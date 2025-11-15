@@ -1,0 +1,231 @@
+// Re-export content types for convenience
+export type {
+  MessageStopReason,
+  BlockCategory,
+  RenderingBlockGroup,
+  RenderingContentBlock,
+  ThinkingRenderBlock,
+  TextRenderBlock,
+  WebSearchRenderBlock,
+  WebSearchResult,
+  WebFetchRenderBlock,
+  ErrorRenderBlock,
+} from './content';
+export { categorizeBlock, groupAndConsolidateBlocks } from './content';
+import type { RenderingBlockGroup, MessageStopReason } from './content';
+
+// API Type - represents the protocol/client template (ChatGPT, Anthropic, Bedrock, WebLLM)
+export const APIType = {
+  CHATGPT: 'chatgpt',
+  ANTHROPIC: 'anthropic',
+  AMAZON_BEDROCK: 'amazon_bedrock',
+  RESPONSES_API: 'responses_api',
+  WEBLLM: 'webllm',
+} as const;
+
+export type APIType = (typeof APIType)[keyof typeof APIType];
+
+// For backward compatibility during transition
+export const APIProvider = APIType;
+export type APIProvider = APIType;
+
+export interface APIDefinition {
+  id: string;
+  apiType: APIType;
+  name: string; // User-given display name (e.g., "xAI", "My OpenAI")
+  baseUrl: string; // Empty means use apiType default
+  apiKey: string;
+  isDefault?: boolean; // Mark as default (non-deletable) definition
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Model types
+export interface Model {
+  id: string;
+  name: string;
+  apiType: APIType;
+  contextWindow: number;
+}
+
+// Project types
+export interface Project {
+  id: string;
+  name: string;
+  icon?: string; // Emoji
+  createdAt: Date;
+  lastUsedAt: Date;
+  systemPrompt: string;
+  preFillResponse: string;
+  apiDefinitionId: string | null; // null = not configured
+  modelId: string | null; // null = not configured
+  webSearchEnabled: boolean;
+  temperature: number | null;
+  maxOutputTokens: number;
+  enableReasoning: boolean;
+  reasoningBudgetTokens: number;
+  // Message metadata settings
+  sendMessageMetadata?: boolean;
+  metadataTimestampMode?: 'utc' | 'local' | 'disabled';
+  metadataIncludeContextWindow?: boolean;
+  metadataIncludeCost?: boolean;
+  // Memory tool
+  memoryEnabled?: boolean;
+}
+
+// Chat pending state types
+export interface ChatPendingState {
+  type: 'userMessage' | 'forkMessage';
+  content: {
+    message: string;
+    attachments?: MessageAttachment[]; // Processed attachments (base64)
+  };
+}
+
+// Chat types
+export interface Chat {
+  id: string;
+  projectId: string;
+  name: string;
+  createdAt: Date;
+  lastModifiedAt: Date;
+  // Overrides (null = use project default)
+  apiDefinitionId: string | null;
+  modelId: string | null;
+  //
+  messageCount?: number;
+  // Cumulative totals (never decrease, even when messages deleted)
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalReasoningTokens?: number;
+  totalCacheCreationTokens?: number;
+  totalCacheReadTokens?: number;
+  totalCost?: number;
+  // Current context window usage (recalculated, can decrease)
+  contextWindowUsage?: number;
+  // Flag for one-time contextWindowUsage migration
+  contextWindowUsageMigrated?: boolean;
+  // DEPRECATED: Sink costs kept for migration only, not used in calculations
+  sinkInputTokens?: number;
+  sinkOutputTokens?: number;
+  sinkReasoningTokens?: number;
+  sinkCacheCreationTokens?: number;
+  sinkCacheReadTokens?: number;
+  sinkCost?: number;
+  // Fork tracking
+  isForked?: boolean;
+  forkedFromChatId?: string;
+  forkedFromMessageId?: string; // Original message ID where fork occurred
+  forkedAtMessageId?: string; // New message ID in this chat (last copied message)
+  // Pending state for deferred operations
+  pendingState?: ChatPendingState;
+}
+
+// Message types
+export const MessageRole = {
+  USER: 'user',
+  ASSISTANT: 'assistant',
+  SYSTEM: 'system',
+} as const;
+
+export type MessageRole = (typeof MessageRole)[keyof typeof MessageRole];
+
+export interface MessageContent<T> {
+  type: 'text';
+  content: string; // Pure text for display (from StreamResult.textContent)
+  modelFamily?: APIType; // Which API created this message
+  fullContent?: T; // Provider-specific blocks (for caching/replay)
+  renderingContent?: RenderingBlockGroup[]; // Pre-grouped blocks for UI rendering
+  attachmentIds?: string[]; // References to attachment records
+  originalAttachmentCount?: number; // Number of attachments when message was sent (for tracking deleted attachments)
+  stopReason?: MessageStopReason; // Why message ended (end_turn, max_tokens, etc.)
+}
+
+// Attachment types
+export interface MessageAttachment {
+  id: string;
+  type: 'image';
+  mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  data: string; // base64 encoded image data
+}
+
+export interface MessageMetadata {
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+
+  // Feature 1: Pricing - total cost calculated at message creation time
+  messageCost?: number; // Total calculated cost at message time
+  contextWindow?: number; // Model's max context window in tokens
+  contextWindowUsage?: number; // Model's context window usage in tokens
+}
+
+export interface Message<T> {
+  id: string;
+  role: MessageRole;
+  content: MessageContent<T>;
+  timestamp: Date;
+  metadata?: MessageMetadata;
+  attachments?: MessageAttachment[]; // Loaded from storage when needed for API calls
+}
+
+// UI types
+export interface TokenUsage {
+  input: number;
+  output: number;
+  reasoning?: number;
+  cacheCreation?: number;
+  cacheRead?: number;
+  cost?: number;
+}
+
+// Attachment Manager types
+export interface AttachmentInfo {
+  id: string;
+  messageId: string;
+  timestamp: Date;
+}
+
+export interface AttachmentSection {
+  chatId: string;
+  chatName: string;
+  chatTimestamp: Date;
+  projectId: string;
+  projectName: string;
+  projectIcon: string;
+  attachments: AttachmentInfo[];
+}
+
+// Client-side tool types
+export interface ToolUseBlock {
+  type: 'tool_use';
+  id: string; // toolu_xxxx
+  name: string; // e.g., 'memory', 'ping'
+  input: Record<string, unknown>;
+}
+
+export interface ToolResultBlock {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+}
+
+export interface ToolResult {
+  content: string;
+  isError?: boolean;
+}
+
+export interface ClientSideTool {
+  name: string;
+  description: string;
+  inputSchema: {
+    type: 'object';
+    properties: Record<string, unknown>;
+    required: string[];
+  };
+  execute(input: Record<string, unknown>): Promise<ToolResult>;
+}

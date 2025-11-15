@@ -1,0 +1,17 @@
+# Dependencies
+node_modules
+package-lock.json
+
+# Build outputs
+dist
+*.tsbuildinfo
+
+# Data directory
+data/
+
+# Environment files
+.env
+.env.*
+
+# Git
+.git

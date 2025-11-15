@@ -1,0 +1,41 @@
+#!/sbin/openrc-run
+# GremlinOFA Storage Backend - OpenRC init script for Alpine Linux
+
+name="gremlinofa-storage"
+description="GremlinOFA Storage Backend - SQLite-based remote storage"
+
+# Configuration
+: ${GREMLINOFA_USER:=gremlinofa}
+: ${GREMLINOFA_GROUP:=gremlinofa}
+: ${GREMLINOFA_DIR:=/opt/gremlinofa-storage}
+: ${GREMLINOFA_ENVFILE:=${GREMLINOFA_DIR}/.env}
+
+command="/usr/bin/node"
+command_args="${GREMLINOFA_DIR}/dist/index.js"
+command_user="${GREMLINOFA_USER}:${GREMLINOFA_GROUP}"
+command_background=true
+
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.err"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    # Load environment file if it exists
+    if [ -f "${GREMLINOFA_ENVFILE}" ]; then
+        set -a
+        . "${GREMLINOFA_ENVFILE}"
+        set +a
+    fi
+
+    # Create log files if they don't exist
+    checkpath --file --owner ${GREMLINOFA_USER}:${GREMLINOFA_GROUP} "${output_log}"
+    checkpath --file --owner ${GREMLINOFA_USER}:${GREMLINOFA_GROUP} "${error_log}"
+
+    # Ensure working directory exists
+    checkpath --directory --owner ${GREMLINOFA_USER}:${GREMLINOFA_GROUP} "${GREMLINOFA_DIR}"
+}

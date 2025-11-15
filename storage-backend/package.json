@@ -1,0 +1,43 @@
+{
+  "name": "@gremlinofa/storage-sqlite",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "SQLite-based remote storage backend for GremlinOFA - because your data deserves a proper home, not some flimsy IndexDB",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node esbuild.config.js",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:silent": "CI=true vitest run --no-color --silent passed-only",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify": "CI=true prettier --check . && tsc --noEmit && eslint ."
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.5.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.10.0",
+    "esbuild": "^0.27.2",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "prettier": "^3.6.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.46.3",
+    "vitest": "^4.0.16"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

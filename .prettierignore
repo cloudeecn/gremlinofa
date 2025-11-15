@@ -1,0 +1,33 @@
+# Dependencies
+node_modules
+package-lock.json
+
+# Build outputs
+dist
+dev-dist
+build
+.vite
+*.tsbuildinfo
+
+
+# Storage backend (separate project)
+storage-backend
+
+# Git
+.git
+
+# Environment files
+.env
+.env.*
+
+# IDE
+.vscode
+.idea
+
+# Test coverage
+coverage
+
+# PWA
+public/manifest.json
+public/sw.js
+public/workbox-*.js

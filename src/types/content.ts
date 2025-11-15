@@ -1,0 +1,143 @@
+/**
+ * Rendering content types for interleaved thinking/tool-use blocks.
+ * These are API-agnostic types used for UI rendering.
+ */
+
+/** Stop reasons for messages - extensible for future providers */
+export type MessageStopReason =
+  | 'end_turn' // Normal completion
+  | 'max_tokens' // Hit token limit
+  | 'stop_sequence' // Hit stop sequence
+  | 'error' // Error during generation
+  | 'cancelled' // User cancelled
+  | (string & {}); // Future-proof: allow any string from new providers
+
+/** Block category for grouping */
+export type BlockCategory = 'backstage' | 'text' | 'error';
+
+/** Pre-grouped blocks stored in message */
+export interface RenderingBlockGroup {
+  category: BlockCategory;
+  blocks: RenderingContentBlock[];
+}
+
+/** Generic rendering block types - API agnostic */
+export type RenderingContentBlock =
+  | ThinkingRenderBlock
+  | TextRenderBlock
+  | WebSearchRenderBlock
+  | WebFetchRenderBlock
+  | ToolUseRenderBlock
+  | ToolResultRenderBlock
+  | ErrorRenderBlock;
+
+/** Thinking block - just the thinking text */
+export interface ThinkingRenderBlock {
+  type: 'thinking';
+  thinking: string;
+}
+
+/** Web search with results (titles and URLs only, no snippets to save storage) */
+export interface WebSearchRenderBlock {
+  type: 'web_search';
+  id: string; // Tool use ID for matching results to searches
+  query: string;
+  results: WebSearchResult[];
+}
+
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  // No snippet - save storage space
+}
+
+/** Web fetch (URL and title only, no content to save storage) */
+export interface WebFetchRenderBlock {
+  type: 'web_fetch';
+  url: string;
+  title?: string;
+  // No content - save storage space
+}
+
+/** Text block - markdown with citation <a> tags pre-inserted */
+export interface TextRenderBlock {
+  type: 'text';
+  text: string; // Raw markdown with citation <a> tags only (not pre-rendered markdown)
+}
+
+/** Tool use block - client-side tool invocation */
+export interface ToolUseRenderBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+/** Tool result block - result from client-side tool execution */
+export interface ToolResultRenderBlock {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+}
+
+/** Error block */
+export interface ErrorRenderBlock {
+  type: 'error';
+  message: string;
+  stack?: string;
+  status?: number;
+}
+
+/**
+ * Categorize a block by its type.
+ */
+export function categorizeBlock(block: RenderingContentBlock): BlockCategory {
+  switch (block.type) {
+    case 'thinking':
+    case 'web_search':
+    case 'web_fetch':
+    case 'tool_use':
+    case 'tool_result':
+      return 'backstage';
+    case 'text':
+      return 'text';
+    case 'error':
+      return 'error';
+  }
+}
+
+/**
+ * Group and consolidate blocks for efficient rendering.
+ * - Continuous blocks of the same category are grouped together
+ * - Continuous text blocks are merged into a single text block
+ */
+export function groupAndConsolidateBlocks(blocks: RenderingContentBlock[]): RenderingBlockGroup[] {
+  const groups: RenderingBlockGroup[] = [];
+  let currentGroup: RenderingBlockGroup | null = null;
+
+  for (const block of blocks) {
+    const category = categorizeBlock(block);
+
+    if (!currentGroup || currentGroup.category !== category) {
+      // Start new group
+      currentGroup = { category, blocks: [block] };
+      groups.push(currentGroup);
+    } else {
+      // Continue current group
+      if (category === 'text' && block.type === 'text') {
+        // Consolidate: merge text into previous text block
+        const lastBlock = currentGroup.blocks[currentGroup.blocks.length - 1];
+        if (lastBlock.type === 'text') {
+          lastBlock.text += block.text;
+        } else {
+          currentGroup.blocks.push(block);
+        }
+      } else {
+        currentGroup.blocks.push(block);
+      }
+    }
+  }
+
+  return groups;
+}

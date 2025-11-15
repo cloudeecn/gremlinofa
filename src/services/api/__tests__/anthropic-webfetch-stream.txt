@@ -1,0 +1,984 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_id1","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3423,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":8,"service_tier":"standard"}}            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user wants me to fetch a README"}               }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":".md file from a GitHub repository."}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Let"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" me fetch"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the URL they provided."}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"<omitted>"}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_id1","name":"web_fetch","input":{}}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"url\":"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":" \"h"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"ttps:"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"//raw.git"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"hub"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"userconte"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"nt"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":".com/cline"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"/cline/refs"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"/hea"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"ds/ma"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"in/RE"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"ADME.md\"}"}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"web_fetch_tool_result","tool_use_id":"srvtoolu_id1","content":{"type":"web_fetch_result","url":"https://raw.githubusercontent.com/cline/cline/refs/heads/main/README.md","retrieved_at":"2025-11-27T10:23:02.942000+00:00","content":{"type":"document","source":{"type":"text","media_type":"text/plain","data":"<div align=\"center\"><sub>\nEnglish | <a href=\"https://github.com/cline/cline/blob/main/locales/es/README.md\" target=\"_blank\">Español</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/de/README.md\" target=\"_blank\">Deutsch</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/ja/README.md\" target=\"_blank\">日本語</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/zh-cn/README.md\" target=\"_blank\">简体中文</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/zh-tw/README.md\" target=\"_blank\">繁體中文</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/ko/README.md\" target=\"_blank\">한국어</a>\n</sub></div>\n\n# Cline\n\n<p align=\"center\">\n  <img src=\"https://media.githubusercontent.com/media/cline/cline/main/assets/docs/demo.gif\" width=\"100%\" />\n</p>\n\n<div align=\"center\">\n<table>\n<tbody>\n<td align=\"center\">\n<a href=\"https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev\" target=\"_blank\"><strong>Download on VS Marketplace</strong></a>\n</td>\n<td align=\"center\">\n<a href=\"https://discord.gg/cline\" target=\"_blank\"><strong>Discord</strong></a>\n</td>\n<td align=\"center\">\n<a href=\"https://www.reddit.com/r/cline/\" target=\"_blank\"><strong>r/cline</strong></a>\n</td>\n<td align=\"center\">\n<a href=\"https://github.com/cline/cline/discussions/categories/feature-requests?discussions_q=is%3Aopen+category%3A%22Feature+Requests%22+sort%3Atop\" target=\"_blank\"><strong>Feature Requests</strong></a>\n</td>\n<td align=\"center\">\n<a href=\"https://docs.cline.bot/getting-started/for-new-coders\" target=\"_blank\"><strong>Getting Started</strong></a>\n</td>\n</tbody>\n</table>\n</div>\n\nMeet Cline, an AI assistant that can use your **CLI** a**N**d **E**ditor.\n\nThanks to [Claude Sonnet's agentic coding capabilities](https://www.anthropic.com/claude/sonnet), Cline can handle complex software development tasks step-by-step. With tools that let him create & edit files, explore large projects, use the browser, and execute terminal commands (after you grant permission), he can assist you in ways that go beyond code completion or tech support. Cline can even use the Model Context Protocol (MCP) to create new tools and extend his own capabilities. While autonomous AI scripts traditionally run in sandboxed environments, this extension provides a human-in-the-loop GUI to approve every file change and terminal command, providing a safe and accessible way to explore the potential of agentic AI.\n\n1. Enter your task and add images to convert mockups into functional apps or fix bugs with screenshots.\n2. Cline starts by analyzing your file structure & source code ASTs, running regex searches, and reading relevant files to get up to speed in existing projects. By carefully managing what information is added to context, Cline can provide valuable assistance even for large, complex projects without overwhelming the context window.\n3. Once Cline has the information he needs, he can:\n    - Create and edit files + monitor linter/compiler errors along the way, letting him proactively fix issues like missing imports and syntax errors on his own.\n    - Execute commands directly in your terminal and monitor their output as he works, letting him e.g., react to dev server issues after editing a file.\n    - For web development tasks, Cline can launch the site in a headless browser, click, type, scroll, and capture screenshots + console logs, allowing him to fix runtime errors and visual bugs.\n4. When a task is completed, Cline will present the result to you with a terminal command like `open -a \"Google Chrome\" index.html`, which you run with a click of a button.\n\n> [!TIP]\n> Follow [this guide](https://docs.cline.bot/features/customization/opening-cline-in-sidebar) to open Cline on the right side of your editor. This lets you use Cline side-by-side with your file explorer, and see how he changes your workspace more clearly.\n\n---\n\n<img align=\"right\" width=\"340\" src=\"https://github.com/user-attachments/assets/3cf21e04-7ce9-4d22-a7b9-ba2c595e88a4\">\n\n### Use any API and Model\n\nCline supports API providers like OpenRouter, Anthropic, OpenAI, Google Gemini, AWS Bedrock, Azure, GCP Vertex, Cerebras and Groq. You can also configure any OpenAI compatible API, or use a local model through LM Studio/Ollama. If you're using OpenRouter, the extension fetches their latest model list, allowing you to use the newest models as soon as they're available.\n\nThe extension also keeps track of total tokens and API usage cost for the entire task loop and individual requests, keeping you informed of spend every step of the way.\n\n<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n<img align=\"left\" width=\"370\" src=\"https://github.com/user-attachments/assets/81be79a8-1fdb-4028-9129-5fe055e01e76\">\n\n### Run Commands in Terminal\n\nThanks to the new [shell integration updates in VSCode v1.93](https://code.visualstudio.com/updates/v1_93#_terminal-shell-integration-api), Cline can execute commands directly in your terminal and receive the output. This allows him to perform a wide range of tasks, from installing packages and running build scripts to deploying applications, managing databases, and executing tests, all while adapting to your dev environment & toolchain to get the job done right.\n\nFor long running processes like dev servers, use the \"Proceed While Running\" button to let Cline continue in the task while the command runs in the background. As Cline works he’ll be notified of any new terminal output along the way, letting him react to issues that may come up, such as compile-time errors when editing files.\n\n<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n<img align=\"right\" width=\"400\" src=\"https://github.com/user-attachments/assets/c5977833-d9b8-491e-90f9-05f9cd38c588\">\n\n### Create and Edit Files\n\nCline can create and edit files directly in your editor, presenting you a diff view of the changes. You can edit or revert Cline's changes directly in the diff view editor, or provide feedback in chat until you're satisfied with the result. Cline also monitors linter/compiler errors (missing imports, syntax errors, etc.) so he can fix issues that come up along the way on his own.\n\nAll changes made by Cline are recorded in your file's Timeline, providing an easy way to track and revert modifications if needed.\n\n<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n<img align=\"left\" width=\"370\" src=\"https://github.com/user-attachments/assets/bc2e85ba-dfeb-4fe6-9942-7cfc4703cbe5\">\n\n### Use the Browser\n\nWith Claude Sonnet's new [Computer Use](https://www.anthropic.com/news/3-5-models-and-computer-use) capability, Cline can launch a browser, click elements, type text, and scroll, capturing screenshots and console logs at each step. This allows for interactive debugging, end-to-end testing, and even general web use! This gives him autonomy to fixing visual bugs and runtime issues without you needing to handhold and copy-pasting error logs yourself.\n\nTry asking Cline to \"test the app\", and watch as he runs a command like `npm run dev`, launches your locally running dev server in a browser, and performs a series of tests to confirm that everything works. [See a demo here.](https://x.com/sdrzn/status/1850880547825823989)\n\n<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n<img align=\"right\" width=\"350\" src=\"https://github.com/user-attachments/assets/ac0efa14-5c1f-4c26-a42d-9d7c56f5fadd\">\n\n### \"add a tool that...\"\n\nThanks to the [Model Context Protocol](https://github.com/modelcontextprotocol), Cline can extend his capabilities through custom tools. While you can use [community-made servers](https://github.com/modelcontextprotocol/servers), Cline can instead create and install tools tailored to your specific workflow. Just ask Cline to \"add a tool\" and he will handle everything, from creating a new MCP server to installing it into the extension. These custom tools then become part of Cline's toolkit, ready to use in future tasks.\n\n-   \"add a tool that fetches Jira tickets\": Retrieve ticket ACs and put Cline to work\n-   \"add a tool that manages AWS EC2s\": Check server metrics and scale instances up or down\n-   \"add a tool that pulls the latest PagerDuty incidents\": Fetch details and ask Cline to fix bugs\n\n<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n<img align=\"left\" width=\"360\" src=\"https://github.com/user-attachments/assets/7fdf41e6-281a-4b4b-ac19-020b838b6970\">\n\n### Add Context\n\n**`@url`:** Paste in a URL for the extension to fetch and convert to markdown, useful when you want to give Cline the latest docs\n\n**`@problems`:** Add workspace errors and warnings ('Problems' panel) for Cline to fix\n\n**`@file`:** Adds a file's contents so you don't have to waste API requests approving read file (+ type to search files)\n\n**`@folder`:** Adds folder's files all at once to speed up your workflow even more\n\n<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n<img align=\"right\" width=\"350\" src=\"https://github.com/user-attachments/assets/140c8606-d3bf-41b9-9a1f-4dbf0d4c90cb\">\n\n### Checkpoints: Compare and Restore\n\nAs Cline works through a task, the extension takes a snapshot of your workspace at each step. You can use the 'Compare' button to see a diff between the snapshot and your current workspace, and the 'Restore' button to roll back to that point.\n\nFor example, when working with a local web server, you can use 'Restore Workspace Only' to quickly test different versions of your app, then use 'Restore Task and Workspace' when you find the version you want to continue building from. This lets you safely explore different approaches without losing progress.\n\n<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n## Contributing\n\nTo contribute to the project, start with our [Contributing Guide](CONTRIBUTING.md) to learn the basics. You can also join our [Discord](https://discord.gg/cline) to chat with other contributors in the `#contributors` channel. If you're looking for full-time work, check out our open positions on our [careers page](https://cline.bot/join-us)!\n\n## License\n\n[Apache 2.0 © 2025 Cline Bot Inc.](./LICENSE)\n"},"title":null,"citations":{"enabled":true}}}}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"type":"thinking","thinking":"","signature":""}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"The user"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" aske"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"d me"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" to fetch"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" an"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"d explain"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" what"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" Cline is."}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" I've retrieve"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"d the README"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"."} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"md file."}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" Let"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":" me summar"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"ize what Cline is base"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"d on the content"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"."}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":""}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"signature_delta","signature":"<omitted>"} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":3  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":4,"content_block":{"type":"text","text":""} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"This"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" is **"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"Cline**,"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" "} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":4        }
+
+event: content_block_start
+data: {"type":"content_block_start","index":5,"content_block":{"citations":[],"type":"text","text":""}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"<div align=\"center\"><sub>\nEnglish | <a href=\"https://github.com/cline/cline/blob/main/locales/es/README.md\" target=\"_blank\">Español</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/de/README.md\" target=\"_blank\">Deutsch</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/ja/README.md\" target=\"_blank\">日本語</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/zh-cn/README.md\" target=\"_blank\">简体中文</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/zh-tw/README.md\" target=\"_blank\">繁體中文</a> | <a href=\"https://github.com/cline/cline/blob/main/locales/ko/README.md\" target=\"_blank\">한국어</a>\n</sub></div>\n\n# Cline\n\n<p align=\"center\">\n  <img src=\"https://media.githubusercontent.com/media/cline/cline/main/assets/docs/demo.gif\" width=\"100%\" />\n</p>\n\n<div align=\"center\">\n<table>\n<tbody>\n<td align=\"center\">\n<a href=\"https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev\" target=\"_blank\"><strong>Download on VS Marketplace</strong></a>\n</td>\n<td align=\"center\">\n<a href=\"https://discord.gg/cline\" target=\"_blank\"><strong>Discord</strong></a>\n</td>\n<td align=\"center\">\n<a href=\"https://www.reddit.com/r/cline/\" target=\"_blank\"><strong>r/cline</strong></a>\n</td>\n<td align=\"center\">\n<a href=\"https://github.com/cline/cline/discussions/categories/feature-requests?discussions_q=is%3Aopen+category%3A%22Feature+Requests%22+sort%3Atop\" target=\"_blank\"><strong>Feature Requests</strong></a>\n</td>\n<td align=\"center\">\n<a href=\"https://docs.cline.bot/getting-started/for-new-coders\" target=\"_blank\"><strong>Getting Started</strong></a>\n</td>\n</tbody>\n</table>\n</div>\n\nMeet Cline, an AI assistant that can use your **CLI** a**N**d **E**ditor.\n\n","document_index":0,"document_title":null,"start_char_index":0,"end_char_index":1700}}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"an"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" AI"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" assistant"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" that can"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" use"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" your"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" CLI"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" an"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"d Editor"}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":5             }
+
+event: content_block_start
+data: {"type":"content_block_start","index":6,"content_block":{"type":"text","text":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":"."}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":"\n\nHere"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":"'s what Cline does"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":":\n\n**"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":"Core Functionality:**"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":"\n"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":6      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":7,"content_block":{"citations":[],"type":"text","text":""}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"Thanks to [Claude Sonnet's agentic coding capabilities](https://www.anthropic.com/claude/sonnet), Cline can handle complex software development tasks step-by-step. ","document_index":0,"document_title":null,"start_char_index":1700,"end_char_index":1864}}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"Thanks"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" to Claude"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" Son"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"net's"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" a"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"gen"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"tic coding"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" capabilities, Cline can handle"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" complex software"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" development tasks step"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"-"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"by-step."}      }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":7      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":8,"content_block":{"type":"text","text":""}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"text_delta","text":" "}    }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":8   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":9,"content_block":{"citations":[],"type":"text","text":""}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"With tools that let him create & edit files, explore large projects, use the browser, and execute terminal commands (after you grant permission), he can assist you in ways that go beyond code completion or tech support. ","document_index":0,"document_title":null,"start_char_index":1864,"end_char_index":2084}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":"With"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" tools"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" that"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" let"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" him"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" create"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" &"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" edit"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" files"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":", explore"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" large"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" projects"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":", use"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" the"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" browser"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":", and execute"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" terminal"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" commands ("}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":"after"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" you"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" grant"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" permission"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":"),"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" he"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" can assist"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" you"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" in ways"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" that go"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" beyond code"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" completion"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" or"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" tech"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":" support"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":9,"delta":{"type":"text_delta","text":"."}            }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":9            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":10,"content_block":{"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"text_delta","text":"\n\n**"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"text_delta","text":"Key Features:**"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"text_delta","text":"\n\n-"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"text_delta","text":" **File"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"text_delta","text":" Management**: "}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":10      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":11,"content_block":{"citations":[],"type":"text","text":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n<img align=\"right\" width=\"400\" src=\"https://github.com/user-attachments/assets/c5977833-d9b8-491e-90f9-05f9cd38c588\">\n\n### Create and Edit Files\n\nCline can create and edit files directly in your editor, presenting you a diff view of the changes. You can edit or revert Cline's changes directly in the diff view editor, or provide feedback in chat until you're satisfied with the result. ","document_index":0,"document_title":null,"start_char_index":5709,"end_char_index":6287}}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"Cline can"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" create"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" an"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"d edit files directly"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" in your"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" editor"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":","}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" presenting"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" you"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" a"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" diff"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" view"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" of the"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" changes."}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" You"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" can edit"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" or"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" re"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"vert"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" C"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"line's changes"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" directly"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" in the diff"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" view editor"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":","}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" or"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" provide"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" feedback in"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" chat"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" until"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" you're satisfie"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"d with the result"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"."}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":11      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":12,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":"\n\n-"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" **Terminal"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" Execution"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":"**: "}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":12         }
+
+event: content_block_start
+data: {"type":"content_block_start","index":13,"content_block":{"citations":[],"type":"text","text":""}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n<img align=\"left\" width=\"370\" src=\"https://github.com/user-attachments/assets/81be79a8-1fdb-4028-9129-5fe055e01e76\">\n\n### Run Commands in Terminal\n\nThanks to the new [shell integration updates in VSCode v1.93](https://code.visualstudio.com/updates/v1_93#_terminal-shell-integration-api), Cline can execute commands directly in your terminal and receive the output. This allows him to perform a wide range of tasks, from installing packages and running build scripts to deploying applications, managing databases, and executing tests, all while adapting to your dev environment & toolchain to get the job done right.\n\n","document_index":0,"document_title":null,"start_char_index":4571,"end_char_index":5379}}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":"Cline can"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" execute commands"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" directly"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" in your"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" terminal an"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":"d receive"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" the"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" output, allowing"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" him"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" to perform"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" a"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" wide range of tasks, from installing"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" packages an"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":"d running"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" buil"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":"d scripts"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" to deplo"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":"ying applications,"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" managing"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" databases, and executing"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" tests"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":"."}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":13         }
+
+event: content_block_start
+data: {"type":"content_block_start","index":14,"content_block":{"type":"text","text":""}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":"\n\n-"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":" **Browser"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":" Control"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":"**: "}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":14       }
+
+event: content_block_start
+data: {"type":"content_block_start","index":15,"content_block":{"citations":[],"type":"text","text":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"<!-- Transparent pixel to create line break after floating image -->\n\n<img width=\"2000\" height=\"0\" src=\"https://github.com/user-attachments/assets/ee14e6f7-20b8-4391-9091-8e8e25561929\"><br>\n\n<img align=\"left\" width=\"370\" src=\"https://github.com/user-attachments/assets/bc2e85ba-dfeb-4fe6-9942-7cfc4703cbe5\">\n\n### Use the Browser\n\nWith Claude Sonnet's new [Computer Use](https://www.anthropic.com/news/3-5-models-and-computer-use) capability, Cline can launch a browser, click elements, type text, and scroll, capturing screenshots and console logs at each step. This allows for interactive debugging, end-to-end testing, and even general web use! ","document_index":0,"document_title":null,"start_char_index":6562,"end_char_index":7209}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":"With"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" Claude"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" Sonnet's Computer"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" Use"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" capability"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":", Cline can launch"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" a browser,"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" click"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" elements"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":", type"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" text, and scroll"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":", capturing"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" screenshots and console"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" logs"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" at"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" each step. This"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" allows for"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" interactive"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" debugging"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":","}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" en"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":"d-to-end testing, and even"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" general"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" web use"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":"!"}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":15      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":16,"content_block":{"type":"text","text":""}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":"\n\n-"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" **Extens"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":"ibility**: "} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":16           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":17,"content_block":{"citations":[],"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"Just ask Cline to \"add a tool\" and he will handle everything, from creating a new MCP server to installing it into the extension. These custom tools then become part of Cline's toolkit, ready to use in future tasks.\n\n","document_index":0,"document_title":null,"start_char_index":8265,"end_char_index":8482}}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":"Just"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" ask"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" Cline to \""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":"ad"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":"d a tool"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":"\" an"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":"d he will"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" handle"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" everything"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":","}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" from creating a"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" new M"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":"CP"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" server"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" to installing"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" it"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" into"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" the"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" extension"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":"."}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" These"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" custom"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" tools"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" then"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" become part of Cline's toolkit"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":","}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" ready"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" to use"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" in future"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" tasks"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":"."}        }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":17    }
+
+event: content_block_start
+data: {"type":"content_block_start","index":18,"content_block":{"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":18,"delta":{"type":"text_delta","text":"\n\n"}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":18              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":19,"content_block":{"citations":[],"type":"text","text":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"---\n\n<img align=\"right\" width=\"340\" src=\"https://github.com/user-attachments/assets/3cf21e04-7ce9-4d22-a7b9-ba2c595e88a4\">\n\n### Use any API and Model\n\nCline supports API providers like OpenRouter, Anthropic, OpenAI, Google Gemini, AWS Bedrock, Azure, GCP Vertex, Cerebras and Groq. You can also configure any OpenAI compatible API, or use a local model through LM Studio/Ollama. ","document_index":0,"document_title":null,"start_char_index":3878,"end_char_index":4257}}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"Cline supports"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" API"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" providers"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" like Open"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"Router"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":", Anthrop"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"ic, Open"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"AI, Google"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" Gem"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"ini, AWS"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" Bedrock, Azure"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":","}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" G"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"CP"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" Vertex"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":","}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" Cereb"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"ras an"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"d Gro"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"q."}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" You"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" can also configure"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" any"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" Open"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"AI compatible"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" API,"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" or"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" use a"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" local"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" model"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" through"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" L"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"M"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" Studio/"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"Oll"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"ama."}      }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":19              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":20,"content_block":{"type":"text","text":""}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":20,"delta":{"type":"text_delta","text":" It"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":20,"delta":{"type":"text_delta","text":"'s available"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":20,"delta":{"type":"text_delta","text":" as a Visual"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":20,"delta":{"type":"text_delta","text":" Studio Code extension."}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":20      }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":3430,"cache_creation_input_tokens":7525,"cache_read_input_tokens":0,"output_tokens":728,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":1}}      }
+
+event: message_stop
+data: {"type":"message_stop"         }
+

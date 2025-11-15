@@ -1,0 +1,2481 @@
+[
+  {
+    "type": "event",
+    "content": "message_start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "thinking.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "The user wants me to fetch a README"
+  },
+  {
+    "type": "event",
+    "content": "ping"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": ".md file from a GitHub repository."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " Let"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " me fetch"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " the URL they provided."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": ""
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "thinking.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "web_fetch.start",
+    "id": "srvtoolu_id1"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "web_fetch",
+    "id": "srvtoolu_id1",
+    "url": "https://raw.githubusercontent.com/cline/cline/refs/heads/main/README.md"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "web_fetch.result",
+    "tool_use_id": "srvtoolu_id1",
+    "url": "https://raw.githubusercontent.com/cline/cline/refs/heads/main/README.md"
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "thinking.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "The user"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " aske"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "d me"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " to fetch"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " an"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "d explain"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " what"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " Cline is."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " I've retrieve"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "d the README"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "md file."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " Let"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": " me summar"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "ize what Cline is base"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "d on the content"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": "."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "thinking",
+    "content": ""
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "thinking.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "This"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " is **"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Cline**,"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " "
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "an"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " AI"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " assistant"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " that can"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " use"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " your"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " CLI"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " an"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d Editor"
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "\n\nHere"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "'s what Cline does"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ":\n\n**"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Core Functionality:**"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "\n"
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Thanks"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " to Claude"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Son"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "net's"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " a"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "gen"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "tic coding"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " capabilities, Cline can handle"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " complex software"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " development tasks step"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "-"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "by-step."
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " "
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "With"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " tools"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " that"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " let"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " him"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " create"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " &"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " edit"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " files"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ", explore"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " large"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " projects"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ", use"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " the"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " browser"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ", and execute"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " terminal"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " commands ("
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "after"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " you"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " grant"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " permission"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "),"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " he"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " can assist"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " you"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " in ways"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " that go"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " beyond code"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " completion"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " or"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " tech"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " support"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "."
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "\n\n**"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Key Features:**"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "\n\n-"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " **File"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Management**: "
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Cline can"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " create"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " an"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d edit files directly"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " in your"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " editor"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ","
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " presenting"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " you"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " a"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " diff"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " view"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " of the"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " changes."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " You"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " can edit"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " or"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " re"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "vert"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " C"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "line's changes"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " directly"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " in the diff"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " view editor"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ","
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " or"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " provide"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " feedback in"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " chat"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " until"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " you're satisfie"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d with the result"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "."
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "\n\n-"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " **Terminal"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Execution"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "**: "
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Cline can"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " execute commands"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " directly"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " in your"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " terminal an"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d receive"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " the"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " output, allowing"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " him"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " to perform"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " a"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " wide range of tasks, from installing"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " packages an"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d running"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " buil"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d scripts"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " to deplo"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "ying applications,"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " managing"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " databases, and executing"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " tests"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "."
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "\n\n-"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " **Browser"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Control"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "**: "
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "With"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Claude"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Sonnet's Computer"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Use"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " capability"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ", Cline can launch"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " a browser,"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " click"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " elements"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ", type"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " text, and scroll"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ", capturing"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " screenshots and console"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " logs"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " at"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " each step. This"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " allows for"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " interactive"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " debugging"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ","
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " en"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d-to-end testing, and even"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " general"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " web use"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "!"
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "\n\n-"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " **Extens"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "ibility**: "
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Just"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " ask"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Cline to \""
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "ad"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d a tool"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "\" an"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d he will"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " handle"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " everything"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ","
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " from creating a"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " new M"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "CP"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " server"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " to installing"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " it"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " into"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " the"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " extension"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " These"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " custom"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " tools"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " then"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " become part of Cline's toolkit"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ","
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " ready"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " to use"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " in future"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " tasks"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "."
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "\n\n"
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Cline supports"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " API"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " providers"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " like Open"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Router"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ", Anthrop"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "ic, Open"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "AI, Google"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Gem"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "ini, AWS"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Bedrock, Azure"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ","
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " G"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "CP"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Vertex"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": ","
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Cereb"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "ras an"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "d Gro"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "q."
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " You"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " can also configure"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " any"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Open"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "AI compatible"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " API,"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " or"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " use a"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " local"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " model"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " through"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " L"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "M"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Studio/"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "Oll"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "ama."
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "content_block_start"
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " It"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": "'s available"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " as a Visual"
+  },
+  {
+    "type": "event",
+    "content": "content_block_delta"
+  },
+  {
+    "type": "content",
+    "content": " Studio Code extension."
+  },
+  {
+    "type": "event",
+    "content": "content_block_stop"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "event",
+    "content": "message_delta"
+  },
+  {
+    "type": "event",
+    "content": "message_stop"
+  },
+  {
+    "type": "token_usage",
+    "inputTokens": 3430,
+    "outputTokens": 728,
+    "cacheCreationTokens": 7525,
+    "cacheReadTokens": 0
+  }
+]

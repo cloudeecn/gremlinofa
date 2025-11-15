@@ -1,0 +1,28 @@
+[Unit]
+Description=GremlinOFA Storage Backend - SQLite-based remote storage
+Documentation=https://github.com/your-repo/gremlinofa
+After=network.target
+
+[Service]
+Type=simple
+User=gremlinofa
+Group=gremlinofa
+WorkingDirectory=/opt/gremlinofa-storage
+ExecStart=/usr/bin/node /opt/gremlinofa-storage/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/gremlinofa-storage
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gremlinofa-storage
+
+[Install]
+WantedBy=multi-user.target

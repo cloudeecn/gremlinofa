@@ -1,0 +1,730 @@
+openapi: 3.1.0
+info:
+  title: GremlinOFA Storage Backend
+  description: |
+    A SQLite-based remote storage backend for GremlinOFA. Vibe-coded, but it works.
+
+    This API mirrors the frontend `StorageAdapter` interface, storing encrypted blobs in SQLite - 
+    more reliably than browser storage. Multi-tenant by design, with each user's data isolated 
+    via userId in Basic Auth.
+
+    The backend stores encrypted blobs and indexes them by parentId and timestamp. 
+    Encryption/decryption happens client-side.
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:3001
+    description: Local development server
+
+tags:
+  - name: Records
+    description: CRUD operations for encrypted records
+  - name: Bulk Operations
+    description: Operations that affect multiple records (handle with care)
+  - name: Health
+    description: Is this thing on?
+
+security:
+  - basicAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns OK if the server is alive. No auth required - we're not monsters.
+      operationId: healthCheck
+      tags:
+        - Health
+      security: []
+      responses:
+        '200':
+          description: Server is alive and kicking
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                required:
+                  - status
+              example:
+                status: ok
+
+  /api/{table}:
+    get:
+      summary: Query records
+      description: |
+        Retrieves records from the specified table. Supports filtering by parentId and sorting.
+        Returns an array of records (potentially empty if you haven't stored anything yet).
+      operationId: queryRecords
+      tags:
+        - Records
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - $ref: '#/components/parameters/ParentId'
+        - $ref: '#/components/parameters/OrderBy'
+        - $ref: '#/components/parameters/OrderDirection'
+      responses:
+        '200':
+          description: Array of matching records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RecordResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      summary: Delete multiple records
+      description: |
+        Bulk delete records matching the parentId filter. Requires parentId parameter - 
+        we're not letting you accidentally nuke an entire table without at least some friction.
+      operationId: deleteMany
+      tags:
+        - Bulk Operations
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - name: parentId
+          in: query
+          required: true
+          description: Parent ID to filter records for deletion (required - no footguns here)
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Records deleted successfully (or there were none matching - we don't judge)
+        '400':
+          description: Missing required parentId parameter or invalid table
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: parentId query parameter is required for bulk delete
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/{table}/_count:
+    get:
+      summary: Count records
+      description: |
+        Returns the count of records in the table, optionally filtered by parentId.
+        Useful for pagination or "are there even any messages in this chat?" checks.
+      operationId: countRecords
+      tags:
+        - Records
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - $ref: '#/components/parameters/ParentId'
+      responses:
+        '200':
+          description: Record count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountResponse'
+              example:
+                count: 42
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/{table}/{id}:
+    put:
+      summary: Save a record
+      description: |
+        Upserts a record - creates it if it doesn't exist, updates it if it does.
+        The encryptedData is stored as-is; we don't peek inside your encrypted blobs.
+
+        Optional metadata fields (timestamp, parentId) are stored unencrypted for indexing.
+      operationId: saveRecord
+      tags:
+        - Records
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - $ref: '#/components/parameters/RecordId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveRequest'
+            example:
+              encryptedData: SGVsbG8gV29ybGQhIFRoaXMgaXMgZW5jcnlwdGVkLCB0cnVzdCBtZS4=
+              timestamp: '2024-01-15T10:30:00.000Z'
+              parentId: chat_abc123xyz
+      responses:
+        '204':
+          description: Record saved successfully
+        '400':
+          description: Invalid table name or missing encryptedData
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingData:
+                  summary: Missing encrypted data
+                  value:
+                    error: encryptedData is required
+                invalidTable:
+                  summary: Invalid table name
+                  value:
+                    error: 'Invalid table: definitely_not_a_table'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    get:
+      summary: Get a record by ID
+      description: |
+        Retrieves a single record by its ID. Returns 404 if not found - 
+        either it never existed or you already deleted it.
+      operationId: getRecord
+      tags:
+        - Records
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - $ref: '#/components/parameters/RecordId'
+      responses:
+        '200':
+          description: The requested record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordResponse'
+              example:
+                encryptedData: SGVsbG8gV29ybGQhIFRoaXMgaXMgZW5jcnlwdGVkLCB0cnVzdCBtZS4=
+                unencryptedData: '{"version": 1}'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Record not found
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      summary: Delete a record
+      description: |
+        Deletes a single record by ID. Idempotent - deleting a non-existent record 
+        still returns 204 because the end state is the same: it's gone.
+      operationId: deleteRecord
+      tags:
+        - Records
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - $ref: '#/components/parameters/RecordId'
+      responses:
+        '204':
+          description: Record deleted (or never existed - same difference)
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/_clear-all:
+    post:
+      summary: Clear all user data
+      description: |
+        The nuclear option. Deletes ALL records for the authenticated user across ALL tables.
+
+        Use with extreme caution. There's no "are you sure?" prompt here - 
+        if you call this endpoint, you better mean it.
+      operationId: clearAll
+      tags:
+        - Bulk Operations
+      responses:
+        '204':
+          description: All user data cleared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/{table}/_export:
+    get:
+      summary: Export records with pagination
+      description: |
+        Cursor-based pagination for exporting all records from a table. Returns records
+        sorted by ID, making it perfect for full table exports.
+
+        Use `columns` to fetch only the fields you need - great for getting metadata without
+        the heavy `encryptedData` blob.
+
+        Limits:
+        - Max 200 rows per page
+        - Max ~20MB total response size (stops early if exceeded)
+
+        Use the last row's `id` as `afterId` for the next page. Keep fetching while `hasMore` is true.
+      operationId: exportRecords
+      tags:
+        - Bulk Operations
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - name: afterId
+          in: query
+          required: false
+          description: Cursor for pagination - returns records with ID greater than this value
+          schema:
+            type: string
+          example: msg_user_a7k2m9p4xyz123
+        - $ref: '#/components/parameters/Columns'
+      responses:
+        '200':
+          description: Paginated records with all columns
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+              example:
+                rows:
+                  - id: msg_user_abc123
+                    encryptedData: SGVsbG8gV29ybGQh
+                    timestamp: '2024-01-15T10:30:00.000Z'
+                    parentId: chat_xyz789
+                  - id: msg_user_def456
+                    encryptedData: QW5vdGhlciBtZXNzYWdl
+                    timestamp: '2024-01-15T10:31:00.000Z'
+                    parentId: chat_xyz789
+                hasMore: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/{table}/_batch:
+    get:
+      summary: Batch get records by IDs
+      description: |
+        Fetch multiple records by their IDs in a single request. Way more efficient than
+        making individual GET requests when you know exactly which records you need.
+
+        Use `columns` to fetch only the fields you need - perfect for getting metadata
+        without dragging along the heavy `encryptedData` blob.
+
+        Limited to 200 IDs per request - if you need more, split into multiple requests.
+      operationId: batchGet
+      tags:
+        - Bulk Operations
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+        - $ref: '#/components/parameters/Ids'
+        - $ref: '#/components/parameters/Columns'
+      responses:
+        '200':
+          description: Array of matching records (missing IDs are silently omitted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchGetResponse'
+              example:
+                rows:
+                  - id: msg_abc123
+                    encryptedData: SGVsbG8gV29ybGQh
+                    timestamp: '2024-01-15T10:30:00.000Z'
+                  - id: msg_def456
+                    encryptedData: QW5vdGhlciBtZXNzYWdl
+                    parentId: chat_xyz789
+        '400':
+          description: Invalid request (missing ids, too many ids, invalid columns)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingIds:
+                  summary: Missing ids parameter
+                  value:
+                    error: ids query parameter is required
+                tooManyIds:
+                  summary: Too many IDs
+                  value:
+                    error: Maximum 200 IDs per request
+                invalidColumn:
+                  summary: Invalid column name
+                  value:
+                    error: 'Invalid column: not_a_column'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      summary: Batch save records
+      description: |
+        Save multiple records in a single transaction. Significantly faster than individual PUTs
+        when importing data - the backend wraps everything in a SQLite transaction.
+
+        Use `skipExisting: true` for import scenarios where you want to preserve existing data.
+        Use `skipExisting: false` (default) for sync scenarios where remote should overwrite local.
+      operationId: batchSave
+      tags:
+        - Bulk Operations
+      parameters:
+        - $ref: '#/components/parameters/TableName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchSaveRequest'
+            example:
+              rows:
+                - id: msg_user_abc123
+                  encryptedData: SGVsbG8gV29ybGQh
+                  timestamp: '2024-01-15T10:30:00.000Z'
+                  parentId: chat_xyz789
+                - id: msg_user_def456
+                  encryptedData: QW5vdGhlciBtZXNzYWdl
+                  timestamp: '2024-01-15T10:31:00.000Z'
+                  parentId: chat_xyz789
+              skipExisting: true
+      responses:
+        '200':
+          description: Batch save result with counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchSaveResponse'
+              example:
+                saved: 150
+                skipped: 10
+        '400':
+          description: Invalid request (missing rows, invalid row data)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingRows:
+                  summary: Missing rows array
+                  value:
+                    error: rows array is required
+                invalidRow:
+                  summary: Invalid row data
+                  value:
+                    error: Row 5 missing required id or encryptedData
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: |
+        HTTP Basic Auth where the username is the userId (typically a hash of the CEK on the frontend).
+        Password is currently ignored; validation planned for future control plane.
+
+        Example: `Authorization: Basic dXNlcjEyMzp3aGF0ZXZlcg==` (user123:whatever)
+
+  parameters:
+    TableName:
+      name: table
+      in: path
+      required: true
+      description: The storage table name
+      schema:
+        type: string
+        enum:
+          - api_definitions
+          - models_cache
+          - projects
+          - chats
+          - messages
+          - attachments
+          - app_metadata
+
+    RecordId:
+      name: id
+      in: path
+      required: true
+      description: Unique record identifier
+      schema:
+        type: string
+      example: msg_user_a7k2m9p4xyz123
+
+    ParentId:
+      name: parentId
+      in: query
+      required: false
+      description: Filter by parent ID (e.g., get all messages in a chat)
+      schema:
+        type: string
+      example: chat_abc123xyz
+
+    OrderBy:
+      name: orderBy
+      in: query
+      required: false
+      description: Field to sort results by
+      schema:
+        type: string
+        enum:
+          - timestamp
+          - createdAt
+
+    OrderDirection:
+      name: orderDirection
+      in: query
+      required: false
+      description: Sort direction
+      schema:
+        type: string
+        enum:
+          - asc
+          - desc
+        default: asc
+
+    Columns:
+      name: columns
+      in: query
+      required: false
+      description: |
+        Comma-separated list of columns to include in the response. 
+        Omit to get all columns (the default behavior).
+
+        Use this to fetch metadata without the heavy `encryptedData` blob - 
+        your bandwidth will thank you.
+      schema:
+        type: string
+      example: id,timestamp,parentId
+
+    Ids:
+      name: ids
+      in: query
+      required: true
+      description: |
+        Comma-separated list of record IDs to fetch.
+        Limited to 200 IDs per request - if you need more, make multiple requests.
+      schema:
+        type: string
+      example: msg_abc123,msg_def456,msg_ghi789
+
+  schemas:
+    SaveRequest:
+      type: object
+      required:
+        - encryptedData
+      properties:
+        encryptedData:
+          type: string
+          description: Base64-encoded encrypted blob. We don't ask what's inside.
+          example: SGVsbG8gV29ybGQhIFRoaXMgaXMgZW5jcnlwdGVkLCB0cnVzdCBtZS4=
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp for ordering
+          example: '2024-01-15T10:30:00.000Z'
+        parentId:
+          type: string
+          description: Parent record ID for hierarchical queries
+          example: chat_abc123xyz
+        unencryptedData:
+          type: string
+          description: Optional unencrypted data (e.g., version info, feature flags)
+          example: '{"version": 1}'
+
+    RecordResponse:
+      type: object
+      required:
+        - encryptedData
+      properties:
+        encryptedData:
+          type: string
+          description: Your encrypted blob, exactly as you stored it
+          example: SGVsbG8gV29ybGQhIFRoaXMgaXMgZW5jcnlwdGVkLCB0cnVzdCBtZS4=
+        unencryptedData:
+          type: string
+          description: Unencrypted metadata, if any was stored
+          example: '{"version": 1}'
+
+    CountResponse:
+      type: object
+      required:
+        - count
+      properties:
+        count:
+          type: integer
+          minimum: 0
+          description: Number of records matching the query
+          example: 42
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: Internal server error
+
+    ExportRow:
+      type: object
+      required:
+        - id
+        - encryptedData
+      properties:
+        id:
+          type: string
+          description: Record identifier
+          example: msg_user_abc123
+        encryptedData:
+          type: string
+          description: The encrypted blob
+          example: SGVsbG8gV29ybGQh
+        unencryptedData:
+          type: string
+          description: Optional unencrypted metadata
+        timestamp:
+          type: string
+          format: date-time
+          description: Record timestamp (if stored)
+        parentId:
+          type: string
+          description: Parent record ID (if stored)
+
+    ExportResponse:
+      type: object
+      required:
+        - rows
+        - hasMore
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportRow'
+          description: Array of records with all columns
+        hasMore:
+          type: boolean
+          description: True if there are more records to fetch (use last row's id as afterId)
+
+    BatchSaveRow:
+      type: object
+      required:
+        - id
+        - encryptedData
+      properties:
+        id:
+          type: string
+          description: Record identifier
+          example: msg_user_abc123
+        encryptedData:
+          type: string
+          description: The encrypted blob to store
+          example: SGVsbG8gV29ybGQh
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp for ordering
+        parentId:
+          type: string
+          description: Parent record ID for hierarchical queries
+        unencryptedData:
+          type: string
+          description: Optional unencrypted data
+
+    BatchSaveRequest:
+      type: object
+      required:
+        - rows
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchSaveRow'
+          description: Array of records to save
+        skipExisting:
+          type: boolean
+          default: false
+          description: If true, skip records that already exist (INSERT OR IGNORE). If false, upsert (INSERT OR REPLACE).
+
+    BatchSaveResponse:
+      type: object
+      required:
+        - saved
+        - skipped
+      properties:
+        saved:
+          type: integer
+          minimum: 0
+          description: Number of records successfully saved
+          example: 150
+        skipped:
+          type: integer
+          minimum: 0
+          description: Number of records skipped (due to skipExisting or errors)
+          example: 10
+
+    BatchGetResponse:
+      type: object
+      required:
+        - rows
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExportRow'
+          description: |
+            Array of found records. Missing IDs are silently omitted - 
+            if you asked for 5 and got 3 back, 2 didn't exist.
+
+  responses:
+    BadRequest:
+      description: Invalid request (bad table name, missing parameters, etc.)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: 'Invalid table: not_a_real_table'
+
+    Unauthorized:
+      description: Missing or invalid Basic Auth credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Authorization required
+
+    InternalError:
+      description: Something broke on our end
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Failed to query records

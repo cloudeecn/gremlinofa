@@ -1,0 +1,380 @@
+@import 'tailwindcss';
+@import 'highlight.js/styles/github.css';
+@import 'katex/dist/katex.min.css';
+
+/* iOS keyboard viewport compensation - set by useIOSKeyboard hook */
+:root {
+  --keyboard-offset: 0px;
+}
+
+/* iOS-style momentum scrolling with scroll containment */
+.ios-scroll {
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+
+/* Safe area inset utilities for iOS devices with notch/home indicator */
+.safe-area-inset-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.safe-area-inset-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-area-inset-x {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* Scrollable content that reaches viewport edge - add safe area bottom padding */
+.scroll-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Markdown prose styles for message content */
+.prose {
+  color: inherit;
+}
+
+.prose p {
+  margin-bottom: 0.75em;
+}
+
+.prose p:last-child {
+  margin-bottom: 0;
+}
+
+.prose code {
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.prose pre {
+  background-color: #f6f8fa;
+  padding: 1em;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+
+.prose pre code {
+  background-color: transparent;
+  padding: 0;
+  font-size: 0.875em;
+  line-height: 1.5;
+}
+
+/* Code block container with copy button */
+.code-block-container {
+  position: relative;
+  margin: 0.75em 0;
+}
+
+.code-block-container pre {
+  margin: 0;
+}
+
+.code-copy-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background-color: rgba(255, 255, 255, 0.9);
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  opacity: 0;
+  transition:
+    opacity 0.15s ease-in-out,
+    background-color 0.15s ease-in-out;
+  z-index: 10;
+}
+
+.code-block-container:hover .code-copy-button {
+  opacity: 1;
+}
+
+.code-copy-button:hover {
+  background-color: #f3f4f6;
+}
+
+.code-copy-button:active {
+  background-color: #e5e7eb;
+}
+
+.code-copy-button.copied {
+  background-color: #d1fae5;
+  border-color: #6ee7b7;
+}
+
+.prose ul {
+  margin: 0.75em 0;
+  padding-left: 1.5em;
+  list-style-type: disc;
+}
+
+.prose ol {
+  margin: 0.75em 0;
+  padding-left: 1.5em;
+  list-style-type: decimal;
+}
+
+.prose li {
+  margin: 0.25em 0;
+}
+
+.prose blockquote {
+  border-left: 3px solid #d1d5db;
+  padding-left: 1em;
+  margin: 0.75em 0;
+  color: #6b7280;
+}
+
+.prose a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.prose a:hover {
+  color: #1d4ed8;
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
+  font-weight: 600;
+  margin-top: 0.5em;
+  margin-bottom: 0.2em;
+}
+
+.prose h1 {
+  font-size: 1.5em;
+}
+
+.prose h2 {
+  font-size: 1.3em;
+}
+
+.prose h3 {
+  font-size: 1.1em;
+}
+
+.prose table {
+  border-collapse: collapse;
+  border: 1px solid #e5e7eb;
+  margin: 0.75em 0;
+  width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+
+.prose th,
+.prose td {
+  border: 1px solid #e5e7eb;
+  padding: 0.5em;
+  text-align: left;
+}
+
+.prose th {
+  background-color: #f9fafb;
+  font-weight: 600;
+}
+
+/* Citation link styles */
+.citation-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #e0e7ff;
+  color: #4338ca;
+  font-size: 0.7em;
+  font-weight: 600;
+  padding: 0.1em 0.4em;
+  margin: 0 0.1em;
+  border-radius: 0.25em;
+  text-decoration: none;
+  vertical-align: super;
+  line-height: 1;
+  transition: background-color 0.15s ease;
+}
+
+.citation-link:hover {
+  background-color: #c7d2fe;
+  color: #3730a3;
+  text-decoration: none;
+}
+
+/* Backstage view styles */
+.backstage-container {
+  margin-top: 0.75rem;
+}
+
+.backstage-segment + .backstage-segment {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e9d5ff;
+}
+
+/* Web search results styles */
+.web-search-results {
+  margin-top: 0.5rem;
+}
+
+.web-search-results a {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Text group view styles */
+.text-group-view .prose {
+  color: inherit;
+}
+
+/* Math rendering styles */
+.math-error {
+  color: #cc0000;
+  background-color: #fff0f0;
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+/* KaTeX display math - centered with horizontal scroll for long formulas */
+.katex-display {
+  margin: 1em 0;
+  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Inline math overflow handling for small screens */
+.katex {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* Error block styles */
+.error-block {
+  animation: error-shake 0.3s ease-in-out;
+}
+
+@keyframes error-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-2px);
+  }
+  75% {
+    transform: translateX(2px);
+  }
+}
+
+/* Stop reason badge styles */
+.stop-reason-badge {
+  animation: badge-fade-in 0.3s ease-out;
+}
+
+@keyframes badge-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Bouncing dots animation for streaming indicator */
+@keyframes bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-4px);
+  }
+}
+
+.bouncing-dot {
+  display: inline-block;
+  animation: bounce 1.4s infinite;
+}
+
+.bouncing-dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.bouncing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.bouncing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Floating button animations */
+.error-floating-button {
+  animation: floating-button-appear 0.3s ease-out;
+}
+
+.scroll-to-bottom-button {
+  animation: floating-button-appear 0.2s ease-out;
+}
+
+@keyframes floating-button-appear {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Modal animations (shared by Alert and Error views) */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.15s ease-out;
+}
+
+.animate-scale-in {
+  animation: scale-in 0.2s ease-out;
+}

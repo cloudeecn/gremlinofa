@@ -1,0 +1,1083 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_id1","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3466,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard"}}   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user wants"}       }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" me to:\n1. Search for"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" capital of Canada -"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" even"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" though this"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" is stable"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" knowledge"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" I"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" already"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" have, they"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" specifically ask"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" me to search \"solely, without depending"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" on established knowledge\""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n2. Search"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" for the"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" weather there"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" tomorrow"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n3. Comment"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" on the request first"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n4. Do the searches"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n5. Show the results of each"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" step\n\nThe user wants to"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" test how multiple"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" step tool calls work an"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"d says"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" not"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" to take shortcuts"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":". So"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" I should:\n1. First"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" comment on the request\n2. Make"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the first"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" search for"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" Canada"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"'s capital\n3. Show"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" that"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" result"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n4. Then"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" make"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the second search for the"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" weather there"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" tomorrow\n5. Show that result"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\nLet me start by"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" commenting on the request."}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"<omitted>"}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"## Step"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 1: Comment on the Request"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n\nYou're asking me to search for"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" information that"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" typically"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" falls"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" into"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" \""}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"stable"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" knowledge\" that doesn"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"'t change"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" ("}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"like the capital of Canada),"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" which"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" my"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" training data woul"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"d cover"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":". However"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":", you"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"'re"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" explicitly"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" instruct"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ing me to search"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" online"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" an"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"d not depen"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"d on established knowledge, an"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"d to demonstrate"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" how I handle"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" multi"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"-step tool"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" calls."}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" I"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"'ll respect"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" your test"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" scenario"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" and search"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" for both"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" pieces"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" of information separately"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":","}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" showing you"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" the results of each step.\n\nThis"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" is a good test because"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":":"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n- The"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" first"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" search is straightforward fact"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ual lookup"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n- The second search depends"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" on the result"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" of"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" the first search"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\n- I'll"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" nee"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"d to wait"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" for the first result"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" before making the second search\n\n## Step"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 2: Search"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" for Canada's Capital\n\nLet"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" me search for the capital of Canada:"}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srvtoolu_id1","name":"web_search","input":{}}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"q"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"uer"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"y\": \"cap"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ital of"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" Canada\"}"}         }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_id1","content":[{"type":"web_search_result","title":"Ottawa - Wikipedia","url":"https://en.wikipedia.org/wiki/Ottawa","encrypted_content":"<omitted>","page_age":"2 weeks ago"},{"type":"web_search_result","title":"Ottawa | History, Facts, Map, & Points of Interest | Britannica","url":"https://www.britannica.com/place/Ottawa","encrypted_content":"<omitted>","page_age":"2 weeks ago"},{"type":"web_search_result","title":"Ottawa - Capital of Canada | Adventures.com","url":"https://adventures.com/canada/attractions/cities-towns/ottawa/","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"Canada - Wikipedia","url":"https://en.wikipedia.org/wiki/Canada","encrypted_content":"<omitted>","page_age":"2 days ago"},{"type":"web_search_result","title":"Visiting Canada's capital - Canada.ca","url":"https://www.canada.ca/en/canadian-heritage/services/visitor-information/about.html","encrypted_content":"<omitted>","page_age":"October 30, 2025"},{"type":"web_search_result","title":"Provinces and Capitals - Region of Queens Municipality","url":"https://www.regionofqueens.com/provinces/","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"Capital of Canada: Why Ottawa?","url":"https://www.brightsparktravel.ca/blog/capital-of-canada","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"About Ottawa | Ottawa Tourism","url":"https://ottawatourism.ca/en/about-ottawa","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"What is the capital city of Canada? Is it Toronto, Montreal, Vancouver, or Victoria? - Quora","url":"https://www.quora.com/What-is-the-capital-city-of-Canada-Is-it-Toronto-Montreal-Vancouver-or-Victoria","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"The Capital Cities | Legislative Assembly of Ontario","url":"https://www.ola.org/en/visit-learn/teach-learn-play/about-ontario/capital-cities","encrypted_content":"<omitted>","page_age":null}]} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":3               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":4,"content_block":{"type":"thinking","thinking":"","signature":""}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":"Great! The"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" search results clearly"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" show that"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" Ottawa is the"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" capital of Canada. Now"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" I nee"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":"d to search"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" for the"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" weather"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" in"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" Ottawa tomorrow"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":"."}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" Today"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":"'s"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" date is November"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":" 30"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":", 2025"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":", so tomorrow would be December 1"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":", 2025."}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"thinking_delta","thinking":""}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":4,"delta":{"type":"signature_delta","signature":"<omitted>"}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":4}
+
+event: content_block_start
+data: {"type":"content_block_start","index":5,"content_block":{"type":"text","text":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"## Step"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" "}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"3"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":": Result"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" of"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" First"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" Search"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"\n\nBased on the search results, "}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":5            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":6,"content_block":{"citations":[],"type":"text","text":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"Ottawa is the capital city of Canada. ","url":"https://en.wikipedia.org/wiki/Ottawa","title":"Ottawa - Wikipedia","encrypted_index":"<omitted>"}}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":"Ottawa is the capital city"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":6,"delta":{"type":"text_delta","text":" of Canada"}    }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":6           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":7,"content_block":{"type":"text","text":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":". The search confirme"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"d this"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" through"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" multiple reliable"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" sources."}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"\n\n---"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"\n\n## Step 4: Search"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" for Tomorrow"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"'s Weather in Ottawa\n\nNow"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" that"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" I know the"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" capital is"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" Ottawa, let"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":" me search for tomorrow's weather there"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":":"}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":7       }
+
+event: content_block_start
+data: {"type":"content_block_start","index":8,"content_block":{"type":"server_tool_use","id":"srvtoolu_id2","name":"web_search","input":{}}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"input_json_delta","partial_json":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"input_json_delta","partial_json":"{\""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"input_json_delta","partial_json":"query\":"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"input_json_delta","partial_json":" \""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"input_json_delta","partial_json":"Ottawa weat"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"input_json_delta","partial_json":"her tomo"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"input_json_delta","partial_json":"rrow D"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"input_json_delta","partial_json":"ecembe"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":8,"delta":{"type":"input_json_delta","partial_json":"r 1\"}"}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":8          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":9,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_id2","content":[{"type":"web_search_result","title":"Ottawa, ON - 7 Day Forecast - Environment Canada","url":"https://weather.gc.ca/en/location/index.html?coords=45.403,-75.687","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"60-Day Extended Weather Forecast for Ottawa, ON | Almanac.com","url":"https://www.almanac.com/weather/longrange/on/Ottawa","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"Weather in Ottawa in December 2025 - Detailed Forecast","url":"https://www.easeweather.com/north-america/canada/ontario/ottawa/december","encrypted_content":"<omitted>","page_age":"1 day ago"},{"type":"web_search_result","title":"Weather Ottawa in December 2025: Temperature & Climate","url":"https://en.climate-data.org/north-america/canada/ontario/ottawa-56/t/december-12/","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"Ottawa, Ontario, Canada Monthly Weather | AccuWeather","url":"https://www.accuweather.com/en/ca/ottawa/k1p/december-weather/55487","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"Ottawa local weather (live): tomorrow, hourly weather","url":"https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"Ottawa weather in December 2025 | Ottawa 14 day weather","url":"https://www.weather25.com/north-america/canada/ontario/ottawa?page=month&month=December","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"Ottawa, ON Current Weather - The Weather Network","url":"https://www.theweathernetwork.com/en/city/ca/ontario/ottawa/current","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"Ottawa weather in December 2025 | Ontario: How hot?","url":"https://www.weather2travel.com/ontario/ottawa/december/","encrypted_content":"<omitted>","page_age":null},{"type":"web_search_result","title":"December weather - Winter 2025 - Ottawa, Canada","url":"https://www.weather-atlas.com/en/canada/ottawa-weather-december","encrypted_content":"<omitted>","page_age":null}]}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":9     }
+
+event: content_block_start
+data: {"type":"content_block_start","index":10,"content_block":{"type":"thinking","thinking":"","signature":""}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"Perfect! I got"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" weather"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" information"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" for tomorrow"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" in Ottawa. The"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" search results show:"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"\n- From"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" weather"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"25"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":".com"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":": The"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" weather"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" tomorrow"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" will"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" be freez"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"ing col"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"d with temperatures of"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" "}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"0°C during"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" the day time"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":","} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" dropping"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" to -3"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"°C at night."}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" Mostly"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" over"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"cast."}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" 0"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"%"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" chance of rain."}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" Winds "}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"22"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"-27"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" "}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"Km/h."}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" 6"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"."}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"8 hours of sun"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"."}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" Sunrise at 07"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":":05"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":","}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" sunset at 16"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":":30"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"."}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":"\n\nSo"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" I"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" have the information I need."}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" Now let"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" me present"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" the results"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":" clearly."}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"thinking_delta","thinking":""}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":10,"delta":{"type":"signature_delta","signature":"<omitted>"}            }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":10  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":11,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"## Step"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" "}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"5"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":": Result"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" of"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" Secon"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"d Search"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"\n\nFor"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" tomorrow"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"'s weather ("}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"December"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" 1"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":", 2025"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":")"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" in Ottawa:"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"\n\n"}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":11      }
+
+event: content_block_start
+data: {"type":"content_block_start","index":12,"content_block":{"citations":[],"type":"text","text":""} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"The weather tomorrow in Ottawa will be freezing cold with temperatures of 0°C during the day time. During the evening and night time the temperatures ...","url":"https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow","title":"Ottawa local weather (live): tomorrow, hourly weather","encrypted_index":"<omitted>"}}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":"The weather tomorrow in"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" Ottawa will be freezing cold with temperatures"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" of 0°C during the day"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" time."}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" During"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" the evening"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" an"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":"d night time"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" the"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" temperatures"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":12,"delta":{"type":"text_delta","text":" will drop to -3°C."}              }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":12       }
+
+event: content_block_start
+data: {"type":"content_block_start","index":13,"content_block":{"type":"text","text":""}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":13,"delta":{"type":"text_delta","text":" "}        }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":13   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":14,"content_block":{"citations":[],"type":"text","text":""}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"The wather forecast for tomorrow in Ottawa is mostly overcast. ","url":"https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow","title":"Ottawa local weather (live): tomorrow, hourly weather","encrypted_index":"<omitted>"}}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":"The weather forecast"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":" for"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":" tomorrow in Ottawa is mostly"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":" overcast."}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":14              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":15,"content_block":{"type":"text","text":""}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":15,"delta":{"type":"text_delta","text":" "}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":15             }
+
+event: content_block_start
+data: {"type":"content_block_start","index":16,"content_block":{"citations":[],"type":"text","text":""}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"The wind will blow between 22 Km/h to 27 Km/h tomorrow in Ottawa. ","url":"https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow","title":"Ottawa local weather (live): tomorrow, hourly weather","encrypted_index":"<omitted>"}}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":"The wind will blow"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" between"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" 22 "}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":"Km/h to"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" 27 Km/h tomorrow"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" in"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" Ottawa."}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":16         }
+
+event: content_block_start
+data: {"type":"content_block_start","index":17,"content_block":{"type":"text","text":""}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":17,"delta":{"type":"text_delta","text":" Additionally, "}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":17 }
+
+event: content_block_start
+data: {"type":"content_block_start","index":18,"content_block":{"citations":[],"type":"text","text":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":18,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"The chance of rain tomorrow in Ottawa is 0%. ","url":"https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow","title":"Ottawa local weather (live): tomorrow, hourly weather","encrypted_index":"<omitted>"}}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":18,"delta":{"type":"text_delta","text":"the chance of rain tomorrow"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":18,"delta":{"type":"text_delta","text":" in"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":18,"delta":{"type":"text_delta","text":" Ottawa is 0%."}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":18          }
+
+event: content_block_start
+data: {"type":"content_block_start","index":19,"content_block":{"type":"text","text":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"\n\n---\n\n## Summary\n\nThis"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" test"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" demonstrate"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"d the multi"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"-step tool"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" call"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" workflow"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":":"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"\n\n1. **Initial"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" Request"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":":**"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" Search for Canada"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"'s capital"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" without"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" rel"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"ying on establishe"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"d knowledge"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":"\n2. **First"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" Search:** Retrieved that"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":19,"delta":{"type":"text_delta","text":" "}        }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":19     }
+
+event: content_block_start
+data: {"type":"content_block_start","index":20,"content_block":{"citations":[],"type":"text","text":""}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":20,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","cited_text":"Ottawa is the capital city of Canada. ","url":"https://en.wikipedia.org/wiki/Ottawa","title":"Ottawa - Wikipedia","encrypted_index":"<omitted>"}}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":20,"delta":{"type":"text_delta","text":"Ottawa is the capital city of Canada"}               }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":20              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":21,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":"\n3. **Second Search:** Base"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":"d on that result"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":", searched for tomorrow"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":"'s weather in Ottawa specifically"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":"\n4. **Final"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" Result"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":":**"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" Provide"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":"d detaile"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":"d weather information for December"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" 1, 2025 in"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" Ottawa\n\nThe process"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" shows that the secon"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":"d search was dependent"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" on the result"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" of the first search, an"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":"d both"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" searches were performed sequentially rather"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" than in"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":21,"delta":{"type":"text_delta","text":" parallel."}        }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":21             }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":3480,"cache_creation_input_tokens":22668,"cache_read_input_tokens":14518,"output_tokens":1049,"server_tool_use":{"web_search_requests":2,"web_fetch_requests":0}}             }
+
+event: message_stop
+data: {"type":"message_stop"      }
+

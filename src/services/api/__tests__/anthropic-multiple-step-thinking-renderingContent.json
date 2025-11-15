@@ -1,0 +1,150 @@
+[
+  {
+    "category": "backstage",
+    "blocks": [
+      {
+        "type": "thinking",
+        "thinking": "The user wants me to:\n1. Search for the capital of Canada - even though this is stable knowledge I already have, they specifically ask me to search \"solely, without depending on established knowledge\"\n2. Search for the weather there tomorrow\n3. Comment on the request first\n4. Do the searches\n5. Show the results of each step\n\nThe user wants to test how multiple step tool calls work and says not to take shortcuts. So I should:\n1. First comment on the request\n2. Make the first search for Canada's capital\n3. Show that result\n4. Then make the second search for the weather there tomorrow\n5. Show that result\n\nLet me start by commenting on the request."
+      }
+    ]
+  },
+  {
+    "category": "text",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "## Step 1: Comment on the Request\n\nYou're asking me to search for information that typically falls into \"stable knowledge\" that doesn't change (like the capital of Canada), which my training data would cover. However, you're explicitly instructing me to search online and not depend on established knowledge, and to demonstrate how I handle multi-step tool calls. I'll respect your test scenario and search for both pieces of information separately, showing you the results of each step.\n\nThis is a good test because:\n- The first search is straightforward factual lookup\n- The second search depends on the result of the first search\n- I'll need to wait for the first result before making the second search\n\n## Step 2: Search for Canada's Capital\n\nLet me search for the capital of Canada:"
+      }
+    ]
+  },
+  {
+    "category": "backstage",
+    "blocks": [
+      {
+        "type": "web_search",
+        "id": "srvtoolu_id1",
+        "query": "capital of Canada",
+        "results": [
+          {
+            "title": "Ottawa - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Ottawa"
+          },
+          {
+            "title": "Ottawa | History, Facts, Map, & Points of Interest | Britannica",
+            "url": "https://www.britannica.com/place/Ottawa"
+          },
+          {
+            "title": "Ottawa - Capital of Canada | Adventures.com",
+            "url": "https://adventures.com/canada/attractions/cities-towns/ottawa/"
+          },
+          {
+            "title": "Canada - Wikipedia",
+            "url": "https://en.wikipedia.org/wiki/Canada"
+          },
+          {
+            "title": "Visiting Canada's capital - Canada.ca",
+            "url": "https://www.canada.ca/en/canadian-heritage/services/visitor-information/about.html"
+          },
+          {
+            "title": "Provinces and Capitals - Region of Queens Municipality",
+            "url": "https://www.regionofqueens.com/provinces/"
+          },
+          {
+            "title": "Capital of Canada: Why Ottawa?",
+            "url": "https://www.brightsparktravel.ca/blog/capital-of-canada"
+          },
+          {
+            "title": "About Ottawa | Ottawa Tourism",
+            "url": "https://ottawatourism.ca/en/about-ottawa"
+          },
+          {
+            "title": "What is the capital city of Canada? Is it Toronto, Montreal, Vancouver, or Victoria? - Quora",
+            "url": "https://www.quora.com/What-is-the-capital-city-of-Canada-Is-it-Toronto-Montreal-Vancouver-or-Victoria"
+          },
+          {
+            "title": "The Capital Cities | Legislative Assembly of Ontario",
+            "url": "https://www.ola.org/en/visit-learn/teach-learn-play/about-ontario/capital-cities"
+          }
+        ]
+      },
+      {
+        "type": "thinking",
+        "thinking": "Great! The search results clearly show that Ottawa is the capital of Canada. Now I need to search for the weather in Ottawa tomorrow. Today's date is November 30, 2025, so tomorrow would be December 1, 2025."
+      }
+    ]
+  },
+  {
+    "category": "text",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "## Step 3: Result of First Search\n\nBased on the search results, Ottawa is the capital city of Canada<a href=\"https://en.wikipedia.org/wiki/Ottawa\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Ottawa - Wikipedia\" data-cited=\"Ottawa is the capital city of Canada. \" class=\"citation-link\">src</a>. The search confirmed this through multiple reliable sources.\n\n---\n\n## Step 4: Search for Tomorrow's Weather in Ottawa\n\nNow that I know the capital is Ottawa, let me search for tomorrow's weather there:"
+      }
+    ]
+  },
+  {
+    "category": "backstage",
+    "blocks": [
+      {
+        "type": "web_search",
+        "id": "srvtoolu_id2",
+        "query": "Ottawa weather tomorrow December 1",
+        "results": [
+          {
+            "title": "Ottawa, ON - 7 Day Forecast - Environment Canada",
+            "url": "https://weather.gc.ca/en/location/index.html?coords=45.403,-75.687"
+          },
+          {
+            "title": "60-Day Extended Weather Forecast for Ottawa, ON | Almanac.com",
+            "url": "https://www.almanac.com/weather/longrange/on/Ottawa"
+          },
+          {
+            "title": "Weather in Ottawa in December 2025 - Detailed Forecast",
+            "url": "https://www.easeweather.com/north-america/canada/ontario/ottawa/december"
+          },
+          {
+            "title": "Weather Ottawa in December 2025: Temperature & Climate",
+            "url": "https://en.climate-data.org/north-america/canada/ontario/ottawa-56/t/december-12/"
+          },
+          {
+            "title": "Ottawa, Ontario, Canada Monthly Weather | AccuWeather",
+            "url": "https://www.accuweather.com/en/ca/ottawa/k1p/december-weather/55487"
+          },
+          {
+            "title": "Ottawa local weather (live): tomorrow, hourly weather",
+            "url": "https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow"
+          },
+          {
+            "title": "Ottawa weather in December 2025 | Ottawa 14 day weather",
+            "url": "https://www.weather25.com/north-america/canada/ontario/ottawa?page=month&month=December"
+          },
+          {
+            "title": "Ottawa, ON Current Weather - The Weather Network",
+            "url": "https://www.theweathernetwork.com/en/city/ca/ontario/ottawa/current"
+          },
+          {
+            "title": "Ottawa weather in December 2025 | Ontario: How hot?",
+            "url": "https://www.weather2travel.com/ontario/ottawa/december/"
+          },
+          {
+            "title": "December weather - Winter 2025 - Ottawa, Canada",
+            "url": "https://www.weather-atlas.com/en/canada/ottawa-weather-december"
+          }
+        ]
+      },
+      {
+        "type": "thinking",
+        "thinking": "Perfect! I got weather information for tomorrow in Ottawa. The search results show:\n- From weather25.com: The weather tomorrow will be freezing cold with temperatures of 0°C during the day time, dropping to -3°C at night. Mostly overcast. 0% chance of rain. Winds 22-27 Km/h. 6.8 hours of sun. Sunrise at 07:05, sunset at 16:30.\n\nSo I have the information I need. Now let me present the results clearly."
+      }
+    ]
+  },
+  {
+    "category": "text",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "## Step 5: Result of Second Search\n\nFor tomorrow's weather (December 1, 2025) in Ottawa:\n\nThe weather tomorrow in Ottawa will be freezing cold with temperatures of 0°C during the day time. During the evening and night time the temperatures will drop to -3°C.<a href=\"https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Ottawa local weather (live): tomorrow, hourly weather\" data-cited=\"The weather tomorrow in Ottawa will be freezing cold with temperatures of 0°C during the day time. During the evening and night time the temperatures ...\" class=\"citation-link\">src</a>The weather forecast for tomorrow in Ottawa is mostly overcast.<a href=\"https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Ottawa local weather (live): tomorrow, hourly weather\" data-cited=\"The wather forecast for tomorrow in Ottawa is mostly overcast. \" class=\"citation-link\">src</a>The wind will blow between 22 Km/h to 27 Km/h tomorrow in Ottawa.<a href=\"https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Ottawa local weather (live): tomorrow, hourly weather\" data-cited=\"The wind will blow between 22 Km/h to 27 Km/h tomorrow in Ottawa. \" class=\"citation-link\">src</a> Additionally, the chance of rain tomorrow in Ottawa is 0%.<a href=\"https://www.weather25.com/north-america/canada/ontario/ottawa?page=tomorrow\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Ottawa local weather (live): tomorrow, hourly weather\" data-cited=\"The chance of rain tomorrow in Ottawa is 0%. \" class=\"citation-link\">src</a>\n\n---\n\n## Summary\n\nThis test demonstrated the multi-step tool call workflow:\n\n1. **Initial Request:** Search for Canada's capital without relying on established knowledge\n2. **First Search:** Retrieved that Ottawa is the capital city of Canada<a href=\"https://en.wikipedia.org/wiki/Ottawa\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Ottawa - Wikipedia\" data-cited=\"Ottawa is the capital city of Canada. \" class=\"citation-link\">src</a>\n3. **Second Search:** Based on that result, searched for tomorrow's weather in Ottawa specifically\n4. **Final Result:** Provided detailed weather information for December 1, 2025 in Ottawa\n\nThe process shows that the second search was dependent on the result of the first search, and both searches were performed sequentially rather than in parallel."
+      }
+    ]
+  }
+]

@@ -5,6 +5,17 @@
 
 A vibe coded AI chat client that runs entirely in your browser. Like a famous man once said: "It just works."
 
+## Quick Start
+
+Head to https://cloudeecn.github.io/gremlinofa/ and complete the setup wizard. Then:
+
+1. Click "Configure API" and add an API key for your provider of choice (Bedrock not implemented yet)
+2. Click "New Project" to create your first project
+3. Open the project, tap 🔧, pick a model
+4. Start chatting
+
+WebLLM users can skip step 1 — local models run free with no API key.
+
 ## Overview
 
 GremlinOFA is a browser-based chat client for multiple AI providers. You bring your own API keys, your data stays on your device (encrypted, no less), and there's no backend server collecting your conversations. It's 95% vibe coded, and just works.

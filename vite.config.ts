@@ -8,7 +8,8 @@ export default defineConfig(({ command }) => {
   // Development mode when running `npm run dev`
   const isDev = command === 'serve';
   // Base path: /dev/ for dev server (proxied by nginx), / for production build
-  const base = isDev ? '/dev/' : '/';
+  // Can be overridden with VITE_BASE_PATH env var (e.g., for GitHub Pages subdirectory)
+  const base = process.env.VITE_BASE_PATH || (isDev ? '/dev/' : '/');
 
   return {
     base,
@@ -35,7 +36,7 @@ export default defineConfig(({ command }) => {
         workbox: {
           // Prevent service worker from caching /dev/* paths
           // This allows the dev server to work alongside prod PWA
-          navigateFallbackDenylist: [/^\/dev/, /^\/storage/],
+          navigateFallbackDenylist: [/\/dev\//, /\/storage\//],
           maximumFileSizeToCacheInBytes: 10485760,
         },
         manifest: {
@@ -45,10 +46,10 @@ export default defineConfig(({ command }) => {
           theme_color: '#ffffff',
           background_color: '#ffffff',
           display: 'standalone',
-          start_url: '/',
+          start_url: base,
           icons: [
             {
-              src: '/icons/gremlin-icon.png',
+              src: `${base}icons/gremlin-icon.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',

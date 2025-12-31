@@ -1,0 +1,28 @@
+name: Sign-off Check
+
+on:
+  pull_request:
+    branches: ['main']
+
+jobs:
+  signoff-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for sign-off
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          SIGNOFF_LINE="[x] I confirm this contribution is my original work (or I have rights to submit it) and I agree to license it under the Apache 2.0 license."
+
+          if echo "$PR_BODY" | grep -Fq "$SIGNOFF_LINE"; then
+            echo "✓ Sign-off found"
+            exit 0
+          else
+            echo "❌ Sign-off missing or not checked"
+            echo ""
+            echo "Required sign-off line:"
+            echo "$SIGNOFF_LINE"
+            echo ""
+            echo "Please check the sign-off checkbox in your PR description."
+            exit 1
+          fi

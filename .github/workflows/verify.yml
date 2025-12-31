@@ -8,6 +8,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  signoff-check:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check for sign-off
+        run: |
+          SIGNOFF_LINE="[x] I confirm this contribution is my original work (or I have rights to submit it) and I agree to license it under the Apache 2.0 license."
+          PR_BODY="${{ github.event.pull_request.body }}"
+          
+          if echo "$PR_BODY" | grep -Fq "$SIGNOFF_LINE"; then
+            echo " Sign-off found"
+            exit 0
+          else
+            echo "L Sign-off missing or not checked"
+            echo ""
+            echo "Required sign-off line:"
+            echo "$SIGNOFF_LINE"
+            echo ""
+            echo "Please check the sign-off checkbox in your PR description."
+            exit 1
+          fi
+
   verify:
     runs-on: ubuntu-latest
     steps:

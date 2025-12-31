@@ -45,21 +45,44 @@ export function basicAuth(req: Request, res: Response, next: NextFunction): void
 
 /**
  * CORS middleware
- * Configurable via CORS_ORIGIN env var
+ * Supports multiple origins via comma-separated CORS_ORIGIN env var
  */
 export function cors(req: Request, res: Response, next: NextFunction): void {
-  const origin = config.corsOrigin;
+  const origins = config.corsOrigins;
 
-  if (origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
+  if (!origins) {
+    // Same-domain only - no CORS headers
+    next();
+    return;
+  }
+
+  if (origins === '*') {
+    // Allow all origins
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
 
     // Handle preflight
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
+    }
+  } else {
+    // Multiple origins - check incoming Origin header
+    const requestOrigin = req.headers.origin;
+
+    if (requestOrigin && origins.includes(requestOrigin)) {
+      // Echo back the matching origin
+      res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+      // Handle preflight
+      if (req.method === 'OPTIONS') {
+        res.status(204).end();
+        return;
+      }
     }
   }
 

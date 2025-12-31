@@ -17,6 +17,10 @@ jobs:
         run: npm ci
       - name: Install remote storage dependencies
         run: cd storage-backend && npm ci
+      - name: Run verification storage-backend
+        run: cd storage-backend && npm run verify
+      - name: Run tests storage-backend
+        run: cd storage-backend && npm run test:silent
       - name: Run verification
         run: npm run verify
       - name: Run tests

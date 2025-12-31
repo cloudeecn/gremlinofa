@@ -27,11 +27,11 @@ npm start
 
 Create a `.env` file (or just use environment variables like a civilized person):
 
-| Variable      | Default     | Description                                            |
-| ------------- | ----------- | ------------------------------------------------------ |
-| `PORT`        | `3001`      | Server port                                            |
-| `CORS_ORIGIN` | (empty)     | CORS origin. Empty = same-domain only, `*` = yolo mode |
-| `DB_PATH`     | `./data.db` | SQLite database file path                              |
+| Variable      | Default     | Description                                                                              |
+| ------------- | ----------- | ---------------------------------------------------------------------------------------- |
+| `PORT`        | `3001`      | Server port                                                                              |
+| `CORS_ORIGIN` | (empty)     | CORS origins. Empty = same-domain only, `*` = yolo mode, or comma-separated list of URLs |
+| `DB_PATH`     | `./data.db` | SQLite database file path                                                                |
 
 ## Authentication
 

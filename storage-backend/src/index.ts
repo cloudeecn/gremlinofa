@@ -35,7 +35,12 @@ app.get('/health', (_req, res) => {
 const server = app.listen(config.port, () => {
   console.log(`Storage backend listening on port ${config.port}`);
   console.log(`Database: ${config.dbPath}`);
-  console.log(`CORS: ${config.corsOrigin || 'same-domain only'}`);
+  const corsDisplay = config.corsOrigins
+    ? config.corsOrigins === '*'
+      ? 'allow all (*)'
+      : config.corsOrigins.join(', ')
+    : 'same-domain only';
+  console.log(`CORS: ${corsDisplay}`);
 });
 
 // Graceful shutdown

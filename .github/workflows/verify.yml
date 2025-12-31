@@ -1,0 +1,23 @@
+name: Verify PR
+
+on:
+  pull_request:
+    branches: ['main']
+
+  # Allows manual workflow runs
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: npm ci
+      - name: Install remote storage dependencies
+        run: cd storage-backend && npm ci
+      - name: Run verification
+        run: npm run verify
+      - name: Run tests
+        run: npm run test:silent

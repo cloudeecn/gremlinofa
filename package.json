@@ -10,7 +10,9 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && mkdir -p dist/src && cp scripts/pwa-recovery.js dist/src/main.js",
+    "prebuild": "tsc -b",
+    "build": "vite build",
+    "postbuild": "mkdir -p dist/src && cp scripts/pwa-recovery.js dist/src/main.js",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

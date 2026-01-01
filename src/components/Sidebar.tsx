@@ -20,7 +20,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
   const [devAvailable, setDevAvailable] = useState(false);
 
   const baseUrl = import.meta.env.BASE_URL;
-  const isDevMode = baseUrl !== '/';
+  const isDevMode = baseUrl.includes('/dev/');
 
   // Check if /dev/ is accessible (only in production mode)
   useEffect(() => {

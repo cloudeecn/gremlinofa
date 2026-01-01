@@ -7,7 +7,7 @@ A vibe coded AI chat client that runs entirely in your browser. Like a famous ma
 
 ## Quick Start
 
-Head to https://cloudeecn.github.io/gremlinofa/ and complete the setup wizard. Then:
+Head to https://cloudeecn.github.io/gremlinofa/ (optionally save to home screen / install PWA) and complete the setup wizard. Then:
 
 1. Click "Configure API" and add an API key for your provider of choice (Bedrock not implemented yet)
 2. Click "New Project" to create your first project

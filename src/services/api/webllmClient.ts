@@ -320,7 +320,7 @@ export class WebLLMClient implements APIClient {
       const chunks = await mlcEngine.chat.completions.create({
         messages: webllmMessages,
         stream: true,
-        temperature: options.temperature ?? 1.0,
+        temperature: options.temperature,
         max_tokens: options.maxTokens,
       });
 

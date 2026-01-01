@@ -53,13 +53,16 @@ function generateMessageMetadata(project: Project, chat: Chat): string {
 
   // Add timestamp if enabled
   if (project.metadataTimestampMode && project.metadataTimestampMode !== 'disabled') {
-    const timezone =
-      project.metadataTimestampMode === 'utc'
-        ? 'UTC'
-        : Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const formatter = new Intl.DateTimeFormat('en-CA', {
-      dateStyle: 'full',
-      timeStyle: 'full',
+    const timezone = project.metadataTimestampMode === 'utc' ? 'UTC' : undefined;
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      weekday: 'short',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      timeZoneName: 'short',
       timeZone: timezone,
     });
 

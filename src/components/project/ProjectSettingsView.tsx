@@ -498,18 +498,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
               <label className="mb-2 block text-sm font-semibold text-gray-900">
                 Temperature (0-1)
               </label>
-              {enableReasoning && (
-                <p className="mb-2 text-xs text-yellow-700 italic">
-                  ⚠️ Temperature is ignored (usually default to 1.0) by most models when reasoning
-                  is enabled
-                </p>
-              )}
-              {isOSeriesModel && (
-                <p className="mb-2 text-xs text-yellow-700 italic">
-                  ⚠️ o-series models don't support temperature control - this setting will be
-                  ignored
-                </p>
-              )}
+              <p className="mb-2 text-xs text-yellow-700 italic">
+                ⚠️ Temperature is ignored by most reasoning models
+              </p>
               <input
                 type="number"
                 step="0.1"
@@ -517,7 +508,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                 max="1"
                 value={temperature}
                 onChange={e => setTemperature(e.target.value)}
-                placeholder="1.0 for most models"
+                placeholder="Use model default"
                 className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
               />
             </div>

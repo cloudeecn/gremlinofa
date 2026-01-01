@@ -136,10 +136,10 @@ Projects organize chats with shared settings:
 - **Name** and **Icon** (default: 📁)
 - **System prompt** and **Pre-fill response**
 - **Default API definition/model** (required)
-- **Reasoning**: enable toggle + budget tokens (default: 2048)
+- **Reasoning**: enable toggle + budget tokens (default: 2047)
 - **Web search** toggle
 - **Message metadata**: timestamp mode (UTC/Local/Disabled), context window usage, current cost
-- **Advanced**: temperature (default: 1.0), max output tokens (default: 2048)
+- **Advanced**: temperature, max output tokens (default: 2048)
 
 ### Chats
 

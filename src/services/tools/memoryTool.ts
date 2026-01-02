@@ -5,7 +5,7 @@
  * Implements Anthropic's memory tool commands: view, create, str_replace, insert, delete, rename.
  */
 
-import type { ClientSideTool, ToolResult } from '../../types';
+import { APIType, type ClientSideTool, type ToolResult } from '../../types';
 import {
   loadMemory,
   saveMemory,
@@ -554,6 +554,7 @@ export function disposeMemoryTool(_projectId: string): void {
 /**
  * Create a ClientSideTool adapter for the memory tool.
  * The actual execution is delegated to the MemoryToolInstance.
+ * Anthropic uses the memory_20250818 shorthand; other APIs use the full schema.
  */
 export function createMemoryClientSideTool(projectId: string): ClientSideTool {
   return {
@@ -617,6 +618,13 @@ export function createMemoryClientSideTool(projectId: string): ClientSideTool {
         };
       }
       return instance.execute(input);
+    },
+    // Anthropic uses shorthand type; other APIs get the full schema generated
+    apiOverrides: {
+      [APIType.ANTHROPIC]: {
+        type: 'memory_20250818',
+        name: 'memory',
+      },
     },
   };
 }

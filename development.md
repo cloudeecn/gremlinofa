@@ -286,9 +286,15 @@ public/             # Static assets and PWA icons
 
 - `src/services/tools/clientSideTools.ts` - Tool registry and execution
 - Tools registered with `toolRegistry.register()`, executed via `executeClientSideTool()`
-- Tool definitions sent to Anthropic API via `getToolDefinitions()`
-- `ping` tool included for testing tool infrastructure ("test tool calling" → pong)
-- `memory` tool provides persistent virtual filesystem (see Memory Tool section below), dynamically registered/unregistered per project
+- Tool definitions sent to API via `getToolDefinitionsForAPI(apiType, enabledToolNames)`
+- `ClientSideTool` interface supports:
+  - `alwaysEnabled: true` - Tool included regardless of enabledToolNames (e.g., `ping`)
+  - `apiOverrides: { [APIType]: {...} }` - API-specific definition overrides (e.g., Anthropic's `memory_20250818` shorthand)
+- API-specific format generation:
+  - **Anthropic**: `{ name, description, input_schema }` or custom override
+  - **OpenAI/Responses**: `{ type: 'function', function: { name, description, parameters } }`
+- `ping` tool included for testing tool infrastructure ("test tool calling" → pong), marked `alwaysEnabled: true`
+- `memory` tool provides persistent virtual filesystem (see Memory Tool section below), dynamically registered/unregistered per project; uses Anthropic's `memory_20250818` shorthand via `apiOverrides`
 - Agentic loop in `useChat.ts` handles `stop_reason: 'tool_use'`:
   1. Extract `tool_use` blocks from `fullContent`
   2. Execute client-side tools locally

@@ -5,9 +5,13 @@ import type {
   MessageStopReason,
   Model,
   RenderingBlockGroup,
+  ToolResultBlock,
+  ToolUseBlock,
 } from '../../types';
 
 import { APIType, groupAndConsolidateBlocks, MessageRole } from '../../types';
+import { generateUniqueId } from '../../utils/idGenerator';
+import { toolRegistry } from '../tools/clientSideTools';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import type { ModelInfo } from './modelInfo';
 import { formatModelInfoForDisplay, getModelInfo, isReasoningModel } from './openaiModelInfo';
@@ -137,7 +141,7 @@ export class ResponsesClient implements APIClient {
   }
 
   async *sendMessageStream(
-    messages: Message<OpenAI.Responses.ResponseInputItem[]>[],
+    messages: Message<unknown>[],
     modelId: string,
     apiDefinition: APIDefinition,
     options: {
@@ -148,8 +152,9 @@ export class ResponsesClient implements APIClient {
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
+      enabledTools?: string[];
     }
-  ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.Responses.ResponseInputItem[]>, unknown> {
+  ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
     let requestParams: OpenAI.Responses.ResponseCreateParams = {};
     try {
       // Create OpenAI client with API key and custom baseUrl if provided
@@ -178,6 +183,23 @@ export class ResponsesClient implements APIClient {
       // Add conversation messages
       messages.forEach(msg => {
         if (msg.role === MessageRole.USER) {
+          // Check if this is a tool result message (fullContent has function_call_output items)
+          if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
+            const fullContentArr = msg.content.fullContent as Array<Record<string, unknown>>;
+            const hasFunctionCallOutput = fullContentArr.some(
+              item => item.type === 'function_call_output'
+            );
+            if (hasFunctionCallOutput) {
+              // Add function_call_output items directly
+              for (const item of fullContentArr) {
+                if (item.type === 'function_call_output') {
+                  input.push(item as unknown as OpenAI.Responses.ResponseInputItem);
+                }
+              }
+              return; // Skip normal user message processing
+            }
+          }
+
           const contentItems: (
             | OpenAI.Responses.ResponseInputText
             | OpenAI.Responses.ResponseInputImage
@@ -204,9 +226,13 @@ export class ResponsesClient implements APIClient {
             content: contentItems,
           });
         } else if (msg.role === MessageRole.ASSISTANT) {
-          if (msg.content.fullContent) {
-            for (const m of msg.content.fullContent.filter(m => m.type === 'message')) {
-              input.push(m);
+          if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
+            // Include message and function_call items (not just messages)
+            // Clean items to strip output-only fields (handles old stored messages)
+            for (const m of (msg.content.fullContent as Array<Record<string, unknown>>).filter(
+              m => m.type === 'message' || m.type === 'function_call'
+            )) {
+              input.push(this.cleanStoredItem(m) as unknown as OpenAI.Responses.ResponseInputItem);
             }
           } else {
             input.push({
@@ -238,6 +264,10 @@ export class ResponsesClient implements APIClient {
             },
           ]
         : [];
+
+      // Add client-side tool definitions
+      const clientToolDefs = this.getClientSideTools(options.enabledTools || []);
+      tools.push(...clientToolDefs);
 
       // Prepare API request parameters
       requestParams = {
@@ -466,6 +496,7 @@ export class ResponsesClient implements APIClient {
       .filter(input => input !== undefined);
     let thinkingContent = '';
     let thinkingSummary = '';
+    let hasFunctionCall = false;
 
     if (!textContent) {
       textContent = '';
@@ -478,6 +509,17 @@ export class ResponsesClient implements APIClient {
               textContent += content.refusal;
             }
           }
+        }
+        if (item.type === 'function_call') {
+          hasFunctionCall = true;
+        }
+      }
+    } else {
+      // Check for function_call even when there's text content
+      for (const item of response.output) {
+        if (item.type === 'function_call') {
+          hasFunctionCall = true;
+          break;
         }
       }
     }
@@ -510,6 +552,7 @@ export class ResponsesClient implements APIClient {
       textContent,
       thinkingContent: thinkingContent || thinkingSummary || undefined,
       fullContent,
+      stopReason: hasFunctionCall ? 'tool_use' : undefined,
       inputTokens: inputTokens - cachedTokens,
       outputTokens,
       cacheReadTokens: cachedTokens,
@@ -622,6 +665,32 @@ export class ResponsesClient implements APIClient {
     return isReasoningModel(modelId);
   }
 
+  /**
+   * Clean stored items when loading from storage.
+   * Uses blacklist approach - spread original and only delete known problematic fields.
+   */
+  private cleanStoredItem(item: Record<string, unknown>): Record<string, unknown> {
+    if (item.type === 'message' && Array.isArray(item.content)) {
+      return {
+        ...item,
+        content: (item.content as Array<Record<string, unknown>>).map(part => {
+          if (part.type === 'output_text') {
+            const cleaned = { ...part };
+            delete cleaned.parsed;
+            return cleaned;
+          }
+          return part;
+        }),
+      };
+    } else if (item.type === 'function_call') {
+      {
+        const { parsed_arguments: _parsed_arguments, ...cleaned } = item;
+        return cleaned;
+      }
+    }
+    return item;
+  }
+
   private convertOutputToContext(
     output: OpenAI.Responses.ResponseOutputItem
   ): OpenAI.Responses.ResponseInputItem | undefined {
@@ -640,6 +709,28 @@ export class ResponsesClient implements APIClient {
       } else {
         return { ...output, output: output.output };
       }
+    }
+
+    // Handle function_call - pass through as-is
+    if (output.type === 'function_call') {
+      return output as unknown as OpenAI.Responses.ResponseInputItem;
+    }
+
+    // Handle message - spread and delete problematic fields from content parts
+    if (output.type === 'message') {
+      return {
+        ...output,
+        content: output.content.map(part => {
+          if (part.type === 'output_text') {
+            const cleaned = { ...part } as Record<string, unknown>;
+            delete cleaned.parsed;
+            delete cleaned.logprobs;
+            delete cleaned.annotations;
+            return cleaned;
+          }
+          return part;
+        }),
+      } as unknown as OpenAI.Responses.ResponseInputItem;
     }
 
     return output;
@@ -705,5 +796,78 @@ export class ResponsesClient implements APIClient {
       default:
         return stopReason;
     }
+  }
+
+  /**
+   * Extract tool_use blocks from OpenAI Responses API fullContent.
+   * Responses API stores function calls differently than Chat Completions.
+   */
+  extractToolUseBlocks(fullContent: unknown): ToolUseBlock[] {
+    if (!Array.isArray(fullContent)) return [];
+
+    // Responses API fullContent may contain function_call items
+    // Format: [{ type: 'function_call', call_id: '...', name: '...', arguments: '...' }]
+    // Note: call_id is used for matching function_call_output, not id
+    const toolUseBlocks: ToolUseBlock[] = [];
+    for (const item of fullContent as Array<Record<string, unknown>>) {
+      if (item.type === 'function_call') {
+        toolUseBlocks.push({
+          type: 'tool_use' as const,
+          id: item.call_id as string,
+          name: item.name as string,
+          input: JSON.parse((item.arguments as string) || '{}'),
+        });
+      }
+    }
+    return toolUseBlocks;
+  }
+
+  /**
+   * Build tool result messages in OpenAI Responses API expected format.
+   */
+  buildToolResultMessages(
+    assistantContent: unknown,
+    toolResults: ToolResultBlock[],
+    textContent: string
+  ): Message<unknown>[] {
+    // Assistant message with the original fullContent
+    const assistantMessage: Message<unknown> = {
+      id: generateUniqueId('msg_assistant'),
+      role: MessageRole.ASSISTANT,
+      content: {
+        type: 'text',
+        content: textContent,
+        modelFamily: APIType.RESPONSES_API,
+        fullContent: assistantContent,
+      },
+      timestamp: new Date(),
+    };
+
+    // Store tool results in our internal format
+    const toolResultMessage: Message<unknown> = {
+      id: generateUniqueId('msg_user'),
+      role: MessageRole.USER,
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: APIType.RESPONSES_API,
+        fullContent: toolResults.map(tr => ({
+          type: 'function_call_output',
+          call_id: tr.tool_use_id,
+          output: tr.content,
+        })),
+      },
+      timestamp: new Date(),
+    };
+
+    return [assistantMessage, toolResultMessage];
+  }
+
+  /**
+   * Get client-side tool definitions for Responses API format.
+   */
+  protected getClientSideTools(enabledTools: string[]): OpenAI.Responses.Tool[] {
+    const toolDefs = toolRegistry.getToolDefinitionsForAPI(APIType.RESPONSES_API, enabledTools);
+    return toolDefs as unknown as OpenAI.Responses.Tool[];
   }
 }

@@ -13,33 +13,15 @@ import type {
   RenderingBlockGroup,
   TokenUsage,
   ToolResultBlock,
-  ToolUseBlock,
 } from '../types';
 import type { ToolResultRenderBlock } from '../types/content';
 
-import { APIType, MessageRole } from '../types';
+import { MessageRole } from '../types';
 import { generateUniqueId } from '../utils/idGenerator';
 import { showAlert } from '../utils/alerts';
 
 // Maximum agentic loop iterations to prevent infinite loops
 const MAX_TOOL_ITERATIONS = 10;
-
-/**
- * Extract ALL tool_use blocks from Anthropic fullContent.
- * Includes all tools - unknown tools will receive error responses.
- */
-function extractToolUseBlocks(fullContent: unknown): ToolUseBlock[] {
-  if (!Array.isArray(fullContent)) return [];
-
-  return fullContent
-    .filter((block: Record<string, unknown>) => block.type === 'tool_use')
-    .map((block: Record<string, unknown>) => ({
-      type: 'tool_use' as const,
-      id: block.id as string,
-      name: block.name as string,
-      input: (block.input as Record<string, unknown>) || {},
-    }));
-}
 
 /**
  * Generate metadata XML to prepend to user messages
@@ -515,6 +497,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         })
       );
 
+      // Build enabled tools list from project settings
+      const enabledTools: string[] = [];
+      if (currentProject.memoryEnabled) {
+        enabledTools.push('memory');
+      }
+      // Note: ping tool is alwaysEnabled, no need to add explicitly
+
       console.debug('[useChat] Starting API stream');
       const stream = apiService.sendMessageStream(
         messagesWithAttachments,
@@ -528,7 +517,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           systemPrompt: currentProject.systemPrompt,
           preFillResponse: currentProject.preFillResponse,
           webSearchEnabled: currentProject.webSearchEnabled,
-          memoryEnabled: currentProject.memoryEnabled,
+          enabledTools,
         }
       );
 
@@ -590,7 +579,10 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         console.debug('[useChat] Tool use detected, iteration:', toolIterations);
 
         // Extract ALL tool_use blocks - unknown tools will receive error responses
-        const toolUseBlocks = extractToolUseBlocks(result.fullContent);
+        const toolUseBlocks = apiService.extractToolUseBlocks(
+          currentApiDef.apiType,
+          result.fullContent
+        );
         if (toolUseBlocks.length === 0) {
           console.debug('[useChat] No client-side tools to execute');
           break;
@@ -614,21 +606,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         // Finalize assembler - tool_use blocks already pushed during streaming
         const assistantRenderingContent = assemblerRef.current?.finalize() ?? [];
 
-        // Build continuation messages: add assistant message with tool_use, then user message with tool_results
-        const assistantToolMessage: Message<unknown> = {
-          id: generateUniqueId('msg_assistant'),
-          role: MessageRole.ASSISTANT,
-          content: {
-            type: 'text',
-            content: result.textContent,
-            modelFamily: currentApiDef.apiType,
-            fullContent: result.fullContent,
-            renderingContent: assistantRenderingContent,
-            stopReason: 'tool_use',
-          },
-          timestamp: new Date(),
-        };
-
         // Build renderingContent for tool result message
         const toolResultRenderBlocks: ToolResultRenderBlock[] = toolResults.map(tr => ({
           type: 'tool_result' as const,
@@ -637,19 +614,20 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           is_error: tr.is_error,
         }));
 
-        // Create user message with tool results (Anthropic expects tool_result in user role)
-        const toolResultMessage: Message<unknown> = {
-          id: generateUniqueId('msg_user'),
-          role: MessageRole.USER,
-          content: {
-            type: 'text',
-            content: '',
-            modelFamily: APIType.ANTHROPIC,
-            fullContent: toolResults,
-            renderingContent: [{ category: 'backstage' as const, blocks: toolResultRenderBlocks }],
-          },
-          timestamp: new Date(),
-        };
+        // Build continuation messages using API-specific format
+        const [assistantToolMessage, toolResultMessage] = apiService.buildToolResultMessages(
+          currentApiDef.apiType,
+          result.fullContent,
+          toolResults,
+          result.textContent
+        );
+
+        // Add rendering content to the messages
+        assistantToolMessage.content.renderingContent = assistantRenderingContent;
+        assistantToolMessage.content.stopReason = 'tool_use';
+        toolResultMessage.content.renderingContent = [
+          { category: 'backstage' as const, blocks: toolResultRenderBlocks },
+        ];
 
         // Save intermediate messages to storage and update UI
         await storage.saveMessage(streamingChatId, assistantToolMessage);
@@ -692,12 +670,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
             systemPrompt: currentProject.systemPrompt,
             preFillResponse: undefined, // No prefill for continuation
             webSearchEnabled: currentProject.webSearchEnabled,
-            memoryEnabled: currentProject.memoryEnabled,
+            enabledTools,
           }
         );
 
         // Reset assembler for continuation
         assemblerRef.current = new StreamingContentAssembler();
+        setStreamingGroups([]);
 
         // Stream continuation response
         let continueNext = await continueStream.next();

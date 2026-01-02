@@ -6,11 +6,14 @@ import type {
   Model,
   RenderingBlockGroup,
   RenderingContentBlock,
+  ToolResultBlock,
+  ToolUseBlock,
   WebFetchRenderBlock,
   WebSearchRenderBlock,
 } from '../../types';
 
 import { APIType, groupAndConsolidateBlocks, MessageRole } from '../../types';
+import { generateUniqueId } from '../../utils/idGenerator';
 import { formatModelInfoForDisplay, getModelInfo } from './anthropicModelInfo';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import {
@@ -86,7 +89,7 @@ export class AnthropicClient implements APIClient {
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
-      memoryEnabled?: boolean;
+      enabledTools?: string[];
     }
   ): AsyncGenerator<
     StreamChunk,
@@ -226,27 +229,13 @@ export class AnthropicClient implements APIClient {
         );
       }
 
-      // Add client-side tools (ping, etc.)
-      // Exclude 'memory' tool if memoryEnabled since we use Anthropic's short-hand definition
-      const clientToolDefs = toolRegistry.getToolDefinitions();
-      for (const toolDef of clientToolDefs) {
-        if (options.memoryEnabled && toolDef.name === 'memory') {
-          continue;
-        }
-        tools.push({
-          name: toolDef.name,
-          description: toolDef.description,
-          input_schema: toolDef.input_schema,
-        });
-      }
-
-      // Add memory tool if enabled (special short-handed tool type)
-      if (options.memoryEnabled) {
-        tools.push({
-          type: 'memory_20250818',
-          name: 'memory',
-        } as Anthropic.Beta.BetaToolUnion);
-      }
+      // Get client-side tool definitions for Anthropic format
+      // Uses apiOverrides for special tools (e.g., memory_20250818 shorthand)
+      const clientToolDefs = toolRegistry.getToolDefinitionsForAPI(
+        APIType.ANTHROPIC,
+        options.enabledTools || []
+      );
+      tools.push(...(clientToolDefs as unknown as Anthropic.Beta.BetaToolUnion[]));
 
       // Prepare thinking configuration if reasoning is enabled
       const thinkingConfig = options.enableReasoning
@@ -257,9 +246,10 @@ export class AnthropicClient implements APIClient {
         : undefined;
 
       // Build betas array - always include web-fetch and interleaved-thinking,
-      // add context-management when memory is enabled
+      // add context-management when memory tool is enabled
       const betas = ['web-fetch-2025-09-10', 'interleaved-thinking-2025-05-14'];
-      if (options.memoryEnabled) {
+      const enabledTools = options.enabledTools || [];
+      if (enabledTools.includes('memory')) {
         betas.push('context-management-2025-06-27');
       }
 
@@ -665,5 +655,62 @@ export class AnthropicClient implements APIClient {
       default:
         return stopReason;
     }
+  }
+
+  /**
+   * Extract tool_use blocks from Anthropic fullContent.
+   * Includes all tool_use blocks - unknown tools will receive error responses.
+   */
+  extractToolUseBlocks(fullContent: unknown): ToolUseBlock[] {
+    if (!Array.isArray(fullContent)) return [];
+
+    return fullContent
+      .filter((block: Record<string, unknown>) => block.type === 'tool_use')
+      .map((block: Record<string, unknown>) => ({
+        type: 'tool_use' as const,
+        id: block.id as string,
+        name: block.name as string,
+        input: (block.input as Record<string, unknown>) || {},
+      }));
+  }
+
+  /**
+   * Build tool result messages in Anthropic's expected format.
+   * Returns [assistantMessage with tool_use, userMessage with tool_result blocks].
+   */
+  buildToolResultMessages(
+    assistantContent: unknown,
+    toolResults: ToolResultBlock[],
+    textContent: string
+  ): Message<unknown>[] {
+    // Assistant message with the original fullContent (contains tool_use blocks)
+    const assistantMessage: Message<unknown> = {
+      id: generateUniqueId('msg_assistant'),
+      role: MessageRole.ASSISTANT,
+      content: {
+        type: 'text',
+        content: textContent,
+        modelFamily: APIType.ANTHROPIC,
+        fullContent: assistantContent,
+        // renderingContent will be set by caller after finalize()
+      },
+      timestamp: new Date(),
+    };
+
+    // User message with tool_result blocks (Anthropic expects tool_result in user role)
+    const toolResultMessage: Message<unknown> = {
+      id: generateUniqueId('msg_user'),
+      role: MessageRole.USER,
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: APIType.ANTHROPIC,
+        fullContent: toolResults,
+        // renderingContent will be set by caller
+      },
+      timestamp: new Date(),
+    };
+
+    return [assistantMessage, toolResultMessage];
   }
 }

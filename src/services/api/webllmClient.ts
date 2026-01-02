@@ -14,6 +14,8 @@ import type {
   MessageStopReason,
   Model,
   RenderingBlockGroup,
+  ToolResultBlock,
+  ToolUseBlock,
 } from '../../types';
 import { APIType, groupAndConsolidateBlocks, MessageRole } from '../../types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
@@ -500,5 +502,25 @@ export class WebLLMClient implements APIClient {
       default:
         return stopReason;
     }
+  }
+
+  /**
+   * Extract tool_use blocks - WebLLM doesn't support tools.
+   */
+  extractToolUseBlocks(_fullContent: unknown): ToolUseBlock[] {
+    // WebLLM doesn't support tool calling
+    return [];
+  }
+
+  /**
+   * Build tool result messages - WebLLM doesn't support tools.
+   */
+  buildToolResultMessages(
+    _assistantContent: unknown,
+    _toolResults: ToolResultBlock[],
+    _textContent: string
+  ): Message<unknown>[] {
+    // WebLLM doesn't support tool calling
+    return [];
   }
 }

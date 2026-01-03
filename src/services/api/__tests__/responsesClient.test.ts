@@ -271,7 +271,7 @@ describe('ResponsesClient', () => {
           stream: false,
           reasoning: expect.objectContaining({
             effort: 'medium', // 4096 maps to medium
-            summary: 'detailed',
+            summary: 'auto',
           }),
         })
       );
@@ -497,11 +497,11 @@ describe('ResponsesClient', () => {
         });
       });
 
-      it('should skip non-message items (like reasoning)', () => {
+      it('should extract reasoning with summary as thinking block', () => {
         const fullContent = [
           {
             type: 'reasoning',
-            content: [{ type: 'reasoning_text', text: 'Thinking...' }],
+            summary: [{ type: 'summary_text', text: 'Thinking...' }],
           },
           {
             type: 'message',
@@ -512,8 +512,15 @@ describe('ResponsesClient', () => {
 
         const result = client.migrateMessageRendering(fullContent, null);
 
-        expect(result.renderingContent).toHaveLength(1);
-        expect(result.renderingContent[0].blocks[0]).toEqual({ type: 'text', text: 'The answer' });
+        // Both thinking and text blocks are extracted
+        expect(result.renderingContent).toHaveLength(2);
+        expect(result.renderingContent[0].category).toBe('backstage');
+        expect(result.renderingContent[0].blocks[0]).toEqual({
+          type: 'thinking',
+          thinking: 'Thinking...',
+        });
+        expect(result.renderingContent[1].category).toBe('text');
+        expect(result.renderingContent[1].blocks[0]).toEqual({ type: 'text', text: 'The answer' });
       });
 
       it('should handle message with string content (legacy)', () => {
@@ -534,7 +541,7 @@ describe('ResponsesClient', () => {
         });
       });
 
-      it('should skip non-output_text content parts', () => {
+      it('should include refusal content along with output_text', () => {
         const fullContent = [
           {
             type: 'message',
@@ -550,10 +557,10 @@ describe('ResponsesClient', () => {
         const result = client.migrateMessageRendering(fullContent, null);
 
         expect(result.renderingContent).toHaveLength(1);
-        // Only output_text parts are extracted
+        // Both output_text and refusal are extracted
         expect(result.renderingContent[0].blocks[0]).toEqual({
           type: 'text',
-          text: 'Valid text more text',
+          text: 'Valid textI cannot do that more text',
         });
       });
     });
@@ -643,8 +650,8 @@ describe('ResponsesClient', () => {
         expect(result.stopReason).toBe('end_turn');
       });
 
-      it('should handle response with reasoning output (reasoning is ignored)', () => {
-        // Reasoning blocks are in fullContent but migrateMessageRendering extracts only text
+      it('should handle response with reasoning output', () => {
+        // Reasoning blocks with summary are converted to thinking blocks
         const fullContent = [
           {
             type: 'reasoning',
@@ -660,9 +667,15 @@ describe('ResponsesClient', () => {
 
         const result = client.migrateMessageRendering(fullContent, 'completed');
 
-        // Only the message text is extracted (reasoning is not yet supported in migrateMessageRendering)
-        expect(result.renderingContent).toHaveLength(1);
+        // Both thinking and text blocks are extracted
+        expect(result.renderingContent).toHaveLength(2);
+        expect(result.renderingContent[0].category).toBe('backstage');
         expect(result.renderingContent[0].blocks[0]).toEqual({
+          type: 'thinking',
+          thinking: 'I thought about it carefully.',
+        });
+        expect(result.renderingContent[1].category).toBe('text');
+        expect(result.renderingContent[1].blocks[0]).toEqual({
           type: 'text',
           text: 'The answer is 42.',
         });
@@ -671,7 +684,7 @@ describe('ResponsesClient', () => {
   });
 
   describe('non-streaming support', () => {
-    it('should use non-streaming for o3 model', async () => {
+    it('should use non-streaming for o3 model and yield chunks', async () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
@@ -685,6 +698,7 @@ describe('ResponsesClient', () => {
         output: [
           {
             type: 'message',
+            role: 'assistant',
             content: [
               {
                 type: 'output_text',
@@ -718,8 +732,6 @@ describe('ResponsesClient', () => {
         reasoningBudgetTokens: 4096,
       });
 
-      // For non-streaming, the generator returns immediately
-      // Consume the generator (even though it returns, not yields)
       const chunks: any[] = [];
       for await (const chunk of generator) {
         chunks.push(chunk);
@@ -734,12 +746,14 @@ describe('ResponsesClient', () => {
       );
       expect(mockClient.responses.stream).not.toHaveBeenCalled();
 
-      // For non-streaming, no chunks are yielded (the result is returned, not yielded)
-      // This is the expected behavior - the calling code uses the return value
-      expect(chunks.length).toBe(0);
+      // Non-streaming now yields chunks for StreamingContentAssembler
+      expect(chunks.length).toBeGreaterThan(0);
+      // Should have content chunks and token usage
+      expect(chunks.filter(c => c.type === 'content').length).toBe(1);
+      expect(chunks.filter(c => c.type === 'token_usage').length).toBe(1);
     });
 
-    it('should use non-streaming for gpt-5 (non-chat variant)', async () => {
+    it('should use non-streaming for gpt-5 (non-chat variant) and yield chunks', async () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
@@ -753,6 +767,7 @@ describe('ResponsesClient', () => {
         output: [
           {
             type: 'message',
+            role: 'assistant',
             content: [
               {
                 type: 'output_text',
@@ -786,8 +801,6 @@ describe('ResponsesClient', () => {
         reasoningBudgetTokens: 2048,
       });
 
-      // For non-streaming, the generator returns immediately
-      // Consume the generator (even though it returns, not yields)
       const chunks: any[] = [];
       for await (const chunk of generator) {
         chunks.push(chunk);
@@ -802,9 +815,11 @@ describe('ResponsesClient', () => {
       );
       expect(mockClient.responses.stream).not.toHaveBeenCalled();
 
-      // For non-streaming, no chunks are yielded (the result is returned, not yielded)
-      // This is the expected behavior - the calling code uses the return value
-      expect(chunks.length).toBe(0);
+      // Non-streaming now yields chunks for StreamingContentAssembler
+      expect(chunks.length).toBeGreaterThan(0);
+      // Should have content chunks and token usage
+      expect(chunks.filter(c => c.type === 'content').length).toBe(1);
+      expect(chunks.filter(c => c.type === 'token_usage').length).toBe(1);
     });
 
     it('should use streaming for o1 model', async () => {

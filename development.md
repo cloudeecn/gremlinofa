@@ -280,7 +280,7 @@ public/             # Static assets and PWA icons
 
 - Separates provider-specific event mapping from client logic
 - Event → MapperState → StreamChunk[] (stateful transformation)
-- Currently: `anthropicStreamMapper.ts`; OpenAI/Responses use inline mapping
+- Currently: `anthropicStreamMapper.ts`, `responsesStreamMapper.ts`; OpenAI Chat Completions uses inline mapping
 
 **Client-Side Tools:**
 

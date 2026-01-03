@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ToolResultRenderBlock } from '../../types/content';
+import type { RenderingBlockGroup, ToolResultRenderBlock } from '../../types/content';
 import type { Message } from '../../types';
 import { formatTimestamp } from '../../utils/messageFormatters';
 
@@ -14,9 +14,12 @@ export interface ToolResultBubbleProps {
 export default function ToolResultBubble({ message }: ToolResultBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // Extract tool_result blocks from fullContent
-  const fullContent = message.content.fullContent as ToolResultRenderBlock[] | undefined;
-  const toolResults = fullContent?.filter(b => b.type === 'tool_result') ?? [];
+  // Extract tool_result blocks from renderingContent (normalized format for all APIs)
+  const renderingContent = message.content.renderingContent as RenderingBlockGroup[] | undefined;
+  const toolResults =
+    renderingContent
+      ?.flatMap(group => group.blocks)
+      .filter((b): b is ToolResultRenderBlock => b.type === 'tool_result') ?? [];
 
   if (toolResults.length === 0) return null;
 

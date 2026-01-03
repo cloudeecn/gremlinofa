@@ -5,6 +5,7 @@ import type {
   MessageStopReason,
   Model,
   RenderingBlockGroup,
+  RenderingContentBlock,
   ToolResultBlock,
   ToolUseBlock,
 } from '../../types';
@@ -15,6 +16,13 @@ import { toolRegistry } from '../tools/clientSideTools';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import type { ModelInfo } from './modelInfo';
 import { formatModelInfoForDisplay, getModelInfo, isReasoningModel } from './openaiModelInfo';
+import {
+  convertOutputToStreamChunks,
+  createMapperState,
+  createTokenUsageChunk,
+  mapResponsesEventToStreamChunks,
+  parseResponsesStreamEvent,
+} from './responsesStreamMapper';
 
 export class ResponsesClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
@@ -275,6 +283,7 @@ export class ResponsesClient implements APIClient {
         input: input,
         max_output_tokens: options.maxTokens,
         store: false, // Keep chat history in the app
+        include: ['reasoning.encrypted_content'],
       };
 
       this.applyReasoning(requestParams, options);
@@ -288,121 +297,22 @@ export class ResponsesClient implements APIClient {
       const supportsStreaming = this.supportsStreaming(modelId);
 
       if (supportsStreaming) {
-        // STREAMING PATH
+        // STREAMING PATH - use mapper functions
         const stream = client.responses.stream({
           ...requestParams,
           stream: true,
         });
 
-        // Track whether we've started content/thinking blocks
-        let inContentBlock = false;
-        let inThinkingBlock = false;
+        let mapperState = createMapperState();
 
-        // Stream the response events
         for await (const event of stream) {
-          yield { type: 'event', content: event.type };
+          // Convert SDK event to SSE event format for mapper
+          const sseEvent = parseResponsesStreamEvent(event as unknown as Record<string, unknown>);
+          const result = mapResponsesEventToStreamChunks(sseEvent, mapperState);
+          mapperState = result.state;
 
-          // Handle content start event
-          if (event.type === 'response.content_part.added') {
-            const part = event.part as { type?: string };
-            if (part.type === 'output_text') {
-              inContentBlock = true;
-              yield { type: 'content.start' };
-            }
-          }
-
-          // Handle content done event
-          if (event.type === 'response.content_part.done') {
-            const part = event.part as { type?: string };
-            if (part.type === 'output_text' && inContentBlock) {
-              inContentBlock = false;
-              yield { type: 'content.end' };
-            }
-          }
-
-          // Handle reasoning start event (cast to string for event types not in SDK typings)
-          if ((event.type as string) === 'response.reasoning.added') {
-            inThinkingBlock = true;
-            yield { type: 'thinking.start' };
-          }
-
-          // Handle reasoning done event
-          if ((event.type as string) === 'response.reasoning.done') {
-            if (inThinkingBlock) {
-              inThinkingBlock = false;
-              yield { type: 'thinking.end' };
-            }
-          }
-
-          // Handle text delta events
-          if (event.type === 'response.output_text.delta') {
-            // Emit content.start if we haven't yet (fallback)
-            if (!inContentBlock) {
-              inContentBlock = true;
-              yield { type: 'content.start' };
-            }
-            yield { type: 'content', content: event.delta };
-          }
-
-          // Handle reasoning text delta events
-          if (event.type === 'response.reasoning_text.delta') {
-            // Emit thinking.start if we haven't yet (fallback)
-            if (!inThinkingBlock) {
-              inThinkingBlock = true;
-              yield { type: 'thinking.start' };
-            }
-            yield { type: 'thinking', content: event.delta };
-          }
-
-          // Handle web search events
-          if (event.type === 'response.output_item.added') {
-            const item = event.item as { type?: string; status?: string };
-            if (item.type === 'web_search_call') {
-              // Web search tool invoked
-            }
-          }
-
-          // Handle web search result events
-          if (event.type === 'response.web_search_call.searching') {
-            const searchEvent = event as { id?: string; query?: string };
-            if (searchEvent.query) {
-              yield {
-                type: 'web_search',
-                id: searchEvent.id || `ws_${Date.now()}`,
-                query: searchEvent.query,
-              };
-            }
-          }
-
-          if (event.type === 'response.web_search_call.completed') {
-            // Web search completed - results may be in the event
-          }
-
-          // Yield token usage updates during streaming if available
-          if (event.type === 'response.completed' && event.response.usage) {
-            // Emit end events for any open blocks
-            if (inContentBlock) {
-              yield { type: 'content.end' };
-              inContentBlock = false;
-            }
-            if (inThinkingBlock) {
-              yield { type: 'thinking.end' };
-              inThinkingBlock = false;
-            }
-
-            const usage = event.response.usage;
-            const inputTokens = usage.input_tokens || 0;
-            const outputTokens = usage.output_tokens || 0;
-            const cachedTokens = usage.input_tokens_details?.cached_tokens || 0;
-            const reasoningTokens = usage.output_tokens_details?.reasoning_tokens || 0;
-
-            yield {
-              type: 'token_usage',
-              inputTokens: inputTokens - cachedTokens,
-              outputTokens,
-              cacheReadTokens: cachedTokens,
-              reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
-            };
+          for (const chunk of result.chunks) {
+            yield chunk;
           }
         }
 
@@ -412,13 +322,26 @@ export class ResponsesClient implements APIClient {
         // Process and return final response
         return this.processResponse(finalResponse);
       } else {
-        // NON-STREAMING PATH
+        // NON-STREAMING PATH - convert output to chunks
         const response = await client.responses.create({
           ...requestParams,
           stream: false,
         });
 
-        // Process and return response (no yielding for non-streaming)
+        // Yield chunks for non-streaming response
+        const chunks = convertOutputToStreamChunks(
+          response.output as unknown as Parameters<typeof convertOutputToStreamChunks>[0]
+        );
+        for (const chunk of chunks) {
+          yield chunk;
+        }
+
+        // Yield token usage
+        if (response.usage) {
+          yield createTokenUsageChunk(response.usage);
+        }
+
+        // Process and return response
         return this.processResponse(response);
       }
     } catch (error: unknown) {
@@ -568,9 +491,13 @@ export class ResponsesClient implements APIClient {
       reasoningBudgetTokens: number;
     }
   ) {
+    const modelId = requestParams.model || '';
     const effort = (() => {
       // Map reasoningBudgetTokens to effort level
-      if (options.reasoningBudgetTokens <= 1024) {
+      if (options.reasoningBudgetTokens <= 1024 && modelId.startsWith('gpt-5.')) {
+        return 'minimal';
+      }
+      if (options.reasoningBudgetTokens <= 2000) {
         return 'low';
       }
       if (options.reasoningBudgetTokens <= 4096) {
@@ -578,7 +505,7 @@ export class ResponsesClient implements APIClient {
       }
       return 'high';
     })();
-    const modelId = requestParams.model || '';
+    if (options.temperature) requestParams.temperature = options.temperature;
     // gpt 5 chat series are all non-reasoning
     if (modelId.includes('gpt-5') && modelId.includes('-chat')) {
       if (options.temperature) requestParams.temperature = options.temperature;
@@ -586,13 +513,14 @@ export class ResponsesClient implements APIClient {
     }
     if (modelId.startsWith('o')) {
       // o-series are reasoning only
-      requestParams.reasoning = { effort, summary: 'detailed' };
+      requestParams.reasoning = { effort, summary: 'auto' };
       return;
     }
-    if (modelId.startsWith('gpt-5.1')) {
+    if (modelId.startsWith('gpt-5.1') || modelId.startsWith('gpt-5.2')) {
       // gpt-5 is reasoning only, but can use reasoning_effort minimal to minimize reasoning
       requestParams.reasoning = {
         effort: options.enableReasoning ? effort : 'none',
+        summary: 'auto',
       };
 
       return;
@@ -602,6 +530,7 @@ export class ResponsesClient implements APIClient {
       // gpt-5 is reasoning only, but can use reasoning_effort minimal to minimize reasoning
       requestParams.reasoning = {
         effort: options.enableReasoning ? effort : 'minimal',
+        summary: 'auto',
       };
 
       return;
@@ -619,7 +548,7 @@ export class ResponsesClient implements APIClient {
       return;
     }
 
-    if (modelId.startsWith('grok-4-fast-non-reasoning')) {
+    if (modelId.startsWith('grok-4') && modelId.includes('non-reasoning')) {
       // No reasoning model
       if (options.temperature) requestParams.temperature = options.temperature;
       return;
@@ -629,7 +558,7 @@ export class ResponsesClient implements APIClient {
       // Grok 4 does not have a reasoning_effort parameter and supports only reasoning.
       // Try to request for reasoning summary
       requestParams.reasoning = {
-        summary: 'detailed',
+        summary: 'auto',
       };
       return;
     }
@@ -743,36 +672,123 @@ export class ResponsesClient implements APIClient {
     renderingContent: RenderingBlockGroup[];
     stopReason: MessageStopReason;
   } {
-    // Responses API stores fullContent as ResponseInputItem[] (message objects)
-    // Extract text content from the message objects
-    let textContent = '';
+    // Responses API stores fullContent as ResponseInputItem[] (output items)
+    // Convert each item to appropriate RenderingContentBlock
+    const blocks: RenderingContentBlock[] = [];
+    let mappedStopReason = this.mapStopReason(stopReason);
 
     if (Array.isArray(fullContent)) {
       for (const item of fullContent as Array<Record<string, unknown>>) {
-        if (item.type === 'message' && item.role === 'assistant') {
-          const content = item.content;
-          if (Array.isArray(content)) {
-            for (const part of content as Array<Record<string, unknown>>) {
-              if (part.type === 'output_text' && typeof part.text === 'string') {
-                textContent += part.text;
+        switch (item.type) {
+          case 'reasoning': {
+            // Extract text from summary array
+            const summary = item.summary as Array<Record<string, unknown>> | undefined;
+            if (summary && Array.isArray(summary)) {
+              let thinkingText = '';
+              for (const part of summary) {
+                if (part.type === 'summary_text' && typeof part.text === 'string') {
+                  thinkingText += part.text;
+                }
+              }
+              if (thinkingText.trim()) {
+                blocks.push({ type: 'thinking', thinking: thinkingText });
               }
             }
-          } else if (typeof content === 'string') {
-            textContent += content;
+            break;
           }
+
+          case 'web_search_call': {
+            // Extract query from action
+            const action = item.action as Record<string, unknown> | undefined;
+            const id = (item.id as string) || '';
+            if (action) {
+              const actionType = action.type as string;
+              let query = '';
+              if (actionType === 'search') {
+                query = (action.query as string) || '';
+              } else if (actionType === 'open_page') {
+                query = `Opening: ${action.url as string}`;
+              }
+
+              // Extract sources as results
+              const sources = action.sources as Array<Record<string, unknown>> | undefined;
+              const results = (sources || []).map(source => ({
+                title: (source.title as string) || '',
+                url: (source.url as string) || '',
+              }));
+
+              if (query) {
+                blocks.push({
+                  type: 'web_search',
+                  id,
+                  query,
+                  results,
+                });
+              }
+            }
+            break;
+          }
+
+          case 'function_call': {
+            // Tool use block
+            const callId = (item.call_id as string) || (item.id as string) || '';
+            const name = (item.name as string) || '';
+            const argsStr = (item.arguments as string) || '{}';
+            let input: Record<string, unknown> = {};
+            try {
+              input = JSON.parse(argsStr) as Record<string, unknown>;
+            } catch {
+              // Keep empty input on parse failure
+            }
+
+            blocks.push({
+              type: 'tool_use',
+              id: callId,
+              name,
+              input,
+            });
+
+            // Function call means tool_use stop reason
+            mappedStopReason = 'tool_use';
+            break;
+          }
+
+          case 'message': {
+            // Extract text from message content
+            if (item.role !== 'assistant') continue;
+
+            const content = item.content;
+            if (Array.isArray(content)) {
+              let textContent = '';
+              for (const part of content as Array<Record<string, unknown>>) {
+                if (part.type === 'output_text' && typeof part.text === 'string') {
+                  textContent += part.text;
+                } else if (part.type === 'refusal' && typeof part.refusal === 'string') {
+                  textContent += part.refusal;
+                }
+              }
+              if (textContent.trim()) {
+                blocks.push({ type: 'text', text: textContent });
+              }
+            } else if (typeof content === 'string' && content.trim()) {
+              blocks.push({ type: 'text', text: content });
+            }
+            break;
+          }
+
+          default:
+            // Skip unknown item types
+            break;
         }
       }
-    } else if (typeof fullContent === 'string') {
-      textContent = fullContent;
+    } else if (typeof fullContent === 'string' && fullContent.trim()) {
+      // Legacy format: just text content
+      blocks.push({ type: 'text', text: fullContent });
     }
 
-    const renderingContent = textContent.trim()
-      ? groupAndConsolidateBlocks([{ type: 'text', text: textContent }])
-      : [];
-
     return {
-      renderingContent,
-      stopReason: this.mapStopReason(stopReason),
+      renderingContent: groupAndConsolidateBlocks(blocks),
+      stopReason: mappedStopReason,
     };
   }
 

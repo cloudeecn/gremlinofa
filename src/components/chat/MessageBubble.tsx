@@ -101,15 +101,9 @@ export default function MessageBubble({
   const renderingContent = message.content.renderingContent as RenderingBlockGroup[] | undefined;
   const hasRenderingContent = !isUser && renderingContent && renderingContent.length > 0;
 
-  // Detect tool_result message (USER role but contains tool_result blocks in fullContent)
-  const fullContent = message.content.fullContent;
+  // Detect tool_result message via renderingContent (normalized format works for all APIs)
   const isToolResult =
-    isUser &&
-    Array.isArray(fullContent) &&
-    fullContent.some(
-      (b: Record<string, unknown>) =>
-        typeof b === 'object' && b !== null && b.type === 'tool_result'
-    );
+    isUser && renderingContent?.some(group => group.blocks.some(b => b.type === 'tool_result'));
 
   return (
     <div

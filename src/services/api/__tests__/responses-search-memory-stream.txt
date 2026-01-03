@@ -1,0 +1,90 @@
+event: response.created
+data: {"sequence_number":0,"type":"response.created","response":{"created_at":1700000000,"id":"1","max_output_tokens":2048,"model":"grok-4-1-fast-non-reasoning","object":"response","output":[],"parallel_tool_calls":true,"previous_response_id":null,"reasoning":{"effort":null,"summary":"detailed"},"temperature":null,"text":{"format":{"type":"text"}},"tool_choice":"auto","tools":[{"type":"web_search"},{"type":"function","description":"Use this tool when the user explicitly asks to test tool calling","name":"ping","parameters":{"type":"object","properties":{},"required":[]},"strict":null},{"type":"function","description":"Use this tool to store and retrieve information across conversations. Files persist per project.","name":"memory","parameters":{"type":"object","properties":{"command":{"type":"string","enum":["view","create","str_replace","insert","delete","rename"],"description":"The command to execute"},"path":{"type":"string","description":"Path to the file or directory"},"file_text":{"type":"string","description":"Content for create command"},"old_str":{"type":"string","description":"String to find for str_replace command"},"new_str":{"type":"string","description":"Replacement string for str_replace command"},"insert_line":{"type":"number","description":"Line number to insert at for insert command (0-indexed)"},"insert_text":{"type":"string","description":"Text to insert for insert command"},"old_path":{"type":"string","description":"Source path for rename command"},"new_path":{"type":"string","description":"Destination path for rename command"},"view_range":{"type":"array","items":{"type":"number"},"description":"Optional line range [start, end] for view command"}},"required":["command"]},"strict":null}],"top_p":null,"user":null,"incomplete_details":null,"status":"in_progress","store":false,"metadata":{}}}
+
+event: response.in_progress
+data: {"sequence_number":1,"type":"response.in_progress","response":{"created_at":1700000000,"id":"1","max_output_tokens":2048,"model":"grok-4-1-fast-non-reasoning","object":"response","output":[],"parallel_tool_calls":true,"previous_response_id":null,"reasoning":{"effort":null,"summary":"detailed"},"temperature":null,"text":{"format":{"type":"text"}},"tool_choice":"auto","tools":[{"type":"web_search"},{"type":"function","description":"Use this tool when the user explicitly asks to test tool calling","name":"ping","parameters":{"type":"object","properties":{},"required":[]},"strict":null},{"type":"function","description":"Use this tool to store and retrieve information across conversations. Files persist per project.","name":"memory","parameters":{"type":"object","properties":{"command":{"type":"string","enum":["view","create","str_replace","insert","delete","rename"],"description":"The command to execute"},"path":{"type":"string","description":"Path to the file or directory"},"file_text":{"type":"string","description":"Content for create command"},"old_str":{"type":"string","description":"String to find for str_replace command"},"new_str":{"type":"string","description":"Replacement string for str_replace command"},"insert_line":{"type":"number","description":"Line number to insert at for insert command (0-indexed)"},"insert_text":{"type":"string","description":"Text to insert for insert command"},"old_path":{"type":"string","description":"Source path for rename command"},"new_path":{"type":"string","description":"Destination path for rename command"},"view_range":{"type":"array","items":{"type":"number"},"description":"Optional line range [start, end] for view command"}},"required":["command"]},"strict":null}],"top_p":null,"user":null,"incomplete_details":null,"status":"in_progress","store":false,"metadata":{}}}
+
+event: response.output_item.added
+data: {"sequence_number":2,"type":"response.output_item.added","item":{"id":"ws_1_call_1","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"","sources":[]}},"output_index":0}
+
+event: response.web_search_call.in_progress
+data: {"sequence_number":3,"type":"response.web_search_call.in_progress","item_id":"ws_1_call_1","output_index":0}
+
+event: response.web_search_call.searching
+data: {"sequence_number":4,"type":"response.web_search_call.searching","item_id":"ws_1_call_1","output_index":0}
+
+event: response.web_search_call.completed
+data: {"sequence_number":5,"type":"response.web_search_call.completed","item_id":"ws_1_call_1","output_index":0}
+
+event: response.output_item.done
+data: {"sequence_number":6,"type":"response.output_item.done","item":{"id":"ws_1_call_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"Vancouver weather tomorrow","sources":[]}},"output_index":0}
+
+event: response.output_item.added
+data: {"sequence_number":7,"type":"response.output_item.added","item":{"id":"ws_1_call_2","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"","sources":[]}},"output_index":1}
+
+event: response.web_search_call.in_progress
+data: {"sequence_number":8,"type":"response.web_search_call.in_progress","item_id":"ws_1_call_2","output_index":1}
+
+event: response.web_search_call.searching
+data: {"sequence_number":9,"type":"response.web_search_call.searching","item_id":"ws_1_call_2","output_index":1}
+
+event: response.output_item.added
+data: {"sequence_number":10,"type":"response.output_item.added","item":{"id":"ws_1_call_3","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"","sources":[]}},"output_index":2}
+
+event: response.web_search_call.in_progress
+data: {"sequence_number":11,"type":"response.web_search_call.in_progress","item_id":"ws_1_call_3","output_index":2}
+
+event: response.web_search_call.searching
+data: {"sequence_number":12,"type":"response.web_search_call.searching","item_id":"ws_1_call_3","output_index":2}
+
+event: response.output_item.added
+data: {"sequence_number":13,"type":"response.output_item.added","item":{"id":"ws_1_call_4","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"","sources":[]}},"output_index":3}
+
+event: response.web_search_call.in_progress
+data: {"sequence_number":14,"type":"response.web_search_call.in_progress","item_id":"ws_1_call_4","output_index":3}
+
+event: response.web_search_call.searching
+data: {"sequence_number":15,"type":"response.web_search_call.searching","item_id":"ws_1_call_4","output_index":3}
+
+event: response.output_item.added
+data: {"sequence_number":16,"type":"response.output_item.added","item":{"id":"ws_1_call_5","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"","sources":[]}},"output_index":4}
+
+event: response.web_search_call.in_progress
+data: {"sequence_number":17,"type":"response.web_search_call.in_progress","item_id":"ws_1_call_5","output_index":4}
+
+event: response.web_search_call.searching
+data: {"sequence_number":18,"type":"response.web_search_call.searching","item_id":"ws_1_call_5","output_index":4}
+
+event: response.web_search_call.completed
+data: {"sequence_number":19,"type":"response.web_search_call.completed","item_id":"ws_1_call_2","output_index":1}
+
+event: response.output_item.done
+data: {"sequence_number":20,"type":"response.output_item.done","item":{"id":"ws_1_call_2","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://weather.gc.ca/en/location/index.html?coords=49.245%2C-123.115"}},"output_index":1}
+
+event: response.web_search_call.completed
+data: {"sequence_number":21,"type":"response.web_search_call.completed","item_id":"ws_1_call_3","output_index":2}
+
+event: response.output_item.done
+data: {"sequence_number":22,"type":"response.output_item.done","item":{"id":"ws_1_call_3","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://www.accuweather.com/en/ca/vancouver/v6c/weather-tomorrow/53286"}},"output_index":2}
+
+event: response.web_search_call.completed
+data: {"sequence_number":23,"type":"response.web_search_call.completed","item_id":"ws_1_call_4","output_index":3}
+
+event: response.output_item.done
+data: {"sequence_number":24,"type":"response.output_item.done","item":{"id":"ws_1_call_4","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://www.theweathernetwork.com/en/city/ca/british-columbia/vancouver/7-days"}},"output_index":3}
+
+event: response.web_search_call.completed
+data: {"sequence_number":25,"type":"response.web_search_call.completed","item_id":"ws_1_call_5","output_index":4}
+
+event: response.output_item.done
+data: {"sequence_number":26,"type":"response.output_item.done","item":{"id":"ws_1_call_5","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://weather.com/weather/tenday/l/Shaughnessy+Vancouver+British+Columbia+Canada?canonicalCityId=1a12ea5bc64fdc94330068426e8363de"}},"output_index":4}
+
+event: response.output_item.added
+data: {"sequence_number":27,"type":"response.output_item.added","item":{"arguments":"{\"command\":\"create\",\"path\":\"vancouver_weather_tomorrow.txt\",\"file_text\":\"Vancouver, BC weather for tomorrow (Saturday, January 3, 2026):\\n\\n- High/Low: Around 8°C / 6-7°C (46-48°F / 44°F)\\n- Conditions: Periods of rain throughout the day and night, possibly heavy at times. Morning rain and drizzle likely.\\n- Precip: 75-100% chance, 10-25 mm possible.\\n- Wind: SE/E/NE 10-20 km/h (5-13 mph), gusts to 40 km/h near water.\\n- Other: Coastal flooding statement in effect for Metro Vancouver due to high tides, winds, and waves.\\n\\nSources: Environment Canada [web:10], AccuWeather [web:11], The Weather Network [web:12], Weather.com [web:13]\"}","call_id":"call_1","name":"memory","type":"function_call","id":"fc_1_0","status":"completed"},"output_index":5}
+
+event: response.output_item.done
+data: {"sequence_number":28,"type":"response.output_item.done","item":{"arguments":"{\"command\":\"create\",\"path\":\"vancouver_weather_tomorrow.txt\",\"file_text\":\"Vancouver, BC weather for tomorrow (Saturday, January 3, 2026):\\n\\n- High/Low: Around 8°C / 6-7°C (46-48°F / 44°F)\\n- Conditions: Periods of rain throughout the day and night, possibly heavy at times. Morning rain and drizzle likely.\\n- Precip: 75-100% chance, 10-25 mm possible.\\n- Wind: SE/E/NE 10-20 km/h (5-13 mph), gusts to 40 km/h near water.\\n- Other: Coastal flooding statement in effect for Metro Vancouver due to high tides, winds, and waves.\\n\\nSources: Environment Canada [web:10], AccuWeather [web:11], The Weather Network [web:12], Weather.com [web:13]\"}","call_id":"call_1","name":"memory","type":"function_call","id":"fc_1_0","status":"completed"},"output_index":5}
+
+event: response.completed
+data: {"sequence_number":29,"type":"response.completed","response":{"created_at":1700000000,"id":"1","max_output_tokens":2048,"model":"grok-4-1-fast-non-reasoning","object":"response","output":[{"id":"ws_1_call_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"Vancouver weather tomorrow","sources":[]}},{"id":"ws_1_call_2","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://weather.gc.ca/en/location/index.html?coords=49.245%2C-123.115"}},{"id":"ws_1_call_3","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://www.accuweather.com/en/ca/vancouver/v6c/weather-tomorrow/53286"}},{"id":"ws_1_call_4","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://www.theweathernetwork.com/en/city/ca/british-columbia/vancouver/7-days"}},{"id":"ws_1_call_5","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://weather.com/weather/tenday/l/Shaughnessy+Vancouver+British+Columbia+Canada?canonicalCityId=1a12ea5bc64fdc94330068426e8363de"}},{"arguments":"{\"command\":\"create\",\"path\":\"vancouver_weather_tomorrow.txt\",\"file_text\":\"Vancouver, BC weather for tomorrow (Saturday, January 3, 2026):\\n\\n- High/Low: Around 8°C / 6-7°C (46-48°F / 44°F)\\n- Conditions: Periods of rain throughout the day and night, possibly heavy at times. Morning rain and drizzle likely.\\n- Precip: 75-100% chance, 10-25 mm possible.\\n- Wind: SE/E/NE 10-20 km/h (5-13 mph), gusts to 40 km/h near water.\\n- Other: Coastal flooding statement in effect for Metro Vancouver due to high tides, winds, and waves.\\n\\nSources: Environment Canada [web:10], AccuWeather [web:11], The Weather Network [web:12], Weather.com [web:13]\"}","call_id":"call_1","name":"memory","type":"function_call","id":"fc_1_0","status":"completed"}],"parallel_tool_calls":true,"previous_response_id":null,"reasoning":{"effort":null,"summary":"detailed"},"temperature":null,"text":{"format":{"type":"text"}},"tool_choice":"auto","tools":[{"type":"web_search"},{"type":"function","description":"Use this tool when the user explicitly asks to test tool calling","name":"ping","parameters":{"type":"object","properties":{},"required":[]},"strict":null},{"type":"function","description":"Use this tool to store and retrieve information across conversations. Files persist per project.","name":"memory","parameters":{"type":"object","properties":{"command":{"type":"string","enum":["view","create","str_replace","insert","delete","rename"],"description":"The command to execute"},"path":{"type":"string","description":"Path to the file or directory"},"file_text":{"type":"string","description":"Content for create command"},"old_str":{"type":"string","description":"String to find for str_replace command"},"new_str":{"type":"string","description":"Replacement string for str_replace command"},"insert_line":{"type":"number","description":"Line number to insert at for insert command (0-indexed)"},"insert_text":{"type":"string","description":"Text to insert for insert command"},"old_path":{"type":"string","description":"Source path for rename command"},"new_path":{"type":"string","description":"Destination path for rename command"},"view_range":{"type":"array","items":{"type":"number"},"description":"Optional line range [start, end] for view command"}},"required":["command"]},"strict":null}],"top_p":null,"usage":{"input_tokens":10273,"input_tokens_details":{"cached_tokens":4333},"output_tokens":663,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":10936,"num_sources_used":0,"num_server_side_tools_used":5,"cost_in_usd_ticks":267361500,"server_side_tool_usage_details":{"web_search_calls":5,"x_search_calls":0,"code_interpreter_calls":0,"file_search_calls":0,"mcp_calls":0,"document_search_calls":0}},"user":null,"incomplete_details":null,"status":"completed","store":false,"metadata":{}}}
+

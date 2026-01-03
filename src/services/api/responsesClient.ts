@@ -283,7 +283,6 @@ export class ResponsesClient implements APIClient {
         input: input,
         max_output_tokens: options.maxTokens,
         store: false, // Keep chat history in the app
-        include: ['reasoning.encrypted_content'],
       };
 
       this.applyReasoning(requestParams, options);
@@ -414,9 +413,7 @@ export class ResponsesClient implements APIClient {
   ): StreamResult<OpenAI.Responses.ResponseInputItem[]> {
     // Extract text content from output
     let textContent = response.output_text;
-    const fullContent = response.output
-      .map(output => this.convertOutputToContext(output))
-      .filter(input => input !== undefined);
+    const fullContent = response.output.filter(input => input !== undefined);
     let thinkingContent = '';
     let thinkingSummary = '';
     let hasFunctionCall = false;
@@ -506,14 +503,18 @@ export class ResponsesClient implements APIClient {
       return 'high';
     })();
     if (options.temperature) requestParams.temperature = options.temperature;
-    // gpt 5 chat series are all non-reasoning
+    // No reasoning models
     if (modelId.includes('gpt-5') && modelId.includes('-chat')) {
-      if (options.temperature) requestParams.temperature = options.temperature;
       return;
     }
+    if (modelId.startsWith('grok-4') && modelId.includes('non-reasoning')) {
+      return;
+    }
+    // OpenAI reasoning models
     if (modelId.startsWith('o')) {
       // o-series are reasoning only
       requestParams.reasoning = { effort, summary: 'auto' };
+      requestParams.include = ['reasoning.encrypted_content'];
       return;
     }
     if (modelId.startsWith('gpt-5.1') || modelId.startsWith('gpt-5.2')) {
@@ -522,35 +523,28 @@ export class ResponsesClient implements APIClient {
         effort: options.enableReasoning ? effort : 'none',
         summary: 'auto',
       };
-
+      requestParams.include = ['reasoning.encrypted_content'];
       return;
     }
-
     if (modelId.startsWith('gpt-5')) {
       // gpt-5 is reasoning only, but can use reasoning_effort minimal to minimize reasoning
       requestParams.reasoning = {
         effort: options.enableReasoning ? effort : 'minimal',
         summary: 'auto',
       };
-
+      requestParams.include = ['reasoning.encrypted_content'];
       return;
     }
 
+    // xAI reasoning models
     if (modelId.startsWith('grok-3-mini')) {
       if (options.enableReasoning) {
         requestParams.reasoning = {
           effort: effort == 'high' ? 'high' : 'low',
-          summary: 'detailed',
+          summary: 'auto',
         };
-      } else {
-        if (options.temperature) requestParams.temperature = options.temperature;
+        requestParams.include = ['reasoning.encrypted_content'];
       }
-      return;
-    }
-
-    if (modelId.startsWith('grok-4') && modelId.includes('non-reasoning')) {
-      // No reasoning model
-      if (options.temperature) requestParams.temperature = options.temperature;
       return;
     }
 
@@ -560,9 +554,16 @@ export class ResponsesClient implements APIClient {
       requestParams.reasoning = {
         summary: 'auto',
       };
+      requestParams.include = ['reasoning.encrypted_content'];
       return;
     }
-    if (options.temperature) requestParams.temperature = options.temperature;
+    // Other models
+    if (options.enableReasoning) {
+      requestParams.reasoning = {
+        summary: 'auto',
+      };
+      requestParams.include = ['reasoning.encrypted_content'];
+    }
   }
 
   calculateCost(
@@ -618,51 +619,6 @@ export class ResponsesClient implements APIClient {
       }
     }
     return item;
-  }
-
-  private convertOutputToContext(
-    output: OpenAI.Responses.ResponseOutputItem
-  ): OpenAI.Responses.ResponseInputItem | undefined {
-    // Handle apply_patch_call - only include if operation is present
-    if (output.type === 'apply_patch_call') {
-      if (output.operation !== undefined) {
-        return { ...output, operation: output.operation };
-      } else {
-        return undefined; // Skip incomplete patch calls without operation
-      }
-    }
-
-    if (output.type === 'apply_patch_call_output') {
-      if (output.output === null) {
-        return { ...output, output: undefined };
-      } else {
-        return { ...output, output: output.output };
-      }
-    }
-
-    // Handle function_call - pass through as-is
-    if (output.type === 'function_call') {
-      return output as unknown as OpenAI.Responses.ResponseInputItem;
-    }
-
-    // Handle message - spread and delete problematic fields from content parts
-    if (output.type === 'message') {
-      return {
-        ...output,
-        content: output.content.map(part => {
-          if (part.type === 'output_text') {
-            const cleaned = { ...part } as Record<string, unknown>;
-            delete cleaned.parsed;
-            delete cleaned.logprobs;
-            delete cleaned.annotations;
-            return cleaned;
-          }
-          return part;
-        }),
-      } as unknown as OpenAI.Responses.ResponseInputItem;
-    }
-
-    return output;
   }
 
   migrateMessageRendering(

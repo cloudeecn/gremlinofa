@@ -111,20 +111,17 @@ describe('OpenAIClient.migrateMessageRendering', () => {
       expect(result.stopReason).toBe('max_tokens');
     });
 
-    it('should map "tool_calls" to end_turn', () => {
-      const result = client.migrateMessageRendering(
-        [{ type: 'text', text: 'Hello' }],
-        'tool_calls'
-      );
-      expect(result.stopReason).toBe('end_turn');
+    it('should map "tool_calls" to tool_use for agentic loop', () => {
+      const result = client.migrateMessageRendering([{ type: 'text', text: 'test' }], 'tool_calls');
+      expect(result.stopReason).toBe('tool_use');
     });
 
-    it('should map "function_call" to end_turn', () => {
+    it('should map "function_call" to tool_use for agentic loop', () => {
       const result = client.migrateMessageRendering(
-        [{ type: 'text', text: 'Hello' }],
+        [{ type: 'text', text: 'test' }],
         'function_call'
       );
-      expect(result.stopReason).toBe('end_turn');
+      expect(result.stopReason).toBe('tool_use');
     });
 
     it('should map "content_filter" to error', () => {

@@ -4,6 +4,8 @@ import type {
   MessageStopReason,
   Model,
   RenderingBlockGroup,
+  ToolResultBlock,
+  ToolUseBlock,
 } from '../../types';
 import { APIType, groupAndConsolidateBlocks } from '../../types';
 import { AnthropicClient } from './anthropicClient';
@@ -67,7 +69,7 @@ class APIService {
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
-      memoryEnabled?: boolean;
+      enabledTools?: string[];
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
     const client = this.getClient(apiDefinition.apiType);
@@ -233,6 +235,35 @@ class APIService {
     }
 
     return client.migrateMessageRendering(fullContent, stopReason);
+  }
+
+  /**
+   * Extract tool_use blocks from provider-specific fullContent.
+   * Routes to the appropriate client based on API type.
+   */
+  extractToolUseBlocks(apiType: APIType, fullContent: unknown): ToolUseBlock[] {
+    const client = this.getClient(apiType);
+    if (!client) {
+      return [];
+    }
+    return client.extractToolUseBlocks(fullContent);
+  }
+
+  /**
+   * Build tool result messages in provider's expected format.
+   * Routes to the appropriate client based on API type.
+   */
+  buildToolResultMessages(
+    apiType: APIType,
+    assistantContent: unknown,
+    toolResults: ToolResultBlock[],
+    textContent: string
+  ): Message<unknown>[] {
+    const client = this.getClient(apiType);
+    if (!client) {
+      return [];
+    }
+    return client.buildToolResultMessages(assistantContent, toolResults, textContent);
   }
 }
 

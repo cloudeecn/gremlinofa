@@ -4,6 +4,8 @@ import type {
   MessageStopReason,
   Model,
   RenderingBlockGroup,
+  ToolResultBlock,
+  ToolUseBlock,
 } from '../../types';
 import type { ModelInfo } from './modelInfo';
 
@@ -61,6 +63,27 @@ export interface APIClient {
     renderingContent: RenderingBlockGroup[];
     stopReason: MessageStopReason;
   };
+
+  /**
+   * Extract tool_use blocks from provider-specific fullContent.
+   * Returns array of ToolUseBlock for client-side tool execution.
+   */
+  extractToolUseBlocks(fullContent: unknown): ToolUseBlock[];
+
+  /**
+   * Build tool result messages in provider's expected format.
+   * Returns [assistantMessage, toolResultMessage] ready for continuation.
+   *
+   * @param assistantContent - Original fullContent from assistant response with tool_use
+   * @param toolResults - Results from executing client-side tools
+   * @param textContent - Text content from assistant response
+   * @returns Array of messages: [assistant message with tool_use, user/tool message with results]
+   */
+  buildToolResultMessages(
+    assistantContent: unknown,
+    toolResults: ToolResultBlock[],
+    textContent: string
+  ): Message<unknown>[];
 }
 
 // Stream chunk types

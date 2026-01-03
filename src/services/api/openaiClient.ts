@@ -6,9 +6,13 @@ import type {
   MessageStopReason,
   Model,
   RenderingBlockGroup,
+  ToolResultBlock,
+  ToolUseBlock,
 } from '../../types';
 
 import { APIType, groupAndConsolidateBlocks, MessageRole } from '../../types';
+import { generateUniqueId } from '../../utils/idGenerator';
+import { toolRegistry } from '../tools/clientSideTools';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import type { ModelInfo } from './modelInfo';
 import { formatModelInfoForDisplay, getModelInfo, isReasoningModel } from './openaiModelInfo';
@@ -81,7 +85,7 @@ export class OpenAIClient implements APIClient {
   }
 
   async *sendMessageStream(
-    messages: Message<OpenAI.ChatCompletionContentPart[]>[],
+    messages: Message<unknown>[],
     modelId: string,
     apiDefinition: APIDefinition,
     options: {
@@ -92,8 +96,9 @@ export class OpenAIClient implements APIClient {
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
+      enabledTools?: string[];
     }
-  ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.ChatCompletionContentPart[]>, unknown> {
+  ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
     try {
       // Create OpenAI client with API key and custom baseUrl if provided
       const client = new OpenAI({
@@ -180,6 +185,12 @@ export class OpenAIClient implements APIClient {
         }
       }
 
+      // Add client-side tool definitions
+      const clientToolDefs = this.getClientSideTools(options.enabledTools || []);
+      if (clientToolDefs.length > 0) {
+        requestParams.tools = [...(requestParams.tools || []), ...clientToolDefs];
+      }
+
       this.applyReasoning(requestParams, options, reasoningEffort);
 
       // Track streamed content and token usage
@@ -188,6 +199,10 @@ export class OpenAIClient implements APIClient {
       let outputTokens = 0;
       let cached_tokens = 0;
       let reasoningTokens = 0;
+      let finishReason: string | null = null;
+      // Track tool calls for client-side tool execution
+      const accumulatedToolCalls: Map<number, { id: string; name: string; arguments: string }> =
+        new Map();
 
       // Check if model supports streaming
       const supportsStreaming = this.supportStreaming(modelId);
@@ -205,6 +220,12 @@ export class OpenAIClient implements APIClient {
 
         // Stream the response
         for await (const chunk of stream) {
+          // Capture finish_reason
+          const chunkFinishReason = chunk.choices[0]?.finish_reason;
+          if (chunkFinishReason) {
+            finishReason = chunkFinishReason;
+          }
+
           // Handle content delta
           const contentDelta = chunk.choices[0]?.delta?.content;
           if (contentDelta) {
@@ -217,18 +238,35 @@ export class OpenAIClient implements APIClient {
             yield { type: 'content', content: contentDelta };
           }
 
-          // Handle tool calls (e.g., web_search)
+          // Handle tool calls - accumulate across chunks
           const toolCalls = chunk.choices[0]?.delta?.tool_calls;
           if (toolCalls) {
             for (const toolCall of toolCalls) {
+              const index = toolCall.index;
+              const existing = accumulatedToolCalls.get(index);
+
+              if (existing) {
+                // Append to existing tool call's arguments
+                if (toolCall.function?.arguments) {
+                  existing.arguments += toolCall.function.arguments;
+                }
+              } else {
+                // New tool call
+                accumulatedToolCalls.set(index, {
+                  id: toolCall.id || `tc_${Date.now()}_${index}`,
+                  name: toolCall.function?.name || '',
+                  arguments: toolCall.function?.arguments || '',
+                });
+              }
+
+              // Emit web_search event for UI
               if (toolCall.function?.name === 'web_search') {
-                // Web search tool invoked - try to extract query from arguments
-                const toolId = toolCall.id || `ws_${Date.now()}`;
                 const args = toolCall.function.arguments;
                 if (args) {
                   try {
                     const parsed = JSON.parse(args);
                     if (parsed.query) {
+                      const toolId = toolCall.id || `ws_${Date.now()}`;
                       yield { type: 'web_search', id: toolId, query: parsed.query };
                     }
                   } catch {
@@ -274,12 +312,34 @@ export class OpenAIClient implements APIClient {
           stream: false,
         });
 
+        // Capture finish_reason
+        finishReason = response.choices[0]?.finish_reason || null;
+
         // Extract and yield content with start/end events
         streamedContent = response.choices[0]?.message?.content || '';
         if (streamedContent) {
           yield { type: 'content.start' };
           yield { type: 'content', content: streamedContent };
           yield { type: 'content.end' };
+        }
+
+        // Extract tool calls from non-streaming response
+        const messageToolCalls = response.choices[0]?.message?.tool_calls;
+        if (messageToolCalls) {
+          for (let i = 0; i < messageToolCalls.length; i++) {
+            const tc = messageToolCalls[i] as {
+              id: string;
+              type: string;
+              function?: { name: string; arguments: string };
+            };
+            if (tc.function) {
+              accumulatedToolCalls.set(i, {
+                id: tc.id,
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+              });
+            }
+          }
         }
 
         // Extract token usage
@@ -307,13 +367,29 @@ export class OpenAIClient implements APIClient {
         textContent = options.preFillResponse + streamedContent;
       }
 
-      // Wrap in content block format for consistency
-      const fullContent = [{ type: 'text' as const, text: textContent }];
+      // Build fullContent - include tool_calls if present for agentic loop
+      const fullContent: Array<Record<string, unknown>> = [
+        { type: 'text' as const, text: textContent },
+      ];
 
-      // Return final result
+      // Add tool_calls block if any tools were called
+      if (accumulatedToolCalls.size > 0) {
+        const toolCallsArray = Array.from(accumulatedToolCalls.values()).map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: tc.name,
+            arguments: tc.arguments,
+          },
+        }));
+        fullContent.push({ type: 'tool_calls', tool_calls: toolCallsArray });
+      }
+
+      // Return final result with stopReason for agentic loop
       return {
         textContent,
         fullContent,
+        stopReason: finishReason ?? undefined,
         inputTokens,
         outputTokens,
         cacheReadTokens: cached_tokens,
@@ -503,11 +579,87 @@ export class OpenAIClient implements APIClient {
         return 'max_tokens';
       case 'tool_calls':
       case 'function_call':
-        return 'end_turn'; // Treat tool use as normal end
+        return 'tool_use'; // Map to tool_use for agentic loop
       case 'content_filter':
         return 'error';
       default:
         return stopReason;
     }
+  }
+
+  /**
+   * Extract tool_use blocks from OpenAI Chat Completions fullContent.
+   * OpenAI stores tool calls in a different format than Anthropic.
+   */
+  extractToolUseBlocks(fullContent: unknown): ToolUseBlock[] {
+    if (!Array.isArray(fullContent)) return [];
+
+    // OpenAI fullContent may contain tool_calls array from the response
+    // Format: [{ type: 'text', text: '...' }, { type: 'tool_calls', tool_calls: [...] }]
+    for (const block of fullContent as Array<Record<string, unknown>>) {
+      if (block.type === 'tool_calls' && Array.isArray(block.tool_calls)) {
+        return (block.tool_calls as Array<Record<string, unknown>>).map(tc => ({
+          type: 'tool_use' as const,
+          id: tc.id as string,
+          name: (tc.function as Record<string, unknown>)?.name as string,
+          input: JSON.parse(
+            ((tc.function as Record<string, unknown>)?.arguments as string) || '{}'
+          ),
+        }));
+      }
+    }
+    return [];
+  }
+
+  /**
+   * Build tool result messages in OpenAI Chat Completions expected format.
+   * OpenAI uses separate tool messages (role: 'tool') for each result.
+   */
+  buildToolResultMessages(
+    assistantContent: unknown,
+    toolResults: ToolResultBlock[],
+    textContent: string
+  ): Message<unknown>[] {
+    // Assistant message with the original fullContent
+    const assistantMessage: Message<unknown> = {
+      id: generateUniqueId('msg_assistant'),
+      role: MessageRole.ASSISTANT,
+      content: {
+        type: 'text',
+        content: textContent,
+        modelFamily: APIType.CHATGPT,
+        fullContent: assistantContent,
+      },
+      timestamp: new Date(),
+    };
+
+    // OpenAI expects individual tool messages with role: 'tool'
+    // We store them as a single user message with tool_results for our internal format
+    const toolResultMessage: Message<unknown> = {
+      id: generateUniqueId('msg_user'),
+      role: MessageRole.USER,
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: APIType.CHATGPT,
+        fullContent: toolResults.map(tr => ({
+          type: 'tool_result',
+          tool_call_id: tr.tool_use_id,
+          content: tr.content,
+          is_error: tr.is_error,
+        })),
+      },
+      timestamp: new Date(),
+    };
+
+    return [assistantMessage, toolResultMessage];
+  }
+
+  /**
+   * Get client-side tool definitions for OpenAI format.
+   */
+  protected getClientSideTools(enabledTools: string[]): ChatCompletionTool[] {
+    const toolDefs = toolRegistry.getToolDefinitionsForAPI(APIType.CHATGPT, enabledTools);
+    return toolDefs as unknown as ChatCompletionTool[];
   }
 }

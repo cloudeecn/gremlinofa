@@ -228,4 +228,8 @@ export interface ClientSideTool {
     required: string[];
   };
   execute(input: Record<string, unknown>): Promise<ToolResult>;
+  /** API-specific definition overrides (e.g., Anthropic's memory_20250818 shorthand) */
+  apiOverrides?: Partial<Record<APIType, Record<string, unknown>>>;
+  /** Tools with alwaysEnabled: true are included regardless of enabledTools list */
+  alwaysEnabled?: boolean;
 }

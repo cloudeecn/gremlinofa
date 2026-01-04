@@ -52,7 +52,6 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     { id: APIType.RESPONSES_API, name: 'OpenAI Responses', icon: '🔮' },
     { id: APIType.CHATGPT, name: 'ChatGPT', icon: '🤖' },
     { id: APIType.ANTHROPIC, name: 'Anthropic', icon: '🧠' },
-    { id: APIType.AMAZON_BEDROCK, name: 'Amazon Bedrock', icon: '☁️' },
     { id: APIType.WEBLLM, name: 'WebLLM (Local)', icon: '🧊' },
   ];
 

@@ -62,7 +62,7 @@ describe('UnifiedStorage', () => {
     it('should create default API definitions', async () => {
       await storage.initialize();
 
-      // Should save 3 default definitions (ChatGPT, Anthropic, Bedrock)
+      // Should save 4 default definitions (Responses, ChatGPT, Anthropic, WebLLM)
       const saveCalls = adapter.save.mock.calls.filter(
         ([table]: any) => table === 'api_definitions'
       );

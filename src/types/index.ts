@@ -14,16 +14,27 @@ export type {
 export { categorizeBlock, groupAndConsolidateBlocks } from './content';
 import type { RenderingBlockGroup, MessageStopReason } from './content';
 
-// API Type - represents the protocol/client template (ChatGPT, Anthropic, Bedrock, WebLLM)
+import type Anthropic from '@anthropic-ai/sdk';
+import type { ChatCompletionTool } from 'openai/resources/index.mjs';
+import type OpenAI from 'openai';
+
+// API Type - represents the protocol/client template (ChatGPT, Anthropic, Responses API, WebLLM)
 export const APIType = {
   CHATGPT: 'chatgpt',
   ANTHROPIC: 'anthropic',
-  AMAZON_BEDROCK: 'amazon_bedrock',
   RESPONSES_API: 'responses_api',
   WEBLLM: 'webllm',
 } as const;
 
 export type APIType = (typeof APIType)[keyof typeof APIType];
+
+/** Type-safe tool definition overrides for each API type */
+export interface APIToolOverrides {
+  [APIType.ANTHROPIC]?: Anthropic.Beta.BetaToolUnion;
+  [APIType.CHATGPT]?: ChatCompletionTool;
+  [APIType.RESPONSES_API]?: OpenAI.Responses.Tool;
+  [APIType.WEBLLM]?: void;
+}
 
 // For backward compatibility during transition
 export const APIProvider = APIType;
@@ -229,7 +240,7 @@ export interface ClientSideTool {
   };
   execute(input: Record<string, unknown>): Promise<ToolResult>;
   /** API-specific definition overrides (e.g., Anthropic's memory_20250818 shorthand) */
-  apiOverrides?: Partial<Record<APIType, Record<string, unknown>>>;
+  apiOverrides?: Partial<APIToolOverrides>;
   /** Tools with alwaysEnabled: true are included regardless of enabledTools list */
   alwaysEnabled?: boolean;
 }

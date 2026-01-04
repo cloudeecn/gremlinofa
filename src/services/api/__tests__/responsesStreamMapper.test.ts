@@ -1,3 +1,4 @@
+import type OpenAI from 'openai';
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -66,7 +67,14 @@ data: {"valid":true}
 
   describe('parseResponsesStreamEvent', () => {
     it('extracts type from chunk data', () => {
-      const chunk = { type: 'response.output_text.delta', delta: 'Hello' };
+      // Partial mock - cast through unknown since SDK type requires additional fields
+      const chunk = {
+        type: 'response.output_text.delta' as const,
+        delta: 'Hello',
+        item_id: '123',
+        output_index: 0,
+        sequence_number: 0,
+      } as OpenAI.Responses.ResponseStreamEvent;
       const event = parseResponsesStreamEvent(chunk);
       expect(event.type).toBe('response.output_text.delta');
       expect(event.data).toBe(chunk);
@@ -440,18 +448,19 @@ data: {"valid":true}
     });
 
     it('converts web_search_call output to web_search chunks', () => {
+      // Test mock with action property - cast through unknown since SDK type doesn't expose action
       const output = [
         {
           type: 'web_search_call' as const,
           id: 'ws_1',
-          status: 'completed',
+          status: 'completed' as const,
           action: {
             type: 'search' as const,
             query: 'weather today',
             sources: [{ url: 'https://example.com', title: 'Example' }],
           },
         },
-      ];
+      ] as unknown as OpenAI.Responses.ResponseOutputItem[];
       const chunks = convertOutputToStreamChunks(output);
 
       expect(chunks).toContainEqual({ type: 'web_search.start', id: 'ws_1' });
@@ -465,14 +474,16 @@ data: {"valid":true}
     });
 
     it('converts message output to content chunks', () => {
+      // Test mock - cast through unknown since SDK type requires additional fields
       const output = [
         {
           type: 'message' as const,
           id: 'msg_1',
-          role: 'assistant',
+          role: 'assistant' as const,
+          status: 'completed' as const,
           content: [{ type: 'output_text' as const, text: 'Hello world' }],
         },
-      ];
+      ] as unknown as OpenAI.Responses.ResponseOutputItem[];
       const chunks = convertOutputToStreamChunks(output);
 
       expect(chunks).toContainEqual({ type: 'content.start' });
@@ -521,14 +532,16 @@ data: {"valid":true}
     });
 
     it('skips non-assistant messages', () => {
+      // Test mock - cast through unknown since SDK type requires additional fields
       const output = [
         {
           type: 'message' as const,
           id: 'msg_1',
-          role: 'user',
+          role: 'user' as const,
+          status: 'completed' as const,
           content: [{ type: 'output_text' as const, text: 'User message' }],
         },
-      ];
+      ] as unknown as OpenAI.Responses.ResponseOutputItem[];
       const chunks = convertOutputToStreamChunks(output);
 
       // Should not have content chunks for user messages

@@ -149,7 +149,7 @@ export class ResponsesClient implements APIClient {
   }
 
   async *sendMessageStream(
-    messages: Message<unknown>[],
+    messages: Message<OpenAI.Responses.ResponseInputItem[]>[],
     modelId: string,
     apiDefinition: APIDefinition,
     options: {
@@ -162,7 +162,7 @@ export class ResponsesClient implements APIClient {
       webSearchEnabled?: boolean;
       enabledTools?: string[];
     }
-  ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
+  ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.Responses.ResponseInputItem[]>, unknown> {
     let requestParams: OpenAI.Responses.ResponseCreateParams = {};
     try {
       // Create OpenAI client with API key and custom baseUrl if provided
@@ -192,8 +192,13 @@ export class ResponsesClient implements APIClient {
       messages.forEach(msg => {
         if (msg.role === MessageRole.USER) {
           // Check if this is a tool result message (fullContent has function_call_output items)
-          if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
-            const fullContentArr = msg.content.fullContent as Array<Record<string, unknown>>;
+          if (
+            msg.content.modelFamily === APIType.RESPONSES_API &&
+            msg.content.fullContent &&
+            Array.isArray(msg.content.fullContent)
+          ) {
+            // Cast through unknown since stored data loses SDK type info
+            const fullContentArr = msg.content.fullContent;
             const hasFunctionCallOutput = fullContentArr.some(
               item => item.type === 'function_call_output'
             );
@@ -201,7 +206,7 @@ export class ResponsesClient implements APIClient {
               // Add function_call_output items directly
               for (const item of fullContentArr) {
                 if (item.type === 'function_call_output') {
-                  input.push(item as unknown as OpenAI.Responses.ResponseInputItem);
+                  input.push(item);
                 }
               }
               return; // Skip normal user message processing
@@ -234,13 +239,19 @@ export class ResponsesClient implements APIClient {
             content: contentItems,
           });
         } else if (msg.role === MessageRole.ASSISTANT) {
-          if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
+          if (
+            msg.content.modelFamily === APIType.RESPONSES_API &&
+            msg.content.fullContent &&
+            Array.isArray(msg.content.fullContent)
+          ) {
             // Include message and function_call items (not just messages)
             // Clean items to strip output-only fields (handles old stored messages)
-            for (const m of (msg.content.fullContent as Array<Record<string, unknown>>).filter(
+            // Cast through unknown since stored data loses SDK type info
+            const storedItems = msg.content.fullContent as OpenAI.Responses.ResponseOutputItem[];
+            for (const m of storedItems.filter(
               m => m.type === 'message' || m.type === 'function_call'
             )) {
-              input.push(this.cleanStoredItem(m) as unknown as OpenAI.Responses.ResponseInputItem);
+              input.push(m);
             }
           } else {
             input.push({
@@ -306,7 +317,8 @@ export class ResponsesClient implements APIClient {
 
         for await (const event of stream) {
           // Convert SDK event to SSE event format for mapper
-          const sseEvent = parseResponsesStreamEvent(event as unknown as Record<string, unknown>);
+          // ResponseStreamEvent is a union type - cast through unknown to access generic properties
+          const sseEvent = parseResponsesStreamEvent(event);
           const result = mapResponsesEventToStreamChunks(sseEvent, mapperState);
           mapperState = result.state;
 
@@ -328,9 +340,7 @@ export class ResponsesClient implements APIClient {
         });
 
         // Yield chunks for non-streaming response
-        const chunks = convertOutputToStreamChunks(
-          response.output as unknown as Parameters<typeof convertOutputToStreamChunks>[0]
-        );
+        const chunks = convertOutputToStreamChunks(response.output);
         for (const chunk of chunks) {
           yield chunk;
         }
@@ -410,10 +420,10 @@ export class ResponsesClient implements APIClient {
    */
   private processResponse(
     response: OpenAI.Responses.Response
-  ): StreamResult<OpenAI.Responses.ResponseInputItem[]> {
+  ): StreamResult<OpenAI.Responses.ResponseOutputItem[]> {
     // Extract text content from output
     let textContent = response.output_text;
-    const fullContent = response.output.filter(input => input !== undefined);
+    const fullContent = response.output.filter(output => output !== undefined);
     let thinkingContent = '';
     let thinkingSummary = '';
     let hasFunctionCall = false;
@@ -513,7 +523,7 @@ export class ResponsesClient implements APIClient {
     // OpenAI reasoning models
     if (modelId.startsWith('o')) {
       // o-series are reasoning only
-      requestParams.reasoning = { effort, summary: 'auto' };
+      requestParams.reasoning = { effort };
       requestParams.include = ['reasoning.encrypted_content'];
       return;
     }
@@ -521,7 +531,6 @@ export class ResponsesClient implements APIClient {
       // gpt-5 is reasoning only, but can use reasoning_effort minimal to minimize reasoning
       requestParams.reasoning = {
         effort: options.enableReasoning ? effort : 'none',
-        summary: 'auto',
       };
       requestParams.include = ['reasoning.encrypted_content'];
       return;
@@ -530,7 +539,6 @@ export class ResponsesClient implements APIClient {
       // gpt-5 is reasoning only, but can use reasoning_effort minimal to minimize reasoning
       requestParams.reasoning = {
         effort: options.enableReasoning ? effort : 'minimal',
-        summary: 'auto',
       };
       requestParams.include = ['reasoning.encrypted_content'];
       return;
@@ -593,32 +601,6 @@ export class ResponsesClient implements APIClient {
 
   isReasoningModel(modelId: string): boolean {
     return isReasoningModel(modelId);
-  }
-
-  /**
-   * Clean stored items when loading from storage.
-   * Uses blacklist approach - spread original and only delete known problematic fields.
-   */
-  private cleanStoredItem(item: Record<string, unknown>): Record<string, unknown> {
-    if (item.type === 'message' && Array.isArray(item.content)) {
-      return {
-        ...item,
-        content: (item.content as Array<Record<string, unknown>>).map(part => {
-          if (part.type === 'output_text') {
-            const cleaned = { ...part };
-            delete cleaned.parsed;
-            return cleaned;
-          }
-          return part;
-        }),
-      };
-    } else if (item.type === 'function_call') {
-      {
-        const { parsed_arguments: _parsed_arguments, ...cleaned } = item;
-        return cleaned;
-      }
-    }
-    return item;
   }
 
   migrateMessageRendering(
@@ -801,33 +783,36 @@ export class ResponsesClient implements APIClient {
     assistantContent: unknown,
     toolResults: ToolResultBlock[],
     textContent: string
-  ): Message<unknown>[] {
-    // Assistant message with the original fullContent
-    const assistantMessage: Message<unknown> = {
+  ): Message<OpenAI.Responses.ResponseInputItem[]>[] {
+    // Assistant message with the original fullContent (ResponseOutputItem[] which is subset of ResponseInputItem[])
+    const assistantMessage: Message<OpenAI.Responses.ResponseInputItem[]> = {
       id: generateUniqueId('msg_assistant'),
       role: MessageRole.ASSISTANT,
       content: {
         type: 'text',
         content: textContent,
         modelFamily: APIType.RESPONSES_API,
-        fullContent: assistantContent,
+        fullContent: assistantContent as OpenAI.Responses.ResponseInputItem[],
       },
       timestamp: new Date(),
     };
 
-    // Store tool results in our internal format
-    const toolResultMessage: Message<unknown> = {
+    // Store tool results as FunctionCallOutput items
+    const functionCallOutputs: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] =
+      toolResults.map(tr => ({
+        type: 'function_call_output' as const,
+        call_id: tr.tool_use_id,
+        output: tr.content,
+      }));
+
+    const toolResultMessage: Message<OpenAI.Responses.ResponseInputItem[]> = {
       id: generateUniqueId('msg_user'),
       role: MessageRole.USER,
       content: {
         type: 'text',
         content: '',
         modelFamily: APIType.RESPONSES_API,
-        fullContent: toolResults.map(tr => ({
-          type: 'function_call_output',
-          call_id: tr.tool_use_id,
-          output: tr.content,
-        })),
+        fullContent: functionCallOutputs,
       },
       timestamp: new Date(),
     };
@@ -839,7 +824,6 @@ export class ResponsesClient implements APIClient {
    * Get client-side tool definitions for Responses API format.
    */
   protected getClientSideTools(enabledTools: string[]): OpenAI.Responses.Tool[] {
-    const toolDefs = toolRegistry.getToolDefinitionsForAPI(APIType.RESPONSES_API, enabledTools);
-    return toolDefs as unknown as OpenAI.Responses.Tool[];
+    return toolRegistry.getToolDefinitionsForAPI(APIType.RESPONSES_API, enabledTools);
   }
 }

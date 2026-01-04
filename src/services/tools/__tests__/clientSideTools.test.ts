@@ -141,25 +141,25 @@ describe('clientSideTools', () => {
 
     it('should always include alwaysEnabled tools (ping)', () => {
       const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, []);
-      const pingDef = defs.find(d => d.name === 'ping');
+      const pingDef = defs.find(d => (d as { name?: string }).name === 'ping');
       expect(pingDef).toBeDefined();
     });
 
     it('should include explicitly enabled tools', () => {
       const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, ['test_api_tool']);
-      const testDef = defs.find(d => d.name === 'test_api_tool');
+      const testDef = defs.find(d => (d as { name?: string }).name === 'test_api_tool');
       expect(testDef).toBeDefined();
     });
 
     it('should NOT include non-enabled, non-alwaysEnabled tools', () => {
       const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, []);
-      const testDef = defs.find(d => d.name === 'test_api_tool');
+      const testDef = defs.find(d => (d as { name?: string }).name === 'test_api_tool');
       expect(testDef).toBeUndefined();
     });
 
     it('should generate Anthropic format correctly', () => {
       const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, ['test_api_tool']);
-      const testDef = defs.find(d => d.name === 'test_api_tool');
+      const testDef = defs.find(d => (d as { name?: string }).name === 'test_api_tool');
 
       expect(testDef).toEqual({
         name: 'test_api_tool',
@@ -206,6 +206,7 @@ describe('clientSideTools', () => {
           properties: { input: { type: 'string' } },
           required: ['input'],
         },
+        strict: false,
       });
     });
 
@@ -217,19 +218,21 @@ describe('clientSideTools', () => {
         execute: async (): Promise<ToolResult> => ({ content: 'ok' }),
         apiOverrides: {
           [APIType.ANTHROPIC]: {
-            type: 'custom_type_123',
             name: 'tool_with_override',
+            description: 'Custom override description',
+            input_schema: { type: 'object' as const, properties: {}, required: [] as string[] },
           },
         },
       };
       toolRegistry.register(toolWithOverride);
 
       const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, ['tool_with_override']);
-      const overrideDef = defs.find(d => d.name === 'tool_with_override');
+      const overrideDef = defs.find(d => (d as { name?: string }).name === 'tool_with_override');
 
       expect(overrideDef).toEqual({
-        type: 'custom_type_123',
         name: 'tool_with_override',
+        description: 'Custom override description',
+        input_schema: { type: 'object', properties: {}, required: [] },
       });
     });
 
@@ -241,14 +244,15 @@ describe('clientSideTools', () => {
         execute: async (): Promise<ToolResult> => ({ content: 'ok' }),
         apiOverrides: {
           [APIType.ANTHROPIC]: {
-            type: 'anthropic_shorthand',
             name: 'tool_with_override',
+            description: 'Anthropic-specific description',
+            input_schema: { type: 'object' as const, properties: {}, required: [] as string[] },
           },
         },
       };
       toolRegistry.register(toolWithPartialOverride);
 
-      // Request OpenAI format - should use standard generation
+      // Request OpenAI format - should use standard generation (no ChatGPT override defined)
       const defs = toolRegistry.getToolDefinitionsForAPI(APIType.CHATGPT, ['tool_with_override']);
       const toolDef = defs.find(
         d => (d as { function?: { name: string } }).function?.name === 'tool_with_override'

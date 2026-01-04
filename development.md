@@ -125,7 +125,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 ### API Definitions
 
-- Multiple API definitions per provider type (APIType: RESPONSES_API, CHATGPT, ANTHROPIC, AMAZON_BEDROCK, WEBLLM)
+- Multiple API definitions per provider type (APIType: RESPONSES_API, CHATGPT, ANTHROPIC, WEBLLM)
 - Each definition: name, baseUrl (optional), apiKey (not required for WEBLLM)
 - Default definitions auto-created; model lists cached per definition
 
@@ -254,7 +254,7 @@ public/             # Static assets and PWA icons
 
 **API Types:**
 
-- `APIType` = protocol/client template (ChatGPT, Anthropic, Bedrock)
+- `APIType` = protocol/client template (ChatGPT, Anthropic, WebLLM)
 - `APIDefinition` = configured instance (e.g., "xAI", "OpenRouter")
 
 **API Clients:**
@@ -289,7 +289,7 @@ public/             # Static assets and PWA icons
 - Tool definitions sent to API via `getToolDefinitionsForAPI(apiType, enabledToolNames)`
 - `ClientSideTool` interface supports:
   - `alwaysEnabled: true` - Tool included regardless of enabledToolNames (e.g., `ping`)
-  - `apiOverrides: { [APIType]: {...} }` - API-specific definition overrides (e.g., Anthropic's `memory_20250818` shorthand)
+  - `apiOverrides: Partial<APIToolOverrides>` - Type-safe API-specific definition overrides using SDK types (`BetaToolUnion` for Anthropic, `ChatCompletionTool` for OpenAI, `Tool` for Responses API)
 - API-specific format generation:
   - **Anthropic**: `{ name, description, input_schema }` or custom override
   - **OpenAI/Responses**: `{ type: 'function', function: { name, description, parameters } }`

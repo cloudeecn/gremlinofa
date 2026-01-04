@@ -27,7 +27,6 @@ class APIService {
     this.clients.set(APIType.ANTHROPIC, new AnthropicClient());
     this.clients.set(APIType.CHATGPT, new OpenAIClient());
     this.clients.set(APIType.WEBLLM, new WebLLMClient());
-    // Bedrock client will be added later
   }
 
   // Get the appropriate client for an API type

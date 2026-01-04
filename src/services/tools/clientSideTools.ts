@@ -1,3 +1,6 @@
+import type Anthropic from '@anthropic-ai/sdk';
+import type { ChatCompletionTool } from 'openai/resources/index.mjs';
+import type OpenAI from 'openai';
 import { APIType, type ClientSideTool, type ToolResult } from '../../types';
 
 /**
@@ -49,79 +52,95 @@ class ClientSideToolRegistry {
   }
 
   /**
+   * Get tools that should be included based on enabledToolNames.
+   * Includes alwaysEnabled tools + explicitly enabled tools.
+   */
+  private getEnabledTools(enabledToolNames: string[]): ClientSideTool[] {
+    const enabledSet = new Set(enabledToolNames);
+    return this.getAll().filter(tool => tool.alwaysEnabled || enabledSet.has(tool.name));
+  }
+
+  /**
    * Get tool definitions for a specific API type.
    * Includes alwaysEnabled tools + explicitly enabled tools.
    * Returns API-specific format (uses apiOverrides when available).
    */
   getToolDefinitionsForAPI(
+    apiType: typeof APIType.ANTHROPIC,
+    enabledToolNames: string[]
+  ): Anthropic.Beta.BetaToolUnion[];
+  getToolDefinitionsForAPI(
+    apiType: typeof APIType.CHATGPT,
+    enabledToolNames: string[]
+  ): ChatCompletionTool[];
+  getToolDefinitionsForAPI(
+    apiType: typeof APIType.RESPONSES_API,
+    enabledToolNames: string[]
+  ): OpenAI.Responses.Tool[];
+  getToolDefinitionsForAPI(
+    apiType: typeof APIType.WEBLLM,
+    enabledToolNames: string[]
+  ): Anthropic.Beta.BetaToolUnion[];
+  getToolDefinitionsForAPI(
     apiType: APIType,
     enabledToolNames: string[]
-  ): Array<Record<string, unknown>> {
-    const enabledSet = new Set(enabledToolNames);
-    const definitions: Array<Record<string, unknown>> = [];
+  ): Anthropic.Beta.BetaToolUnion[] | ChatCompletionTool[] | OpenAI.Responses.Tool[] {
+    const tools = this.getEnabledTools(enabledToolNames);
 
-    for (const tool of this.tools.values()) {
-      // Skip if not always enabled and not in enabled list
-      if (!tool.alwaysEnabled && !enabledSet.has(tool.name)) {
-        continue;
-      }
-
-      // Use override if available for this API type
-      const override = tool.apiOverrides?.[apiType];
-      if (override) {
-        definitions.push(override);
-        continue;
-      }
-
-      // Generate standard format based on API type
-      definitions.push(this.generateStandardDefinition(apiType, tool));
-    }
-
-    return definitions;
-  }
-
-  /**
-   * Generate standard tool definition for an API type (no override).
-   */
-  private generateStandardDefinition(
-    apiType: APIType,
-    tool: ClientSideTool
-  ): Record<string, unknown> {
     switch (apiType) {
-      case APIType.ANTHROPIC:
-        return {
-          name: tool.name,
-          description: tool.description,
-          input_schema: tool.inputSchema,
+      case APIType.ANTHROPIC: {
+        const mapper = (tool: ClientSideTool): Anthropic.Beta.BetaToolUnion => {
+          const override = tool.apiOverrides?.[APIType.ANTHROPIC];
+          if (override) return override;
+          return {
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.inputSchema,
+          };
         };
+        return tools.map(mapper);
+      }
 
-      case APIType.CHATGPT:
-        return {
-          type: 'function',
-          function: {
+      case APIType.CHATGPT: {
+        const mapper = (tool: ClientSideTool): ChatCompletionTool => {
+          const override = tool.apiOverrides?.[APIType.CHATGPT];
+          if (override) return override;
+          return {
+            type: 'function',
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.inputSchema,
+            },
+          };
+        };
+        return tools.map(mapper);
+      }
+
+      case APIType.RESPONSES_API: {
+        const mapper = (tool: ClientSideTool): OpenAI.Responses.Tool => {
+          const override = tool.apiOverrides?.[APIType.RESPONSES_API];
+          if (override) return override;
+          // Responses API uses flat structure (no nested "function" object)
+          return {
+            type: 'function',
             name: tool.name,
             description: tool.description,
             parameters: tool.inputSchema,
-          },
+            strict: false,
+          };
         };
+        return tools.map(mapper);
+      }
 
-      case APIType.RESPONSES_API:
-        // Responses API uses flat structure (no nested "function" object)
-        return {
-          type: 'function',
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.inputSchema,
-        };
-
-      // WebLLM and Bedrock don't support tools yet - use Anthropic format as fallback
-      case APIType.AMAZON_BEDROCK:
-      case APIType.WEBLLM:
-        return {
+      case APIType.WEBLLM: {
+        // WebLLM doesn't support tools yet - use Anthropic format as fallback
+        return tools.map(tool => ({
           name: tool.name,
           description: tool.description,
           input_schema: tool.inputSchema,
-        };
+        }));
+      }
     }
   }
 }

@@ -235,7 +235,7 @@ export class AnthropicClient implements APIClient {
         APIType.ANTHROPIC,
         options.enabledTools || []
       );
-      tools.push(...(clientToolDefs as unknown as Anthropic.Beta.BetaToolUnion[]));
+      tools.push(...clientToolDefs);
 
       // Prepare thinking configuration if reasoning is enabled
       const thinkingConfig = options.enableReasoning

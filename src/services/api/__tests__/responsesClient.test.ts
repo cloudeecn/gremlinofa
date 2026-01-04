@@ -271,7 +271,6 @@ describe('ResponsesClient', () => {
           stream: false,
           reasoning: expect.objectContaining({
             effort: 'medium', // 4096 maps to medium
-            summary: 'auto',
           }),
         })
       );

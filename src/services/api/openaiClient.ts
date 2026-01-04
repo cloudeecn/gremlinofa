@@ -174,6 +174,7 @@ export class OpenAIClient implements APIClient {
         model: modelId,
         max_completion_tokens: options.maxTokens,
         messages: openaiMessages,
+        store: false,
       };
 
       if (options.webSearchEnabled) {
@@ -659,7 +660,6 @@ export class OpenAIClient implements APIClient {
    * Get client-side tool definitions for OpenAI format.
    */
   protected getClientSideTools(enabledTools: string[]): ChatCompletionTool[] {
-    const toolDefs = toolRegistry.getToolDefinitionsForAPI(APIType.CHATGPT, enabledTools);
-    return toolDefs as unknown as ChatCompletionTool[];
+    return toolRegistry.getToolDefinitionsForAPI(APIType.CHATGPT, enabledTools);
   }
 }

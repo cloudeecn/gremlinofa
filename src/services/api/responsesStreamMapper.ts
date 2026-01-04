@@ -5,6 +5,7 @@
  * Handles both streaming events and non-streaming output conversion.
  */
 
+import type OpenAI from 'openai';
 import type { StreamChunk } from './baseClient';
 
 /**
@@ -80,10 +81,12 @@ export function parseResponsesSSEText(text: string): ResponsesSSEEvent[] {
  * Parse a single SSE event from stream data.
  * Used when processing raw stream chunks that contain type embedded in data.
  */
-export function parseResponsesStreamEvent(chunk: Record<string, unknown>): ResponsesSSEEvent {
+export function parseResponsesStreamEvent(
+  chunk: OpenAI.Responses.ResponseStreamEvent
+): ResponsesSSEEvent {
   return {
     type: chunk.type as string,
-    data: chunk,
+    data: chunk as unknown as Record<string, unknown>,
   };
 }
 
@@ -307,80 +310,23 @@ export function mapResponsesEventToStreamChunks(
 // ============================================================================
 
 /**
- * Output item types from Responses API response.output[]
- */
-interface ReasoningSummaryText {
-  type: 'summary_text';
-  text: string;
-}
-
-interface ReasoningOutputItem {
-  type: 'reasoning';
-  id: string;
-  summary: ReasoningSummaryText[];
-  status?: string;
-  encrypted_content?: string;
-}
-
-interface WebSearchAction {
-  type: 'search' | 'open_page';
-  query?: string;
-  url?: string;
-  sources?: Array<{ url: string; title?: string }>;
-}
-
-interface WebSearchCallOutputItem {
-  type: 'web_search_call';
-  id: string;
-  status: string;
-  action: WebSearchAction;
-}
-
-interface FunctionCallOutputItem {
-  type: 'function_call';
-  id: string;
-  call_id: string;
-  name: string;
-  arguments: string;
-  status?: string;
-}
-
-interface MessageContentPart {
-  type: 'output_text' | 'refusal';
-  text?: string;
-  refusal?: string;
-}
-
-interface MessageOutputItem {
-  type: 'message';
-  id: string;
-  role: string;
-  content: MessageContentPart[];
-  status?: string;
-}
-
-type ResponseOutputItem =
-  | ReasoningOutputItem
-  | WebSearchCallOutputItem
-  | FunctionCallOutputItem
-  | MessageOutputItem
-  | Record<string, unknown>;
-
-/**
  * Convert non-streaming response output to StreamChunks.
  * This allows the same StreamingContentAssembler to handle both paths.
+ *
+ * Uses SDK's ResponseOutputItem[] type directly.
  */
-export function convertOutputToStreamChunks(output: ResponseOutputItem[]): StreamChunk[] {
+export function convertOutputToStreamChunks(
+  output: OpenAI.Responses.ResponseOutputItem[]
+): StreamChunk[] {
   const chunks: StreamChunk[] = [];
 
   for (const item of output) {
     switch (item.type) {
       case 'reasoning': {
-        const reasoning = item as ReasoningOutputItem;
         chunks.push({ type: 'thinking.start' });
 
         // Extract text from summary array
-        for (const summaryPart of reasoning.summary) {
+        for (const summaryPart of item.summary) {
           if (summaryPart.type === 'summary_text' && summaryPart.text) {
             chunks.push({ type: 'thinking', content: summaryPart.text });
           }
@@ -391,68 +337,76 @@ export function convertOutputToStreamChunks(output: ResponseOutputItem[]): Strea
       }
 
       case 'web_search_call': {
-        const webSearch = item as WebSearchCallOutputItem;
-        const action = webSearch.action;
+        // SDK's ResponseFunctionWebSearch type doesn't expose 'action' property,
+        // but the runtime response includes it. Cast to access the actual structure.
+        const webSearchItem = item as unknown as {
+          id: string;
+          action?: {
+            type: string;
+            query?: string;
+            url?: string;
+            sources?: Array<{ url: string; title?: string }>;
+          };
+        };
+        const action = webSearchItem.action;
 
         // Emit web_search.start first
-        chunks.push({ type: 'web_search.start', id: webSearch.id });
+        chunks.push({ type: 'web_search.start', id: webSearchItem.id });
 
-        if (action.type === 'search' && action.query) {
-          chunks.push({
-            type: 'web_search',
-            id: webSearch.id,
-            query: action.query,
-          });
-        } else if (action.type === 'open_page' && action.url) {
-          // Emit as web_search with URL info
-          chunks.push({
-            type: 'web_search',
-            id: webSearch.id,
-            query: `Opening: ${action.url}`,
-          });
-        }
-
-        // Emit sources as results if available
-        if (action.sources && action.sources.length > 0) {
-          for (const source of action.sources) {
+        if (action) {
+          if (action.type === 'search' && action.query) {
             chunks.push({
-              type: 'web_search.result',
-              tool_use_id: webSearch.id,
-              url: source.url,
-              title: source.title,
+              type: 'web_search',
+              id: webSearchItem.id,
+              query: action.query,
             });
+          } else if (action.type === 'open_page' && action.url) {
+            // Emit as web_search with URL info
+            chunks.push({
+              type: 'web_search',
+              id: webSearchItem.id,
+              query: `Opening: ${action.url}`,
+            });
+          }
+
+          // Emit sources as results if available
+          if (action.type === 'search' && action.sources && action.sources.length > 0) {
+            for (const source of action.sources) {
+              chunks.push({
+                type: 'web_search.result',
+                tool_use_id: webSearchItem.id,
+                url: source.url,
+                title: source.title,
+              });
+            }
           }
         }
         break;
       }
 
       case 'function_call': {
-        const funcCall = item as FunctionCallOutputItem;
         let input: Record<string, unknown> = {};
         try {
-          input = funcCall.arguments
-            ? (JSON.parse(funcCall.arguments) as Record<string, unknown>)
-            : {};
+          input = item.arguments ? (JSON.parse(item.arguments) as Record<string, unknown>) : {};
         } catch {
           // Keep empty input on parse failure
         }
 
         chunks.push({
           type: 'tool_use',
-          id: funcCall.call_id,
-          name: funcCall.name,
+          id: item.call_id,
+          name: item.name,
           input,
         });
         break;
       }
 
       case 'message': {
-        const message = item as MessageOutputItem;
-        if (message.role !== 'assistant') continue;
+        if (item.role !== 'assistant') continue;
 
         // Extract text content
         let hasContent = false;
-        for (const part of message.content) {
+        for (const part of item.content) {
           if (part.type === 'output_text' && part.text) {
             if (!hasContent) {
               chunks.push({ type: 'content.start' });
@@ -474,8 +428,22 @@ export function convertOutputToStreamChunks(output: ResponseOutputItem[]): Strea
         break;
       }
 
-      default:
-        // Skip unknown item types
+      // Explicitly skip unhandled SDK types
+      case 'file_search_call':
+      case 'computer_call':
+      case 'compaction':
+      case 'image_generation_call':
+      case 'code_interpreter_call':
+      case 'local_shell_call':
+      case 'shell_call':
+      case 'shell_call_output':
+      case 'apply_patch_call':
+      case 'apply_patch_call_output':
+      case 'mcp_call':
+      case 'mcp_list_tools':
+      case 'mcp_approval_request':
+      case 'custom_tool_call':
+        // Not implemented - skip these tool types
         break;
     }
   }

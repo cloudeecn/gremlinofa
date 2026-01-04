@@ -61,6 +61,22 @@ class ClientSideToolRegistry {
   }
 
   /**
+   * Get system prompts from enabled tools that don't use apiOverrides for the given API type.
+   * Returns array of non-empty system prompts to be appended to the project's system prompt.
+   */
+  getSystemPrompts(apiType: APIType, enabledToolNames: string[]): string[] {
+    return this.getEnabledTools(enabledToolNames)
+      .filter(tool => {
+        // Skip if tool uses an apiOverrides for this API type
+        if (tool.apiOverrides?.[apiType]) return false;
+        // Skip if no systemPrompt defined
+        if (!tool.systemPrompt) return false;
+        return true;
+      })
+      .map(tool => tool.systemPrompt!);
+  }
+
+  /**
    * Get tool definitions for a specific API type.
    * Includes alwaysEnabled tools + explicitly enabled tools.
    * Returns API-specific format (uses apiOverrides when available).

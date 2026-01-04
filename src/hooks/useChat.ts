@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
 import { StreamingContentAssembler } from '../services/streaming/StreamingContentAssembler';
-import { executeClientSideTool } from '../services/tools/clientSideTools';
+import { executeClientSideTool, toolRegistry } from '../services/tools/clientSideTools';
 import { initMemoryTool, disposeMemoryTool } from '../services/tools/memoryTool';
 import type {
   APIDefinition,
@@ -504,6 +504,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       }
       // Note: ping tool is alwaysEnabled, no need to add explicitly
 
+      // Build combined system prompt: project prompt + tool prompts (if not using apiOverrides)
+      const toolSystemPrompts = toolRegistry.getSystemPrompts(currentApiDef.apiType, enabledTools);
+      const combinedSystemPrompt = [currentProject.systemPrompt, ...toolSystemPrompts]
+        .filter(Boolean)
+        .join('\n\n');
+
       console.debug('[useChat] Starting API stream');
       const stream = apiService.sendMessageStream(
         messagesWithAttachments,
@@ -514,7 +520,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           maxTokens: currentProject.maxOutputTokens,
           enableReasoning: currentProject.enableReasoning,
           reasoningBudgetTokens: currentProject.reasoningBudgetTokens,
-          systemPrompt: currentProject.systemPrompt,
+          systemPrompt: combinedSystemPrompt || undefined,
           preFillResponse: currentProject.preFillResponse,
           webSearchEnabled: currentProject.webSearchEnabled,
           enabledTools,
@@ -667,7 +673,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
             maxTokens: currentProject.maxOutputTokens,
             enableReasoning: currentProject.enableReasoning,
             reasoningBudgetTokens: currentProject.reasoningBudgetTokens,
-            systemPrompt: currentProject.systemPrompt,
+            systemPrompt: combinedSystemPrompt || undefined,
             preFillResponse: undefined, // No prefill for continuation
             webSearchEnabled: currentProject.webSearchEnabled,
             enabledTools,

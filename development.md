@@ -290,6 +290,10 @@ public/             # Static assets and PWA icons
 - `ClientSideTool` interface supports:
   - `alwaysEnabled: true` - Tool included regardless of enabledToolNames (e.g., `ping`)
   - `apiOverrides: Partial<APIToolOverrides>` - Type-safe API-specific definition overrides using SDK types (`BetaToolUnion` for Anthropic, `ChatCompletionTool` for OpenAI, `Tool` for Responses API)
+  - `systemPrompt?: string` - Injected after project's system prompt when tool is enabled; skipped if tool uses `apiOverrides` for the current API type (provider handles its own system prompt injection)
+- System prompt construction in `useChat.ts`:
+  - `toolRegistry.getSystemPrompts(apiType, enabledTools)` returns prompts from enabled tools
+  - Combined: `[project.systemPrompt, ...toolPrompts].filter(Boolean).join('\n\n')`
 - API-specific format generation:
   - **Anthropic**: `{ name, description, input_schema }` or custom override
   - **OpenAI/Responses**: `{ type: 'function', function: { name, description, parameters } }`

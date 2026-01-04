@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import tailwindcss from '@tailwindcss/vite';
+import { nodePolyfills } from 'vite-plugin-node-polyfills';
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => {
@@ -31,6 +32,14 @@ export default defineConfig(({ command }) => {
     plugins: [
       react(),
       tailwindcss(),
+      nodePolyfills({
+        globals: {
+          Buffer: true,
+        },
+        overrides: {
+          fs: 'memfs',
+        },
+      }),
       VitePWA({
         includeAssets: ['favicon.ico'],
         workbox: {

@@ -607,6 +607,61 @@ rename:      "Successfully renamed {old_path} to {new_path}"
 - Invalid line (insert): `"Error: Invalid \`insert_line\` parameter: {n}. It should be within the range of lines of the file: [0, {max}]"`
 - Destination exists (rename): `"Error: The destination {path} already exists"`
 
+### JavaScript Execution Tool
+
+**Overview:**
+
+Client-side tool that executes JavaScript code in a secure QuickJS sandbox. Enables the AI to perform calculations, data transformations, and algorithm demonstrations.
+
+**Files:**
+
+- `src/services/tools/jsTool.ts` - Tool implementation
+
+**Dependencies:**
+
+- `@sebastianwessel/quickjs` - QuickJS wrapper with sandbox features
+- `@jitl/quickjs-singlefile-browser-release-sync` - Browser-compatible WASM variant
+
+**Input Parameters:**
+
+| Parameter    | Type   | Required | Description                                       |
+| ------------ | ------ | -------- | ------------------------------------------------- |
+| `code`       | string | Yes      | JavaScript code to execute                        |
+| `timeout_ms` | number | No       | Execution timeout in milliseconds (default: 5000) |
+
+**Output Format:**
+
+Console output with level prefixes, followed by result:
+
+```
+[LOG] hello world
+[WARN] careful there
+=== Result ===
+42
+```
+
+If no console output and result is undefined: `(no output)`
+
+**Security:**
+
+- Code runs in isolated QuickJS WebAssembly sandbox
+- No access to browser APIs (DOM, fetch, localStorage)
+- No network access
+- 5-second execution timeout (configurable)
+- 64MB memory limit
+
+**Instance Management:**
+
+- `initJsTool()` - Create singleton instance, register with toolRegistry
+- `disposeJsTool()` - Unregister from toolRegistry, clear instance
+- Stateless design - no per-project data, shared instance
+
+**Project Setting:**
+
+- `jsExecutionEnabled?: boolean` on `Project` type
+- Toggle in Project Settings UI
+- Tool initialized/disposed in `useChat.ts` based on setting
+
 ### OOBE (Out-of-Box Experience)
 
 **Flow:**

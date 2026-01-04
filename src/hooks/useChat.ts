@@ -4,6 +4,7 @@ import { storage } from '../services/storage';
 import { StreamingContentAssembler } from '../services/streaming/StreamingContentAssembler';
 import { executeClientSideTool, toolRegistry } from '../services/tools/clientSideTools';
 import { initMemoryTool, disposeMemoryTool } from '../services/tools/memoryTool';
+import { initJsTool, disposeJsTool } from '../services/tools/jsTool';
 import type {
   APIDefinition,
   Chat,
@@ -290,6 +291,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         if (isCancelled) return;
       }
 
+      // 3d. Initialize JavaScript tool if enabled
+      if (loadedProject.jsExecutionEnabled) {
+        console.debug('[useChat] Initializing JavaScript tool');
+        initJsTool();
+      }
+
       // 4. Load API definition
       let loadedApiDef: APIDefinition | null = null;
       const effectiveApiDefId = loadedChat.apiDefinitionId ?? loadedProject.apiDefinitionId;
@@ -373,6 +380,16 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       }
     };
   }, [project?.id, project?.memoryEnabled]);
+
+  // Cleanup JavaScript tool when project changes or unmounts
+  useEffect(() => {
+    return () => {
+      if (project?.jsExecutionEnabled) {
+        console.debug('[useChat] Disposing JavaScript tool');
+        disposeJsTool();
+      }
+    };
+  }, [project?.jsExecutionEnabled]);
 
   // Reload API definition when chat/project API definition changes
   useEffect(() => {
@@ -501,6 +518,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       const enabledTools: string[] = [];
       if (currentProject.memoryEnabled) {
         enabledTools.push('memory');
+      }
+      if (currentProject.jsExecutionEnabled) {
+        enabledTools.push('javascript');
       }
       // Note: ping tool is alwaysEnabled, no need to add explicitly
 

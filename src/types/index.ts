@@ -82,6 +82,8 @@ export interface Project {
   metadataIncludeCost?: boolean;
   // Memory tool
   memoryEnabled?: boolean;
+  // JavaScript execution tool
+  jsExecutionEnabled?: boolean;
 }
 
 // Chat pending state types

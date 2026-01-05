@@ -53,6 +53,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     project?.metadataIncludeCost || false
   );
   const [memoryEnabled, setMemoryEnabled] = useState(project?.memoryEnabled || false);
+  const [jsExecutionEnabled, setJsExecutionEnabled] = useState(
+    project?.jsExecutionEnabled || false
+  );
   const [projectHasMemory, setProjectHasMemory] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [temperature, setTemperature] = useState(project?.temperature?.toString() || '');
@@ -77,6 +80,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setMetadataIncludeContextWindow(project.metadataIncludeContextWindow || false);
       setMetadataIncludeCost(project.metadataIncludeCost || false);
       setMemoryEnabled(project.memoryEnabled || false);
+      setJsExecutionEnabled(project.jsExecutionEnabled || false);
       setTemperature(project.temperature?.toString() || '');
       setMaxOutputTokens(project.maxOutputTokens.toString() || '2048');
       setSelectedApiDefId(project.apiDefinitionId || null);
@@ -121,6 +125,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       sendMessageMetadata,
       metadataTimestampMode,
       memoryEnabled,
+      jsExecutionEnabled,
       metadataIncludeContextWindow,
       metadataIncludeCost,
       temperature: temperature === '' ? null : parseFloat(temperature),
@@ -364,6 +369,28 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
               )}
             </div>
           )}
+        </div>
+
+        {/* JavaScript Execution */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <label
+                htmlFor="jsExecutionEnabled"
+                className="cursor-pointer text-sm font-semibold text-gray-900"
+              >
+                Enable JavaScript Execution
+              </label>
+              <p className="text-xs text-gray-500">Execute JavaScript code in a secure sandbox</p>
+            </div>
+            <input
+              id="jsExecutionEnabled"
+              type="checkbox"
+              checked={jsExecutionEnabled}
+              onChange={e => setJsExecutionEnabled(e.target.checked)}
+              className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
         </div>
 
         {/* Send Message Metadata */}

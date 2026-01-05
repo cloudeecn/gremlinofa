@@ -291,6 +291,15 @@ public/             # Static assets and PWA icons
   - `alwaysEnabled: true` - Tool included regardless of enabledToolNames (e.g., `ping`)
   - `apiOverrides: Partial<APIToolOverrides>` - Type-safe API-specific definition overrides using SDK types (`BetaToolUnion` for Anthropic, `ChatCompletionTool` for OpenAI, `Tool` for Responses API)
   - `systemPrompt?: string` - Injected after project's system prompt when tool is enabled; skipped if tool uses `apiOverrides` for the current API type (provider handles its own system prompt injection)
+  - `renderInput?: (input) => string` - Transform tool input for display in BackstageView (default: JSON.stringify)
+  - `renderOutput?: (output, isError?) => string` - Transform tool output for display (default: raw content)
+  - `iconInput?: string` - Emoji/unicode icon for tool_use blocks (default: 🔧)
+  - `iconOutput?: string` - Emoji/unicode icon for tool_result blocks (default: ✅/❌)
+- **Persisted rendering**: Tool render functions are called at message save time, not render time:
+  - `ToolUseRenderBlock.renderedInput` and `ToolUseRenderBlock.icon` populated in `useChat` after `finalize()`
+  - `ToolResultRenderBlock.renderedContent` and `ToolResultRenderBlock.icon` populated when creating tool result blocks
+  - `BackstageView` uses persisted fields with fallback to defaults (backward compatible)
+  - Ensures tool blocks display correctly even if tool is later disabled
 - System prompt construction in `useChat.ts`:
   - `toolRegistry.getSystemPrompts(apiType, enabledTools)` returns prompts from enabled tools
   - Combined: `[project.systemPrompt, ...toolPrompts].filter(Boolean).join('\n\n')`

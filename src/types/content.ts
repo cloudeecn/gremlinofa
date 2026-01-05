@@ -71,6 +71,10 @@ export interface ToolUseRenderBlock {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /** Pre-rendered input for display (persisted at message save time) */
+  renderedInput?: string;
+  /** Icon for this tool invocation (persisted at message save time) */
+  icon?: string;
 }
 
 /** Tool result block - result from client-side tool execution */
@@ -79,6 +83,10 @@ export interface ToolResultRenderBlock {
   tool_use_id: string;
   content: string;
   is_error?: boolean;
+  /** Pre-rendered content for display (persisted at message save time) */
+  renderedContent?: string;
+  /** Icon for this tool result (persisted at message save time) */
+  icon?: string;
 }
 
 /** Error block */

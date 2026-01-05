@@ -15,7 +15,7 @@ import type {
   TokenUsage,
   ToolResultBlock,
 } from '../types';
-import type { ToolResultRenderBlock } from '../types/content';
+import type { ToolResultRenderBlock, ToolUseRenderBlock } from '../types/content';
 
 import { MessageRole } from '../types';
 import { generateUniqueId } from '../utils/idGenerator';
@@ -23,6 +23,52 @@ import { showAlert } from '../utils/alerts';
 
 // Maximum agentic loop iterations to prevent infinite loops
 const MAX_TOOL_ITERATIONS = 10;
+
+/**
+ * Post-process rendering content to populate rendered fields on tool blocks.
+ * This ensures the rendered content is persisted with the message, so it displays
+ * correctly even if the tool is later disabled.
+ */
+function populateToolRenderFields(groups: RenderingBlockGroup[]): void {
+  for (const group of groups) {
+    for (const block of group.blocks) {
+      if (block.type === 'tool_use') {
+        const toolUseBlock = block as ToolUseRenderBlock;
+        const tool = toolRegistry.get(toolUseBlock.name);
+        if (tool) {
+          const hasInput = Object.keys(toolUseBlock.input).length > 0;
+          toolUseBlock.icon = tool.iconInput ?? '🔧';
+          toolUseBlock.renderedInput = hasInput
+            ? (tool.renderInput?.(toolUseBlock.input) ??
+              JSON.stringify(toolUseBlock.input, null, 2))
+            : '';
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Create a tool_result render block with pre-rendered display fields.
+ */
+function createToolResultRenderBlock(
+  toolUseId: string,
+  toolName: string,
+  content: string,
+  isError?: boolean
+): ToolResultRenderBlock {
+  const tool = toolRegistry.get(toolName);
+  const defaultIcon = isError ? '❌' : '✅';
+
+  return {
+    type: 'tool_result',
+    tool_use_id: toolUseId,
+    content,
+    is_error: isError,
+    icon: tool?.iconOutput ?? defaultIcon,
+    renderedContent: tool?.renderOutput?.(content, isError) ?? content,
+  };
+}
 
 /**
  * Generate metadata XML to prepend to user messages
@@ -631,14 +677,18 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
         // Finalize assembler - tool_use blocks already pushed during streaming
         const assistantRenderingContent = assemblerRef.current?.finalize() ?? [];
+        // Populate rendered fields on tool_use blocks before saving
+        populateToolRenderFields(assistantRenderingContent);
 
-        // Build renderingContent for tool result message
-        const toolResultRenderBlocks: ToolResultRenderBlock[] = toolResults.map(tr => ({
-          type: 'tool_result' as const,
-          tool_use_id: tr.tool_use_id,
-          content: tr.content,
-          is_error: tr.is_error,
-        }));
+        // Build renderingContent for tool result message with pre-rendered fields
+        const toolResultRenderBlocks: ToolResultRenderBlock[] = toolResults.map((tr, idx) =>
+          createToolResultRenderBlock(
+            tr.tool_use_id,
+            toolUseBlocks[idx].name,
+            tr.content,
+            tr.is_error
+          )
+        );
 
         // Build continuation messages using API-specific format
         const [assistantToolMessage, toolResultMessage] = apiService.buildToolResultMessages(

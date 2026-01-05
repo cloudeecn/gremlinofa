@@ -551,6 +551,25 @@ export function disposeMemoryTool(_projectId: string): void {
   instances.delete(_projectId);
 }
 
+/** Render memory tool input for display */
+function renderMemoryInput(input: Record<string, unknown>): string {
+  const lines: string[] = [];
+  const longFields = ['file_text', 'old_str', 'new_str', 'insert_text'];
+
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined) continue;
+
+    if (longFields.includes(key) && typeof value === 'string') {
+      lines.push(`${key}:`);
+      lines.push(value);
+    } else {
+      lines.push(`${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 /**
  * Create a ClientSideTool adapter for the memory tool.
  * The actual execution is delegated to the MemoryToolInstance.
@@ -561,6 +580,9 @@ export function createMemoryClientSideTool(projectId: string): ClientSideTool {
     name: 'memory',
     description:
       'Use this tool to store and retrieve information across conversations. Files persist per project.',
+    iconInput: '🧠',
+    iconOutput: '📝',
+    renderInput: renderMemoryInput,
     inputSchema: {
       type: 'object',
       properties: {

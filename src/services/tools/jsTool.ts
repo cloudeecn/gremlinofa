@@ -156,6 +156,21 @@ export function isJsToolInitialized(): boolean {
   return instance !== null;
 }
 
+/** Render JS tool input - show code directly */
+function renderJsInput(input: Record<string, unknown>): string {
+  const code = input.code;
+  const timeout = input.timeout_ms;
+
+  const lines: string[] = [];
+  if (typeof code === 'string') {
+    lines.push(code);
+  }
+  if (typeof timeout === 'number' && timeout !== 5000) {
+    lines.push(`\n[timeout: ${timeout}ms]`);
+  }
+  return lines.join('');
+}
+
 /**
  * Create a ClientSideTool adapter for the JavaScript execution tool.
  */
@@ -164,6 +179,9 @@ function createJsClientSideTool(): ClientSideTool {
     name: 'javascript',
     description:
       'Execute JavaScript code in a secure sandbox. Returns console output and default export as result. Use for calculations, data transformations, or algorithm demonstrations.',
+    iconInput: '📜',
+    iconOutput: '⚡',
+    renderInput: renderJsInput,
     inputSchema: {
       type: 'object',
       properties: {

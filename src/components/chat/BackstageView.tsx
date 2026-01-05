@@ -208,13 +208,17 @@ interface ToolUseSegmentProps {
 
 function ToolUseSegment({ block }: ToolUseSegmentProps) {
   const [inputExpanded, setInputExpanded] = useState(false);
+
+  // Use persisted fields if available, fall back to JSON for backward compatibility
+  const icon = block.icon ?? '🔧';
   const hasInput = Object.keys(block.input).length > 0;
-  const inputJson = hasInput ? JSON.stringify(block.input, null, 2) : '';
+  const renderedInput =
+    block.renderedInput ?? (hasInput ? JSON.stringify(block.input, null, 2) : '');
 
   return (
     <div className="backstage-segment mb-3 last:mb-0">
       <div className="mb-1 flex items-center gap-1 text-xs font-medium text-purple-700">
-        <span>🔧</span>
+        <span>{icon}</span>
         <span>Called: {block.name}</span>
         {hasInput && (
           <button
@@ -228,7 +232,7 @@ function ToolUseSegment({ block }: ToolUseSegmentProps) {
 
       {hasInput && inputExpanded && (
         <pre className="ml-4 overflow-x-auto rounded bg-gray-100 p-2 text-xs text-gray-700">
-          {inputJson}
+          {renderedInput}
         </pre>
       )}
     </div>
@@ -242,6 +246,11 @@ interface ToolResultSegmentProps {
 function ToolResultSegment({ block }: ToolResultSegmentProps) {
   const [contentExpanded, setContentExpanded] = useState(false);
 
+  // Use persisted fields if available, fall back to defaults for backward compatibility
+  const defaultIcon = block.is_error ? '❌' : '✅';
+  const icon = block.icon ?? defaultIcon;
+  const renderedContent = block.renderedContent ?? block.content;
+
   return (
     <div className="backstage-segment mb-3 last:mb-0">
       <button
@@ -250,14 +259,14 @@ function ToolResultSegment({ block }: ToolResultSegmentProps) {
           block.is_error ? 'text-red-600' : 'text-purple-700'
         }`}
       >
-        <span>{block.is_error ? '❌' : '✅'}</span>
+        <span>{icon}</span>
         <span>tool_result</span>
         <span className="text-purple-500">{contentExpanded ? '▼' : '▶'}</span>
       </button>
 
       {contentExpanded && (
         <pre className="ml-4 overflow-x-auto rounded bg-gray-100 p-2 text-xs whitespace-pre-wrap text-gray-700">
-          {block.content}
+          {renderedContent}
         </pre>
       )}
     </div>

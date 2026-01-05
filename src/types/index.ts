@@ -247,4 +247,12 @@ export interface ClientSideTool {
   alwaysEnabled?: boolean;
   /** System prompt to inject when tool is enabled. Skipped if apiOverrides is used for the current API type. */
   systemPrompt?: string;
+  /** Transform tool input for display in tool_use blocks. Default: JSON.stringify */
+  renderInput?: (input: Record<string, unknown>) => string;
+  /** Transform tool output for display in tool_result blocks. Default: show raw content */
+  renderOutput?: (output: string, isError?: boolean) => string;
+  /** Icon for tool_use blocks (emoji/unicode). Default: =' */
+  iconInput?: string;
+  /** Icon for tool_result blocks (emoji/unicode). Default:  or L based on error state */
+  iconOutput?: string;
 }

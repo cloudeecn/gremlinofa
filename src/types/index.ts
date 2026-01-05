@@ -243,4 +243,6 @@ export interface ClientSideTool {
   apiOverrides?: Partial<APIToolOverrides>;
   /** Tools with alwaysEnabled: true are included regardless of enabledTools list */
   alwaysEnabled?: boolean;
+  /** System prompt to inject when tool is enabled. Skipped if apiOverrides is used for the current API type. */
+  systemPrompt?: string;
 }

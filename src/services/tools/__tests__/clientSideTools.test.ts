@@ -268,4 +268,94 @@ describe('clientSideTools', () => {
       });
     });
   });
+
+  describe('getSystemPrompts', () => {
+    const toolWithPrompt: ClientSideTool = {
+      name: 'tool_with_prompt',
+      description: 'A tool with system prompt',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      execute: async (): Promise<ToolResult> => ({ content: 'ok' }),
+      systemPrompt: 'You have access to tool_with_prompt for testing.',
+    };
+
+    const toolWithPromptAndOverride: ClientSideTool = {
+      name: 'tool_with_prompt_override',
+      description: 'A tool with prompt and Anthropic override',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      execute: async (): Promise<ToolResult> => ({ content: 'ok' }),
+      systemPrompt: 'This prompt should be skipped for Anthropic.',
+      apiOverrides: {
+        [APIType.ANTHROPIC]: {
+          name: 'tool_with_prompt_override',
+          description: 'Custom Anthropic definition',
+          input_schema: { type: 'object' as const, properties: {}, required: [] as string[] },
+        },
+      },
+    };
+
+    const toolWithoutPrompt: ClientSideTool = {
+      name: 'tool_no_prompt',
+      description: 'A tool without system prompt',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+      execute: async (): Promise<ToolResult> => ({ content: 'ok' }),
+    };
+
+    beforeEach(() => {
+      toolRegistry.register(toolWithPrompt);
+      toolRegistry.register(toolWithPromptAndOverride);
+      toolRegistry.register(toolWithoutPrompt);
+    });
+
+    afterEach(() => {
+      toolRegistry.unregister('tool_with_prompt');
+      toolRegistry.unregister('tool_with_prompt_override');
+      toolRegistry.unregister('tool_no_prompt');
+    });
+
+    it('should return system prompts for enabled tools without apiOverrides', () => {
+      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, ['tool_with_prompt']);
+      expect(prompts).toEqual(['You have access to tool_with_prompt for testing.']);
+    });
+
+    it('should skip tools without systemPrompt defined', () => {
+      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, ['tool_no_prompt']);
+      expect(prompts).toEqual([]);
+    });
+
+    it('should skip tools that use apiOverrides for the current API type', () => {
+      // For Anthropic, tool_with_prompt_override has an override - should skip its prompt
+      const prompts = toolRegistry.getSystemPrompts(APIType.ANTHROPIC, [
+        'tool_with_prompt_override',
+      ]);
+      expect(prompts).toEqual([]);
+    });
+
+    it('should include prompt when apiOverrides does not apply to current API type', () => {
+      // For ChatGPT, tool_with_prompt_override has no override - should include its prompt
+      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, ['tool_with_prompt_override']);
+      expect(prompts).toEqual(['This prompt should be skipped for Anthropic.']);
+    });
+
+    it('should return multiple prompts for multiple enabled tools', () => {
+      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, [
+        'tool_with_prompt',
+        'tool_with_prompt_override',
+      ]);
+      expect(prompts).toHaveLength(2);
+      expect(prompts).toContain('You have access to tool_with_prompt for testing.');
+      expect(prompts).toContain('This prompt should be skipped for Anthropic.');
+    });
+
+    it('should return empty array when no tools are enabled', () => {
+      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, []);
+      // ping is alwaysEnabled but has no systemPrompt, so still empty
+      expect(prompts).toEqual([]);
+    });
+
+    it('should include alwaysEnabled tools if they have systemPrompt', () => {
+      // ping is alwaysEnabled but has no systemPrompt
+      const prompts = toolRegistry.getSystemPrompts(APIType.ANTHROPIC, []);
+      expect(prompts).toEqual([]);
+    });
+  });
 });

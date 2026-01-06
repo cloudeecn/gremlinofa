@@ -77,7 +77,7 @@ export interface Project {
   reasoningBudgetTokens: number;
   // Message metadata settings
   sendMessageMetadata?: boolean;
-  metadataTimestampMode?: 'utc' | 'local' | 'disabled';
+  metadataTimestampMode?: 'utc' | 'local' | 'relative' | 'disabled';
   metadataIncludeContextWindow?: boolean;
   metadataIncludeCost?: boolean;
   // Memory tool

@@ -22,24 +22,44 @@ export default function BackstageView({ blocks, defaultExpanded = false }: Backs
 
   if (blocks.length === 0) return null;
 
-  // Get icon for last block (shows current activity type)
-  const getStatus = (): string => {
+  const getIcon = (block: RenderingContentBlock): string => {
+    switch (block?.type) {
+      case 'thinking':
+        return '💭';
+      case 'web_search':
+        return '🔍';
+      case 'web_fetch':
+        return '🌐';
+      case 'tool_use':
+        return `${block.icon ?? '🔧'}`;
+      case 'tool_result':
+        return `${block.icon ?? (block.is_error ? '❌' : '✅')}`;
+      case 'error':
+        return '❌';
+      case 'text':
+      default:
+        return '💬';
+    }
+  };
+
+  const getStatusText = (): string => {
     const lastBlock = blocks[blocks.length - 1];
     switch (lastBlock?.type) {
       case 'thinking':
-        return '💭 Think';
+        return 'Think';
       case 'web_search':
-        return '🔍 Search';
+        return 'Search';
       case 'web_fetch':
-        return '🌐 Browse';
+        return 'Fetch';
       case 'tool_use':
-        return '🔧 Tool';
+        return lastBlock.name;
       case 'tool_result':
-        return '📤 Result';
-      case 'text':
+        return lastBlock.name ?? 'Result';
       case 'error':
+        return 'Error';
+      case 'text':
       default:
-        return '💬 Wat?';
+        return '';
     }
   };
 
@@ -47,19 +67,16 @@ export default function BackstageView({ blocks, defaultExpanded = false }: Backs
   const getPreviewText = (): string => {
     const lastBlock = blocks[blocks.length - 1];
     switch (lastBlock?.type) {
-      case 'thinking': {
-        const thinking = lastBlock.thinking || '';
-        const lastLine = thinking.trim().split('\n').pop() || '';
-        return lastLine;
-      }
+      case 'thinking':
+        return lastBlock.thinking || '';
       case 'web_search':
-        return `Searched: "${lastBlock.query || ''}"`;
+        return `"${lastBlock.query || ''}"`;
       case 'web_fetch':
-        return `Fetched: ${lastBlock.title || lastBlock.url || ''}`;
+        return lastBlock.title || lastBlock.url || '';
       case 'tool_use':
-        return lastBlock.name;
+        return lastBlock.renderedInput ?? JSON.stringify(lastBlock.input);
       case 'tool_result':
-        return lastBlock.is_error ? '❌ Error' : lastBlock.content.slice(0, 50);
+        return lastBlock.renderedContent ?? lastBlock.content;
       case 'text':
       case 'error':
       default:
@@ -67,7 +84,21 @@ export default function BackstageView({ blocks, defaultExpanded = false }: Backs
     }
   };
 
-  const status = getStatus();
+  // Check if last block is instant (tool_use/tool_result) for overflow-to-left rendering
+  const isInstantBlock = (): boolean => {
+    const lastBlock = blocks[blocks.length - 1];
+    return lastBlock?.type !== 'thinking';
+  };
+
+  const getLastBlockIcon = (): string => {
+    return getIcon(blocks[blocks.length - 1]);
+  };
+
+  const getPreviousBlockIcons = (): string[] => {
+    return blocks.slice(0, blocks.length - 1).map(block => getIcon(block));
+  };
+
+  const instantBlock = isInstantBlock();
 
   return (
     <div className="backstage-container overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50">
@@ -76,14 +107,36 @@ export default function BackstageView({ blocks, defaultExpanded = false }: Backs
         onClick={() => setIsExpanded(!isExpanded)}
         className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm font-medium text-purple-800 transition-colors hover:bg-purple-100"
       >
-        <span className="flex items-center gap-2">
-          <span>{status}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          <span>
+            {getLastBlockIcon()} {getStatusText()}
+          </span>
           <span className="text-purple-600">{isExpanded ? '▼' : '▶'}</span>
         </span>
         {!isExpanded && (
-          <span className="flex-1 truncate text-xs font-normal text-purple-600">
-            {getPreviewText()}
-          </span>
+          <>
+            {instantBlock ? (
+              // Overflow-to-left: outer clips, inner aligns right so end of text stays visible
+              <>
+                <span className="flex min-w-0 overflow-hidden">
+                  <span className="flex max-w-full justify-end overflow-hidden text-xs font-normal whitespace-nowrap text-purple-600">
+                    {getPreviewText()}
+                  </span>
+                </span>
+                <span className="min-w-0 flex-1 overflow-hidden"></span>
+              </>
+            ) : (
+              // Standard truncate for streaming content (thinking, search, fetch)
+              <span className="min-w-0 flex-1 truncate text-xs font-normal whitespace-nowrap text-purple-600">
+                {getPreviewText()}
+              </span>
+            )}
+            <span className="flex shrink-0 items-center gap-1">
+              <span className="text-shadow-[0 0] mr-2 tracking-[-0.5em] opacity-50 text-shadow-white">
+                {getPreviousBlockIcons()}
+              </span>
+            </span>
+          </>
         )}
       </button>
 
@@ -260,7 +313,7 @@ function ToolResultSegment({ block }: ToolResultSegmentProps) {
         }`}
       >
         <span>{icon}</span>
-        <span>tool_result</span>
+        <span>{block.name ?? 'Result'}</span>
         <span className="text-purple-500">{contentExpanded ? '▼' : '▶'}</span>
       </button>
 

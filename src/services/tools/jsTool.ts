@@ -63,12 +63,12 @@ class JsToolInstance {
         return this.formatResult(result.data);
       } else {
         return {
-          content: this.formatOutput(`Error: ${result.error}`),
+          content: this.formatOutput('Error: ' + `${result.error.name}: ${result.error.message}`),
           isError: true,
         };
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       return {
         content: this.formatOutput(`Error: ${message}`),
         isError: true,
@@ -86,6 +86,9 @@ class JsToolInstance {
     if (value === null) return 'null';
     if (typeof value === 'string') return value;
     if (typeof value === 'function') return '[Function]';
+    if (value instanceof Error) {
+      return value.stack ?? `${value.name}: ${value.message}`;
+    }
     try {
       return JSON.stringify(value, null, 2);
     } catch {

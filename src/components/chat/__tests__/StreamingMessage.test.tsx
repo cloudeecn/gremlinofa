@@ -148,7 +148,7 @@ describe('StreamingMessage', () => {
 
       render(<StreamingMessage groups={groups} />);
 
-      // BackstageView renders with "Think" header
+      // BackstageView renders with icon and label combined
       expect(screen.getByText('💭 Think')).toBeInTheDocument();
     });
 
@@ -162,11 +162,12 @@ describe('StreamingMessage', () => {
 
       render(<StreamingMessage groups={groups} />);
 
-      // Backstage should be collapsed during streaming, showing only preview
+      // Backstage should be collapsed during streaming
       expect(screen.getByText('▶')).toBeInTheDocument(); // Collapsed arrow
-      expect(screen.getByText('Preview line')).toBeInTheDocument(); // Preview text (last line)
-      // Full content should NOT be visible when collapsed
-      expect(screen.queryByText('Line 1')).not.toBeInTheDocument();
+      // Preview now contains full content (CSS whitespace-nowrap handles visual truncation)
+      expect(screen.getByText(/Line 1/)).toBeInTheDocument();
+      // The "Thinking" label in expanded segment should NOT be visible when collapsed
+      expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
     });
   });
 
@@ -338,7 +339,7 @@ describe('StreamingMessage', () => {
       expect(screen.getByText('First thinking preview')).toBeInTheDocument(); // Preview
       expect(screen.getByText('First text')).toBeInTheDocument();
       expect(screen.getByText('Second thinking preview')).toBeInTheDocument(); // Preview
-      // Both backstage headers should be rendered
+      // Both backstage headers should be rendered (combined icon+label format)
       expect(screen.getAllByText('💭 Think')).toHaveLength(2);
     });
 
@@ -397,9 +398,8 @@ describe('StreamingMessage', () => {
       expect(screen.getByText('Processing results')).toBeInTheDocument();
       expect(screen.getByText('Final answer')).toBeInTheDocument();
 
-      // Two backstage headers (collapsed) - first shows thinking icon, second shows thinking icon too
-      const backstageHeaders = screen.getAllByText(/💭 Think/);
-      expect(backstageHeaders).toHaveLength(2);
+      // Two backstage headers (collapsed) - combined icon+label format
+      expect(screen.getAllByText('💭 Think')).toHaveLength(2);
 
       // Should show bouncing dots (not status text)
       const dots = container.querySelectorAll('.bouncing-dot');

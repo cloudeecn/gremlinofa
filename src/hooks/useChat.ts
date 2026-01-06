@@ -65,6 +65,7 @@ function createToolResultRenderBlock(
     tool_use_id: toolUseId,
     content,
     is_error: isError,
+    name: toolName,
     icon: tool?.iconOutput ?? defaultIcon,
     renderedContent: tool?.renderOutput?.(content, isError) ?? content,
   };
@@ -705,6 +706,34 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           { category: 'backstage' as const, blocks: toolResultRenderBlocks },
         ];
 
+        // Extract tokens and calculate pricing for intermediate message
+        const iterInputTokens = result.inputTokens ?? 0;
+        const iterOutputTokens = result.outputTokens ?? 0;
+        const iterReasoningTokens = result.reasoningTokens;
+        const iterCacheCreationTokens = result.cacheCreationTokens ?? 0;
+        const iterCacheReadTokens = result.cacheReadTokens ?? 0;
+
+        const iterPricingSnapshot = await getPricingSnapshot(
+          currentApiDef,
+          effectiveModelId,
+          iterInputTokens,
+          iterOutputTokens,
+          iterReasoningTokens || 0,
+          iterCacheCreationTokens,
+          iterCacheReadTokens
+        );
+
+        // Add metadata to intermediate assistant message
+        assistantToolMessage.metadata = {
+          model: effectiveModelId,
+          inputTokens: iterInputTokens,
+          outputTokens: iterOutputTokens,
+          reasoningTokens: iterReasoningTokens,
+          cacheCreationTokens: iterCacheCreationTokens,
+          cacheReadTokens: iterCacheReadTokens,
+          ...iterPricingSnapshot,
+        };
+
         // Save intermediate messages to storage and update UI
         await storage.saveMessage(streamingChatId, assistantToolMessage);
         setMessages(prev => [...prev, assistantToolMessage]);
@@ -718,19 +747,22 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
         loopMessages = [...loopMessages, assistantToolMessage, toolResultMessage];
 
-        // Update token totals from this iteration
+        // Update token/cost totals from this iteration
         updateChat.totalInputTokens =
-          (updateChat.totalInputTokens ?? currentChat.totalInputTokens ?? 0) +
-          (result.inputTokens ?? 0);
+          (updateChat.totalInputTokens ?? currentChat.totalInputTokens ?? 0) + iterInputTokens;
         updateChat.totalOutputTokens =
-          (updateChat.totalOutputTokens ?? currentChat.totalOutputTokens ?? 0) +
-          (result.outputTokens ?? 0);
+          (updateChat.totalOutputTokens ?? currentChat.totalOutputTokens ?? 0) + iterOutputTokens;
+        updateChat.totalReasoningTokens =
+          (updateChat.totalReasoningTokens ?? currentChat.totalReasoningTokens ?? 0) +
+          (iterReasoningTokens || 0);
         updateChat.totalCacheCreationTokens =
           (updateChat.totalCacheCreationTokens ?? currentChat.totalCacheCreationTokens ?? 0) +
-          (result.cacheCreationTokens ?? 0);
+          iterCacheCreationTokens;
         updateChat.totalCacheReadTokens =
           (updateChat.totalCacheReadTokens ?? currentChat.totalCacheReadTokens ?? 0) +
-          (result.cacheReadTokens ?? 0);
+          iterCacheReadTokens;
+        updateChat.totalCost =
+          (updateChat.totalCost ?? currentChat.totalCost ?? 0) + iterPricingSnapshot.messageCost;
 
         // Send continuation request
         console.debug('[useChat] Sending tool result continuation');
@@ -852,7 +884,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         updateChat.totalCacheReadTokens =
           (updateChat.totalCacheReadTokens ?? currentChat.totalCacheReadTokens ?? 0) +
           cacheReadTokens;
-        updateChat.totalCost = (currentChat.totalCost || 0) + pricingSnapshot.messageCost;
+        // Use accumulated cost from tool loop if present, otherwise use chat's base cost
+        updateChat.totalCost =
+          (updateChat.totalCost ?? currentChat.totalCost ?? 0) + pricingSnapshot.messageCost;
         updateChat.contextWindowUsage = pricingSnapshot.contextWindowUsage;
       } else {
         // Stream returned no result - create error message

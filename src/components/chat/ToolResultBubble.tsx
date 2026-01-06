@@ -9,7 +9,7 @@ export interface ToolResultBubbleProps {
 
 /**
  * Renders a tool result message (role: USER but contains tool_result blocks).
- * Shows as a collapsible backstage-style element.
+ * Styled to match BackstageView - purple theme, collapsible, shows tool name.
  */
 export default function ToolResultBubble({ message }: ToolResultBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -24,40 +24,67 @@ export default function ToolResultBubble({ message }: ToolResultBubbleProps) {
   if (toolResults.length === 0) return null;
 
   const hasError = toolResults.some(r => r.is_error);
+  const lastResult = toolResults[toolResults.length - 1];
+
+  // Use persisted fields, with fallbacks for old messages
+  const icon = lastResult.icon ?? (hasError ? '❌' : '✅');
+  const statusText = lastResult.name ?? 'Result';
+  const previewText = lastResult.renderedContent ?? lastResult.content;
 
   return (
     <div className="flex flex-col items-start">
-      <div className="max-w-[85%] overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50">
+      <div className="w-full overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50 md:max-w-[85%]">
         <button
           onClick={() => setIsExpanded(!isExpanded)}
           className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm font-medium text-purple-800 transition-colors hover:bg-purple-100"
         >
-          <span className="flex items-center gap-2">
-            <span>{hasError ? '❌' : '✅'}</span>
-            <span>tool_result</span>
+          <span className="flex shrink-0 items-center gap-1">
+            <span>
+              {icon} {statusText}
+            </span>
             <span className="text-purple-600">{isExpanded ? '▼' : '▶'}</span>
           </span>
           {!isExpanded && (
-            <span className="flex-1 truncate text-xs font-normal text-purple-600">
-              {toolResults.length === 1
-                ? toolResults[0].content.slice(0, 50)
-                : `${toolResults.length} results`}
-            </span>
+            <>
+              {/* Overflow-to-left: outer clips, inner aligns right so end of text stays visible */}
+              <span className="flex min-w-0 overflow-hidden">
+                <span className="flex max-w-full justify-end overflow-hidden text-xs font-normal whitespace-nowrap text-purple-600">
+                  {toolResults.length === 1 ? previewText : `${toolResults.length} results`}
+                </span>
+              </span>
+              <span className="min-w-0 flex-1 overflow-hidden"></span>
+              {/* Show previous result icons if multiple */}
+              {toolResults.length > 1 && (
+                <span className="flex shrink-0 items-center gap-1">
+                  <span className="text-shadow-[0 0] mr-2 tracking-[-0.5em] opacity-50 text-shadow-white">
+                    {toolResults.slice(0, -1).map(r => r.icon ?? (r.is_error ? '❌' : '✅'))}
+                  </span>
+                </span>
+              )}
+            </>
           )}
         </button>
 
         {isExpanded && (
           <div className="border-t border-purple-200 bg-white px-4 py-3">
             {toolResults.map((result, index) => (
-              <div key={index} className="mb-2 last:mb-0">
-                {toolResults.length > 1 && (
-                  <div className="mb-1 text-xs font-medium text-purple-700">
-                    Result {index + 1}
-                    {result.is_error && ' (error)'}
-                  </div>
-                )}
-                <pre className="overflow-x-auto rounded bg-gray-100 p-2 text-xs whitespace-pre-wrap text-gray-700">
-                  {result.content}
+              <div key={index} className="mb-3 last:mb-0">
+                <button
+                  onClick={e => e.stopPropagation()}
+                  className={`mb-1 flex items-center gap-1 text-xs font-medium ${
+                    result.is_error ? 'text-red-600' : 'text-purple-700'
+                  }`}
+                >
+                  <span>{result.icon ?? (result.is_error ? '❌' : '✅')}</span>
+                  <span>{result.name ?? 'Result'}</span>
+                  {toolResults.length > 1 && (
+                    <span className="text-purple-500">
+                      ({index + 1}/{toolResults.length})
+                    </span>
+                  )}
+                </button>
+                <pre className="ml-4 overflow-x-auto rounded bg-gray-100 p-2 text-xs whitespace-pre-wrap text-gray-700">
+                  {result.renderedContent ?? result.content}
                 </pre>
               </div>
             ))}

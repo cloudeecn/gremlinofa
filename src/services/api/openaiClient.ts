@@ -122,6 +122,23 @@ export class OpenAIClient implements APIClient {
       // Add conversation messages
       messages.forEach(msg => {
         if (msg.role === MessageRole.USER) {
+          // Check if message contains tool_result blocks in fullContent (for agentic loop continuation)
+          if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
+            const fullContent = msg.content.fullContent as Array<Record<string, unknown>>;
+            const toolResults = fullContent.filter(item => item.type === 'tool_result');
+            if (toolResults.length > 0) {
+              // Convert tool_result blocks to OpenAI tool messages
+              for (const tr of toolResults) {
+                openaiMessages.push({
+                  role: 'tool',
+                  tool_call_id: tr.tool_call_id as string,
+                  content: tr.content as string,
+                });
+              }
+              return;
+            }
+          }
+
           // Check if message has attachments (images)
           if (msg.attachments && msg.attachments.length > 0) {
             const contentParts: OpenAI.ChatCompletionContentPart[] = [];
@@ -154,6 +171,20 @@ export class OpenAIClient implements APIClient {
             });
           }
         } else if (msg.role === MessageRole.ASSISTANT) {
+          // Check if assistant message has tool_calls in fullContent
+          if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
+            const fullContent = msg.content.fullContent as Array<Record<string, unknown>>;
+            const toolCallsBlock = fullContent.find(item => item.type === 'tool_calls');
+            if (toolCallsBlock && Array.isArray(toolCallsBlock.tool_calls)) {
+              // Assistant message with tool calls - include them in the message
+              openaiMessages.push({
+                role: 'assistant',
+                content: msg.content.content || null,
+                tool_calls: toolCallsBlock.tool_calls as OpenAI.ChatCompletionMessageToolCall[],
+              });
+              return;
+            }
+          }
           openaiMessages.push({
             role: 'assistant',
             content: msg.content.content,

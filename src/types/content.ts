@@ -83,6 +83,8 @@ export interface ToolResultRenderBlock {
   tool_use_id: string;
   content: string;
   is_error?: boolean;
+  /** Tool name for display (persisted at message save time) */
+  name?: string;
   /** Pre-rendered content for display (persisted at message save time) */
   renderedContent?: string;
   /** Icon for this tool result (persisted at message save time) */

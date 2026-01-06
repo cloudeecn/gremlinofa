@@ -25,6 +25,7 @@ describe('BackstageView', () => {
       ];
       render(<BackstageView blocks={blocks} />);
 
+      // Icon and label are in same span now
       expect(screen.getByText('💭 Think')).toBeInTheDocument();
     });
 
@@ -62,35 +63,39 @@ describe('BackstageView', () => {
 
     it('collapses when clicking the header button again', () => {
       const blocks: RenderingContentBlock[] = [
-        { type: 'thinking', thinking: 'Line 1\nLine 2\nLast line only shown in preview' },
+        { type: 'thinking', thinking: 'Line 1\nLine 2\nLast line' },
       ];
       render(<BackstageView blocks={blocks} defaultExpanded={true} />);
 
-      // Verify full content is shown when expanded
-      expect(screen.getByText(/Line 1/)).toBeInTheDocument();
+      // Verify expanded content area is shown
+      expect(screen.getByText('▼')).toBeInTheDocument();
+      // The expanded Thinking segment shows full content with whitespace-pre-wrap
+      const expandedContent = screen.getByText('Thinking').closest('.backstage-segment');
+      expect(expandedContent).toBeInTheDocument();
 
       // Click to collapse
       fireEvent.click(screen.getByRole('button'));
 
       expect(screen.getByText('▶')).toBeInTheDocument();
-      // When collapsed, full content should not be shown (only preview)
-      expect(screen.queryByText(/Line 1/)).not.toBeInTheDocument();
-      // But preview (last line) is shown
-      expect(screen.getByText('Last line only shown in preview')).toBeInTheDocument();
+      // When collapsed, the expanded content section should not be rendered
+      expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
+      // Preview (full content, CSS truncates) is shown in header
+      expect(screen.getByText(/Line 1/)).toBeInTheDocument();
     });
   });
 
   describe('preview text', () => {
-    it('shows last line of thinking as preview when collapsed', () => {
+    it('shows full thinking content in preview (CSS handles truncation)', () => {
       const blocks: RenderingContentBlock[] = [
         { type: 'thinking', thinking: 'Line 1\nLine 2\nLast line preview' },
       ];
       render(<BackstageView blocks={blocks} />);
 
-      expect(screen.getByText('Last line preview')).toBeInTheDocument();
+      // Preview contains full content (CSS whitespace-nowrap collapses newlines visually)
+      expect(screen.getByText(/Line 1/)).toBeInTheDocument();
     });
 
-    it('shows search query as preview when first block is web_search', () => {
+    it('shows quoted query as preview when block is web_search', () => {
       const blocks: RenderingContentBlock[] = [
         {
           type: 'web_search',
@@ -101,10 +106,10 @@ describe('BackstageView', () => {
       ];
       render(<BackstageView blocks={blocks} />);
 
-      expect(screen.getByText('Searched: "test search query"')).toBeInTheDocument();
+      expect(screen.getByText('"test search query"')).toBeInTheDocument();
     });
 
-    it('shows fetch URL as preview when first block is web_fetch', () => {
+    it('shows title as preview when block is web_fetch', () => {
       const blocks: RenderingContentBlock[] = [
         {
           type: 'web_fetch',
@@ -114,7 +119,8 @@ describe('BackstageView', () => {
       ];
       render(<BackstageView blocks={blocks} />);
 
-      expect(screen.getByText('Fetched: Example Page')).toBeInTheDocument();
+      // Preview shows title directly (header has "Fetch:")
+      expect(screen.getByText('Example Page')).toBeInTheDocument();
     });
   });
 
@@ -156,7 +162,8 @@ describe('BackstageView', () => {
     it('renders search query with 🔍 icon', () => {
       render(<BackstageView blocks={[searchBlock]} defaultExpanded={true} />);
 
-      expect(screen.getByText('🔍')).toBeInTheDocument();
+      // Icon appears in both header and segment when expanded
+      expect(screen.getAllByText('🔍').length).toBeGreaterThan(0);
       expect(screen.getByText(/Searched: "capital of Canada"/)).toBeInTheDocument();
     });
 
@@ -209,7 +216,8 @@ describe('BackstageView', () => {
       ];
       render(<BackstageView blocks={blocks} defaultExpanded={true} />);
 
-      expect(screen.getByText('🌐')).toBeInTheDocument();
+      // Icon appears in both header and segment when expanded
+      expect(screen.getAllByText('🌐').length).toBeGreaterThan(0);
       expect(screen.getByText('Fetched')).toBeInTheDocument();
     });
 

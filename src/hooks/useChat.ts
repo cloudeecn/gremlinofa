@@ -4,7 +4,12 @@ import { storage } from '../services/storage';
 import { StreamingContentAssembler } from '../services/streaming/StreamingContentAssembler';
 import { executeClientSideTool, toolRegistry } from '../services/tools/clientSideTools';
 import { initMemoryTool, disposeMemoryTool } from '../services/tools/memoryTool';
-import { initJsTool, disposeJsTool } from '../services/tools/jsTool';
+import {
+  initJsTool,
+  disposeJsTool,
+  createJsSession,
+  disposeJsSession,
+} from '../services/tools/jsTool';
 import type {
   APIDefinition,
   Chat,
@@ -646,10 +651,20 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       let toolIterations = 0;
       // Track messages for tool loop continuation
       let loopMessages = [...messagesWithAttachments];
+      // Track if we created a JS session for this loop
+      let jsSessionCreated = false;
 
       while (result && result.stopReason === 'tool_use' && toolIterations < MAX_TOOL_ITERATIONS) {
         toolIterations++;
         console.debug('[useChat] Tool use detected, iteration:', toolIterations);
+
+        // Create JS session on first tool iteration if JS tool is enabled
+        // Session persists across all iterations, disposed when loop ends
+        if (!jsSessionCreated && currentProject.jsExecutionEnabled) {
+          console.debug('[useChat] Creating JS session for agentic loop');
+          await createJsSession();
+          jsSessionCreated = true;
+        }
 
         // Extract ALL tool_use blocks - unknown tools will receive error responses
         const toolUseBlocks = apiService.extractToolUseBlocks(
@@ -801,6 +816,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         result = continueNext.done ? continueNext.value : null;
       }
 
+      // Dispose JS session after tool loop completes
+      if (jsSessionCreated) {
+        console.debug('[useChat] Disposing JS session after tool loop');
+        disposeJsSession();
+      }
+
       if (result) {
         // Extract token values from result
         const inputTokens = result.inputTokens ?? 0;
@@ -941,6 +962,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       setProject(updatedProject);
       console.debug('[useChat] Project lastUsedAt updated');
     } catch (error: unknown) {
+      // Ensure JS session is cleaned up on error
+      disposeJsSession();
+
       // Extract error info from the caught exception
       const errorInfo =
         error instanceof Error

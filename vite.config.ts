@@ -2,7 +2,6 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import tailwindcss from '@tailwindcss/vite';
-import { nodePolyfills } from 'vite-plugin-node-polyfills';
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => {
@@ -29,23 +28,18 @@ export default defineConfig(({ command }) => {
           }
         : undefined,
     },
+    optimizeDeps: {
+      exclude: ['@jitl/quickjs-ng-wasmfile-release-sync'], // Replace with the actual package name
+    },
     plugins: [
       react(),
       tailwindcss(),
-      nodePolyfills({
-        globals: {
-          Buffer: true,
-        },
-        overrides: {
-          fs: 'memfs',
-        },
-      }),
       VitePWA({
-        includeAssets: ['favicon.ico'],
+        includeAssets: ['favicon.ico', 'assets/*'],
         workbox: {
           // Prevent service worker from caching /dev/* paths
           // This allows the dev server to work alongside prod PWA
-          navigateFallbackDenylist: [/\/dev\//, /\/storage\//],
+          navigateFallbackDenylist: [/\/dev\//, /\/storage\//, /\/src\//],
           maximumFileSizeToCacheInBytes: 10485760,
         },
         manifest: {

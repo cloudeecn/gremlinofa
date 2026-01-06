@@ -620,7 +620,7 @@ rename:      "Successfully renamed {old_path} to {new_path}"
 
 **Overview:**
 
-Client-side tool that executes JavaScript code in a secure QuickJS sandbox. Enables the AI to perform calculations, data transformations, and algorithm demonstrations.
+Client-side tool that executes JavaScript code in a secure QuickJS sandbox. Enables the AI to perform calculations, data transformations, and algorithm demonstrations. Supports persistent sessions within an agentic loop.
 
 **Files:**
 
@@ -628,15 +628,15 @@ Client-side tool that executes JavaScript code in a secure QuickJS sandbox. Enab
 
 **Dependencies:**
 
-- `@sebastianwessel/quickjs` - QuickJS wrapper with sandbox features
+- `quickjs-emscripten-core` - QuickJS WASM bindings with context management
 - `@jitl/quickjs-singlefile-browser-release-sync` - Browser-compatible WASM variant
 
 **Input Parameters:**
 
-| Parameter    | Type   | Required | Description                                       |
-| ------------ | ------ | -------- | ------------------------------------------------- |
-| `code`       | string | Yes      | JavaScript code to execute                        |
-| `timeout_ms` | number | No       | Execution timeout in milliseconds (default: 5000) |
+| Parameter   | Type    | Required | Description                                                          |
+| ----------- | ------- | -------- | -------------------------------------------------------------------- |
+| `code`      | string  | Yes      | JavaScript code to execute                                           |
+| `ephemeral` | boolean | No       | Execute in isolated context without affecting the persistent session |
 
 **Output Format:**
 
@@ -656,14 +656,36 @@ If no console output and result is undefined: `(no output)`
 - Code runs in isolated QuickJS WebAssembly sandbox
 - No access to browser APIs (DOM, fetch, localStorage)
 - No network access
-- 5-second execution timeout (configurable)
-- 64MB memory limit
+
+**Execution Modes:**
+
+1. **Ephemeral** (default): Each tool call is isolated, no state persists
+2. **Session**: VM state persists across multiple tool calls within an agentic loop
+
+**Session Lifecycle:**
+
+Sessions enable the AI to build up state across multiple tool calls:
+
+- `createJsSession()` - Create persistent QuickJS context with console redirection
+- `hasJsSession()` - Check if session is active
+- `disposeJsSession()` - Release context and free memory
+
+**Agentic Loop Integration (`useChat.ts`):**
+
+1. When first `tool_use` response detected and JS tool enabled → `createJsSession()`
+2. All JS tool executions within the loop share the same context (variables persist)
+3. When loop completes (stop_reason changes or max iterations) → `disposeJsSession()`
+4. On error → `disposeJsSession()` in catch block
+
+**Use Case Example:**
+
+Call 1: `const data = [1, 2, 3]; data.length` → `3`
+Call 2: `data.push(4); data` → `[1, 2, 3, 4]` (data persists!)
 
 **Instance Management:**
 
 - `initJsTool()` - Create singleton instance, register with toolRegistry
-- `disposeJsTool()` - Unregister from toolRegistry, clear instance
-- Stateless design - no per-project data, shared instance
+- `disposeJsTool()` - Unregister from toolRegistry, dispose any active session, clear instance
 
 **Project Setting:**
 

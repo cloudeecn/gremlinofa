@@ -2,15 +2,21 @@
  * JavaScript Execution Tool
  *
  * Client-side tool that executes JavaScript code in a sandboxed QuickJS environment.
- * Uses @sebastianwessel/quickjs with @jitl/quickjs-singlefile-browser-release-sync variant.
+ * Uses quickjs-emscripten-core with @jitl/quickjs-singlefile-browser-release-sync variant.
+ *
+ * VM state persists across multiple tool calls within an agentic loop, enabling
+ * the AI to build up state across calls (e.g., define variables, then use them later).
  */
 
-import { loadQuickJs, type SandboxOptions } from '@sebastianwessel/quickjs';
-import variant from '@jitl/quickjs-singlefile-browser-release-sync';
+import {
+  newQuickJSWASMModuleFromVariant,
+  type QuickJSWASMModule,
+  type QuickJSContext,
+  type QuickJSHandle,
+} from 'quickjs-emscripten-core';
+import variant from '@jitl/quickjs-ng-wasmfile-release-sync';
 import type { ClientSideTool, ToolResult } from '../../types';
 import { toolRegistry } from './clientSideTools';
-
-const DEFAULT_TIMEOUT_MS = 5000;
 
 type ConsoleLevel = 'LOG' | 'WARN' | 'ERROR' | 'INFO' | 'DEBUG';
 
@@ -19,19 +25,64 @@ interface ConsoleEntry {
   message: string;
 }
 
+// Module singleton - loaded once, reused
+let modulePromise: Promise<QuickJSWASMModule> | null = null;
+
+async function getModule(): Promise<QuickJSWASMModule> {
+  if (!modulePromise) {
+    modulePromise = newQuickJSWASMModuleFromVariant(variant);
+  }
+  return modulePromise;
+}
+
 /**
  * JavaScript execution tool instance.
+ * VM state persists across multiple tool calls within a session.
  */
 class JsToolInstance {
-  private consoleOutput: ConsoleEntry[] = [];
+  private session: QuickJSContext | null = null;
 
   /**
-   * Execute JavaScript code in sandbox
+   * Create a persistent session for the agentic loop.
+   * Variables and state persist across multiple execute calls.
+   * @returns The created context
+   */
+  async createSession(): Promise<QuickJSContext> {
+    if (this.session) {
+      console.debug('[JsTool] Session already exists, disposing old one');
+      this.disposeSession();
+    }
+
+    const module = await getModule();
+    this.session = module.newContext();
+    console.debug('[JsTool] Session created');
+    return this.session;
+  }
+
+  /**
+   * Check if a session is active.
+   */
+  hasSession(): boolean {
+    return this.session !== null;
+  }
+
+  /**
+   * Dispose the current session.
+   */
+  disposeSession(): void {
+    if (this.session) {
+      this.session.dispose();
+      this.session = null;
+      console.debug('[JsTool] Session disposed');
+    }
+  }
+
+  /**
+   * Execute JavaScript code.
+   * @param input.ephemeral - If true, execute in isolated context without affecting session
    */
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const code = input.code;
-    const timeoutMs = input.timeout_ms;
-
     if (!code || typeof code !== 'string') {
       return {
         content: 'Error: code parameter is required and must be a string',
@@ -39,46 +90,90 @@ class JsToolInstance {
       };
     }
 
-    const timeout = typeof timeoutMs === 'number' ? timeoutMs : DEFAULT_TIMEOUT_MS;
-    this.consoleOutput = [];
+    const ephemeral = !!input.ephemeral;
+
+    // Get or create context
+    const context = ephemeral
+      ? (await getModule()).newContext()
+      : (this.session ?? (await this.createSession()));
+
+    const consoleOutput: ConsoleEntry[] = [];
+    this.setupConsole(context, consoleOutput);
 
     try {
-      const { runSandboxed } = await loadQuickJs(variant);
+      return this.runCode(context, code, consoleOutput);
+    } finally {
+      if (ephemeral) {
+        context.dispose();
+      }
+    }
+  }
 
-      const options: SandboxOptions = {
-        executionTimeout: timeout,
-        allowFs: true,
-        console: {
-          log: (...args: unknown[]) => this.captureConsole('LOG', args),
-          warn: (...args: unknown[]) => this.captureConsole('WARN', args),
-          error: (...args: unknown[]) => this.captureConsole('ERROR', args),
-          info: (...args: unknown[]) => this.captureConsole('INFO', args),
-          debug: (...args: unknown[]) => this.captureConsole('DEBUG', args),
-        },
-      };
+  /**
+   * Core code execution logic shared between session and ephemeral modes.
+   */
+  private runCode(
+    context: QuickJSContext,
+    code: string,
+    consoleOutput: ConsoleEntry[]
+  ): ToolResult {
+    try {
+      const result = context.evalCode(code);
 
-      const result = await runSandboxed(async ({ evalCode }) => evalCode(code), options);
+      if (result.error) {
+        const errorHandle = result.error;
+        const errorValue = context.dump(errorHandle);
+        errorHandle.dispose();
 
-      if (result.ok) {
-        return this.formatResult(result.data);
-      } else {
+        const message =
+          typeof errorValue === 'object' && errorValue !== null
+            ? `${errorValue.name || 'Error'}: ${errorValue.message || String(errorValue)}`
+            : String(errorValue);
+
         return {
-          content: this.formatOutput('Error: ' + `${result.error.name}: ${result.error.message}`),
+          content: this.formatOutput('Error: ' + message, consoleOutput),
           isError: true,
         };
       }
+
+      const valueHandle = result.value;
+      const value = context.dump(valueHandle);
+      valueHandle.dispose();
+
+      return {
+        content: this.formatOutput(this.stringify(value), consoleOutput),
+      };
     } catch (error) {
       const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       return {
-        content: this.formatOutput(`Error: ${message}`),
+        content: this.formatOutput(`Error: ${message}`, consoleOutput),
         isError: true,
       };
     }
   }
 
-  private captureConsole(level: ConsoleLevel, args: unknown[]): void {
-    const message = args.map(arg => this.stringify(arg)).join(' ');
-    this.consoleOutput.push({ level, message });
+  /**
+   * Set up console object in a context for capturing output.
+   */
+  private setupConsole(context: QuickJSContext, consoleOutput: ConsoleEntry[]): void {
+    const consoleHandle = context.newObject();
+
+    const createConsoleMethod = (level: ConsoleLevel) => {
+      return context.newFunction(level.toLowerCase(), (...args: QuickJSHandle[]) => {
+        const message = args.map(arg => this.stringify(context.dump(arg))).join(' ');
+        consoleOutput.push({ level, message });
+      });
+    };
+
+    const methods: ConsoleLevel[] = ['LOG', 'WARN', 'ERROR', 'INFO', 'DEBUG'];
+    for (const level of methods) {
+      const methodHandle = createConsoleMethod(level);
+      context.setProp(consoleHandle, level.toLowerCase(), methodHandle);
+      methodHandle.dispose();
+    }
+
+    context.setProp(context.global, 'console', consoleHandle);
+    consoleHandle.dispose();
   }
 
   private stringify(value: unknown): string {
@@ -96,21 +191,12 @@ class JsToolInstance {
     }
   }
 
-  private formatResult(result: unknown): ToolResult {
-    const resultStr = this.stringify(result);
-    return {
-      content: this.formatOutput(resultStr),
-    };
-  }
-
-  private formatOutput(resultStr: string): string {
+  private formatOutput(resultStr: string, consoleOutput: ConsoleEntry[]): string {
     const parts: string[] = [];
 
     // Console output with level prefixes
-    if (this.consoleOutput.length > 0) {
-      for (const entry of this.consoleOutput) {
-        parts.push(`[${entry.level}] ${entry.message}`);
-      }
+    for (const entry of consoleOutput) {
+      parts.push(`[${entry.level}] ${entry.message}`);
     }
 
     // Result section
@@ -127,7 +213,7 @@ class JsToolInstance {
   }
 }
 
-// Singleton instance (stateless, can be shared)
+// Singleton instance
 let instance: JsToolInstance | null = null;
 
 /**
@@ -148,6 +234,7 @@ export function initJsTool(): void {
 export function disposeJsTool(): void {
   if (!instance) return;
 
+  instance.disposeSession();
   toolRegistry.unregister('javascript');
   instance = null;
 }
@@ -159,17 +246,43 @@ export function isJsToolInitialized(): boolean {
   return instance !== null;
 }
 
+/**
+ * Create a persistent JS session for the agentic loop.
+ * State persists across multiple tool calls until disposeJsSession is called.
+ */
+export async function createJsSession(): Promise<void> {
+  if (!instance) {
+    throw new Error('JavaScript tool not initialized');
+  }
+  await instance.createSession();
+}
+
+/**
+ * Check if a JS session is active.
+ */
+export function hasJsSession(): boolean {
+  return instance?.hasSession() ?? false;
+}
+
+/**
+ * Dispose the current JS session.
+ * Call this when the agentic loop completes.
+ */
+export function disposeJsSession(): void {
+  instance?.disposeSession();
+}
+
 /** Render JS tool input - show code directly */
 function renderJsInput(input: Record<string, unknown>): string {
   const code = input.code;
-  const timeout = input.timeout_ms;
+  const ephemeral = input.ephemeral;
 
   const lines: string[] = [];
   if (typeof code === 'string') {
     lines.push(code);
   }
-  if (typeof timeout === 'number' && timeout !== 5000) {
-    lines.push(`\n[timeout: ${timeout}ms]`);
+  if (ephemeral) {
+    lines.push('\n[ephemeral]');
   }
   return lines.join('');
 }
@@ -180,8 +293,15 @@ function renderJsInput(input: Record<string, unknown>): string {
 function createJsClientSideTool(): ClientSideTool {
   return {
     name: 'javascript',
-    description:
-      'Execute JavaScript code in a secure sandbox. Returns console output and default export as result. Use for calculations, data transformations, or algorithm demonstrations.',
+    description: `
+Execute JavaScript in a QuickJS sandbox (ES2023). Returns console output and the final expression value. 
+  - Useage examples: calculations, data transformation, string manipulation, JSON processing, algorithm implementation, date manipulation.
+  - Limitations: No browser APIs (fetch, DOM, setTimeout), no network or file access. 
+  - Session state persists across tool calls within the same conversation turn, allowing you to build up state across multiple calls.
+  - Output example: \`console.log("test"); const result = 1 + 1; result\`, or just \`console.log("test"); 1 + 1\` → 
+    [LOG] test
+    === Result ===
+    2`,
     iconInput: '📜',
     iconOutput: '⚡',
     renderInput: renderJsInput,
@@ -190,12 +310,20 @@ function createJsClientSideTool(): ClientSideTool {
       properties: {
         code: {
           type: 'string',
-          description:
-            'JavaScript code to execute. Use export default to return result. For example: `const result = 1 + 1; export default result`',
+          description: `
+JavaScript code to execute. Console output and the value of the last expression will be returned.
+Examples: 
+  - \`Math.sqrt(144) + 2 ** 10\` → 1036
+  - \`JSON.parse('{"a":1}').a\` → 1,
+  - \`[1,2,3].map(x => x * 2)\` → [2,4,6]
+Note: if you want to return an object literal, it must be wrapped by parentheses, for example:
+  - \`{score: 5}\` → SyntaxError
+  - \`({score: 5})\` → {score: 5}`,
         },
-        timeout_ms: {
-          type: 'number',
-          description: 'Execution timeout in milliseconds (default: 5000)',
+        ephemeral: {
+          type: 'boolean',
+          description:
+            'Execute in an isolated context without affecting the persistent session. Useful for one-off calculations that should not pollute session state.',
         },
       },
       required: ['code'],

@@ -164,8 +164,8 @@ describe('StreamingMessage', () => {
 
       // Backstage should be collapsed during streaming
       expect(screen.getByText('▶')).toBeInTheDocument(); // Collapsed arrow
-      // Preview now contains full content (CSS whitespace-nowrap handles visual truncation)
-      expect(screen.getByText(/Line 1/)).toBeInTheDocument();
+      // Preview shows only the last line (for streaming visibility)
+      expect(screen.getByText(/Preview line/)).toBeInTheDocument();
       // The "Thinking" label in expanded segment should NOT be visible when collapsed
       expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
     });

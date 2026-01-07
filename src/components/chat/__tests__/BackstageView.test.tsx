@@ -79,20 +79,20 @@ describe('BackstageView', () => {
       expect(screen.getByText('▶')).toBeInTheDocument();
       // When collapsed, the expanded content section should not be rendered
       expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
-      // Preview (full content, CSS truncates) is shown in header
-      expect(screen.getByText(/Line 1/)).toBeInTheDocument();
+      // Preview shows last line (for streaming visibility)
+      expect(screen.getByText(/Last line/)).toBeInTheDocument();
     });
   });
 
   describe('preview text', () => {
-    it('shows full thinking content in preview (CSS handles truncation)', () => {
+    it('shows last line of thinking content in preview (for streaming visibility)', () => {
       const blocks: RenderingContentBlock[] = [
         { type: 'thinking', thinking: 'Line 1\nLine 2\nLast line preview' },
       ];
       render(<BackstageView blocks={blocks} />);
 
-      // Preview contains full content (CSS whitespace-nowrap collapses newlines visually)
-      expect(screen.getByText(/Line 1/)).toBeInTheDocument();
+      // Preview shows only the last line so streaming content is visible
+      expect(screen.getByText(/Last line preview/)).toBeInTheDocument();
     });
 
     it('shows quoted query as preview when block is web_search', () => {

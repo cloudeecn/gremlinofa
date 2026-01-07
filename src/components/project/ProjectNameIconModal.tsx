@@ -11,6 +11,8 @@ interface ProjectNameIconModalProps {
   onCancel: () => void;
 }
 
+const DEFAULT_ICON = '📁';
+
 export default function ProjectNameIconModal({
   isOpen,
   project,
@@ -19,17 +21,22 @@ export default function ProjectNameIconModal({
 }: ProjectNameIconModalProps) {
   // Initialize state from props - reset when modal opens
   const [name, setName] = useState(project.name);
-  const [icon, setIcon] = useState(project.icon || '📁');
+  // Store empty string if using default, so placeholder shows
+  const [icon, setIcon] = useState(project.icon === DEFAULT_ICON ? '' : project.icon || '');
 
   // Reset state when modal opens
   const handleModalOpen = () => {
     if (isOpen) {
       setName(project.name);
-      setIcon(project.icon || '📁');
+      // Show empty input (with placeholder) when using default icon
+      setIcon(project.icon === DEFAULT_ICON ? '' : project.icon || '');
     }
   };
 
   React.useEffect(handleModalOpen, [isOpen, project.name, project.icon]);
+
+  // Effective icon for display and comparison (empty → default)
+  const effectiveIcon = icon.trim() || DEFAULT_ICON;
 
   const handleSave = () => {
     // Validate required fields
@@ -41,7 +48,7 @@ export default function ProjectNameIconModal({
     const updatedProject: Project = {
       ...project,
       name: name.trim(),
-      icon,
+      icon: effectiveIcon,
       lastUsedAt: new Date(),
     };
 
@@ -64,28 +71,40 @@ export default function ProjectNameIconModal({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
-          {/* Project Name */}
+          {/* Project Name with Emoji Input */}
           <div className="mb-6">
             <label className="mb-2 block text-sm font-semibold text-gray-900">Project Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="Enter project name"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
-            />
+            <div className="flex gap-2">
+              {/* Emoji input */}
+              <input
+                type="text"
+                value={icon}
+                onChange={e => setIcon(e.target.value)}
+                placeholder={DEFAULT_ICON}
+                maxLength={2}
+                className="w-12 shrink-0 rounded-lg border border-gray-300 text-center text-2xl focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              />
+              {/* Name input */}
+              <input
+                type="text"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="Enter project name"
+                className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              />
+            </div>
           </div>
 
-          {/* Project Icon */}
+          {/* Icon Picker */}
           <div className="mb-6">
-            <label className="mb-2 block text-sm font-semibold text-gray-900">Project Icon</label>
+            <label className="mb-2 block text-sm font-semibold text-gray-900">Pick an icon</label>
             <div className="grid grid-cols-8 gap-2">
               {PROJECT_EMOJIS.map(emoji => (
                 <button
                   key={emoji}
-                  onClick={() => setIcon(emoji)}
+                  onClick={() => setIcon(emoji === DEFAULT_ICON ? '' : emoji)}
                   className={`flex h-12 w-12 items-center justify-center rounded-lg border-2 text-2xl transition-colors ${
-                    icon === emoji
+                    effectiveIcon === emoji
                       ? 'border-blue-500 bg-blue-50'
                       : 'border-transparent bg-white hover:bg-gray-50'
                   }`}

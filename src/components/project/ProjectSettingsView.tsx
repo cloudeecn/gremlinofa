@@ -43,9 +43,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [sendMessageMetadata, setSendMessageMetadata] = useState(
     project?.sendMessageMetadata || false
   );
-  const [metadataTimestampMode, setMetadataTimestampMode] = useState<'utc' | 'local' | 'disabled'>(
-    project?.metadataTimestampMode || 'disabled'
-  );
+  const [metadataTimestampMode, setMetadataTimestampMode] = useState<
+    'utc' | 'local' | 'relative' | 'disabled'
+  >(project?.metadataTimestampMode || 'disabled');
   const [metadataIncludeContextWindow, setMetadataIncludeContextWindow] = useState(
     project?.metadataIncludeContextWindow || false
   );
@@ -441,6 +441,21 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                   />
                   <label htmlFor="timestampLocal" className="cursor-pointer text-sm text-gray-900">
                     Local
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="timestampRelative"
+                    type="radio"
+                    checked={metadataTimestampMode === 'relative'}
+                    onChange={() => setMetadataTimestampMode('relative')}
+                    className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                  />
+                  <label
+                    htmlFor="timestampRelative"
+                    className="cursor-pointer text-sm text-gray-900"
+                  >
+                    Relative
                   </label>
                 </div>
                 <div className="flex items-center gap-2">

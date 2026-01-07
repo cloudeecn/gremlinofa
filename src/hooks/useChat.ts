@@ -79,7 +79,11 @@ function createToolResultRenderBlock(
 /**
  * Generate metadata XML to prepend to user messages
  */
-function generateMessageMetadata(project: Project, chat: Chat): string {
+function generateMessageMetadata(
+  project: Project,
+  chat: Chat,
+  firstMessageTimestamp?: Date
+): string {
   if (!project.sendMessageMetadata) {
     return '';
   }
@@ -88,20 +92,29 @@ function generateMessageMetadata(project: Project, chat: Chat): string {
 
   // Add timestamp if enabled
   if (project.metadataTimestampMode && project.metadataTimestampMode !== 'disabled') {
-    const timezone = project.metadataTimestampMode === 'utc' ? 'UTC' : undefined;
-    const formatter = new Intl.DateTimeFormat('en-US', {
-      weekday: 'short',
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: 'numeric',
-      second: 'numeric',
-      timeZoneName: 'short',
-      timeZone: timezone,
-    });
+    if (project.metadataTimestampMode === 'relative') {
+      const now = new Date();
+      const chatStart = firstMessageTimestamp ?? now;
+      const secondsSinceChatStart = Math.floor((now.getTime() - chatStart.getTime()) / 1000);
+      metadataParts.push(
+        `<timestamp>${secondsSinceChatStart} seconds since chat start</timestamp>`
+      );
+    } else {
+      const timezone = project.metadataTimestampMode === 'utc' ? 'UTC' : undefined;
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        weekday: 'short',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric',
+        second: 'numeric',
+        timeZoneName: 'short',
+        timeZone: timezone,
+      });
 
-    metadataParts.push(`<timestamp>${formatter.format(new Date())}</timestamp>`);
+      metadataParts.push(`<timestamp>${formatter.format(new Date())}</timestamp>`);
+    }
   }
 
   // Add context window usage if enabled
@@ -485,7 +498,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     }
 
     // Generate metadata if enabled and prepend to message
-    const metadata = generateMessageMetadata(currentProject, currentChat);
+    const firstMessageTimestamp =
+      currentMessages.length > 0 ? currentMessages[0].timestamp : undefined;
+    const metadata = generateMessageMetadata(currentProject, currentChat, firstMessageTimestamp);
     const messageWithMetadata = metadata + messageText;
 
     // Extract attachment IDs if any

@@ -27,6 +27,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formName, setFormName] = useState('');
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [formApiKey, setFormApiKey] = useState('');
+  const [formIsLocal, setFormIsLocal] = useState(false);
 
   // WebGPU capability state
   const [webgpuCapabilities, setWebgpuCapabilities] = useState<WebGPUCapabilities | null>(null);
@@ -46,13 +47,14 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormName('');
     setFormBaseUrl('');
     setFormApiKey('');
+    setFormIsLocal(false);
   };
 
   const apiTypes = [
     { id: APIType.RESPONSES_API, name: 'OpenAI Responses', icon: '🔮' },
     { id: APIType.CHATGPT, name: 'ChatGPT', icon: '🤖' },
     { id: APIType.ANTHROPIC, name: 'Anthropic', icon: '🧠' },
-    { id: APIType.WEBLLM, name: 'WebLLM (Local)', icon: '🧊' },
+    { id: APIType.WEBLLM, name: 'WebLLM (Local)', icon: '🏠' },
   ];
 
   // Check if API type requires an API key
@@ -71,6 +73,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormName(def.name);
     setFormBaseUrl(def.baseUrl);
     setFormApiKey(def.apiKey);
+    setFormIsLocal(def.isLocal || false);
   };
 
   const handleStartAdd = () => {
@@ -80,6 +83,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormName('');
     setFormBaseUrl('');
     setFormApiKey('');
+    setFormIsLocal(false);
   };
 
   const handleSave = async () => {
@@ -89,9 +93,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
       return;
     }
 
-    // API key is required for non-WebLLM types
-    if (requiresApiKey(formApiType) && !formApiKey.trim()) {
-      await showAlert('Error', 'API Key is required for this provider');
+    // API key is required for non-WebLLM, non-local types
+    if (requiresApiKey(formApiType) && !formIsLocal && !formApiKey.trim()) {
+      await showAlert('Error', 'API Key is required for this provider (or mark as Local)');
       return;
     }
 
@@ -108,6 +112,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
       baseUrl: formBaseUrl.trim(),
       apiKey: formApiKey.trim(),
       isDefault: editingId ? apiDefinitions.find(d => d.id === editingId)?.isDefault : false,
+      isLocal: formIsLocal,
       createdAt: editingId
         ? apiDefinitions.find(d => d.id === editingId)?.createdAt || new Date()
         : new Date(),
@@ -180,14 +185,14 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                 const apiTypeInfo = getApiTypeInfo(def.apiType);
                 const hasApiKey = def.apiKey && def.apiKey.trim() !== '';
                 const isEditing = editingId === def.id;
-                const needsApiKey = requiresApiKey(def.apiType);
+                const needsApiKey = requiresApiKey(def.apiType) && !def.isLocal;
 
                 // Determine status badge
                 let statusBadgeClass = '';
                 let statusText = '';
                 if (!needsApiKey) {
-                  // WebLLM - check WebGPU availability
-                  if (!hasWebGPU) {
+                  // WebLLM or isLocal - show Local badge
+                  if (def.apiType === APIType.WEBLLM && !hasWebGPU) {
                     statusBadgeClass = 'bg-yellow-100 text-yellow-800';
                     statusText = 'No WebGPU';
                   } else {
@@ -276,10 +281,23 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           onChange={e => setFormBaseUrl(e.target.value)}
                         />
 
-                        {needsApiKey ? (
+                        {requiresApiKey(def.apiType) ? (
                           <>
+                            {/* Local provider checkbox */}
+                            <label className="mb-3 flex cursor-pointer items-center">
+                              <input
+                                type="checkbox"
+                                checked={formIsLocal}
+                                onChange={e => setFormIsLocal(e.target.checked)}
+                                className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              <span className="text-sm text-gray-700">
+                                🏠 Local provider (API key optional)
+                              </span>
+                            </label>
+
                             <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                              API Key *
+                              API Key {formIsLocal ? '(Optional)' : '*'}
                             </label>
                             <input
                               type="password"
@@ -292,7 +310,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         ) : hasWebGPU ? (
                           <div className="mb-4 space-y-2">
                             <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
-                              🧊 Local model - no API key required. Models run entirely on your
+                              🏠 Local model - no API key required. Models run entirely on your
                               device using WebGPU.
                             </div>
                             {webgpuCapabilities?.adapterInfo && (
@@ -383,8 +401,21 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
 
                   {requiresApiKey(formApiType) ? (
                     <>
+                      {/* Local provider checkbox */}
+                      <label className="mb-3 flex cursor-pointer items-center">
+                        <input
+                          type="checkbox"
+                          checked={formIsLocal}
+                          onChange={e => setFormIsLocal(e.target.checked)}
+                          className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">
+                          🏠 Local provider (API key optional)
+                        </span>
+                      </label>
+
                       <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                        API Key *
+                        API Key {formIsLocal ? '(Optional)' : '*'}
                       </label>
                       <input
                         type="password"
@@ -397,7 +428,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                   ) : hasWebGPU ? (
                     <div className="mb-4 space-y-2">
                       <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
-                        🧊 Local model - no API key required. Models run entirely on your device
+                        🏠 Local model - no API key required. Models run entirely on your device
                         using WebGPU.
                       </div>
                       {webgpuCapabilities?.adapterInfo && (

@@ -47,6 +47,7 @@ export interface APIDefinition {
   baseUrl: string; // Empty means use apiType default
   apiKey: string;
   isDefault?: boolean; // Mark as default (non-deletable) definition
+  isLocal?: boolean; // Local provider - API key is optional (e.g., Ollama, LM Studio)
   createdAt: Date;
   updatedAt: Date;
 }

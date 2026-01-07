@@ -8,6 +8,7 @@ import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence
 import { processImages } from '../../utils/imageProcessor';
 import ModelSelector from './ModelSelector';
 import ProjectNameIconModal from './ProjectNameIconModal';
+import SystemPromptModal from './SystemPromptModal';
 
 interface ProjectViewProps {
   projectId: string;
@@ -52,9 +53,12 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
 
   const [showSettings, setShowSettings] = useState(false);
   const [showNameIcon, setShowNameIcon] = useState(false);
+  const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
+  const [showSystemPrompt, setShowSystemPrompt] = useState(false);
   const [newChatApiDefId, setNewChatApiDefId] = useState<string | null>(null);
   const [newChatModelId, setNewChatModelId] = useState<string | null>(null);
   const [showNewChatModelSelector, setShowNewChatModelSelector] = useState(false);
+  const settingsDropdownRef = useRef<HTMLDivElement>(null);
 
   // Reset new chat model override when project changes
   useEffect(() => {
@@ -97,6 +101,18 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
       return () => clearTimeout(timer);
     }
   }, [validationError]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    if (!showSettingsDropdown) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (settingsDropdownRef.current && !settingsDropdownRef.current.contains(e.target as Node)) {
+        setShowSettingsDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showSettingsDropdown]);
 
   if (!project) return null;
 
@@ -201,6 +217,11 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
     setShowNewChatModelSelector(false);
   };
 
+  const handleSystemPromptSave = async (value: string) => {
+    await updateProject({ ...project, systemPrompt: value });
+    setShowSystemPrompt(false);
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Header with safe area */}
@@ -216,26 +237,54 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
             </button>
           )}
           <div className="flex min-w-0 flex-1 flex-col items-center justify-center">
-            <button
-              onClick={() => setShowNameIcon(true)}
-              className="flex items-center gap-2 rounded-lg px-2 py-1 transition-colors hover:bg-gray-50"
-            >
+            <div className="flex items-center gap-1">
               <span className="text-lg">{project.icon || '📁'}</span>
               <h1 className="truncate text-lg font-semibold text-gray-900">{project.name}</h1>
-            </button>
-            <button
-              onClick={() => setShowSettings(true)}
-              className="truncate text-xs text-gray-600 transition-colors hover:text-blue-600"
-            >
-              {project.modelId || 'No model configured'} ▼
-            </button>
+              <button
+                onClick={() => setShowNameIcon(true)}
+                className="ml-1 flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                title="Edit project name"
+              >
+                <span className="text-sm">✏️</span>
+              </button>
+            </div>
+            <span className="truncate text-xs text-gray-500">
+              {project.modelId || 'set default model in project settings →'}
+            </span>
           </div>
-          <button
-            onClick={() => setShowSettings(true)}
-            className="flex h-11 w-11 items-center justify-center text-gray-600 hover:text-gray-900"
-          >
-            <span className="text-2xl">🔧</span>
-          </button>
+          {/* Settings Dropdown */}
+          <div ref={settingsDropdownRef} className="relative">
+            <button
+              onClick={() => setShowSettingsDropdown(prev => !prev)}
+              className="flex h-11 w-11 items-center justify-center text-gray-600 hover:text-gray-900"
+            >
+              <span className="text-2xl">🔧</span>
+            </button>
+            {showSettingsDropdown && (
+              <div className="absolute top-full right-0 z-10 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                <button
+                  onClick={() => {
+                    setShowSettingsDropdown(false);
+                    setShowSettings(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  <span>⚙️</span>
+                  <span>Project Settings</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSettingsDropdown(false);
+                    setShowSystemPrompt(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  <span>📝</span>
+                  <span>Project Instructions</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -248,6 +297,15 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
           setShowNameIcon(false);
         }}
         onCancel={() => setShowNameIcon(false)}
+      />
+
+      {/* System Prompt Modal */}
+      <SystemPromptModal
+        isOpen={showSystemPrompt}
+        projectId={projectId}
+        initialValue={project.systemPrompt || ''}
+        onSave={handleSystemPromptSave}
+        onCancel={() => setShowSystemPrompt(false)}
       />
 
       {/* New Chat Input Area */}

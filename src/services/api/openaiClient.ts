@@ -12,6 +12,7 @@ import type {
 
 import { APIType, groupAndConsolidateBlocks, MessageRole } from '../../types';
 import { generateUniqueId } from '../../utils/idGenerator';
+import { mapReasoningEffort } from '../../utils/reasoningEffort';
 import { toolRegistry } from '../tools/clientSideTools';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import type { ModelInfo } from './modelInfo';
@@ -93,6 +94,8 @@ export class OpenAIClient implements APIClient {
       maxTokens: number;
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      reasoningSummary?: 'auto' | 'concise' | 'detailed';
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
@@ -107,7 +110,6 @@ export class OpenAIClient implements APIClient {
         baseURL: apiDefinition.baseUrl || undefined,
       });
 
-      const reasoningEffort = this.getReasoningEffort(options.reasoningBudgetTokens);
       // Convert our message format to OpenAI's format
       const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [];
 
@@ -223,7 +225,7 @@ export class OpenAIClient implements APIClient {
         requestParams.tools = [...(requestParams.tools || []), ...clientToolDefs];
       }
 
-      this.applyReasoning(requestParams, options, reasoningEffort);
+      this.applyReasoning(requestParams, options);
 
       // Track streamed content and token usage
       let streamedContent = '';
@@ -482,58 +484,79 @@ export class OpenAIClient implements APIClient {
 
   protected applyReasoning(
     requestParams: ChatCompletionCreateParams,
-    options: { enableReasoning: boolean; temperature: number },
-    effort: 'low' | 'medium' | 'high'
+    options: {
+      temperature?: number;
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+    }
   ) {
-    const modelId = requestParams.model;
+    const modelId = requestParams.model || '';
+    const effort = options.reasoningEffort;
+
+    if (options.temperature) requestParams.temperature = options.temperature;
+
+    // Non-reasoning models - early return
+    if (modelId.includes('gpt-5') && modelId.includes('-chat')) {
+      return;
+    }
+    if (modelId.startsWith('grok-4') && modelId.includes('non-reasoning')) {
+      return;
+    }
+
+    // OpenAI o-series: map to low/medium/high
     if (modelId.startsWith('o')) {
-      // o-series are reasoning only
-      requestParams.reasoning_effort = effort;
-      return;
-    }
-    if (modelId.startsWith('gpt-5') && !modelId.startsWith('gpt-5-chat')) {
-      // gpt-5 is reasoning only, but can use reasoning_effort minimal to minimize reasoning
-      requestParams.reasoning_effort = options.enableReasoning ? effort : 'minimal';
-
-      return;
-    }
-
-    if (modelId.startsWith('grok-3-mini')) {
-      if (options.enableReasoning) {
-        requestParams.reasoning_effort = effort === 'high' ? 'high' : 'low';
-      } else {
-        requestParams.temperature = options.temperature;
+      const mappedEffort = mapReasoningEffort(effort, ['low', 'medium', 'high'] as const);
+      if (mappedEffort !== undefined) {
+        requestParams.reasoning_effort = mappedEffort;
       }
       return;
     }
 
-    if (modelId.startsWith('grok-4-fast-non-reasoning')) {
-      // No reasoning model
-      requestParams.temperature = options.temperature;
+    // gpt-5.1/5.2: all efforts supported
+    if (modelId.startsWith('gpt-5.1') || modelId.startsWith('gpt-5.2')) {
+      const mappedEffort = mapReasoningEffort(effort, [
+        'none',
+        'minimal',
+        'low',
+        'medium',
+        'high',
+      ] as const);
+      if (mappedEffort !== undefined) {
+        requestParams.reasoning_effort = mappedEffort;
+      }
       return;
     }
 
-    if (modelId.startsWith('grok-4')) {
-      // Grok 4 does not have a reasoning_effort parameter and supports only reasoning.
-      // Nor grok-4-fast-reasoning, so nothing to deal with them at all.
+    // gpt-5: all except 'none'
+    if (modelId.startsWith('gpt-5')) {
+      const mappedEffort = mapReasoningEffort(effort, [
+        'minimal',
+        'low',
+        'medium',
+        'high',
+      ] as const);
+      if (mappedEffort !== undefined) {
+        requestParams.reasoning_effort = mappedEffort;
+      }
       return;
     }
-    requestParams.temperature = options.temperature;
+
+    // xAI grok-3-mini: only low/high
+    if (modelId.startsWith('grok-3-mini')) {
+      const mappedEffort = mapReasoningEffort(effort, ['low', 'high'] as const);
+      if (mappedEffort !== undefined) {
+        requestParams.reasoning_effort = mappedEffort;
+      }
+      return;
+    }
+
+    // xAI grok-4: reasoning-only, no effort param
+    if (modelId.startsWith('grok-4')) {
+      return;
+    }
   }
 
   protected systemPromptRole(_modelId: string): 'developer' | 'system' {
     return 'system';
-  }
-
-  private getReasoningEffort(reasoningBudgetTokens: number): 'low' | 'medium' | 'high' {
-    // Map reasoningBudgetTokens to effort level
-    if (reasoningBudgetTokens <= 1024) {
-      return 'low';
-    }
-    if (reasoningBudgetTokens <= 4096) {
-      return 'medium';
-    }
-    return 'high';
   }
 
   calculateCost(

@@ -256,6 +256,7 @@ describe('ResponsesClient', () => {
         maxTokens: 2048,
         enableReasoning: true,
         reasoningBudgetTokens: 4096,
+        reasoningEffort: 'medium',
       });
 
       // Consume the generator
@@ -270,7 +271,7 @@ describe('ResponsesClient', () => {
           model: 'o3-mini',
           stream: false,
           reasoning: expect.objectContaining({
-            effort: 'medium', // 4096 maps to medium
+            effort: 'medium',
           }),
         })
       );

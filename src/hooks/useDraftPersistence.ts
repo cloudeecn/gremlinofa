@@ -1,15 +1,47 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 
 const DRAFT_KEY = 'draft';
 const DEBOUNCE_MS = 500;
 
 interface UseDraftPersistenceOptions {
-  place: 'chatview' | 'project-chat' | 'project-instructions';
+  place: 'chatview' | 'project-chat' | 'project-instructions' | 'system-prompt-modal';
   contextId: string; // chatId, projectId, etc.
   value: string;
   onChange: (value: string) => void;
   enabled?: boolean; // Allow disabling persistence (default: true)
+  initialDbValue?: string; // Original value from DB (for detecting draft differences)
 }
+
+interface UseDraftPersistenceResult {
+  /** True when a draft was restored that differs from the DB value */
+  hasDraftDifference: boolean;
+}
+
+// Store for tracking draft differences (keyed by place|contextId)
+const draftDifferenceStore = {
+  subscribers: new Set<() => void>(),
+  values: new Map<string, boolean>(),
+  subscribe(callback: () => void) {
+    draftDifferenceStore.subscribers.add(callback);
+    return () => draftDifferenceStore.subscribers.delete(callback);
+  },
+  get(key: string): boolean {
+    return draftDifferenceStore.values.get(key) ?? false;
+  },
+  set(key: string, value: boolean) {
+    const prev = draftDifferenceStore.values.get(key);
+    if (prev !== value) {
+      draftDifferenceStore.values.set(key, value);
+      draftDifferenceStore.subscribers.forEach(cb => cb());
+    }
+  },
+  clear(key: string) {
+    if (draftDifferenceStore.values.has(key)) {
+      draftDifferenceStore.values.delete(key);
+      draftDifferenceStore.subscribers.forEach(cb => cb());
+    }
+  },
+};
 
 /**
  * Hook to persist draft text to localStorage with debouncing.
@@ -20,15 +52,17 @@ interface UseDraftPersistenceOptions {
  * - Saves to localStorage after 500ms of inactivity
  * - Restores draft when component mounts (if context matches)
  * - Clears draft when context changes
+ * - Returns `hasDraftDifference` when restored draft differs from initialDbValue
  *
  * Usage:
  * ```ts
  * const [inputMessage, setInputMessage] = useState('');
- * useDraftPersistence({
+ * const { hasDraftDifference } = useDraftPersistence({
  *   place: 'chatview',
  *   contextId: chatId,
  *   value: inputMessage,
  *   onChange: setInputMessage,
+ *   initialDbValue: '', // optional: for detecting draft differences
  * });
  *
  * // Clear draft on submit:
@@ -44,10 +78,19 @@ export function useDraftPersistence({
   value,
   onChange,
   enabled = true,
-}: UseDraftPersistenceOptions) {
+  initialDbValue,
+}: UseDraftPersistenceOptions): UseDraftPersistenceResult {
   const debounceTimerRef = useRef<number | null>(null);
   const initializedRef = useRef(false);
   const lastContextIdRef = useRef<string>(contextId);
+  const storeKey = `${place}|${contextId}`;
+
+  // Subscribe to draft difference store for re-renders
+  const hasDraftDifference = useSyncExternalStore(
+    draftDifferenceStore.subscribe,
+    () => draftDifferenceStore.get(storeKey),
+    () => false
+  );
 
   // Restore draft on mount (only once)
   useEffect(() => {
@@ -65,11 +108,16 @@ export function useDraftPersistence({
       if (storedPlace === place && storedContextId === contextId && storedContent) {
         console.debug(`[useDraftPersistence] Restoring draft for ${place}/${contextId}`);
         onChange(storedContent);
+
+        // Check if restored draft differs from DB value
+        if (initialDbValue !== undefined && storedContent !== initialDbValue) {
+          draftDifferenceStore.set(storeKey, true);
+        }
       }
     } catch (error) {
       console.error('[useDraftPersistence] Failed to restore draft:', error);
     }
-  }, [enabled, place, contextId, onChange]);
+  }, [enabled, place, contextId, onChange, initialDbValue, storeKey]);
 
   // Clear draft when context changes
   useEffect(() => {
@@ -79,11 +127,13 @@ export function useDraftPersistence({
       console.debug(
         `[useDraftPersistence] Context changed from ${lastContextIdRef.current} to ${contextId}, clearing draft`
       );
+      const oldKey = `${place}|${lastContextIdRef.current}`;
+      draftDifferenceStore.clear(oldKey);
       clearDraft();
       lastContextIdRef.current = contextId;
       initializedRef.current = false; // Allow restoration for new context
     }
-  }, [contextId, enabled]);
+  }, [contextId, enabled, place]);
 
   // Save draft with debouncing
   useEffect(() => {
@@ -116,7 +166,14 @@ export function useDraftPersistence({
     };
   }, [enabled, place, contextId, value]);
 
-  return null; // Hook doesn't return anything
+  // Cleanup store entry on unmount
+  useEffect(() => {
+    return () => {
+      draftDifferenceStore.clear(storeKey);
+    };
+  }, [storeKey]);
+
+  return { hasDraftDifference };
 }
 
 /**
@@ -126,4 +183,13 @@ export function useDraftPersistence({
 export function clearDraft() {
   localStorage.removeItem(DRAFT_KEY);
   console.debug('[useDraftPersistence] Draft cleared');
+}
+
+/**
+ * Clear draft difference flag for a specific context.
+ * Call this when the draft is discarded or reset to DB value.
+ */
+export function clearDraftDifference(place: string, contextId: string) {
+  const key = `${place}|${contextId}`;
+  draftDifferenceStore.clear(key);
 }

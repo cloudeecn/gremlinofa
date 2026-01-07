@@ -134,12 +134,14 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 Projects organize chats with shared settings:
 
 - **Name** and **Icon** (default: 📁)
-- **System prompt** and **Pre-fill response**
+- **System prompt** (via `SystemPromptModal`) and **Pre-fill response** (in Advanced section)
 - **Default API definition/model** (required)
-- **Reasoning**: enable toggle + budget tokens (default: 2047)
+- **Anthropic reasoning**: enable toggle + budget tokens (default: 1024)
+- **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
 - **Message metadata**: timestamp mode (UTC/Local/Disabled), context window usage, current cost
-- **Advanced**: temperature, max output tokens (default: 2048)
+- **Tools**: Memory (Anthropic only), JavaScript Execution
+- **Advanced** (collapsed): temperature, max output tokens (default: 1536)
 
 ### Chats
 
@@ -256,6 +258,19 @@ public/             # Static assets and PWA icons
 
 - `APIType` = protocol/client template (ChatGPT, Anthropic, WebLLM)
 - `APIDefinition` = configured instance (e.g., "xAI", "OpenRouter")
+
+**StreamOptions** (in `baseClient.ts`):
+
+- `temperature?: number` - Model temperature
+- `maxTokens: number` - Max output tokens
+- `enableReasoning: boolean` - Anthropic: enable thinking blocks
+- `reasoningBudgetTokens: number` - Anthropic: budget for thinking
+- `reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'` - OpenAI/Responses: reasoning effort level (`undefined` = auto)
+- `reasoningSummary?: 'auto' | 'concise' | 'detailed'` - OpenAI/Responses: summary mode (`undefined` = auto)
+- `systemPrompt?: string` - System prompt
+- `preFillResponse?: string` - Pre-fill assistant response (Anthropic only)
+- `webSearchEnabled?: boolean` - Enable web search
+- `enabledTools?: string[]` - Enabled client-side tools
 
 **API Clients:**
 
@@ -511,10 +526,17 @@ MessageList.tsx                    # Container with virtual scrolling
 - Mobile: Overlay drawer, hamburger menu per view
 - `useIsMobile()` hook for responsive components (no prop drilling)
 
+**Provider-Specific Settings Pattern:**
+
+Settings that apply to the currently selected API provider appear in the main section. Settings for other providers appear in a collapsible "Other Provider Config" section. For example, when using an Anthropic model, Anthropic reasoning (enable + budget) appears in Reasoning section, while OpenAI reasoning (effort + summary) appears in Other Provider Config. This keeps the UI focused while still allowing pre-configuration of all providers.
+
 **Draft Persistence:**
 
 - localStorage with key format: `<place>|<contextId>|<content>`
 - Auto-save (500ms debounce), auto-restore on mount, auto-clear on context change
+- Places: `chatview`, `project-chat`, `project-instructions`, `system-prompt-modal`
+- Returns `{ hasDraftDifference }` - true when restored draft differs from `initialDbValue`
+- Helper functions: `clearDraft()` clears localStorage, `clearDraftDifference(place, contextId)` clears difference flag
 
 ### ID Generation & Race Protection
 

@@ -11,6 +11,7 @@ import {
   type ImportProgressCallback,
 } from '../utils/dataImport';
 import { encryptionService } from '../services/encryption/encryptionService';
+import { cleanupExpiredDrafts } from '../hooks/useDraftPersistence';
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [apiDefinitions, setAPIDefinitions] = useState<APIDefinition[]>([]);
@@ -29,6 +30,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const initializeApp = async () => {
     try {
       console.debug('[AppContext] Starting app initialization...');
+
+      // Clean up expired drafts early in initialization
+      cleanupExpiredDrafts();
+
       await storage.initialize();
       console.debug('[AppContext] Storage initialized, refreshing API definitions...');
       await refreshAPIDefinitions();

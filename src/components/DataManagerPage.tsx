@@ -13,6 +13,7 @@ import {
   type StorageConfig,
 } from '../services/storage/storageConfig';
 import { encryptionService } from '../services/encryption/encryptionService';
+import { clearAllDrafts } from '../hooks/useDraftPersistence';
 import { ImportDataModal } from './ImportDataModal';
 
 interface DataManagerPageProps {
@@ -125,6 +126,7 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
       'Detach'
     );
     if (confirmed) {
+      clearAllDrafts();
       await encryptionService.clearCEK();
       clearStorageConfig();
       window.location.reload();

@@ -163,7 +163,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     };
 
     await updateProject(updatedProject);
-    clearDraft(); // Clear draft when settings are saved
+    clearDraft('system-prompt-modal', projectId); // Clear draft when settings are saved
     navigate(`/project/${projectId}`);
   };
 

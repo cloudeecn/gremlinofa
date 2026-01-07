@@ -18,8 +18,9 @@ interface SystemPromptModalProps {
  * Get initial value for system prompt, checking for draft first.
  */
 function getInitialSystemPrompt(projectId: string, dbValue: string): string {
-  const stored = localStorage.getItem('draft');
-  if (stored?.startsWith(`system-prompt-modal|${projectId}|`)) {
+  const draftKey = `draft_system-prompt-modal_${projectId}`;
+  const stored = localStorage.getItem(draftKey);
+  if (stored) {
     // Draft exists for this project, will be restored by useDraftPersistence
     // Return dbValue as placeholder; onChange will update it
     return dbValue;
@@ -51,7 +52,7 @@ export default function SystemPromptModal({
   });
 
   const handleSave = useCallback(() => {
-    clearDraft();
+    clearDraft('system-prompt-modal', projectId);
     clearDraftDifference('system-prompt-modal', projectId);
     onSave(systemPrompt);
   }, [systemPrompt, projectId, onSave]);
@@ -62,7 +63,7 @@ export default function SystemPromptModal({
   }, [onCancel]);
 
   const handleDiscardDraft = useCallback(() => {
-    clearDraft();
+    clearDraft('system-prompt-modal', projectId);
     clearDraftDifference('system-prompt-modal', projectId);
     setSystemPrompt(initialValue);
   }, [projectId, initialValue]);

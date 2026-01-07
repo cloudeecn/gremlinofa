@@ -241,7 +241,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
     setInputMessage('');
     setAttachments([]); // Clear attachments
-    clearDraft(); // Clear draft when message is sent
+    clearDraft('chatview', chatId); // Clear draft when message is sent
 
     await sendMessage(chatId, messageText, processedAttachments);
   };

@@ -190,7 +190,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
       setNewChatMessage('');
       setAttachments([]);
       setValidationError('');
-      clearDraft(); // Clear draft when chat is created
+      clearDraft('project-chat', projectId); // Clear draft when chat is created
       // Reset model override after creating chat
       setNewChatApiDefId(null);
       setNewChatModelId(null);

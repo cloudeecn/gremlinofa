@@ -533,11 +533,15 @@ Settings that apply to the currently selected API provider appear in the main se
 
 **Draft Persistence:**
 
-- localStorage with key format: `<place>|<contextId>|<content>`
+- localStorage with multi-key format: `draft_<place>_<contextId>` → `{ content, createdAt }`
 - Auto-save (500ms debounce), auto-restore on mount, auto-clear on context change
-- Places: `chatview`, `project-chat`, `project-instructions`, `system-prompt-modal`
+- Places: `chatview`, `project-chat`, `system-prompt-modal`
 - Returns `{ hasDraftDifference }` - true when restored draft differs from `initialDbValue`
-- Helper functions: `clearDraft()` clears localStorage, `clearDraftDifference(place, contextId)` clears difference flag
+- Helper functions:
+  - `clearDraft(place, contextId)` - clears specific draft
+  - `clearDraftDifference(place, contextId)` - clears difference flag
+  - `clearAllDrafts()` - removes all drafts (called on purgeAllData/detach)
+  - `cleanupExpiredDrafts()` - removes drafts older than `DRAFT_MAX_AGE_MS` (24 hours), called on app init
 
 ### ID Generation & Race Protection
 

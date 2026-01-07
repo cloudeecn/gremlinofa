@@ -607,6 +607,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           maxTokens: currentProject.maxOutputTokens,
           enableReasoning: currentProject.enableReasoning,
           reasoningBudgetTokens: currentProject.reasoningBudgetTokens,
+          reasoningEffort: currentProject.reasoningEffort,
+          reasoningSummary: currentProject.reasoningSummary,
           systemPrompt: combinedSystemPrompt || undefined,
           preFillResponse: currentProject.preFillResponse,
           webSearchEnabled: currentProject.webSearchEnabled,
@@ -805,6 +807,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
             maxTokens: currentProject.maxOutputTokens,
             enableReasoning: currentProject.enableReasoning,
             reasoningBudgetTokens: currentProject.reasoningBudgetTokens,
+            reasoningEffort: currentProject.reasoningEffort,
+            reasoningSummary: currentProject.reasoningSummary,
             systemPrompt: combinedSystemPrompt || undefined,
             preFillResponse: undefined, // No prefill for continuation
             webSearchEnabled: currentProject.webSearchEnabled,

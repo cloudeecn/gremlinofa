@@ -1,13 +1,16 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { hasMemory, clearMemory } from '../../services/memory/memoryStorage';
 import { useApp } from '../../hooks/useApp';
 import { apiService } from '../../services/api/apiService';
 import { useProject } from '../../hooks/useProject';
-import type { Project } from '../../types';
+import type { Project, APIType } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
-import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
+import { clearDraft } from '../../hooks/useDraftPersistence';
 import ModelSelector from './ModelSelector';
+import SystemPromptModal from './SystemPromptModal';
+import AnthropicReasoningConfig from './AnthropicReasoningConfig';
+import OpenAIReasoningConfig from './OpenAIReasoningConfig';
 
 interface ProjectSettingsViewProps {
   projectId: string;
@@ -26,18 +29,11 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   });
 
   const [systemPrompt, setSystemPrompt] = useState(project?.systemPrompt || '');
-
-  // Draft persistence for system prompt
-  useDraftPersistence({
-    place: 'project-instructions',
-    contextId: projectId,
-    value: systemPrompt,
-    onChange: setSystemPrompt,
-  });
+  const [showSystemPromptModal, setShowSystemPromptModal] = useState(false);
   const [preFillResponse, setPreFillResponse] = useState(project?.preFillResponse || '');
   const [enableReasoning, setEnableReasoning] = useState(project?.enableReasoning || false);
   const [reasoningBudgetTokens, setReasoningBudgetTokens] = useState(
-    project?.reasoningBudgetTokens.toString() || '2048'
+    project?.reasoningBudgetTokens.toString() || '1024'
   );
   const [webSearchEnabled, setWebSearchEnabled] = useState(project?.webSearchEnabled || false);
   const [sendMessageMetadata, setSendMessageMetadata] = useState(
@@ -56,11 +52,19 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [jsExecutionEnabled, setJsExecutionEnabled] = useState(
     project?.jsExecutionEnabled || false
   );
+  const [reasoningEffort, setReasoningEffort] = useState<
+    'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined
+  >(project?.reasoningEffort);
+  const [reasoningSummary, setReasoningSummary] = useState<
+    'auto' | 'concise' | 'detailed' | undefined
+  >(project?.reasoningSummary);
   const [projectHasMemory, setProjectHasMemory] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showOtherProviderConfig, setShowOtherProviderConfig] = useState(false);
+  const [showDangerZone, setShowDangerZone] = useState(false);
   const [temperature, setTemperature] = useState(project?.temperature?.toString() || '');
   const [maxOutputTokens, setMaxOutputTokens] = useState(
-    project?.maxOutputTokens.toString() || '2048'
+    project?.maxOutputTokens.toString() || '1536'
   );
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [selectedApiDefId, setSelectedApiDefId] = useState(project?.apiDefinitionId || null);
@@ -73,7 +77,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setSystemPrompt(project.systemPrompt || '');
       setPreFillResponse(project.preFillResponse || '');
       setEnableReasoning(project.enableReasoning || false);
-      setReasoningBudgetTokens(project.reasoningBudgetTokens.toString() || '2048');
+      setReasoningBudgetTokens(project.reasoningBudgetTokens.toString() || '1024');
       setWebSearchEnabled(project.webSearchEnabled || false);
       setSendMessageMetadata(project.sendMessageMetadata || false);
       setMetadataTimestampMode(project.metadataTimestampMode || 'disabled');
@@ -81,8 +85,10 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setMetadataIncludeCost(project.metadataIncludeCost || false);
       setMemoryEnabled(project.memoryEnabled || false);
       setJsExecutionEnabled(project.jsExecutionEnabled || false);
+      setReasoningEffort(project.reasoningEffort);
+      setReasoningSummary(project.reasoningSummary);
       setTemperature(project.temperature?.toString() || '');
-      setMaxOutputTokens(project.maxOutputTokens.toString() || '2048');
+      setMaxOutputTokens(project.maxOutputTokens.toString() || '1536');
       setSelectedApiDefId(project.apiDefinitionId || null);
       setSelectedModelId(project.modelId || null);
     }
@@ -101,14 +107,28 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
 
   // Get API definition and model names for display
   const apiDef = selectedApiDefId ? apiDefinitions.find(a => a.id === selectedApiDefId) : null;
+  const selectedApiType: APIType | null = apiDef?.apiType ?? null;
+
+  // Check if any non-WebLLM API has credentials configured
+  const hasConfiguredApis = apiDefinitions.some(
+    def => def.apiType !== 'webllm' && def.apiKey?.trim()
+  );
 
   // Detect if current model is an o-series reasoning model
   const isOSeriesModel =
     selectedModelId && selectedApiDefId && apiDef
       ? apiService.isReasoningModel(apiDef.apiType, selectedModelId)
       : false;
-  const apiDefName = apiDef?.name || 'No API';
-  const modelName = selectedModelId || 'No model';
+
+  // Check if selected API is Anthropic or OpenAI/Responses
+  const isAnthropic = selectedApiType === 'anthropic';
+  const isOpenAIOrResponses = selectedApiType === 'chatgpt' || selectedApiType === 'responses_api';
+  const isWebLLM = selectedApiType === 'webllm';
+  const hasModelSelected = !!selectedModelId;
+
+  const modelDisplayText = hasModelSelected
+    ? `${apiDef?.name || 'Unknown'} • ${selectedModelId}`
+    : 'Select a model to get started';
 
   const handleSave = async () => {
     if (!project) return;
@@ -120,7 +140,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       systemPrompt,
       preFillResponse,
       enableReasoning,
-      reasoningBudgetTokens: parseInt(reasoningBudgetTokens) || 2048,
+      reasoningBudgetTokens: parseInt(reasoningBudgetTokens) || 1024,
       webSearchEnabled,
       sendMessageMetadata,
       metadataTimestampMode,
@@ -128,8 +148,10 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       jsExecutionEnabled,
       metadataIncludeContextWindow,
       metadataIncludeCost,
+      reasoningEffort,
+      reasoningSummary,
       temperature: temperature === '' ? null : parseFloat(temperature),
-      maxOutputTokens: parseInt(maxOutputTokens) || 2048,
+      maxOutputTokens: parseInt(maxOutputTokens) || 1536,
       lastUsedAt: new Date(),
     };
 
@@ -202,6 +224,18 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         showResetOption={false}
       />
 
+      {/* System Prompt Modal */}
+      <SystemPromptModal
+        isOpen={showSystemPromptModal}
+        projectId={projectId}
+        initialValue={project.systemPrompt || ''}
+        onSave={value => {
+          setSystemPrompt(value);
+          setShowSystemPromptModal(false);
+        }}
+        onCancel={() => setShowSystemPromptModal(false)}
+      />
+
       {/* Content */}
       <div className="ios-scroll flex-1 overflow-y-auto overscroll-y-contain p-4">
         {/* Model Configuration */}
@@ -221,327 +255,62 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
             tabIndex={0}
             className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-gray-300 bg-white p-3 transition-colors hover:border-gray-400"
           >
-            <span className="text-gray-900">
-              {apiDefName} • {modelName}
+            <span className={hasModelSelected ? 'text-gray-900' : 'text-gray-500'}>
+              {modelDisplayText}
             </span>
             <span className="text-gray-600">▼</span>
           </div>
-        </div>
-
-        {/* System Prompt */}
-        <div className="mb-6">
-          <label className="mb-2 block text-sm font-semibold text-gray-900">System Prompt</label>
-          {isOSeriesModel && (
-            <p className="mb-2 text-xs text-yellow-700 italic">
-              ⚠️ o-series models don't support system prompts - this will be converted to a user
-              message
-            </p>
-          )}
-          <textarea
-            value={systemPrompt}
-            onChange={e => setSystemPrompt(e.target.value)}
-            placeholder="Enter system prompt..."
-            rows={10}
-            className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
-          />
-        </div>
-
-        {/* Pre-fill Response */}
-        <div className="mb-6">
-          <label className="mb-2 block text-sm font-semibold text-gray-900">
-            Pre-fill Response
-          </label>
-          {isOSeriesModel && (
-            <p className="mb-2 text-xs text-yellow-700 italic">
-              ⚠️ o-series models don't support pre-fill responses - this will be ignored
-            </p>
-          )}
-          <textarea
-            value={preFillResponse}
-            onChange={e => setPreFillResponse(e.target.value)}
-            placeholder="Optional assistant response prefix"
-            rows={2}
-            className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
-          />
-        </div>
-
-        {/* Enable Reasoning */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between">
-            <label
-              htmlFor="enableReasoning"
-              className="cursor-pointer text-sm font-semibold text-gray-900"
+          {!hasConfiguredApis && (
+            <Link
+              to="/settings"
+              className="mt-2 block text-sm text-blue-600 hover:text-blue-700 hover:underline"
             >
-              Enable Reasoning
-            </label>
-            <input
-              id="enableReasoning"
-              type="checkbox"
-              checked={enableReasoning}
-              onChange={e => setEnableReasoning(e.target.checked)}
-              className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
+              ⚙️ Configure API keys to unlock more providers
+            </Link>
+          )}
         </div>
 
-        {/* Reasoning Budget Tokens */}
-        {enableReasoning && (
-          <div className="mb-6">
-            <label className="mb-2 block text-sm font-semibold text-gray-900">
-              Reasoning Budget Tokens
-            </label>
-            <input
-              type="number"
-              value={reasoningBudgetTokens}
-              onChange={e => setReasoningBudgetTokens(e.target.value)}
-              placeholder="2048"
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
-            />
-          </div>
-        )}
-
-        {/* Web Search */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between">
-            <label
-              htmlFor="webSearch"
-              className="cursor-pointer text-sm font-semibold text-gray-900"
-            >
-              Web Search Enabled
-            </label>
-            <input
-              id="webSearch"
-              type="checkbox"
-              checked={webSearchEnabled}
-              onChange={e => setWebSearchEnabled(e.target.checked)}
-              className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-        </div>
-
-        {/* Memory */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <label
-                htmlFor="memoryEnabled"
-                className="cursor-pointer text-sm font-semibold text-gray-900"
-              >
-                Enable Memory
+        {hasModelSelected && (
+          <>
+            {/* Project Instructions (System Prompt) */}
+            <div className="mb-6">
+              <label className="mb-2 block text-sm font-semibold text-gray-900">
+                Project Instructions
               </label>
-              <p className="text-xs text-gray-500">
-                Claude can remember information across conversations (Anthropic only)
-              </p>
-            </div>
-            <input
-              id="memoryEnabled"
-              type="checkbox"
-              checked={memoryEnabled}
-              onChange={e => setMemoryEnabled(e.target.checked)}
-              className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          {memoryEnabled && (
-            <div className="mt-3 flex items-center gap-2">
-              <button
-                onClick={() => navigate(`/project/${projectId}/memories`)}
-                className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
-              >
-                📂 View Memory Files
-              </button>
-              {projectHasMemory && (
-                <button
-                  onClick={async () => {
-                    const confirmed = await showDestructiveConfirm(
-                      'Clear Memory',
-                      'Delete all memory files for this project? Claude will forget everything.',
-                      'Clear'
-                    );
-                    if (confirmed) {
-                      await clearMemory(projectId);
-                      setProjectHasMemory(false);
-                    }
-                  }}
-                  className="rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
-                >
-                  🗑️ Clear
-                </button>
+              {isOSeriesModel && (
+                <p className="mb-2 text-xs text-yellow-700 italic">
+                  ⚠️ o-series models don't support system prompts - this will be converted to a user
+                  message
+                </p>
               )}
-            </div>
-          )}
-        </div>
-
-        {/* JavaScript Execution */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <label
-                htmlFor="jsExecutionEnabled"
-                className="cursor-pointer text-sm font-semibold text-gray-900"
+              <div
+                onClick={() => setShowSystemPromptModal(true)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setShowSystemPromptModal(true);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-gray-300 bg-white p-3 transition-colors hover:border-gray-400"
               >
-                Enable JavaScript Execution
-              </label>
-              <p className="text-xs text-gray-500">Execute JavaScript code in a secure sandbox</p>
-            </div>
-            <input
-              id="jsExecutionEnabled"
-              type="checkbox"
-              checked={jsExecutionEnabled}
-              onChange={e => setJsExecutionEnabled(e.target.checked)}
-              className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-        </div>
-
-        {/* Send Message Metadata */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between">
-            <label
-              htmlFor="sendMetadata"
-              className="cursor-pointer text-sm font-semibold text-gray-900"
-            >
-              Send Message Metadata
-            </label>
-            <input
-              id="sendMetadata"
-              type="checkbox"
-              checked={sendMessageMetadata}
-              onChange={e => setSendMessageMetadata(e.target.checked)}
-              className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-        </div>
-
-        {/* Metadata Options */}
-        {sendMessageMetadata && (
-          <div className="mb-6 ml-4 space-y-6 border-l-2 border-gray-200 pl-4">
-            {/* Timestamp Mode */}
-            <div>
-              <label className="mb-2 block text-sm font-semibold text-gray-900">Timestamp</label>
-              <div className="flex gap-4">
-                <div className="flex items-center gap-2">
-                  <input
-                    id="timestampUtc"
-                    type="radio"
-                    checked={metadataTimestampMode === 'utc'}
-                    onChange={() => setMetadataTimestampMode('utc')}
-                    className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                  />
-                  <label htmlFor="timestampUtc" className="cursor-pointer text-sm text-gray-900">
-                    UTC
-                  </label>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="timestampLocal"
-                    type="radio"
-                    checked={metadataTimestampMode === 'local'}
-                    onChange={() => setMetadataTimestampMode('local')}
-                    className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                  />
-                  <label htmlFor="timestampLocal" className="cursor-pointer text-sm text-gray-900">
-                    Local
-                  </label>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="timestampRelative"
-                    type="radio"
-                    checked={metadataTimestampMode === 'relative'}
-                    onChange={() => setMetadataTimestampMode('relative')}
-                    className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                  />
-                  <label
-                    htmlFor="timestampRelative"
-                    className="cursor-pointer text-sm text-gray-900"
-                  >
-                    Relative
-                  </label>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="timestampDisabled"
-                    type="radio"
-                    checked={metadataTimestampMode === 'disabled'}
-                    onChange={() => setMetadataTimestampMode('disabled')}
-                    className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                  />
-                  <label
-                    htmlFor="timestampDisabled"
-                    className="cursor-pointer text-sm text-gray-900"
-                  >
-                    Disabled
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            {/* Context Window */}
-            <div>
-              <div className="flex items-center justify-between">
-                <label
-                  htmlFor="includeContextWindow"
-                  className="cursor-pointer text-sm font-semibold text-gray-900"
+                <span
+                  className={`min-w-0 flex-1 truncate ${systemPrompt ? 'text-gray-900' : 'text-gray-500'}`}
                 >
-                  Include Context Window Usage
-                </label>
-                <input
-                  id="includeContextWindow"
-                  type="checkbox"
-                  checked={metadataIncludeContextWindow}
-                  onChange={e => setMetadataIncludeContextWindow(e.target.checked)}
-                  className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-                />
+                  {systemPrompt || 'Configure system prompt...'}
+                </span>
+                <span className="ml-2 flex-shrink-0 text-gray-600">✏️</span>
               </div>
             </div>
 
-            {/* Cost */}
-            <div>
-              <div className="flex items-center justify-between">
-                <label
-                  htmlFor="includeCost"
-                  className="cursor-pointer text-sm font-semibold text-gray-900"
-                >
-                  Include Current Cost
-                </label>
-                <input
-                  id="includeCost"
-                  type="checkbox"
-                  checked={metadataIncludeCost}
-                  onChange={e => setMetadataIncludeCost(e.target.checked)}
-                  className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Advanced Section */}
-        <div
-          onClick={() => setShowAdvanced(!showAdvanced)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setShowAdvanced(!showAdvanced);
-            }
-          }}
-          role="button"
-          tabIndex={0}
-          className="mb-4 flex w-full cursor-pointer items-center justify-between rounded-lg border border-gray-200 bg-white p-4 transition-colors hover:border-gray-300"
-        >
-          <span className="text-base font-semibold text-gray-900">Advanced</span>
-          <span className="text-gray-600">{showAdvanced ? '▼' : '▶'}</span>
-        </div>
-
-        {showAdvanced && (
-          <div className="mb-6 space-y-6">
-            {/* Temperature */}
-            <div>
+            {/* Temperature - moved here for prominence */}
+            <div className="mb-6">
               <label className="mb-2 block text-sm font-semibold text-gray-900">
                 Temperature (0-1)
               </label>
-              <p className="mb-2 text-xs text-yellow-700 italic">
-                ⚠️ Temperature is ignored by most reasoning models
+              <p className="mb-2 text-xs text-gray-500">
+                Lower values (0.3) may help WebLLM. Ignored by most reasoning models.
               </p>
               <input
                 type="number"
@@ -555,34 +324,427 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
               />
             </div>
 
-            {/* Max Output Tokens */}
-            <div>
-              <label className="mb-2 block text-sm font-semibold text-gray-900">
-                Max Output Tokens
+            {/* Reasoning Section - Dynamic based on API type */}
+            {isAnthropic && (
+              <div className="mb-6">
+                <AnthropicReasoningConfig
+                  enableReasoning={enableReasoning}
+                  setEnableReasoning={setEnableReasoning}
+                  reasoningBudgetTokens={reasoningBudgetTokens}
+                  setReasoningBudgetTokens={setReasoningBudgetTokens}
+                  maxOutputTokens={maxOutputTokens}
+                  showHeader={true}
+                />
+              </div>
+            )}
+            {isOpenAIOrResponses && (
+              <div className="mb-6">
+                <OpenAIReasoningConfig
+                  reasoningEffort={reasoningEffort}
+                  setReasoningEffort={setReasoningEffort}
+                  reasoningSummary={reasoningSummary}
+                  setReasoningSummary={setReasoningSummary}
+                  showHeader={true}
+                />
+              </div>
+            )}
+
+            {/* Metadata Section */}
+            <div className="mb-6 overflow-hidden rounded-lg border border-gray-200">
+              {/* Section Header - full width clickable */}
+              <label className="flex w-full cursor-pointer items-center justify-between bg-gray-50 px-4 py-3">
+                <span className="text-sm font-semibold text-gray-900">Message Metadata</span>
+                <input
+                  type="checkbox"
+                  checked={sendMessageMetadata}
+                  onChange={e => setSendMessageMetadata(e.target.checked)}
+                  className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                />
               </label>
-              <input
-                type="number"
-                value={maxOutputTokens}
-                onChange={e => setMaxOutputTokens(e.target.value)}
-                placeholder="2048"
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
-              />
+              {/* Section Content */}
+              {sendMessageMetadata && (
+                <div className="space-y-4 bg-white p-4">
+                  {/* Timestamp Mode */}
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-900">
+                      Timestamp
+                    </label>
+                    <div className="flex flex-wrap gap-4">
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="timestampUtc"
+                          type="radio"
+                          checked={metadataTimestampMode === 'utc'}
+                          onChange={() => setMetadataTimestampMode('utc')}
+                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                        />
+                        <label
+                          htmlFor="timestampUtc"
+                          className="cursor-pointer text-sm text-gray-900"
+                        >
+                          UTC
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="timestampLocal"
+                          type="radio"
+                          checked={metadataTimestampMode === 'local'}
+                          onChange={() => setMetadataTimestampMode('local')}
+                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                        />
+                        <label
+                          htmlFor="timestampLocal"
+                          className="cursor-pointer text-sm text-gray-900"
+                        >
+                          Local
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="timestampRelative"
+                          type="radio"
+                          checked={metadataTimestampMode === 'relative'}
+                          onChange={() => setMetadataTimestampMode('relative')}
+                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                        />
+                        <label
+                          htmlFor="timestampRelative"
+                          className="cursor-pointer text-sm text-gray-900"
+                        >
+                          Relative
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="timestampDisabled"
+                          type="radio"
+                          checked={metadataTimestampMode === 'disabled'}
+                          onChange={() => setMetadataTimestampMode('disabled')}
+                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                        />
+                        <label
+                          htmlFor="timestampDisabled"
+                          className="cursor-pointer text-sm text-gray-900"
+                        >
+                          Disabled
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Context Window */}
+                  <div className="flex items-center justify-between">
+                    <label
+                      htmlFor="includeContextWindow"
+                      className="cursor-pointer text-sm font-medium text-gray-900"
+                    >
+                      Include Context Window Usage
+                    </label>
+                    <input
+                      id="includeContextWindow"
+                      type="checkbox"
+                      checked={metadataIncludeContextWindow}
+                      onChange={e => setMetadataIncludeContextWindow(e.target.checked)}
+                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* Cost */}
+                  <div className="flex items-center justify-between">
+                    <label
+                      htmlFor="includeCost"
+                      className="cursor-pointer text-sm font-medium text-gray-900"
+                    >
+                      Include Current Cost
+                    </label>
+                    <input
+                      id="includeCost"
+                      type="checkbox"
+                      checked={metadataIncludeCost}
+                      onChange={e => setMetadataIncludeCost(e.target.checked)}
+                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
+
+            {/* Tools Section - hidden for WebLLM */}
+            {!isWebLLM && (
+              <div className="mb-6 overflow-hidden rounded-lg border border-gray-200">
+                {/* Section Header */}
+                <div className="bg-gray-50 px-4 py-3">
+                  <span className="text-sm font-semibold text-gray-900">Tools</span>
+                </div>
+                {/* Section Content */}
+                <div className="space-y-4 bg-white p-4">
+                  {/* Server-side Tools */}
+                  <p className="text-xs font-medium tracking-wide text-gray-500 uppercase">
+                    Server-side
+                  </p>
+
+                  {/* Web Search */}
+                  <div className="flex items-center justify-between">
+                    <label
+                      htmlFor="webSearch"
+                      className="cursor-pointer text-sm font-medium text-gray-900"
+                    >
+                      Web Search
+                    </label>
+                    <input
+                      id="webSearch"
+                      type="checkbox"
+                      checked={webSearchEnabled}
+                      onChange={e => setWebSearchEnabled(e.target.checked)}
+                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* Client-side Tools */}
+                  <p className="mt-2 text-xs font-medium tracking-wide text-gray-500 uppercase">
+                    Client-side
+                  </p>
+
+                  {/* Memory */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label
+                          htmlFor="memoryEnabled"
+                          className="cursor-pointer text-sm font-medium text-gray-900"
+                        >
+                          Memory
+                        </label>
+                        <p className="text-xs text-gray-500">
+                          Claude remembers across conversations (Anthropic only)
+                        </p>
+                      </div>
+                      <input
+                        id="memoryEnabled"
+                        type="checkbox"
+                        checked={memoryEnabled}
+                        onChange={e => setMemoryEnabled(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    {memoryEnabled && (
+                      <div className="mt-3 flex items-center gap-2">
+                        <button
+                          onClick={() => navigate(`/project/${projectId}/memories`)}
+                          className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                        >
+                          📂 View Memory Files
+                        </button>
+                        {projectHasMemory && (
+                          <button
+                            onClick={async () => {
+                              const confirmed = await showDestructiveConfirm(
+                                'Clear Memory',
+                                'Delete all memory files for this project? Claude will forget everything.',
+                                'Clear'
+                              );
+                              if (confirmed) {
+                                await clearMemory(projectId);
+                                setProjectHasMemory(false);
+                              }
+                            }}
+                            className="rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
+                          >
+                            🗑️ Clear
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* JavaScript Execution */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label
+                        htmlFor="jsExecutionEnabled"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        JavaScript Execution
+                      </label>
+                      <p className="text-xs text-gray-500">Execute code in a secure sandbox</p>
+                    </div>
+                    <input
+                      id="jsExecutionEnabled"
+                      type="checkbox"
+                      checked={jsExecutionEnabled}
+                      onChange={e => setJsExecutionEnabled(e.target.checked)}
+                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Advanced Section */}
+            <div className="mb-6 overflow-hidden rounded-lg border border-gray-200">
+              {/* Section Header */}
+              <div
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setShowAdvanced(!showAdvanced);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                className="flex cursor-pointer items-center justify-between bg-gray-50 px-4 py-3 transition-colors hover:bg-gray-100"
+              >
+                <span className="text-sm font-semibold text-gray-900">Advanced</span>
+                <span className="text-gray-600">{showAdvanced ? '▼' : '▶'}</span>
+              </div>
+              {/* Section Content */}
+              {showAdvanced && (
+                <div className="space-y-4 bg-white p-4">
+                  {/* Pre-fill Response */}
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-900">
+                      Pre-fill Response
+                    </label>
+                    <p className="mb-2 text-xs text-gray-500">
+                      Start assistant replies with this text. Only Anthropic supports this reliably.
+                    </p>
+                    <textarea
+                      value={preFillResponse}
+                      onChange={e => setPreFillResponse(e.target.value)}
+                      placeholder="Optional pre-fill text..."
+                      rows={2}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Max Output Tokens */}
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-900">
+                      Max Output Tokens
+                    </label>
+                    {enableReasoning &&
+                      parseInt(maxOutputTokens) <= parseInt(reasoningBudgetTokens) && (
+                        <p className="mb-2 text-xs text-yellow-700 italic">
+                          ⚠️ Max tokens ≤ reasoning budget - will be auto-adjusted to{' '}
+                          {(parseInt(reasoningBudgetTokens) || 0) + 500} for Anthropic
+                        </p>
+                      )}
+                    <input
+                      type="number"
+                      value={maxOutputTokens}
+                      onChange={e => setMaxOutputTokens(e.target.value)}
+                      placeholder="1536"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Other Provider Config Section */}
+            <div className="mb-6 overflow-hidden rounded-lg border border-gray-200">
+              {/* Section Header */}
+              <div
+                onClick={() => setShowOtherProviderConfig(!showOtherProviderConfig)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setShowOtherProviderConfig(!showOtherProviderConfig);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                className="flex cursor-pointer items-center justify-between bg-gray-50 px-4 py-3 transition-colors hover:bg-gray-100"
+              >
+                <span className="text-sm font-semibold text-gray-900">Other Provider Config</span>
+                <span className="text-gray-600">{showOtherProviderConfig ? '▼' : '▶'}</span>
+              </div>
+              {/* Section Content */}
+              {showOtherProviderConfig && (
+                <div className="space-y-6 bg-white p-4">
+                  <p className="text-xs text-gray-500 italic">
+                    These settings apply when the model is overridden at chat level.
+                  </p>
+
+                  {/* OpenAI/Responses Reasoning (show if NOT OpenAI selected) */}
+                  {!isOpenAIOrResponses && hasModelSelected && (
+                    <div>
+                      <h4 className="mb-3 text-sm font-semibold text-gray-700">
+                        OpenAI / Responses API Reasoning
+                      </h4>
+                      <OpenAIReasoningConfig
+                        reasoningEffort={reasoningEffort}
+                        setReasoningEffort={setReasoningEffort}
+                        reasoningSummary={reasoningSummary}
+                        setReasoningSummary={setReasoningSummary}
+                        showHeader={false}
+                      />
+                    </div>
+                  )}
+
+                  {/* Anthropic Reasoning (show if NOT Anthropic selected) */}
+                  {!isAnthropic && hasModelSelected && (
+                    <div>
+                      <h4 className="mb-3 text-sm font-semibold text-gray-700">
+                        Anthropic Reasoning
+                      </h4>
+                      <AnthropicReasoningConfig
+                        enableReasoning={enableReasoning}
+                        setEnableReasoning={setEnableReasoning}
+                        reasoningBudgetTokens={reasoningBudgetTokens}
+                        setReasoningBudgetTokens={setReasoningBudgetTokens}
+                        maxOutputTokens={maxOutputTokens}
+                        showHeader={false}
+                      />
+                    </div>
+                  )}
+
+                  {/* No model selected hint */}
+                  {!hasModelSelected && (
+                    <p className="text-xs text-gray-500 italic">
+                      Select a model to see provider options
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
         )}
 
-        {/* Danger Zone */}
-        <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4">
-          <h3 className="mb-3 text-sm font-semibold text-red-900">Danger Zone</h3>
-          <button
-            onClick={handleDelete}
-            className="w-full rounded-lg bg-red-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-red-700"
+        {/* Danger Zone Section */}
+        <div className="mt-6 overflow-hidden rounded-lg border border-red-200">
+          {/* Section Header */}
+          <div
+            onClick={() => setShowDangerZone(!showDangerZone)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setShowDangerZone(!showDangerZone);
+              }
+            }}
+            role="button"
+            tabIndex={0}
+            className="flex cursor-pointer items-center justify-between bg-red-50 px-4 py-3 transition-colors hover:bg-red-100"
           >
-            🗑️ Delete Project
-          </button>
-          <p className="mt-2 text-center text-xs text-gray-600 italic">
-            This will permanently delete the project and all its chats.
-          </p>
+            <span className="text-sm font-semibold text-red-900">Danger Zone</span>
+            <span className="text-red-600">{showDangerZone ? '▼' : '▶'}</span>
+          </div>
+          {/* Section Content */}
+          {showDangerZone && (
+            <div className="bg-red-50 p-4">
+              <button
+                onClick={handleDelete}
+                className="w-full rounded-lg bg-red-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-red-700"
+              >
+                🗑️ Delete Project
+              </button>
+              <p className="mt-2 text-center text-xs text-red-700">
+                This will permanently delete the project and all its chats.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Bottom spacer */}

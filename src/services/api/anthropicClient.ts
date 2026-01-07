@@ -86,6 +86,8 @@ export class AnthropicClient implements APIClient {
       maxTokens: number;
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      reasoningSummary?: 'auto' | 'concise' | 'detailed';
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
@@ -245,6 +247,13 @@ export class AnthropicClient implements APIClient {
           } as const)
         : undefined;
 
+      // Auto-adjust maxTokens if reasoning is enabled and maxTokens <= reasoningBudgetTokens
+      // Anthropic requires max_tokens > budget_tokens for reasoning to work
+      let effectiveMaxTokens = options.maxTokens;
+      if (options.enableReasoning && options.maxTokens <= options.reasoningBudgetTokens) {
+        effectiveMaxTokens = options.reasoningBudgetTokens + 500;
+      }
+
       // Build betas array - always include web-fetch and interleaved-thinking,
       // add context-management when memory tool is enabled
       const betas = ['web-fetch-2025-09-10', 'interleaved-thinking-2025-05-14'];
@@ -257,7 +266,7 @@ export class AnthropicClient implements APIClient {
       const stream = client.beta.messages.stream({
         betas,
         model: modelId,
-        max_tokens: options.maxTokens,
+        max_tokens: effectiveMaxTokens,
         temperature: options.enableReasoning ? undefined : options.temperature, // Omit temperature for reasoning
         system: options.systemPrompt
           ? [

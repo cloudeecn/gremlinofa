@@ -73,8 +73,12 @@ export interface Project {
   webSearchEnabled: boolean;
   temperature: number | null;
   maxOutputTokens: number;
+  // Anthropic reasoning
   enableReasoning: boolean;
   reasoningBudgetTokens: number;
+  // OpenAI/Responses API reasoning
+  reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; // undefined = auto
+  reasoningSummary?: 'auto' | 'concise' | 'detailed'; // undefined = auto
   // Message metadata settings
   sendMessageMetadata?: boolean;
   metadataTimestampMode?: 'utc' | 'local' | 'relative' | 'disabled';

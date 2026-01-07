@@ -59,9 +59,9 @@ export default function Sidebar({ onClose }: SidebarProps) {
       modelId: null, // User must configure
       webSearchEnabled: false,
       temperature: null, // Use API-level default
-      maxOutputTokens: 2048,
+      maxOutputTokens: 1536,
       enableReasoning: false,
-      reasoningBudgetTokens: 2048,
+      reasoningBudgetTokens: 1024,
       // Message metadata defaults
       sendMessageMetadata: false,
       metadataTimestampMode: 'utc',

@@ -75,8 +75,9 @@ vi.mock('../../../hooks/useProject', () => ({
 }));
 
 vi.mock('../../../hooks/useDraftPersistence', () => ({
-  useDraftPersistence: () => {},
+  useDraftPersistence: () => ({ hasDraftDifference: false }),
   clearDraft: vi.fn(),
+  clearDraftDifference: vi.fn(),
 }));
 
 vi.mock('../../../services/api/apiService', () => ({
@@ -111,7 +112,7 @@ describe('ProjectSettingsView Memory Section', () => {
     it('renders memory toggle checkbox', async () => {
       renderWithRouter();
 
-      const checkbox = screen.getByLabelText('Enable Memory');
+      const checkbox = screen.getByLabelText('Memory');
       expect(checkbox).toBeInTheDocument();
       expect(checkbox).not.toBeChecked();
     });
@@ -119,7 +120,7 @@ describe('ProjectSettingsView Memory Section', () => {
     it('shows memory toggle as checked when memoryEnabled is true', async () => {
       renderWithRouter(true);
 
-      const checkbox = screen.getByLabelText('Enable Memory');
+      const checkbox = screen.getByLabelText('Memory');
       expect(checkbox).toBeChecked();
     });
 
@@ -127,14 +128,14 @@ describe('ProjectSettingsView Memory Section', () => {
       renderWithRouter();
 
       expect(
-        screen.getByText('Claude can remember information across conversations (Anthropic only)')
+        screen.getByText('Claude remembers across conversations (Anthropic only)')
       ).toBeInTheDocument();
     });
 
     it('toggles memory enabled state when clicked', () => {
       renderWithRouter();
 
-      const checkbox = screen.getByLabelText('Enable Memory');
+      const checkbox = screen.getByLabelText('Memory');
       fireEvent.click(checkbox);
 
       expect(checkbox).toBeChecked();

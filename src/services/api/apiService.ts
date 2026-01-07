@@ -63,8 +63,13 @@ class APIService {
     options: {
       temperature?: number;
       maxTokens: number;
+      // Anthropic-specific reasoning
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
+      // OpenAI/Responses-specific reasoning
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      reasoningSummary?: 'auto' | 'concise' | 'detailed';
+      // Common options
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;

@@ -86,6 +86,7 @@ export class AnthropicClient implements APIClient {
       maxTokens: number;
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
+      thinkingKeepTurns?: number; // undefined = model default, -1 = all, 0+ = thinking_turns
       reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       systemPrompt?: string;
@@ -255,11 +256,33 @@ export class AnthropicClient implements APIClient {
       }
 
       // Build betas array - always include web-fetch and interleaved-thinking,
-      // add context-management when memory tool is enabled
+      // add context-management when memory tool is enabled or thinkingKeepTurns is set
       const betas = ['web-fetch-2025-09-10', 'interleaved-thinking-2025-05-14'];
       const enabledTools = options.enabledTools || [];
-      if (enabledTools.includes('memory')) {
+      const needsContextManagement =
+        enabledTools.includes('memory') || options.thinkingKeepTurns !== undefined;
+      if (needsContextManagement) {
         betas.push('context-management-2025-06-27');
+      }
+
+      // Build context_management config if thinkingKeepTurns is set
+      let contextManagement: Anthropic.Beta.BetaContextManagementConfig | undefined;
+      if (options.thinkingKeepTurns !== undefined) {
+        const keepValue:
+          | Anthropic.Beta.BetaThinkingTurns
+          | Anthropic.Beta.BetaAllThinkingTurns
+          | 'all' =
+          options.thinkingKeepTurns === -1
+            ? 'all'
+            : { type: 'thinking_turns' as const, value: options.thinkingKeepTurns };
+        contextManagement = {
+          edits: [
+            {
+              type: 'clear_thinking_20251015',
+              keep: keepValue,
+            },
+          ],
+        };
       }
 
       // Create streaming request with cache_control on system prompt
@@ -280,6 +303,7 @@ export class AnthropicClient implements APIClient {
         messages: anthropicMessages,
         ...(tools.length > 0 && { tools }),
         ...(thinkingConfig && { thinking: thinkingConfig }),
+        ...(contextManagement && { context_management: contextManagement }),
       });
 
       // Initialize mapper state for stateful event processing

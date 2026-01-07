@@ -136,7 +136,7 @@ Projects organize chats with shared settings:
 - **Name** and **Icon** (default: 📁)
 - **System prompt** (via `SystemPromptModal`) and **Pre-fill response** (in Advanced section)
 - **Default API definition/model** (required)
-- **Anthropic reasoning**: enable toggle + budget tokens (default: 1024)
+- **Anthropic reasoning**: enable toggle + budget tokens (default: 1024) + keep thinking turns
 - **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
 - **Message metadata**: timestamp mode (UTC/Local/Disabled), context window usage, current cost
@@ -265,6 +265,7 @@ public/             # Static assets and PWA icons
 - `maxTokens: number` - Max output tokens
 - `enableReasoning: boolean` - Anthropic: enable thinking blocks
 - `reasoningBudgetTokens: number` - Anthropic: budget for thinking
+- `thinkingKeepTurns?: number` - Anthropic: thinking block preservation (`undefined` = model default, `-1` = keep all, `0+` = keep N turns). Opus 4.5 keeps all by default; others keep 1 turn.
 - `reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'` - OpenAI/Responses: reasoning effort level (`undefined` = auto)
 - `reasoningSummary?: 'auto' | 'concise' | 'detailed'` - OpenAI/Responses: summary mode (`undefined` = auto)
 - `systemPrompt?: string` - System prompt

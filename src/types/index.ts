@@ -76,6 +76,7 @@ export interface Project {
   // Anthropic reasoning
   enableReasoning: boolean;
   reasoningBudgetTokens: number;
+  thinkingKeepTurns?: number; // undefined = model default, -1 = "all", 0+ = keep N turns
   // OpenAI/Responses API reasoning
   reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; // undefined = auto
   reasoningSummary?: 'auto' | 'concise' | 'detailed'; // undefined = auto

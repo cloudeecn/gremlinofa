@@ -27,6 +27,7 @@ export interface APIClient {
       // Anthropic-specific reasoning
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
+      thinkingKeepTurns?: number; // undefined = model default, -1 = all, 0+ = thinking_turns
       // OpenAI/Responses-specific reasoning
       reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';

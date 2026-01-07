@@ -35,6 +35,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [reasoningBudgetTokens, setReasoningBudgetTokens] = useState(
     project?.reasoningBudgetTokens.toString() || '1024'
   );
+  const [thinkingKeepTurns, setThinkingKeepTurns] = useState(
+    project?.thinkingKeepTurns !== undefined ? project.thinkingKeepTurns.toString() : ''
+  );
   const [webSearchEnabled, setWebSearchEnabled] = useState(project?.webSearchEnabled || false);
   const [sendMessageMetadata, setSendMessageMetadata] = useState(
     project?.sendMessageMetadata || false
@@ -78,6 +81,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setPreFillResponse(project.preFillResponse || '');
       setEnableReasoning(project.enableReasoning || false);
       setReasoningBudgetTokens(project.reasoningBudgetTokens.toString() || '1024');
+      setThinkingKeepTurns(
+        project.thinkingKeepTurns !== undefined ? project.thinkingKeepTurns.toString() : ''
+      );
       setWebSearchEnabled(project.webSearchEnabled || false);
       setSendMessageMetadata(project.sendMessageMetadata || false);
       setMetadataTimestampMode(project.metadataTimestampMode || 'disabled');
@@ -141,6 +147,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       preFillResponse,
       enableReasoning,
       reasoningBudgetTokens: parseInt(reasoningBudgetTokens) || 1024,
+      thinkingKeepTurns: thinkingKeepTurns === '' ? undefined : parseInt(thinkingKeepTurns),
       webSearchEnabled,
       sendMessageMetadata,
       metadataTimestampMode,
@@ -332,6 +339,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                   setEnableReasoning={setEnableReasoning}
                   reasoningBudgetTokens={reasoningBudgetTokens}
                   setReasoningBudgetTokens={setReasoningBudgetTokens}
+                  thinkingKeepTurns={thinkingKeepTurns}
+                  setThinkingKeepTurns={setThinkingKeepTurns}
                   maxOutputTokens={maxOutputTokens}
                   showHeader={true}
                 />
@@ -695,6 +704,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                         setEnableReasoning={setEnableReasoning}
                         reasoningBudgetTokens={reasoningBudgetTokens}
                         setReasoningBudgetTokens={setReasoningBudgetTokens}
+                        thinkingKeepTurns={thinkingKeepTurns}
+                        setThinkingKeepTurns={setThinkingKeepTurns}
                         maxOutputTokens={maxOutputTokens}
                         showHeader={false}
                       />

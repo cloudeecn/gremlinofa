@@ -67,8 +67,12 @@ export default function BackstageView({ blocks, defaultExpanded = false }: Backs
   const getPreviewText = (): string => {
     const lastBlock = blocks[blocks.length - 1];
     switch (lastBlock?.type) {
-      case 'thinking':
-        return lastBlock.thinking || '';
+      case 'thinking': {
+        // Extract only the last line to show what's currently being streamed
+        const text = lastBlock.thinking || '';
+        const lines = text.split('\n');
+        return lines[lines.length - 1] || '';
+      }
       case 'web_search':
         return `"${lastBlock.query || ''}"`;
       case 'web_fetch':

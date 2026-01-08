@@ -1,10 +1,17 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 
-const DRAFT_KEY = 'draft';
+const DRAFT_KEY_PREFIX = 'draft_';
 const DEBOUNCE_MS = 500;
+/** Drafts older than this are cleaned up automatically */
+export const DRAFT_EXPIRY_MS = 24 * 60 * 60 * 1000; // 1 day
+
+interface DraftData {
+  content: string;
+  createdAt: number;
+}
 
 interface UseDraftPersistenceOptions {
-  place: 'chatview' | 'project-chat' | 'project-instructions' | 'system-prompt-modal';
+  place: 'chatview' | 'project-chat' | 'system-prompt-modal';
   contextId: string; // chatId, projectId, etc.
   value: string;
   onChange: (value: string) => void;
@@ -44,14 +51,42 @@ const draftDifferenceStore = {
 };
 
 /**
+ * Build localStorage key for a draft.
+ */
+function buildDraftKey(place: string, contextId: string): string {
+  return `${DRAFT_KEY_PREFIX}${place}_${contextId}`;
+}
+
+/**
+ * Parse draft data from localStorage value.
+ * Returns null if invalid or expired.
+ */
+function parseDraftData(stored: string | null): DraftData | null {
+  if (!stored) return null;
+  try {
+    const data = JSON.parse(stored) as DraftData;
+    if (typeof data.content !== 'string' || typeof data.createdAt !== 'number') {
+      return null;
+    }
+    // Check expiry
+    if (Date.now() - data.createdAt > DRAFT_EXPIRY_MS) {
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Hook to persist draft text to localStorage with debouncing.
  *
- * Format: localStorage key='draft', value='<place>|<contextId>|<content>'
+ * Format: localStorage key='draft_<place>_<contextId>', value=JSON {content, createdAt}
  *
  * Features:
  * - Saves to localStorage after 500ms of inactivity
- * - Restores draft when component mounts (if context matches)
- * - Clears draft when context changes
+ * - Restores draft when component mounts (if context matches and not expired)
+ * - Multiple drafts can coexist (keyed by place+contextId)
  * - Returns `hasDraftDifference` when restored draft differs from initialDbValue
  *
  * Usage:
@@ -67,7 +102,7 @@ const draftDifferenceStore = {
  *
  * // Clear draft on submit:
  * const handleSubmit = () => {
- *   clearDraft();
+ *   clearDraft('chatview', chatId);
  *   // ... submit logic
  * };
  * ```
@@ -84,6 +119,7 @@ export function useDraftPersistence({
   const initializedRef = useRef(false);
   const lastContextIdRef = useRef<string>(contextId);
   const storeKey = `${place}|${contextId}`;
+  const localStorageKey = buildDraftKey(place, contextId);
 
   // Subscribe to draft difference store for re-renders
   const hasDraftDifference = useSyncExternalStore(
@@ -97,41 +133,41 @@ export function useDraftPersistence({
     if (!enabled || initializedRef.current) return;
     initializedRef.current = true;
 
-    const stored = localStorage.getItem(DRAFT_KEY);
-    if (!stored) return;
+    // Run cleanup on init
+    cleanupExpiredDrafts();
 
-    try {
-      const [storedPlace, storedContextId, ...contentParts] = stored.split('|');
-      const storedContent = contentParts.join('|'); // Handle content with pipes
+    const stored = localStorage.getItem(localStorageKey);
+    const draftData = parseDraftData(stored);
 
-      // Only restore if place and context match
-      if (storedPlace === place && storedContextId === contextId && storedContent) {
-        console.debug(`[useDraftPersistence] Restoring draft for ${place}/${contextId}`);
-        onChange(storedContent);
+    if (draftData && draftData.content) {
+      console.debug(`[useDraftPersistence] Restoring draft for ${place}/${contextId}`);
+      onChange(draftData.content);
 
-        // Check if restored draft differs from DB value
-        if (initialDbValue !== undefined && storedContent !== initialDbValue) {
-          draftDifferenceStore.set(storeKey, true);
-        }
+      // Check if restored draft differs from DB value
+      if (initialDbValue !== undefined && draftData.content !== initialDbValue) {
+        draftDifferenceStore.set(storeKey, true);
       }
-    } catch (error) {
-      console.error('[useDraftPersistence] Failed to restore draft:', error);
+    } else if (stored) {
+      // Remove invalid/expired entry
+      localStorage.removeItem(localStorageKey);
     }
-  }, [enabled, place, contextId, onChange, initialDbValue, storeKey]);
+  }, [enabled, place, contextId, onChange, initialDbValue, storeKey, localStorageKey]);
 
-  // Clear draft when context changes
+  // Handle context changes - run cleanup when switching contexts
   useEffect(() => {
     if (!enabled) return;
 
     if (lastContextIdRef.current !== contextId) {
       console.debug(
-        `[useDraftPersistence] Context changed from ${lastContextIdRef.current} to ${contextId}, clearing draft`
+        `[useDraftPersistence] Context changed from ${lastContextIdRef.current} to ${contextId}`
       );
       const oldKey = `${place}|${lastContextIdRef.current}`;
       draftDifferenceStore.clear(oldKey);
-      clearDraft();
       lastContextIdRef.current = contextId;
       initializedRef.current = false; // Allow restoration for new context
+
+      // Run cleanup on context change
+      cleanupExpiredDrafts();
     }
   }, [contextId, enabled, place]);
 
@@ -147,12 +183,15 @@ export function useDraftPersistence({
     // Set new timer
     debounceTimerRef.current = window.setTimeout(() => {
       if (value.trim()) {
-        const draftValue = `${place}|${contextId}|${value}`;
-        localStorage.setItem(DRAFT_KEY, draftValue);
+        const draftData: DraftData = {
+          content: value,
+          createdAt: Date.now(),
+        };
+        localStorage.setItem(localStorageKey, JSON.stringify(draftData));
         console.debug(`[useDraftPersistence] Saved draft for ${place}/${contextId}`);
       } else {
         // Clear if empty
-        localStorage.removeItem(DRAFT_KEY);
+        localStorage.removeItem(localStorageKey);
         console.debug(`[useDraftPersistence] Cleared draft (empty value)`);
       }
       debounceTimerRef.current = null;
@@ -164,7 +203,7 @@ export function useDraftPersistence({
         window.clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [enabled, place, contextId, value]);
+  }, [enabled, place, contextId, value, localStorageKey]);
 
   // Cleanup store entry on unmount
   useEffect(() => {
@@ -177,12 +216,62 @@ export function useDraftPersistence({
 }
 
 /**
- * Clear the draft from localStorage.
+ * Clear a specific draft from localStorage.
  * Call this when the draft is submitted or should be discarded.
  */
-export function clearDraft() {
-  localStorage.removeItem(DRAFT_KEY);
-  console.debug('[useDraftPersistence] Draft cleared');
+export function clearDraft(place: string, contextId: string) {
+  const key = buildDraftKey(place, contextId);
+  localStorage.removeItem(key);
+  console.debug(`[useDraftPersistence] Draft cleared for ${place}/${contextId}`);
+}
+
+/**
+ * Clear all drafts from localStorage.
+ * Call this when purging data or detaching from storage.
+ */
+export function clearAllDrafts() {
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(DRAFT_KEY_PREFIX)) {
+      keysToRemove.push(key);
+    }
+  }
+  for (const key of keysToRemove) {
+    localStorage.removeItem(key);
+  }
+  console.debug(`[useDraftPersistence] Cleared all drafts (${keysToRemove.length} entries)`);
+}
+
+/**
+ * Remove drafts older than DRAFT_EXPIRY_MS.
+ * Called automatically on app load and context changes.
+ */
+export function cleanupExpiredDrafts() {
+  const now = Date.now();
+  const keysToRemove: string[] = [];
+
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(DRAFT_KEY_PREFIX)) {
+      const stored = localStorage.getItem(key);
+      const draftData = parseDraftData(stored);
+      if (!draftData) {
+        // Invalid or expired
+        keysToRemove.push(key);
+      } else if (now - draftData.createdAt > DRAFT_EXPIRY_MS) {
+        keysToRemove.push(key);
+      }
+    }
+  }
+
+  for (const key of keysToRemove) {
+    localStorage.removeItem(key);
+  }
+
+  if (keysToRemove.length > 0) {
+    console.debug(`[useDraftPersistence] Cleaned up ${keysToRemove.length} expired drafts`);
+  }
 }
 
 /**

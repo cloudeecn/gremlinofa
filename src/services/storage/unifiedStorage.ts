@@ -14,6 +14,7 @@ import type {
   Project,
 } from '../../types';
 import { APIType, MessageRole } from '../../types';
+import { clearAllDrafts } from '../../hooks/useDraftPersistence';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { encryptionService } from '../encryption/encryptionService';
 import { type StorageAdapter, Tables } from './StorageAdapter';
@@ -53,6 +54,10 @@ export class UnifiedStorage {
    */
   async purgeAllData(): Promise<void> {
     console.debug('[Storage] Purging all data...');
+
+    // Clear all drafts from localStorage first
+    clearAllDrafts();
+    console.debug('[Storage] Drafts cleared');
 
     // Clear all database tables
     await this.adapter.clearAll();

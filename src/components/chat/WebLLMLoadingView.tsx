@@ -59,7 +59,7 @@ export default function WebLLMLoadingView({
         >
           {/* Header */}
           <div className="mb-3 flex items-center">
-            <span className="mr-2 text-xl">🧊</span>
+            <span className="mr-2 text-xl">🏠</span>
             <div className="flex-1">
               <div className="text-sm font-semibold text-gray-900">Loading Local Model</div>
               <div className="text-xs text-gray-600">{modelName}</div>

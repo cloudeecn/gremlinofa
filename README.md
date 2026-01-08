@@ -256,7 +256,7 @@ npm run test:silent
 
 ## Bragging zone / Optional features
 
-### Run LLMs in Your Browser 🧊
+### Run LLMs in Your Browser 🏠
 
 Your GPU, your models, your $0 API bill. WebLLM brings local inference to the browser via WebGPU — we just made sure it doesn't crash when you try to run an 8B model on integrated graphics.
 

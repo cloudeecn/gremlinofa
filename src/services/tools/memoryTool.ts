@@ -581,7 +581,6 @@ export function createMemoryClientSideTool(projectId: string): ClientSideTool {
     description:
       'Use this tool to store and retrieve information across conversations. Files persist per project.',
     iconInput: '🧠',
-    iconOutput: '📝',
     renderInput: renderMemoryInput,
     inputSchema: {
       type: 'object',

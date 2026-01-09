@@ -82,10 +82,13 @@ export interface Project {
   reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; // undefined = auto
   reasoningSummary?: 'auto' | 'concise' | 'detailed'; // undefined = auto
   // Message metadata settings
-  sendMessageMetadata?: boolean;
+  sendMessageMetadata?: boolean | 'template';
   metadataTimestampMode?: 'utc' | 'local' | 'relative' | 'disabled';
+  metadataIncludeModelName?: boolean;
   metadataIncludeContextWindow?: boolean;
   metadataIncludeCost?: boolean;
+  metadataTemplate?: string;
+  metadataNewContext?: boolean;
   // Memory tool
   memoryEnabled?: boolean;
   // JavaScript execution tool

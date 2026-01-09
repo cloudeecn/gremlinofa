@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { hasMemory, clearMemory } from '../../services/memory/memoryStorage';
 import { useApp } from '../../hooks/useApp';
@@ -39,18 +39,29 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     project?.thinkingKeepTurns !== undefined ? project.thinkingKeepTurns.toString() : ''
   );
   const [webSearchEnabled, setWebSearchEnabled] = useState(project?.webSearchEnabled || false);
-  const [sendMessageMetadata, setSendMessageMetadata] = useState(
+  const [sendMessageMetadata, setSendMessageMetadata] = useState<boolean | 'template'>(
     project?.sendMessageMetadata || false
   );
   const [metadataTimestampMode, setMetadataTimestampMode] = useState<
     'utc' | 'local' | 'relative' | 'disabled'
   >(project?.metadataTimestampMode || 'disabled');
+  const [metadataIncludeModelName, setMetadataIncludeModelName] = useState(
+    project?.metadataIncludeModelName || false
+  );
   const [metadataIncludeContextWindow, setMetadataIncludeContextWindow] = useState(
     project?.metadataIncludeContextWindow || false
   );
   const [metadataIncludeCost, setMetadataIncludeCost] = useState(
     project?.metadataIncludeCost || false
   );
+  const [metadataTemplate, setMetadataTemplate] = useState(
+    project?.metadataTemplate || '{{userMessage}}'
+  );
+  const [metadataNewContext, setMetadataNewContext] = useState(
+    project?.metadataNewContext || false
+  );
+  const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
+  const tooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(project?.memoryEnabled || false);
   const [jsExecutionEnabled, setJsExecutionEnabled] = useState(
     project?.jsExecutionEnabled || false
@@ -87,8 +98,11 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setWebSearchEnabled(project.webSearchEnabled || false);
       setSendMessageMetadata(project.sendMessageMetadata || false);
       setMetadataTimestampMode(project.metadataTimestampMode || 'disabled');
+      setMetadataIncludeModelName(project.metadataIncludeModelName || false);
       setMetadataIncludeContextWindow(project.metadataIncludeContextWindow || false);
       setMetadataIncludeCost(project.metadataIncludeCost || false);
+      setMetadataTemplate(project.metadataTemplate || '{{userMessage}}');
+      setMetadataNewContext(project.metadataNewContext || false);
       setMemoryEnabled(project.memoryEnabled || false);
       setJsExecutionEnabled(project.jsExecutionEnabled || false);
       setReasoningEffort(project.reasoningEffort);
@@ -151,10 +165,13 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       webSearchEnabled,
       sendMessageMetadata,
       metadataTimestampMode,
-      memoryEnabled,
-      jsExecutionEnabled,
+      metadataIncludeModelName,
       metadataIncludeContextWindow,
       metadataIncludeCost,
+      metadataTemplate,
+      metadataNewContext,
+      memoryEnabled,
+      jsExecutionEnabled,
       reasoningEffort,
       reasoningSummary,
       temperature: temperature === '' ? null : parseFloat(temperature),
@@ -358,125 +375,320 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
               </div>
             )}
 
-            {/* Metadata Section */}
+            {/* Message Format Section */}
             <div className="mb-6 overflow-hidden rounded-lg border border-gray-200">
-              {/* Section Header - full width clickable */}
-              <label className="flex w-full cursor-pointer items-center justify-between bg-gray-50 px-4 py-3">
-                <span className="text-sm font-semibold text-gray-900">Message Metadata</span>
-                <input
-                  type="checkbox"
-                  checked={sendMessageMetadata}
-                  onChange={e => setSendMessageMetadata(e.target.checked)}
-                  className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-                />
-              </label>
+              {/* Section Header */}
+              <div className="bg-gray-50 px-4 py-3">
+                <span className="text-sm font-semibold text-gray-900">Message Format</span>
+              </div>
               {/* Section Content */}
-              {sendMessageMetadata && (
-                <div className="space-y-4 bg-white p-4">
-                  {/* Timestamp Mode */}
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-gray-900">
-                      Timestamp
-                    </label>
-                    <div className="flex flex-wrap gap-4">
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="timestampUtc"
-                          type="radio"
-                          checked={metadataTimestampMode === 'utc'}
-                          onChange={() => setMetadataTimestampMode('utc')}
-                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                        />
-                        <label
-                          htmlFor="timestampUtc"
-                          className="cursor-pointer text-sm text-gray-900"
-                        >
-                          UTC
-                        </label>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="timestampLocal"
-                          type="radio"
-                          checked={metadataTimestampMode === 'local'}
-                          onChange={() => setMetadataTimestampMode('local')}
-                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                        />
-                        <label
-                          htmlFor="timestampLocal"
-                          className="cursor-pointer text-sm text-gray-900"
-                        >
-                          Local
-                        </label>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="timestampRelative"
-                          type="radio"
-                          checked={metadataTimestampMode === 'relative'}
-                          onChange={() => setMetadataTimestampMode('relative')}
-                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                        />
-                        <label
-                          htmlFor="timestampRelative"
-                          className="cursor-pointer text-sm text-gray-900"
-                        >
-                          Relative
-                        </label>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="timestampDisabled"
-                          type="radio"
-                          checked={metadataTimestampMode === 'disabled'}
-                          onChange={() => setMetadataTimestampMode('disabled')}
-                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                        />
-                        <label
-                          htmlFor="timestampDisabled"
-                          className="cursor-pointer text-sm text-gray-900"
-                        >
-                          Disabled
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Context Window */}
-                  <div className="flex items-center justify-between">
-                    <label
-                      htmlFor="includeContextWindow"
-                      className="cursor-pointer text-sm font-medium text-gray-900"
-                    >
-                      Include Context Window Usage
-                    </label>
+              <div className="space-y-4 bg-white p-4">
+                {/* Radio Options */}
+                <div className="flex flex-wrap gap-4">
+                  <div className="flex items-center gap-2">
                     <input
-                      id="includeContextWindow"
-                      type="checkbox"
-                      checked={metadataIncludeContextWindow}
-                      onChange={e => setMetadataIncludeContextWindow(e.target.checked)}
-                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      id="metadataModeDisabled"
+                      type="radio"
+                      checked={sendMessageMetadata === false}
+                      onChange={() => setSendMessageMetadata(false)}
+                      className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
-                  </div>
-
-                  {/* Cost */}
-                  <div className="flex items-center justify-between">
                     <label
-                      htmlFor="includeCost"
-                      className="cursor-pointer text-sm font-medium text-gray-900"
+                      htmlFor="metadataModeDisabled"
+                      className="cursor-pointer text-sm text-gray-900"
                     >
-                      Include Current Cost
+                      User message
                     </label>
+                  </div>
+                  <div className="flex items-center gap-2">
                     <input
-                      id="includeCost"
-                      type="checkbox"
-                      checked={metadataIncludeCost}
-                      onChange={e => setMetadataIncludeCost(e.target.checked)}
-                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      id="metadataModeEnabled"
+                      type="radio"
+                      checked={sendMessageMetadata === true}
+                      onChange={() => setSendMessageMetadata(true)}
+                      className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
+                    <label
+                      htmlFor="metadataModeEnabled"
+                      className="cursor-pointer text-sm text-gray-900"
+                    >
+                      With metadata
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="metadataModeTemplate"
+                      type="radio"
+                      checked={sendMessageMetadata === 'template'}
+                      onChange={() => setSendMessageMetadata('template')}
+                      className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
+                    <label
+                      htmlFor="metadataModeTemplate"
+                      className="cursor-pointer text-sm text-gray-900"
+                    >
+                      Use template
+                    </label>
                   </div>
                 </div>
-              )}
+
+                {/* With Metadata Options */}
+                {sendMessageMetadata === true && (
+                  <div className="space-y-4 border-t border-gray-100 pt-4">
+                    {/* Timestamp Mode */}
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">
+                        Timestamp
+                      </label>
+                      <div className="flex flex-wrap gap-4">
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="timestampUtc"
+                            type="radio"
+                            checked={metadataTimestampMode === 'utc'}
+                            onChange={() => setMetadataTimestampMode('utc')}
+                            className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                          />
+                          <label
+                            htmlFor="timestampUtc"
+                            className="cursor-pointer text-sm text-gray-900"
+                          >
+                            UTC
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="timestampLocal"
+                            type="radio"
+                            checked={metadataTimestampMode === 'local'}
+                            onChange={() => setMetadataTimestampMode('local')}
+                            className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                          />
+                          <label
+                            htmlFor="timestampLocal"
+                            className="cursor-pointer text-sm text-gray-900"
+                          >
+                            Local
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="timestampRelative"
+                            type="radio"
+                            checked={metadataTimestampMode === 'relative'}
+                            onChange={() => setMetadataTimestampMode('relative')}
+                            className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                          />
+                          <label
+                            htmlFor="timestampRelative"
+                            className="cursor-pointer text-sm text-gray-900"
+                          >
+                            Relative
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="timestampDisabled"
+                            type="radio"
+                            checked={metadataTimestampMode === 'disabled'}
+                            onChange={() => setMetadataTimestampMode('disabled')}
+                            className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                          />
+                          <label
+                            htmlFor="timestampDisabled"
+                            className="cursor-pointer text-sm text-gray-900"
+                          >
+                            Disabled
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Model Name */}
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="includeModelName"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        Include Model Name
+                      </label>
+                      <input
+                        id="includeModelName"
+                        type="checkbox"
+                        checked={metadataIncludeModelName}
+                        onChange={e => setMetadataIncludeModelName(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    {/* Context Window */}
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="includeContextWindow"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        Include Context Window Usage
+                      </label>
+                      <input
+                        id="includeContextWindow"
+                        type="checkbox"
+                        checked={metadataIncludeContextWindow}
+                        onChange={e => setMetadataIncludeContextWindow(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    {/* Cost */}
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="includeCost"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        Include Current Cost
+                      </label>
+                      <input
+                        id="includeCost"
+                        type="checkbox"
+                        checked={metadataIncludeCost}
+                        onChange={e => setMetadataIncludeCost(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Template Mode Options */}
+                {sendMessageMetadata === 'template' && (
+                  <div className="space-y-4 border-t border-gray-100 pt-4">
+                    {/* Available Variables */}
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">
+                        Available Variables
+                      </label>
+                      <div className="relative flex flex-wrap gap-2">
+                        {[
+                          { name: 'userMessage', desc: 'The message you type in the chat input' },
+                          {
+                            name: 'timestamp',
+                            desc: 'Local time (e.g., Wed, Jan 8, 2026, 11:22 PM PST)',
+                          },
+                          {
+                            name: 'timestampUtc',
+                            desc: 'UTC time (e.g., Thu, Jan 9, 2026, 7:22 AM UTC)',
+                          },
+                          {
+                            name: 'timestampRelative',
+                            desc: "Seconds since chat started (e.g., '45 seconds since chat start')",
+                          },
+                          {
+                            name: 'modelName',
+                            desc: 'Current model ID (e.g., claude-sonnet-4-20250514)',
+                          },
+                          {
+                            name: 'contextWindowUsage',
+                            desc: "Tokens used in context (e.g., '12500 tokens')",
+                          },
+                          { name: 'currentCost', desc: "Accumulated cost (e.g., '$0.023')" },
+                        ].map(v => (
+                          <button
+                            key={v.name}
+                            type="button"
+                            onClick={() => {
+                              if (tooltipTimeoutRef.current) {
+                                clearTimeout(tooltipTimeoutRef.current);
+                              }
+                              setActiveTooltip(activeTooltip === v.name ? null : v.name);
+                              if (activeTooltip !== v.name) {
+                                tooltipTimeoutRef.current = setTimeout(
+                                  () => setActiveTooltip(null),
+                                  3000
+                                );
+                              }
+                            }}
+                            className={`rounded-md px-2 py-1 font-mono text-xs transition-colors ${
+                              activeTooltip === v.name
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            }`}
+                          >
+                            {`{{${v.name}}}`}
+                          </button>
+                        ))}
+                        {/* Tooltip */}
+                        {activeTooltip && (
+                          <div className="absolute top-full right-0 left-0 z-10 mt-2 rounded-lg border border-gray-200 bg-white p-2 text-sm text-gray-700 shadow-lg">
+                            {
+                              [
+                                {
+                                  name: 'userMessage',
+                                  desc: 'The message you type in the chat input',
+                                },
+                                {
+                                  name: 'timestamp',
+                                  desc: 'Local time (e.g., Wed, Jan 8, 2026, 11:22 PM PST)',
+                                },
+                                {
+                                  name: 'timestampUtc',
+                                  desc: 'UTC time (e.g., Thu, Jan 9, 2026, 7:22 AM UTC)',
+                                },
+                                {
+                                  name: 'timestampRelative',
+                                  desc: "Seconds since chat started (e.g., '45 seconds since chat start')",
+                                },
+                                {
+                                  name: 'modelName',
+                                  desc: 'Current model ID (e.g., claude-sonnet-4-20250514)',
+                                },
+                                {
+                                  name: 'contextWindowUsage',
+                                  desc: "Tokens used in context (e.g., '12500 tokens')",
+                                },
+                                { name: 'currentCost', desc: "Accumulated cost (e.g., '$0.023')" },
+                              ].find(v => v.name === activeTooltip)?.desc
+                            }
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Template Textarea */}
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">
+                        Template
+                      </label>
+                      <textarea
+                        value={metadataTemplate}
+                        onChange={e => setMetadataTemplate(e.target.value)}
+                        placeholder="{{userMessage}}"
+                        rows={4}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      />
+                    </div>
+
+                    {/* New Context Option */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label
+                          htmlFor="newContext"
+                          className="cursor-pointer text-sm font-medium text-gray-900"
+                        >
+                          Start new context per message
+                        </label>
+                        <p className="text-xs text-gray-500">
+                          Each message ignores chat history (keeps system prompt)
+                        </p>
+                      </div>
+                      <input
+                        id="newContext"
+                        type="checkbox"
+                        checked={metadataNewContext}
+                        onChange={e => setMetadataNewContext(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Tools Section - hidden for WebLLM */}

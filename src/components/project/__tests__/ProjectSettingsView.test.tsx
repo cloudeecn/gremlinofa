@@ -128,7 +128,9 @@ describe('ProjectSettingsView Memory Section', () => {
       renderWithRouter();
 
       expect(
-        screen.getByText('Claude remembers across conversations (Anthropic only)')
+        screen.getByText(
+          'Use a virtual FS to remember across conversations (Optimized for Anthropic)'
+        )
       ).toBeInTheDocument();
     });
 

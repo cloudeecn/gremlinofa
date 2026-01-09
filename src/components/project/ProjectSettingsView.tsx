@@ -526,7 +526,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                           Memory
                         </label>
                         <p className="text-xs text-gray-500">
-                          Claude remembers across conversations (Anthropic only)
+                          Use a virtual FS to remember across conversations (Optimized for
+                          Anthropic)
                         </p>
                       </div>
                       <input
@@ -576,7 +577,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       >
                         JavaScript Execution
                       </label>
-                      <p className="text-xs text-gray-500">Execute code in a secure sandbox</p>
+                      <p className="text-xs text-gray-500">
+                        Execute code in a secure sandbox in your browser
+                      </p>
                     </div>
                     <input
                       id="jsExecutionEnabled"

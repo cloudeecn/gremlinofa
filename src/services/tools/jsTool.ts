@@ -2,61 +2,35 @@
  * JavaScript Execution Tool
  *
  * Client-side tool that executes JavaScript code in a sandboxed QuickJS environment.
- * Uses quickjs-emscripten-core with @jitl/quickjs-singlefile-browser-release-sync variant.
+ * Uses JsVMContext for VM management, event loop, and polyfills.
  *
  * VM state persists across multiple tool calls within an agentic loop, enabling
  * the AI to build up state across calls (e.g., define variables, then use them later).
  */
 
-import {
-  newQuickJSWASMModuleFromVariant,
-  type QuickJSWASMModule,
-  type QuickJSContext,
-  type QuickJSHandle,
-} from 'quickjs-emscripten-core';
-import variant from '@jitl/quickjs-ng-wasmfile-release-sync';
 import type { ClientSideTool, ToolResult } from '../../types';
 import { toolRegistry } from './clientSideTools';
-
-type ConsoleLevel = 'LOG' | 'WARN' | 'ERROR' | 'INFO' | 'DEBUG';
-
-interface ConsoleEntry {
-  level: ConsoleLevel;
-  message: string;
-}
-
-// Module singleton - loaded once, reused
-let modulePromise: Promise<QuickJSWASMModule> | null = null;
-
-async function getModule(): Promise<QuickJSWASMModule> {
-  if (!modulePromise) {
-    modulePromise = newQuickJSWASMModuleFromVariant(variant);
-  }
-  return modulePromise;
-}
+import { JsVMContext, type ConsoleEntry } from './jsvm/JsVMContext';
 
 /**
  * JavaScript execution tool instance.
  * VM state persists across multiple tool calls within a session.
  */
 class JsToolInstance {
-  private session: QuickJSContext | null = null;
+  private session: JsVMContext | null = null;
 
   /**
    * Create a persistent session for the agentic loop.
    * Variables and state persist across multiple execute calls.
-   * @returns The created context
    */
-  async createSession(): Promise<QuickJSContext> {
+  async createSession(): Promise<void> {
     if (this.session) {
       console.debug('[JsTool] Session already exists, disposing old one');
       this.disposeSession();
     }
 
-    const module = await getModule();
-    this.session = module.newContext();
+    this.session = await JsVMContext.create();
     console.debug('[JsTool] Session created');
-    return this.session;
   }
 
   /**
@@ -93,87 +67,37 @@ class JsToolInstance {
     const ephemeral = !!input.ephemeral;
 
     // Get or create context
-    const context = ephemeral
-      ? (await getModule()).newContext()
-      : (this.session ?? (await this.createSession()));
+    let vm: JsVMContext;
+    let shouldDispose = false;
 
-    const consoleOutput: ConsoleEntry[] = [];
-    this.setupConsole(context, consoleOutput);
-
-    try {
-      return this.runCode(context, code, consoleOutput);
-    } finally {
-      if (ephemeral) {
-        context.dispose();
+    if (ephemeral) {
+      vm = await JsVMContext.create();
+      shouldDispose = true;
+    } else {
+      if (!this.session) {
+        await this.createSession();
       }
+      vm = this.session!;
     }
-  }
 
-  /**
-   * Core code execution logic shared between session and ephemeral modes.
-   */
-  private runCode(
-    context: QuickJSContext,
-    code: string,
-    consoleOutput: ConsoleEntry[]
-  ): ToolResult {
     try {
-      const result = context.evalCode(code);
+      const result = await vm.evaluate(code);
 
-      if (result.error) {
-        const errorHandle = result.error;
-        const errorValue = context.dump(errorHandle);
-        errorHandle.dispose();
-
-        const message =
-          typeof errorValue === 'object' && errorValue !== null
-            ? `${errorValue.name || 'Error'}: ${errorValue.message || String(errorValue)}`
-            : String(errorValue);
-
+      if (result.isError) {
         return {
-          content: this.formatOutput('Error: ' + message, consoleOutput),
+          content: this.formatOutput(String(result.value), result.consoleOutput),
           isError: true,
         };
       }
 
-      const valueHandle = result.value;
-      const value = context.dump(valueHandle);
-      valueHandle.dispose();
-
       return {
-        content: this.formatOutput(this.stringify(value), consoleOutput),
+        content: this.formatOutput(this.stringify(result.value), result.consoleOutput),
       };
-    } catch (error) {
-      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      return {
-        content: this.formatOutput(`Error: ${message}`, consoleOutput),
-        isError: true,
-      };
+    } finally {
+      if (shouldDispose) {
+        vm.dispose();
+      }
     }
-  }
-
-  /**
-   * Set up console object in a context for capturing output.
-   */
-  private setupConsole(context: QuickJSContext, consoleOutput: ConsoleEntry[]): void {
-    const consoleHandle = context.newObject();
-
-    const createConsoleMethod = (level: ConsoleLevel) => {
-      return context.newFunction(level.toLowerCase(), (...args: QuickJSHandle[]) => {
-        const message = args.map(arg => this.stringify(context.dump(arg))).join(' ');
-        consoleOutput.push({ level, message });
-      });
-    };
-
-    const methods: ConsoleLevel[] = ['LOG', 'WARN', 'ERROR', 'INFO', 'DEBUG'];
-    for (const level of methods) {
-      const methodHandle = createConsoleMethod(level);
-      context.setProp(consoleHandle, level.toLowerCase(), methodHandle);
-      methodHandle.dispose();
-    }
-
-    context.setProp(context.global, 'console', consoleHandle);
-    consoleHandle.dispose();
   }
 
   private stringify(value: unknown): string {
@@ -295,15 +219,20 @@ function createJsClientSideTool(): ClientSideTool {
     name: 'javascript',
     description: `
 Execute JavaScript in a QuickJS sandbox (ES2023). Returns console output and the final expression value. 
-  - Useage examples: calculations, data transformation, string manipulation, JSON processing, algorithm implementation, date manipulation.
-  - Limitations: No browser APIs (fetch, DOM, setTimeout), no network or file access. 
-  - Session state persists across tool calls within the same conversation turn, allowing you to build up state across multiple calls.
-  - Output example: \`console.log("test"); const result = 1 + 1; result\`, or just \`console.log("test"); 1 + 1\` → 
-    [LOG] test
-    === Result ===
-    2`,
+  - Usage examples: calculations, data transformation, string manipulation, JSON processing, algorithm implementation, date manipulation.
+  - Available APIs: ES2023 core features, setTimeout, TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await. Resolves Promise in the final expression value.
+  - Limitations: No fetch, DOM, or file access. setInterval runs once only, no ES modules.
+  - JS context persists across tool calls within the same conversation turn. (unless 'ephemeral' parameter is true)
+    - Note: because of shared context, const variables with the same name will conflict. 
+      Beware of this and unintended variable / global pollution, make use of ephemeral mode if needed.
+  - Output example: 
+    - \`console.log("test"); const result = 1 + 1; result\` → 
+      [LOG] test
+      === Result ===
+      2
+    - \`async function calculate() { /*some awaits*/; return 42;};  calculate();\` →
+      42`,
     iconInput: '📜',
-    iconOutput: '⚡',
     renderInput: renderJsInput,
     inputSchema: {
       type: 'object',
@@ -314,9 +243,11 @@ Execute JavaScript in a QuickJS sandbox (ES2023). Returns console output and the
 JavaScript code to execute. Console output and the value of the last expression will be returned.
 Examples: 
   - \`Math.sqrt(144) + 2 ** 10\` → 1036
-  - \`JSON.parse('{"a":1}').a\` → 1,
+  - \`JSON.parse('{"a":1}').a\` → 1
   - \`[1,2,3].map(x => x * 2)\` → [2,4,6]
-Note: if you want to return an object literal, it must be wrapped by parentheses, for example:
+  - \`btoa('hello')\` → "aGVsbG8="
+  - \`new TextEncoder().encode('hi')\` → Uint8Array [104, 105]
+Note: object literals must be wrapped in parentheses:
   - \`{score: 5}\` → SyntaxError
   - \`({score: 5})\` → {score: 5}`,
         },

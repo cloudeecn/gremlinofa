@@ -648,16 +648,18 @@ rename:      "Successfully renamed {old_path} to {new_path}"
 
 **Overview:**
 
-Client-side tool that executes JavaScript code in a secure QuickJS sandbox. Enables the AI to perform calculations, data transformations, and algorithm demonstrations. Supports persistent sessions within an agentic loop.
+Client-side tool that executes JavaScript code in a secure QuickJS-ng sandbox. Enables the AI to perform calculations, data transformations, and algorithm demonstrations. Supports persistent sessions within an agentic loop, with browser-like event loop semantics.
 
 **Files:**
 
-- `src/services/tools/jsTool.ts` - Tool implementation
+- `src/services/tools/jsTool.ts` - Tool registration and input/output formatting
+- `src/services/tools/jsvm/JsVMContext.ts` - QuickJS context wrapper with event loop
+- `src/services/tools/jsvm/polyfills.ts` - Browser API polyfills (setTimeout, TextEncoder, etc.)
 
 **Dependencies:**
 
 - `quickjs-emscripten-core` - QuickJS WASM bindings with context management
-- `@jitl/quickjs-singlefile-browser-release-sync` - Browser-compatible WASM variant
+- `@jitl/quickjs-ng-wasmfile-release-sync` - QuickJS-ng WASM variant (ES2023 support)
 
 **Input Parameters:**
 
@@ -685,16 +687,55 @@ If no console output and result is undefined: `(no output)`
 - No access to browser APIs (DOM, fetch, localStorage)
 - No network access
 
+**JsVMContext Architecture:**
+
+The `JsVMContext` class provides a browser-like JavaScript execution environment:
+
+- **Event Loop**: Promise-based via `executePendingJobs(1)` per tick with browser yields
+- **Timeout**: 60s execution limit via `setInterruptHandler()` (kills infinite loops mid-execution)
+- **Console Capture**: All console methods (log, warn, error, info, debug) captured
+
+**Event Loop Semantics:**
+
+1. User code evaluates synchronously
+2. While `hasPendingJob()` is true:
+   - Yield to browser (`setTimeout(0)`)
+   - `executePendingJobs(1)` processes one microtask
+   - Check 60s timeout deadline
+3. setTimeout uses `Promise.resolve().then(wrapper)` internally
+
+**Polyfills (injected into every context):**
+
+| API                      | Description                                             |
+| ------------------------ | ------------------------------------------------------- |
+| `self`                   | Points to `globalThis` (UMD/IIFE library compatibility) |
+| `setTimeout(cb, delay?)` | Queues callback to microtask queue (delay ignored)      |
+| `clearTimeout(id)`       | Cancels pending timeout                                 |
+| `setInterval`            | Stub (runs once, returns ID)                            |
+| `clearInterval`          | Same as clearTimeout                                    |
+| `TextEncoder`            | UTF-8 string to bytes                                   |
+| `TextDecoder`            | UTF-8 bytes to string                                   |
+| `btoa(str)`              | Base64 encode                                           |
+| `atob(str)`              | Base64 decode                                           |
+
+**UMD/IIFE Library Compatibility:**
+
+UMD/IIFE Library can be loaded because:
+
+- `self` global exists (browser environment detection)
+- setTimeout/clearTimeout available (async patterns)
+- Standard execution in global scope (not module mode)
+
 **Execution Modes:**
 
-1. **Ephemeral** (default): Each tool call is isolated, no state persists
-2. **Session**: VM state persists across multiple tool calls within an agentic loop
+1. **Ephemeral**: Each tool call creates fresh context, disposed after execution
+2. **Session**: VM state persists across multiple tool calls within agentic loop
 
 **Session Lifecycle:**
 
 Sessions enable the AI to build up state across multiple tool calls:
 
-- `createJsSession()` - Create persistent QuickJS context with console redirection
+- `createJsSession()` - Create persistent JsVMContext
 - `hasJsSession()` - Check if session is active
 - `disposeJsSession()` - Release context and free memory
 

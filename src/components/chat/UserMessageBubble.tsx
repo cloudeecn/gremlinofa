@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import type { MessageAttachment } from '../../types';
+import type { MessageAttachment, RenderingBlockGroup } from '../../types';
+import type { TextRenderBlock } from '../../types/content';
 import { stripMetadata, formatTimestamp } from '../../utils/messageFormatters';
 import { showAlert } from '../../utils/alerts';
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -14,15 +15,31 @@ export default function UserMessageBubble({
   const isMobile = useIsMobile();
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
 
-  // Strip metadata from content before displaying
-  const displayContent = stripMetadata(message.content.content);
+  // Extract display content from renderingContent if available, fall back to stripMetadata
+  const displayContent = message.content.renderingContent
+    ? (message.content.renderingContent as RenderingBlockGroup[])
+        .flatMap(g => g.blocks)
+        .filter((b): b is TextRenderBlock => b.type === 'text')
+        .map(b => b.text)
+        .join('')
+    : stripMetadata(message.content.content);
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(stripMetadata(message.content.content));
+      await navigator.clipboard.writeText(displayContent);
       showAlert('Copied', 'Message copied to clipboard');
     } catch (_error) {
       showAlert('Error', 'Failed to copy message');
+    }
+  };
+
+  const handleDumpMessage = async () => {
+    try {
+      const messageJson = JSON.stringify(message, null, 2);
+      await navigator.clipboard.writeText(messageJson);
+      showAlert('Copied', 'Message JSON copied to clipboard');
+    } catch (_error) {
+      showAlert('Error', 'Failed to copy message JSON');
     }
   };
 
@@ -89,6 +106,13 @@ export default function UserMessageBubble({
           title="Copy message"
         >
           📋 Copy
+        </button>
+        <button
+          onClick={handleDumpMessage}
+          className="transition-colors hover:text-gray-700"
+          title="Copy message JSON"
+        >
+          🔍
         </button>
         <span>{formatTimestamp(message.timestamp)}</span>
       </div>

@@ -25,7 +25,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 ### Core Features (Implemented)
 
 - [x] Project & chat management with cascading deletion
-- [x] Project settings (system prompt, pre-fill, model, temperature, reasoning, web search, metadata)
+- [x] Project settings (system prompt, pre-fill, model, temperature, reasoning, web search, message format)
 - [x] Chat with streaming responses, message editing, forking, and cost tracking
 - [x] Message rendering (Markdown, syntax highlighting, LaTeX math with horizontal scroll, thinking blocks, citations, code block copy)
 - [x] Image attachments (resize, compress, multi-select, preview, lightbox)
@@ -140,7 +140,7 @@ Projects organize chats with shared settings:
 - **Anthropic reasoning**: enable toggle + budget tokens (default: 1024) + keep thinking turns
 - **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
-- **Message metadata**: timestamp mode (UTC/Local/Disabled), context window usage, current cost
+- **Message format**: three modes (user message / with metadata / use template)
 - **Tools**: Memory (Anthropic only), JavaScript Execution
 - **Advanced** (collapsed): temperature, max output tokens (default: 1536)
 
@@ -356,6 +356,13 @@ public/             # Static assets and PWA icons
 3. Pre-grouped storage (avoid runtime grouping)
 4. Text consolidation (continuous text blocks merged)
 
+**User Message renderingContent:**
+
+- User messages store original input in `renderingContent` as `TextRenderBlock`
+- Format: `[{ category: 'text', blocks: [{ type: 'text', text: originalInput }] }]`
+- Display extracts text from renderingContent, falls back to `stripMetadata(content)` for old messages
+- Separates API payload (`content` with metadata) from display (`renderingContent` without metadata)
+
 **StreamingContentAssembler:**
 
 - Assembles `StreamChunk` events into `RenderingBlockGroup[]` during streaming
@@ -371,7 +378,7 @@ public/             # Static assets and PWA icons
 ```
 MessageList.tsx                    # Container with virtual scrolling
 ├── MessageBubble.tsx              # Container with virtual scrolling logic, delegates rendering
-│   ├── UserMessageBubble.tsx      # User messages (blue bubble, attachments, edit/fork/copy)
+│   ├── UserMessageBubble.tsx      # User messages (blue bubble, attachments, edit/fork/copy/dump JSON)
 │   ├── ToolResultBubble.tsx       # Tool result messages (role: USER with tool_result blocks)
 │   ├── AssistantMessageBubble.tsx # Assistant messages with renderingContent (new format)
 │   │   ├── BackstageView          # Collapsible thinking/search/fetch/tool_use/tool_result

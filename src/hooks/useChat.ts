@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import Mustache from 'mustache';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
 import { StreamingContentAssembler } from '../services/streaming/StreamingContentAssembler';
@@ -76,45 +77,96 @@ function createToolResultRenderBlock(
   };
 }
 
+/** Format timestamp for local timezone */
+function formatTimestampLocal(): string {
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    timeZoneName: 'short',
+  }).format(new Date());
+}
+
+/** Format timestamp for UTC timezone */
+function formatTimestampUtc(): string {
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    timeZoneName: 'short',
+    timeZone: 'UTC',
+  }).format(new Date());
+}
+
+/** Format timestamp as relative time */
+function formatTimestampRelative(firstMessageTimestamp?: Date): string {
+  const now = new Date();
+  const chatStart = firstMessageTimestamp ?? now;
+  const secondsSinceChatStart = Math.floor((now.getTime() - chatStart.getTime()) / 1000);
+  return `${secondsSinceChatStart} seconds since chat start`;
+}
+
 /**
- * Generate metadata XML to prepend to user messages
+ * Generate message content based on metadata mode.
+ * Returns the formatted message with metadata/template applied.
  */
-function generateMessageMetadata(
+function generateMessageWithMetadata(
+  messageText: string,
   project: Project,
   chat: Chat,
+  modelId: string,
   firstMessageTimestamp?: Date
 ): string {
+  // Mode: disabled - return plain message
   if (!project.sendMessageMetadata) {
-    return '';
+    return messageText;
   }
 
+  // Mode: template - use Mustache rendering
+  if (project.sendMessageMetadata === 'template') {
+    const template = project.metadataTemplate || '{{userMessage}}';
+    const view = {
+      userMessage: messageText,
+      timestamp: formatTimestampLocal(),
+      timestampUtc: formatTimestampUtc(),
+      timestampRelative: formatTimestampRelative(firstMessageTimestamp),
+      modelName: modelId,
+      contextWindowUsage: chat.contextWindowUsage ? `${chat.contextWindowUsage} tokens` : '',
+      currentCost: chat.totalCost !== undefined ? `$${chat.totalCost.toFixed(3)}` : '',
+      // Boolean helpers for conditionals
+      hasContextWindowUsage: !!chat.contextWindowUsage,
+      hasCurrentCost: chat.totalCost !== undefined && chat.totalCost > 0,
+    };
+    return Mustache.render(template, view);
+  }
+
+  // Mode: true (metadata XML format)
   const metadataParts: string[] = [];
 
   // Add timestamp if enabled
   if (project.metadataTimestampMode && project.metadataTimestampMode !== 'disabled') {
     if (project.metadataTimestampMode === 'relative') {
-      const now = new Date();
-      const chatStart = firstMessageTimestamp ?? now;
-      const secondsSinceChatStart = Math.floor((now.getTime() - chatStart.getTime()) / 1000);
       metadataParts.push(
-        `<timestamp>${secondsSinceChatStart} seconds since chat start</timestamp>`
+        `<timestamp>${formatTimestampRelative(firstMessageTimestamp)}</timestamp>`
       );
+    } else if (project.metadataTimestampMode === 'utc') {
+      metadataParts.push(`<timestamp>${formatTimestampUtc()}</timestamp>`);
     } else {
-      const timezone = project.metadataTimestampMode === 'utc' ? 'UTC' : undefined;
-      const formatter = new Intl.DateTimeFormat('en-US', {
-        weekday: 'short',
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: 'numeric',
-        second: 'numeric',
-        timeZoneName: 'short',
-        timeZone: timezone,
-      });
-
-      metadataParts.push(`<timestamp>${formatter.format(new Date())}</timestamp>`);
+      metadataParts.push(`<timestamp>${formatTimestampLocal()}</timestamp>`);
     }
+  }
+
+  // Add model name if enabled (after timestamp)
+  if (project.metadataIncludeModelName && modelId) {
+    metadataParts.push(`<model>${modelId}</model>`);
   }
 
   // Add context window usage if enabled
@@ -130,10 +182,10 @@ function generateMessageMetadata(
   }
 
   if (metadataParts.length === 0) {
-    return '';
+    return messageText;
   }
 
-  return `<metadata>\n${metadataParts.join('\n')}\n</metadata>\n\n`;
+  return `<metadata>\n${metadataParts.join('\n')}\n</metadata>\n\n${messageText}`;
 }
 
 /**
@@ -497,11 +549,16 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       return;
     }
 
-    // Generate metadata if enabled and prepend to message
+    // Generate message with metadata/template applied
     const firstMessageTimestamp =
       currentMessages.length > 0 ? currentMessages[0].timestamp : undefined;
-    const metadata = generateMessageMetadata(currentProject, currentChat, firstMessageTimestamp);
-    const messageWithMetadata = metadata + messageText;
+    const messageWithMetadata = generateMessageWithMetadata(
+      messageText,
+      currentProject,
+      currentChat,
+      effectiveModelId,
+      firstMessageTimestamp
+    );
 
     // Extract attachment IDs if any
     const attachmentIds = attachments?.map(att => att.id) || [];
@@ -513,6 +570,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       content: {
         type: 'text',
         content: messageWithMetadata,
+        renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: messageText }] }],
         ...(attachmentIds.length > 0 && {
           attachmentIds,
           originalAttachmentCount: attachmentIds.length,
@@ -597,25 +655,26 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         .filter(Boolean)
         .join('\n\n');
 
+      // Apply metadataNewContext: if enabled, only send current user message (ignore history)
+      const messagesToSend =
+        currentProject.sendMessageMetadata === 'template' && currentProject.metadataNewContext
+          ? [messagesWithAttachments[messagesWithAttachments.length - 1]] // Only the new user message
+          : messagesWithAttachments;
+
       console.debug('[useChat] Starting API stream');
-      const stream = apiService.sendMessageStream(
-        messagesWithAttachments,
-        effectiveModelId,
-        currentApiDef,
-        {
-          temperature: currentProject.temperature ?? undefined,
-          maxTokens: currentProject.maxOutputTokens,
-          enableReasoning: currentProject.enableReasoning,
-          reasoningBudgetTokens: currentProject.reasoningBudgetTokens,
-          thinkingKeepTurns: currentProject.thinkingKeepTurns,
-          reasoningEffort: currentProject.reasoningEffort,
-          reasoningSummary: currentProject.reasoningSummary,
-          systemPrompt: combinedSystemPrompt || undefined,
-          preFillResponse: currentProject.preFillResponse,
-          webSearchEnabled: currentProject.webSearchEnabled,
-          enabledTools,
-        }
-      );
+      const stream = apiService.sendMessageStream(messagesToSend, effectiveModelId, currentApiDef, {
+        temperature: currentProject.temperature ?? undefined,
+        maxTokens: currentProject.maxOutputTokens,
+        enableReasoning: currentProject.enableReasoning,
+        reasoningBudgetTokens: currentProject.reasoningBudgetTokens,
+        thinkingKeepTurns: currentProject.thinkingKeepTurns,
+        reasoningEffort: currentProject.reasoningEffort,
+        reasoningSummary: currentProject.reasoningSummary,
+        systemPrompt: combinedSystemPrompt || undefined,
+        preFillResponse: currentProject.preFillResponse,
+        webSearchEnabled: currentProject.webSearchEnabled,
+        enabledTools,
+      });
 
       let isFirstChunk = true;
 

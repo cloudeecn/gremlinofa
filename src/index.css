@@ -2,11 +2,6 @@
 @import 'highlight.js/styles/github.css';
 @import 'katex/dist/katex.min.css';
 
-/* iOS keyboard viewport compensation - set by useIOSKeyboard hook */
-:root {
-  --keyboard-offset: 0px;
-}
-
 /* iOS-style momentum scrolling with scroll containment */
 .ios-scroll {
   -webkit-overflow-scrolling: touch;

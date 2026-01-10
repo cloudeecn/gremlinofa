@@ -223,6 +223,17 @@ describe('UnifiedStorage', () => {
         parentId: chat.id,
       });
     });
+
+    it('should delete VFS data when project is deleted', async () => {
+      const project = createTestProject();
+      await storage.saveProject(project);
+
+      await storage.deleteProject(project.id);
+
+      // Should delete vfs_meta for the project
+      const vfsMetaId = `vfs_meta_${project.id}`;
+      expect(adapter.delete).toHaveBeenCalledWith('vfs_meta', vfsMetaId);
+    });
   });
 
   describe('Chats CRUD', () => {

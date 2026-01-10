@@ -196,7 +196,7 @@ public/             # Static assets and PWA icons
 - `storageConfig.ts` stores user's storage mode preference (localStorage key: `gremlinofa_storage_config`)
 - **Auto-routing**: `index.ts` reads config at startup and creates the appropriate adapter automatically
 - Factory functions: `createStorage()` and `createStorageAdapter()` for creating instances (useful for migration/sync)
-- Tables: `api_definitions`, `models_cache`, `projects`, `chats`, `messages`, `attachments`, `memories`, `memory_journals`, `app_metadata`
+- Tables: `api_definitions`, `models_cache`, `projects`, `chats`, `messages`, `attachments`, `memories`, `memory_journals`, `app_metadata`, `vfs_meta`, `vfs_files`, `vfs_versions`
 - All tables have the same columns
 
 **Remote Storage:**
@@ -523,6 +523,7 @@ MessageList.tsx                    # Container with virtual scrolling
 - `/` - Welcome screen
 - `/project/:projectId` - Project view (shows default model under title)
 - `/project/:projectId/settings` - Project settings
+- `/project/:projectId/vfs/*` - VFS Manager (memory files, supports deep links to paths)
 - `/chat/:chatId` - Chat conversation
 - `/attachments` - Attachment manager
 - `/settings` - API definitions configuration
@@ -534,6 +535,31 @@ MessageList.tsx                    # Container with virtual scrolling
 - Desktop: Side-by-side two-panel (sidebar 280px fixed)
 - Mobile: Overlay drawer, hamburger menu per view
 - `useIsMobile()` hook for responsive components (no prop drilling)
+
+**VFS Manager:**
+
+UI for viewing and editing files stored in the VFS (memory tool). Accessible from Project Settings > Tools > Memory > "Manage Memory Files" link.
+
+Component structure:
+
+```
+VfsManagerView (page at /project/:projectId/vfs)
+├── Header (back to project settings, title)
+├── Desktop Layout (side-by-side via flex)
+│   ├── VfsDirectoryTree (left panel ~40%)
+│   └── Content panel (right ~60%): VfsFileViewer / VfsFileEditor / VfsDiffViewer
+└── Mobile Layout
+    ├── VfsDirectoryTree (full width)
+    └── VfsFileModal (when file selected)
+```
+
+Features:
+
+- **Directory tree**: Expand/collapse directories, lazy loading, file sizes
+- **File viewer**: Read-only content display with version badge
+- **File editor**: Edit with draft persistence (`vfs-editor` place), auto-versioning on save
+- **Diff viewer**: Compare versions with LCS diff algorithm, rollback support
+- **Delete**: Soft-delete files and directories (recursive)
 
 **Provider-Specific Settings Pattern:**
 
@@ -562,13 +588,12 @@ Settings that apply to the currently selected API provider appear in the main se
 
 **Overview:**
 
-Implements Anthropic's memory tool specification - a persistent virtual filesystem that allows Claude to store and retrieve information across conversations. Files persist per project and survive page reloads.
+Implements Anthropic's memory tool specification - a persistent virtual filesystem that allows LLMs to store and retrieve information across conversations. Files persist per project and survive page reloads. Uses VfsService for tree-structured storage with per-file versioning.
 
 **Files:**
 
 - `src/services/tools/memoryTool.ts` - Tool implementation with `MemoryToolInstance` class
-- `src/services/memory/memoryStorage.ts` - Persistent storage layer (encrypted, compressed)
-- `src/components/project/MemoryManagerView.tsx` - UI for viewing/managing memory files
+- `src/services/vfs/vfsService.ts` - VFS backend with tree structure and versioning
 
 **Commands (Anthropic spec compliant):**
 
@@ -578,57 +603,39 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 | `create`      | `path`, `file_text`                  | Create new file (error if exists)                                             |
 | `str_replace` | `path`, `old_str`, `new_str`         | Replace unique string (error if not found or multiple matches)                |
 | `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (0-indexed)                                      |
-| `delete`      | `path`                               | Delete file or directory                                                      |
+| `delete`      | `path`                               | Delete file or directory (soft delete)                                        |
 | `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                                |
 
-**Virtual Filesystem:**
+**VFS Architecture:**
 
 - Root path: `/memories` (all paths normalized to this)
-- Flat file structure stored as `Record<string, MemoryFile>`
-- Each file tracks `content`, `createdAt`, `updatedAt` timestamps
+- Tree-structured filesystem stored in `vfs_meta` table (JSON tree per project)
+- Files stored in `vfs_files` table with stable UUID (`fileId`) that survives renames
+- Per-file versioning in `vfs_versions` table (auto-versioned on every update)
+- Soft-delete with orphan tracking for displaced files during renames
 - 999,999 line limit per file (returns error if exceeded)
 
-**Storage:**
+**Storage Tables:**
 
-- Uses same encryption/compression as messages (`encryptWithCompression`)
-- Keyed by `projectId` in `memories` table
-- Auto-save: dirty flag cleared after each write operation
+- `vfs_meta`: Tree structure + orphans per project
+- `vfs_files`: Current file content (parentId = projectId)
+- `vfs_versions`: Historical snapshots (parentId = fileId)
+- VFS data cleaned up automatically when project is deleted
 
-**Journal (Version History):**
+**Migration:**
 
-- Every write operation (create, str_replace, insert, delete, rename) logs a journal entry
-- Journal stored in `memory_journals` table with `parentId` = projectId
-- Each entry stores the full command parameters as encrypted JSON
-- `getJournalVersion(projectId)` returns the write count (version number)
-- `loadJournal(projectId)` returns all entries sorted by timestamp
+Old memory system data (`memories`, `memory_journals` tables) is automatically migrated to VFS on app startup via `UnifiedStorage.initialize()`. Migration is idempotent - skips projects that already have VFS data. Process:
 
-**Memory Manager UI (`MemoryManagerView.tsx`):**
-
-- Shows version number (total writes) in header
-- "Verify" button reconstructs filesystem from journal, compares with current state
-- If differences found, offers to overwrite current state with replayed version
-- "Edit" button opens modal with textarea to manually edit file content
-- "Diff" button on file view compares current vs previous version using LCS diff
-- Navigation buttons (◀ ▶) to browse diff between any two versions
-- "Rollback" button (in diff mode) restores file to the currently viewed version
-- Manual file deletion (🗑️ button) records a `delete` command in journal
-- "Clear All" deletes both filesystem and journal history
-
-**User Actions (journal commands):**
-
-| Command         | Source               | Description                                    |
-| --------------- | -------------------- | ---------------------------------------------- |
-| `user_edit`     | Edit modal → Save    | Full file replacement with user-edited content |
-| `user_rollback` | Diff view → Rollback | Full file replacement with historical version  |
-
-Both commands store `{ command, path, file_text }` and are replayed as delete + create.
+1. Replay journal entries chronologically (builds version history in VFS)
+2. Compare VFS state with current `memories` table and sync differences
+3. Delete old `memories` and `memory_journals` records after successful migration
 
 **Instance Management:**
 
-- `MemoryToolInstance` class holds filesystem state per project
-- `initMemoryTool(projectId)` - Load from storage or create empty (cached in Map)
+- `MemoryToolInstance` class wraps VfsService for memory tool operations
+- `initMemoryTool(projectId)` - Create instance, register with toolRegistry
 - `getMemoryTool(projectId)` - Get cached instance
-- `disposeMemoryTool(projectId)` - Remove from cache when chat closes
+- `disposeMemoryTool(projectId)` - Unregister and remove from cache
 
 **Message Format (exact wording per spec):**
 

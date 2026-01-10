@@ -265,3 +265,37 @@ export interface ClientSideTool {
   /** Icon for tool_result blocks (emoji/unicode). Default:  or L based on error state */
   iconOutput?: string;
 }
+
+// Virtual Filesystem (VFS) types
+export interface VfsNode {
+  type: 'file' | 'dir';
+  fileId?: string; // only for type: 'file'
+  deleted: boolean;
+  createdAt: number; // Unix timestamp (ms)
+  updatedAt: number; // Unix timestamp (ms)
+  children?: Record<string, VfsNode>; // only for type: 'dir'
+}
+
+export interface VfsOrphan {
+  fileId: string;
+  originalPath: string;
+  orphanedAt: number; // Unix timestamp (ms)
+}
+
+export interface VfsTree {
+  children: Record<string, VfsNode>;
+  orphans: VfsOrphan[];
+}
+
+export interface VfsFile {
+  content: string;
+  version: number;
+  createdAt: number; // Unix timestamp (ms)
+  updatedAt: number; // Unix timestamp (ms)
+}
+
+export interface VfsVersion {
+  content: string;
+  version: number;
+  createdAt: number; // Unix timestamp (ms)
+}

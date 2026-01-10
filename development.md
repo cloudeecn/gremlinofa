@@ -141,7 +141,7 @@ Projects organize chats with shared settings:
 - **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
 - **Message format**: three modes (user message / with metadata / use template)
-- **Tools**: Memory (Anthropic only), JavaScript Execution
+- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem
 - **Advanced** (collapsed): temperature, max output tokens (default: 1536)
 
 ### Chats
@@ -658,6 +658,39 @@ rename:      "Successfully renamed {old_path} to {new_path}"
 - Invalid line (insert): `"Error: Invalid \`insert_line\` parameter: {n}. It should be within the range of lines of the file: [0, {max}]"`
 - Destination exists (rename): `"Error: The destination {path} already exists"`
 
+### Filesystem Tool
+
+**Overview:**
+
+Client-side tool that provides LLM access to the project's virtual filesystem. Similar to the memory tool but operates from VFS root (`/`) with `/memories` as readonly. Useful for storing code, data files, configuration, and scripts.
+
+**Files:**
+
+- `src/services/tools/fsTool.ts` - Tool implementation with `FsToolInstance` class
+
+**Commands:**
+
+| Command       | Parameters                           | Description                                                 |
+| ------------- | ------------------------------------ | ----------------------------------------------------------- |
+| `view`        | `path`, `view_range?`                | View directory listing or file contents (with line numbers) |
+| `create`      | `path`, `file_text`                  | Create new file (error if exists)                           |
+| `str_replace` | `path`, `old_str`, `new_str`         | Replace unique string (error if not found or multiple)      |
+| `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (0-indexed)                    |
+| `delete`      | `path`                               | Delete file or directory (soft delete)                      |
+| `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)              |
+
+**Readonly Enforcement:**
+
+- `/memories` path and all its contents are readonly
+- Write operations (`create`, `str_replace`, `insert`, `delete`, `rename` into /memories) return error
+- Error message explains that /memories is managed by the memory tool
+
+**Instance Management:**
+
+- `initFsTool(projectId)` - Create instance, register with toolRegistry
+- `getFsTool(projectId)` - Get cached instance
+- `disposeFsTool(projectId)` - Unregister and remove from cache
+
 ### JavaScript Execution Tool
 
 **Overview:**
@@ -669,6 +702,7 @@ Client-side tool that executes JavaScript code in a secure QuickJS-ng sandbox. E
 - `src/services/tools/jsTool.ts` - Tool registration and input/output formatting
 - `src/services/tools/jsvm/JsVMContext.ts` - QuickJS context wrapper with event loop
 - `src/services/tools/jsvm/polyfills.ts` - Browser API polyfills (setTimeout, TextEncoder, etc.)
+- `src/services/tools/jsvm/fsPolyfill.ts` - VFS filesystem bridge for `fs` API
 
 **Dependencies:**
 
@@ -808,6 +842,17 @@ Sessions enable the AI to build up state across multiple tool calls:
 2. All JS tool executions within the loop share the same context (variables persist)
 3. When loop completes (stop_reason changes or max iterations) → `disposeJsSession()`
 4. On error → `disposeJsSession()` in catch block
+
+**Library Preloading (`/lib`):**
+
+When a JS session is created with a projectId, the VM automatically loads and executes all `.js` files in the `/lib` directory:
+
+- Checks if `/lib` exists in VFS
+- Lists all `.js` files, sorts alphabetically for deterministic order
+- Executes each script with the filename parameter for proper stack traces
+- Scripts run during session creation (before any tool calls)
+- Use for: loading utility libraries (lodash, date-fns UMD builds), custom helpers, polyfills
+- Errors logged to console but don't prevent session creation
 
 **Use Case Example:**
 

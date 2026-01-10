@@ -93,6 +93,9 @@ export interface Project {
   memoryEnabled?: boolean;
   // JavaScript execution tool
   jsExecutionEnabled?: boolean;
+  jsLibEnabled?: boolean; // Auto-load /lib/*.js scripts when JS session starts
+  // Filesystem tool
+  fsToolEnabled?: boolean;
 }
 
 // Chat pending state types

@@ -66,6 +66,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [jsExecutionEnabled, setJsExecutionEnabled] = useState(
     project?.jsExecutionEnabled || false
   );
+  const [jsLibEnabled, setJsLibEnabled] = useState(project?.jsLibEnabled ?? true);
+  const [fsToolEnabled, setFsToolEnabled] = useState(project?.fsToolEnabled || false);
   const [reasoningEffort, setReasoningEffort] = useState<
     'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined
   >(project?.reasoningEffort);
@@ -87,7 +89,6 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   // Update form fields when project loads
   useEffect(() => {
     if (project) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSystemPrompt(project.systemPrompt || '');
       setPreFillResponse(project.preFillResponse || '');
       setEnableReasoning(project.enableReasoning || false);
@@ -105,6 +106,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setMetadataNewContext(project.metadataNewContext || false);
       setMemoryEnabled(project.memoryEnabled || false);
       setJsExecutionEnabled(project.jsExecutionEnabled || false);
+      setJsLibEnabled(project.jsLibEnabled ?? true);
+      setFsToolEnabled(project.fsToolEnabled || false);
       setReasoningEffort(project.reasoningEffort);
       setReasoningSummary(project.reasoningSummary);
       setTemperature(project.temperature?.toString() || '');
@@ -163,6 +166,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         metadataNewContext,
         memoryEnabled,
         jsExecutionEnabled,
+        jsLibEnabled,
+        fsToolEnabled,
         reasoningEffort,
         reasoningSummary,
         temperature: temperature === '' ? null : parseFloat(temperature),
@@ -195,6 +200,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     metadataNewContext,
     memoryEnabled,
     jsExecutionEnabled,
+    jsLibEnabled,
+    fsToolEnabled,
     reasoningEffort,
     reasoningSummary,
     temperature,
@@ -796,6 +803,52 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       type="checkbox"
                       checked={jsExecutionEnabled}
                       onChange={e => setJsExecutionEnabled(e.target.checked)}
+                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* JS Library Preloading - nested under JS Execution */}
+                  {jsExecutionEnabled && (
+                    <div className="ml-4 flex items-center justify-between border-l-2 border-gray-200 pl-4">
+                      <div>
+                        <label
+                          htmlFor="jsLibEnabled"
+                          className="cursor-pointer text-sm font-medium text-gray-900"
+                        >
+                          Load /lib Scripts
+                        </label>
+                        <p className="text-xs text-gray-500">
+                          Auto-load .js files from /lib when JS session starts
+                        </p>
+                      </div>
+                      <input
+                        id="jsLibEnabled"
+                        type="checkbox"
+                        checked={jsLibEnabled}
+                        onChange={e => setJsLibEnabled(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Filesystem Tool */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label
+                        htmlFor="fsToolEnabled"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        Filesystem Access
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        Read/write VFS files (/memories readonly)
+                      </p>
+                    </div>
+                    <input
+                      id="fsToolEnabled"
+                      type="checkbox"
+                      checked={fsToolEnabled}
+                      onChange={e => setFsToolEnabled(e.target.checked)}
                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                   </div>

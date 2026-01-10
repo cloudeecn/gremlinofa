@@ -18,6 +18,7 @@ import {
 import variant from '@jitl/quickjs-ng-wasmfile-release-sync';
 import { injectPolyfills } from './polyfills';
 import { FsBridge } from './fsPolyfill';
+import * as vfs from '../../vfs/vfsService';
 
 export type ConsoleLevel = 'LOG' | 'WARN' | 'ERROR' | 'INFO' | 'DEBUG';
 
@@ -68,8 +69,9 @@ export class JsVMContext {
   /**
    * Create a new JsVMContext with polyfills injected.
    * @param projectId - Optional project ID to enable fs operations
+   * @param loadLib - Whether to load /lib scripts on session start (default: true)
    */
-  static async create(projectId?: string): Promise<JsVMContext> {
+  static async create(projectId?: string, loadLib = true): Promise<JsVMContext> {
     const module = await getModule();
     const context = module.newContext();
     const vm = new JsVMContext(context);
@@ -81,18 +83,95 @@ export class JsVMContext {
     if (projectId) {
       vm.fsBridge = new FsBridge(projectId, context);
       vm.fsBridge.injectFs();
+
+      // Load and execute /lib scripts if enabled and the directory exists
+      if (loadLib) {
+        await vm.loadLibScripts(projectId);
+      }
     }
 
     return vm;
   }
 
   /**
+   * Load and execute all .js files in /lib directory.
+   * Scripts are executed with their filename for better stack traces.
+   */
+  private async loadLibScripts(projectId: string): Promise<void> {
+    const libPath = '/lib';
+
+    try {
+      // Check if /lib directory exists
+      const libExists = await vfs.isDirectory(projectId, libPath);
+      if (!libExists) {
+        return;
+      }
+
+      // List files in /lib (non-recursive)
+      const entries = await vfs.readDir(projectId, libPath);
+
+      // Filter for .js files and sort alphabetically for deterministic order
+      const jsFiles = entries
+        .filter(e => e.type === 'file' && e.name.endsWith('.js'))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      if (jsFiles.length === 0) {
+        return;
+      }
+
+      console.debug(
+        '[JsVMContext] Loading lib scripts:',
+        jsFiles.map(f => f.name)
+      );
+
+      // Execute each script with filename for stack traces
+      for (const file of jsFiles) {
+        const filePath = `${libPath}/${file.name}`;
+        try {
+          const content = await vfs.readFile(projectId, filePath);
+
+          // Use evalCode directly (not evaluate) to avoid resetting consoleOutput
+          // and to have simpler error handling during init
+          const result = this.context.evalCode(content, filePath, {
+            type: 'global',
+            backtraceBarrier: false,
+          });
+
+          if (result.error) {
+            const errorValue = this.context.dump(result.error);
+            result.error.dispose();
+            console.error('[JsVMContext] Error loading', filePath, ':', errorValue);
+          } else {
+            result.value.dispose();
+          }
+
+          // Drain any pending jobs from this script
+          while (this.context.runtime.hasPendingJob()) {
+            const pendingResult = this.context.runtime.executePendingJobs(1);
+            if (pendingResult.error) {
+              const errorValue = this.context.dump(pendingResult.error);
+              pendingResult.error.dispose();
+              console.error('[JsVMContext] Async error in', filePath, ':', errorValue);
+              break;
+            }
+          }
+        } catch (error) {
+          console.error('[JsVMContext] Failed to load', filePath, ':', error);
+        }
+      }
+    } catch {
+      // /lib doesn't exist or can't be read - that's fine, it's optional
+    }
+  }
+
+  /**
    * Evaluate JavaScript code and process the event loop.
    *
    * @param code - JavaScript code to execute
+   * @param filename - Optional filename for stack traces
    * @returns Result with value, console output, and error flag
    */
-  async evaluate(code: string): Promise<EvalResult> {
+  async evaluate(code: string, filename?: string): Promise<EvalResult> {
     // Clear state from previous eval
     this.consoleOutput = [];
     this.cancelledTimers.clear();
@@ -102,7 +181,7 @@ export class JsVMContext {
     this.context.runtime.setInterruptHandler(() => Date.now() > deadline);
 
     try {
-      const result = this.context.evalCode(code, undefined, {
+      const result = this.context.evalCode(code, filename, {
         type: 'global',
         backtraceBarrier: true,
       });

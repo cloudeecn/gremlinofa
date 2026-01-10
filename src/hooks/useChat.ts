@@ -5,6 +5,7 @@ import { storage } from '../services/storage';
 import { StreamingContentAssembler } from '../services/streaming/StreamingContentAssembler';
 import { executeClientSideTool, toolRegistry } from '../services/tools/clientSideTools';
 import { initMemoryTool, disposeMemoryTool } from '../services/tools/memoryTool';
+import { initFsTool, disposeFsTool } from '../services/tools/fsTool';
 import {
   initJsTool,
   disposeJsTool,
@@ -417,6 +418,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         initJsTool();
       }
 
+      // 3e. Initialize filesystem tool if enabled
+      if (loadedProject.fsToolEnabled) {
+        console.debug('[useChat] Initializing filesystem tool for project:', loadedProject.id);
+        await initFsTool(loadedProject.id);
+        if (isCancelled) return;
+      }
+
       // 4. Load API definition
       let loadedApiDef: APIDefinition | null = null;
       const effectiveApiDefId = loadedChat.apiDefinitionId ?? loadedProject.apiDefinitionId;
@@ -510,6 +518,16 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       }
     };
   }, [project?.jsExecutionEnabled]);
+
+  // Cleanup filesystem tool when project changes or unmounts
+  useEffect(() => {
+    return () => {
+      if (project?.id && project.fsToolEnabled) {
+        console.debug('[useChat] Disposing filesystem tool for project:', project.id);
+        disposeFsTool(project.id);
+      }
+    };
+  }, [project?.id, project?.fsToolEnabled]);
 
   // Reload API definition when chat/project API definition changes
   useEffect(() => {
@@ -651,6 +669,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       if (currentProject.jsExecutionEnabled) {
         enabledTools.push('javascript');
       }
+      if (currentProject.fsToolEnabled) {
+        enabledTools.push('filesystem');
+      }
       // Note: ping tool is alwaysEnabled, no need to add explicitly
 
       // Build combined system prompt: project prompt + tool prompts (if not using apiOverrides)
@@ -750,7 +771,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         // Session persists across all iterations, disposed when loop ends
         if (!jsSessionCreated && currentProject.jsExecutionEnabled) {
           console.debug('[useChat] Creating JS session for agentic loop');
-          await createJsSession(currentProject.id);
+          await createJsSession(currentProject.id, currentProject.jsLibEnabled ?? true);
           jsSessionCreated = true;
         }
 

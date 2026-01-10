@@ -30,15 +30,16 @@ class JsToolInstance {
   /**
    * Create a persistent session for the agentic loop.
    * Variables and state persist across multiple execute calls.
+   * @param loadLib - Whether to load /lib scripts on session start (default: true)
    */
-  async createSession(): Promise<void> {
+  async createSession(loadLib = true): Promise<void> {
     if (this.session) {
       console.debug('[JsTool] Session already exists, disposing old one');
       this.disposeSession();
     }
 
-    // Pass projectId to enable fs operations
-    this.session = await JsVMContext.create(this.projectId ?? undefined);
+    // Pass projectId to enable fs operations and loadLib option
+    this.session = await JsVMContext.create(this.projectId ?? undefined, loadLib);
     console.debug('[JsTool] Session created', this.projectId ? 'with fs' : 'without fs');
   }
 
@@ -183,15 +184,16 @@ export function isJsToolInitialized(): boolean {
  * Create a persistent JS session for the agentic loop.
  * State persists across multiple tool calls until disposeJsSession is called.
  * @param projectId - Project ID to enable fs operations (optional)
+ * @param loadLib - Whether to load /lib scripts on session start (default: true)
  */
-export async function createJsSession(projectId?: string): Promise<void> {
+export async function createJsSession(projectId?: string, loadLib = true): Promise<void> {
   if (!instance) {
     throw new Error('JavaScript tool not initialized');
   }
   if (projectId) {
     instance.setProjectId(projectId);
   }
-  await instance.createSession();
+  await instance.createSession(loadLib);
 }
 
 /**

@@ -1,5 +1,4 @@
-# Documentation Tone
-
+<documentation-tone>
 Applies to all documents except `.clinerules/*`, `/development.md`.
 
 Self-aware, a bit smug, but informative - we're proud this vibe-coded thing actually works.
@@ -20,3 +19,4 @@ Self-aware, a bit smug, but informative - we're proud this vibe-coded thing actu
 ## The Vibe
 
 Proudly amateur but actually competent. The reader should think "these nerds had fun" not "these jerks think I'm dumb."
+</documentation-tone>

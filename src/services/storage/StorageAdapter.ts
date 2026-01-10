@@ -190,6 +190,9 @@ export const Tables = {
   MEMORIES: 'memories',
   MEMORY_JOURNALS: 'memory_journals',
   METADATA: 'app_metadata',
+  VFS_META: 'vfs_meta',
+  VFS_FILES: 'vfs_files',
+  VFS_VERSIONS: 'vfs_versions',
 } as const;
 
 export type TableName = (typeof Tables)[keyof typeof Tables];

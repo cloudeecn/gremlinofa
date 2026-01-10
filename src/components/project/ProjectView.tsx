@@ -282,6 +282,16 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
                   <span>📝</span>
                   <span>Project Instructions</span>
                 </button>
+                <button
+                  onClick={() => {
+                    setShowSettingsDropdown(false);
+                    navigate(`/project/${projectId}/vfs`);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  <span>📁</span>
+                  <span>Files</span>
+                </button>
               </div>
             )}
           </div>

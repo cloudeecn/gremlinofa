@@ -110,6 +110,13 @@ export class UnifiedStorage {
     await this.adapter.initialize();
     console.debug('[Storage] Adapter initialized');
 
+    // Migrate old memory data to VFS (idempotent, skips if no old data)
+    // Use dynamic import to avoid circular dependency: unifiedStorage -> migration -> vfsService -> storage
+    console.debug('[Storage] Running VFS migration...');
+    const { migrateAllMemories } = await import('../vfs/migration');
+    await migrateAllMemories(this.adapter);
+    console.debug('[Storage] VFS migration complete');
+
     // Create default API definitions if needed
     console.debug('[Storage] Initializing default API definitions...');
     await this.initializeDefaults();
@@ -287,8 +294,44 @@ export class UnifiedStorage {
       await this.deleteChat(chat.id);
     }
 
+    // Delete VFS data for this project
+    await this.deleteVfsData(id);
+
     // Delete project
     await this.adapter.delete(Tables.PROJECTS, id);
+  }
+
+  /**
+   * Delete all VFS data for a project (vfs_meta, vfs_files, vfs_versions)
+   * Called during project deletion to clean up the virtual filesystem
+   */
+  private async deleteVfsData(projectId: string): Promise<void> {
+    // Delete VFS metadata (tree structure)
+    const metaId = `vfs_meta_${projectId}`;
+    await this.adapter.delete(Tables.VFS_META, metaId);
+
+    // Get all vfs_files for this project to find their versions
+    const files: { id: string }[] = [];
+    let afterId: string | undefined;
+    while (true) {
+      const page = await this.adapter.exportPaginated(Tables.VFS_FILES, afterId, [
+        'id',
+        'parentId',
+      ]);
+      for (const row of page.rows) {
+        if (row.parentId === projectId && row.id) {
+          files.push({ id: row.id });
+        }
+      }
+      if (!page.hasMore) break;
+      afterId = page.rows[page.rows.length - 1]?.id;
+    }
+
+    // Delete all versions for each file, then delete the file
+    for (const file of files) {
+      await this.adapter.deleteMany(Tables.VFS_VERSIONS, { parentId: file.id });
+      await this.adapter.delete(Tables.VFS_FILES, file.id);
+    }
   }
 
   // ===== Chats =====

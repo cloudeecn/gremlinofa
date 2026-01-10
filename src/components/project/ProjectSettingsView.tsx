@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { hasMemory, clearMemory } from '../../services/memory/memoryStorage';
 import { useApp } from '../../hooks/useApp';
 import { apiService } from '../../services/api/apiService';
 import { useProject } from '../../hooks/useProject';
@@ -72,7 +71,6 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [reasoningSummary, setReasoningSummary] = useState<
     'auto' | 'concise' | 'detailed' | undefined
   >(project?.reasoningSummary);
-  const [projectHasMemory, setProjectHasMemory] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showOtherProviderConfig, setShowOtherProviderConfig] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
@@ -113,17 +111,6 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setSelectedModelId(project.modelId || null);
     }
   }, [project]);
-
-  // Check if project has memory data
-  useEffect(() => {
-    let mounted = true;
-    hasMemory(projectId).then(exists => {
-      if (mounted) setProjectHasMemory(exists);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [projectId]);
 
   // Get API definition and model names for display
   const apiDef = selectedApiDefId ? apiDefinitions.find(a => a.id === selectedApiDefId) : null;
@@ -750,34 +737,12 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                         className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
-                    {memoryEnabled && (
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          onClick={() => navigate(`/project/${projectId}/memories`)}
-                          className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
-                        >
-                          📂 View Memory Files
-                        </button>
-                        {projectHasMemory && (
-                          <button
-                            onClick={async () => {
-                              const confirmed = await showDestructiveConfirm(
-                                'Clear Memory',
-                                'Delete all memory files for this project? Claude will forget everything.',
-                                'Clear'
-                              );
-                              if (confirmed) {
-                                await clearMemory(projectId);
-                                setProjectHasMemory(false);
-                              }
-                            }}
-                            className="rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
-                          >
-                            🗑️ Clear
-                          </button>
-                        )}
-                      </div>
-                    )}
+                    <Link
+                      to={`/project/${projectId}/vfs/memories`}
+                      className="mt-2 block text-sm text-blue-600 hover:text-blue-700 hover:underline"
+                    >
+                      📁 Manage Memory Files
+                    </Link>
                   </div>
 
                   {/* JavaScript Execution */}

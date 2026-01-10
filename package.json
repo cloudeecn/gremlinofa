@@ -15,6 +15,7 @@
     "postbuild": "mkdir -p dist/src && cp scripts/pwa-recovery.js dist/src/main.js",
     "lint": "eslint .",
     "format": "prettier --write .",
+    "format:silent": "CI=true prettier --write . | grep -v '(unchanged)'",
     "format:check": "prettier --check .",
     "preview": "vite preview",
     "verify": "CI=true prettier --check . && tsc -b && eslint .",

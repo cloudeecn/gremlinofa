@@ -694,6 +694,283 @@ describe('useChat', () => {
     });
   });
 
+  describe('resolvePendingToolCalls', () => {
+    const mockAssistantWithToolUse: Message<unknown> = {
+      id: 'msg_assistant_tooluse',
+      role: MessageRole.ASSISTANT,
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: 'anthropic',
+        fullContent: [
+          {
+            type: 'tool_use',
+            id: 'tool_1',
+            name: 'ping',
+            input: {},
+          },
+        ],
+        renderingContent: [
+          {
+            category: 'backstage',
+            blocks: [{ type: 'tool_use', id: 'tool_1', name: 'ping', input: {} }],
+          },
+        ],
+      },
+      timestamp: new Date('2024-01-01'),
+    };
+
+    beforeEach(() => {
+      // Setup: return messages with unresolved tool use
+      vi.mocked(storage.getMessages).mockResolvedValue([mockUserMessage, mockAssistantWithToolUse]);
+    });
+
+    it('should detect unresolved tool calls', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+
+      await waitFor(() => {
+        expect(result.current.unresolvedToolCalls).not.toBeNull();
+        expect(result.current.unresolvedToolCalls).toHaveLength(1);
+        expect(result.current.unresolvedToolCalls![0].name).toBe('ping');
+      });
+    });
+
+    it('stop mode + empty message: saves tool results, no API call', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+
+      await waitFor(() => {
+        expect(result.current.unresolvedToolCalls).not.toBeNull();
+      });
+
+      await result.current.resolvePendingToolCalls('stop');
+
+      // Should save tool result message
+      expect(storage.saveMessage).toHaveBeenCalledWith(
+        'chat_123',
+        expect.objectContaining({
+          role: MessageRole.USER,
+          content: expect.objectContaining({
+            fullContent: expect.arrayContaining([
+              expect.objectContaining({
+                type: 'tool_result',
+                is_error: true,
+                content: expect.stringContaining('Token limit reached'),
+              }),
+            ]),
+          }),
+        })
+      );
+
+      // Should NOT call API
+      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+    });
+
+    it('continue mode + empty message: saves tool results, calls API', async () => {
+      // Mock stream for continuation
+      const mockStreamGenerator = async function* () {
+        yield { type: 'content' as const, content: 'Response' };
+        return {
+          textContent: 'Response',
+          fullContent: {},
+          inputTokens: 10,
+          outputTokens: 5,
+        };
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStreamGenerator());
+
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+
+      await waitFor(() => {
+        expect(result.current.unresolvedToolCalls).not.toBeNull();
+      });
+
+      await result.current.resolvePendingToolCalls('continue');
+
+      // Should save tool result message (with executed result, not error)
+      await waitFor(() => {
+        expect(storage.saveMessage).toHaveBeenCalledWith(
+          'chat_123',
+          expect.objectContaining({
+            role: MessageRole.USER,
+            content: expect.objectContaining({
+              fullContent: expect.arrayContaining([
+                expect.objectContaining({
+                  type: 'tool_result',
+                  // ping tool returns pong, not an error
+                }),
+              ]),
+            }),
+          })
+        );
+      });
+
+      // Should call API for continuation
+      await waitFor(() => {
+        expect(apiService.sendMessageStream).toHaveBeenCalled();
+      });
+    });
+
+    it('stop mode + user message: saves tool results, calls sendMessageToAPI', async () => {
+      const mockStreamGenerator = async function* () {
+        yield { type: 'content' as const, content: 'Response' };
+        return {
+          textContent: 'Response',
+          fullContent: {},
+          inputTokens: 10,
+          outputTokens: 5,
+        };
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStreamGenerator());
+
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+
+      await waitFor(() => {
+        expect(result.current.unresolvedToolCalls).not.toBeNull();
+      });
+
+      await result.current.resolvePendingToolCalls('stop', 'User follow-up message');
+
+      // Should save tool result message with error
+      await waitFor(() => {
+        expect(storage.saveMessage).toHaveBeenCalledWith(
+          'chat_123',
+          expect.objectContaining({
+            role: MessageRole.USER,
+            content: expect.objectContaining({
+              fullContent: expect.arrayContaining([
+                expect.objectContaining({
+                  type: 'tool_result',
+                  is_error: true,
+                }),
+              ]),
+            }),
+          })
+        );
+      });
+
+      // Should call API with user message
+      await waitFor(() => {
+        expect(apiService.sendMessageStream).toHaveBeenCalled();
+      });
+
+      // Verify the API was called with a user message containing the follow-up
+      const streamCalls = vi.mocked(apiService.sendMessageStream).mock.calls;
+      const lastCall = streamCalls[streamCalls.length - 1];
+      const messagesArg = lastCall[0];
+      const userFollowUp = messagesArg.find(
+        (m: Message<unknown>) =>
+          m.role === MessageRole.USER && m.content.content === 'User follow-up message'
+      );
+      expect(userFollowUp).toBeDefined();
+    });
+
+    it('continue mode + user message: saves tool results, calls sendMessageToAPI', async () => {
+      const mockStreamGenerator = async function* () {
+        yield { type: 'content' as const, content: 'Response' };
+        return {
+          textContent: 'Response',
+          fullContent: {},
+          inputTokens: 10,
+          outputTokens: 5,
+        };
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStreamGenerator());
+
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+
+      await waitFor(() => {
+        expect(result.current.unresolvedToolCalls).not.toBeNull();
+      });
+
+      await result.current.resolvePendingToolCalls('continue', 'User follow-up message');
+
+      // Should save tool result message (executed, not error)
+      await waitFor(() => {
+        expect(storage.saveMessage).toHaveBeenCalledWith(
+          'chat_123',
+          expect.objectContaining({
+            role: MessageRole.USER,
+            content: expect.objectContaining({
+              fullContent: expect.arrayContaining([
+                expect.objectContaining({
+                  type: 'tool_result',
+                }),
+              ]),
+            }),
+          })
+        );
+      });
+
+      // Should call API with user message
+      await waitFor(() => {
+        expect(apiService.sendMessageStream).toHaveBeenCalled();
+      });
+
+      // Verify the API was called with a user message containing the follow-up
+      const streamCalls = vi.mocked(apiService.sendMessageStream).mock.calls;
+      const lastCall = streamCalls[streamCalls.length - 1];
+      const messagesArg = lastCall[0];
+      const userFollowUp = messagesArg.find(
+        (m: Message<unknown>) =>
+          m.role === MessageRole.USER && m.content.content === 'User follow-up message'
+      );
+      expect(userFollowUp).toBeDefined();
+    });
+
+    it('should not detect unresolved tools when tool_result exists', async () => {
+      // Add a tool result message after the assistant tool use
+      const toolResultMessage: Message<unknown> = {
+        id: 'msg_toolresult',
+        role: MessageRole.USER,
+        content: {
+          type: 'text',
+          content: '',
+          fullContent: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool_1',
+              content: 'pong',
+            },
+          ],
+          renderingContent: [
+            {
+              category: 'backstage',
+              blocks: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'pong' }],
+            },
+          ],
+        },
+        timestamp: new Date('2024-01-01'),
+      };
+
+      vi.mocked(storage.getMessages).mockResolvedValue([
+        mockUserMessage,
+        mockAssistantWithToolUse,
+        toolResultMessage,
+      ]);
+
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+
+      await waitFor(() => {
+        expect(result.current.messages).toHaveLength(3);
+      });
+
+      // Should NOT detect unresolved tool calls
+      expect(result.current.unresolvedToolCalls).toBeNull();
+    });
+  });
+
   describe('Effect cleanup and re-execution', () => {
     it('should reload when chatId changes', async () => {
       const { result, rerender } = renderHook(

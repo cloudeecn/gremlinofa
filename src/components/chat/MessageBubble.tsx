@@ -114,7 +114,7 @@ export default function MessageBubble({
         <UserMessageBubble message={message} attachments={attachments} onAction={onAction} />
       )}
 
-      {isToolResult && <ToolResultBubble message={message} />}
+      {isToolResult && <ToolResultBubble message={message} onAction={onAction} />}
 
       {hasRenderingContent && <AssistantMessageBubble message={message} isVisible={isVisible} />}
 

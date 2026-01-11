@@ -3,7 +3,7 @@ import type { RenderingBlockGroup } from '../../types/content';
 
 export interface MessageBubbleProps {
   message: Message<unknown>;
-  onAction: (action: 'copy' | 'fork' | 'edit', messageId: string) => void;
+  onAction: (action: 'copy' | 'fork' | 'edit' | 'delete', messageId: string) => void;
   isVisible: boolean;
   onRegister: (messageId: string, element: HTMLElement | null) => void;
   onMeasureHeight: (messageId: string, height: number) => void;
@@ -32,12 +32,18 @@ export interface StreamingMessageProps {
 
 export interface MessageListProps {
   messages: Message<unknown>[];
-  onAction: (action: 'copy' | 'fork' | 'edit', messageId: string) => void;
+  onAction: (action: 'copy' | 'fork' | 'edit' | 'delete', messageId: string) => void;
   isLoading: boolean;
   streamingGroups: RenderingBlockGroup[];
   streamingLastEvent?: string;
   currentApiDefId: string | null;
   currentModelId: string | null;
+  /** Number of pending tool calls (for banner display) */
+  pendingToolCount?: number;
+  /** Current mode for resolving pending tool calls */
+  pendingToolMode?: 'stop' | 'continue';
+  /** Callback when tool mode changes */
+  onPendingToolModeChange?: (mode: 'stop' | 'continue') => void;
 }
 
 export interface ChatInputProps {
@@ -54,4 +60,6 @@ export interface ChatInputProps {
   isProcessing?: boolean;
   /** Show spinner on send button (waiting for first stream chunk) */
   showSendSpinner?: boolean;
+  /** Whether there are pending tool calls (enables send button even with empty input) */
+  hasPendingToolCalls?: boolean;
 }

@@ -120,34 +120,47 @@ export class AnthropicClient implements APIClient {
         // Use fullContent if available and from Anthropic (better caching)
         if (msg.content.modelFamily === APIType.ANTHROPIC && msg.content.fullContent) {
           // Use the stored fullContent blocks, but add cache_control dynamically
+          // Filter out empty text blocks (Anthropic doesn't support them)
           const content = Array.isArray(msg.content.fullContent)
-            ? msg.content.fullContent.map(
-                (block: Anthropic.Beta.BetaContentBlock, blockIdx: number, blockArr) => {
-                  // Destructure to exclude 'parsed' property (SDK adds it, but API rejects it)
-                  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                  const { parsed, ...blockWithoutParsed } =
-                    block as Anthropic.Beta.BetaContentBlock & { parsed?: unknown };
-                  // Strip 'citations' if previous message was tool_result (document indices may be invalid)
-                  // See Known Issues in development.md for details
-                  let cleanBlock: Anthropic.Beta.BetaContentBlockParam = blockWithoutParsed;
-                  if (prevHasToolResult && 'citations' in blockWithoutParsed) {
+            ? msg.content.fullContent
+                .filter((block: Anthropic.Beta.BetaContentBlock) => {
+                  // Filter out empty text blocks
+                  if (block.type === 'text' && !block.text?.trim()) {
+                    return false;
+                  }
+                  return true;
+                })
+                .map(
+                  (
+                    block: Anthropic.Beta.BetaContentBlock,
+                    blockIdx: number,
+                    blockArr: Anthropic.Beta.BetaContentBlock[]
+                  ) => {
+                    // Destructure to exclude 'parsed' property (SDK adds it, but API rejects it)
                     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                    const { citations, ...rest } =
-                      blockWithoutParsed as typeof blockWithoutParsed & {
-                        citations?: unknown;
+                    const { parsed, ...blockWithoutParsed } =
+                      block as Anthropic.Beta.BetaContentBlock & { parsed?: unknown };
+                    // Strip 'citations' if previous message was tool_result (document indices may be invalid)
+                    // See Known Issues in development.md for details
+                    let cleanBlock: Anthropic.Beta.BetaContentBlockParam = blockWithoutParsed;
+                    if (prevHasToolResult && 'citations' in blockWithoutParsed) {
+                      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                      const { citations, ...rest } =
+                        blockWithoutParsed as typeof blockWithoutParsed & {
+                          citations?: unknown;
+                        };
+                      cleanBlock = rest as Anthropic.Beta.BetaContentBlockParam;
+                    }
+                    // Add cache_control to last block of last 2 messages
+                    if (idx >= arr.length - 2 && blockIdx === blockArr.length - 1) {
+                      return {
+                        ...cleanBlock,
+                        cache_control: { type: 'ephemeral' } as const,
                       };
-                    cleanBlock = rest as Anthropic.Beta.BetaContentBlockParam;
+                    }
+                    return cleanBlock;
                   }
-                  // Add cache_control to last block of last 2 messages
-                  if (idx >= arr.length - 2 && blockIdx === blockArr.length - 1) {
-                    return {
-                      ...cleanBlock,
-                      cache_control: { type: 'ephemeral' } as const,
-                    };
-                  }
-                  return cleanBlock;
-                }
-              )
+                )
             : [
                 {
                   type: 'text' as const,

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import Mustache from 'mustache';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
@@ -21,6 +21,7 @@ import type {
   RenderingBlockGroup,
   TokenUsage,
   ToolResultBlock,
+  ToolUseBlock,
 } from '../types';
 import type { ToolResultRenderBlock, ToolUseRenderBlock } from '../types/content';
 
@@ -196,6 +197,125 @@ function stripMetadata(content: string): string {
   return content.replace(/^<metadata>.*?<\/metadata>\s*/s, '');
 }
 
+/**
+ * Extract tool_use blocks from renderingContent or fullContent.
+ */
+function extractToolUseBlocksFromMessage(message: Message<unknown>): ToolUseBlock[] {
+  // Try renderingContent first (backstage blocks)
+  const renderingContent = message.content.renderingContent;
+  if (renderingContent) {
+    const toolUseBlocks: ToolUseBlock[] = [];
+    for (const group of renderingContent) {
+      if (group.category === 'backstage') {
+        for (const block of group.blocks) {
+          if (block.type === 'tool_use') {
+            const tuBlock = block as ToolUseRenderBlock;
+            toolUseBlocks.push({
+              type: 'tool_use',
+              id: tuBlock.id,
+              name: tuBlock.name,
+              input: tuBlock.input,
+            });
+          }
+        }
+      }
+    }
+    if (toolUseBlocks.length > 0) return toolUseBlocks;
+  }
+
+  // Fall back to fullContent for Anthropic messages
+  const fullContent = message.content.fullContent;
+  if (Array.isArray(fullContent)) {
+    return fullContent
+      .filter((block: Record<string, unknown>) => block.type === 'tool_use')
+      .map((block: Record<string, unknown>) => ({
+        type: 'tool_use' as const,
+        id: block.id as string,
+        name: block.name as string,
+        input: (block.input as Record<string, unknown>) || {},
+      }));
+  }
+
+  return [];
+}
+
+/**
+ * Extract tool_result IDs from a message's renderingContent or fullContent.
+ */
+function extractToolResultIdsFromMessage(message: Message<unknown>): Set<string> {
+  const ids = new Set<string>();
+
+  // Check renderingContent
+  const renderingContent = message.content.renderingContent;
+  if (renderingContent) {
+    for (const group of renderingContent) {
+      if (group.category === 'backstage') {
+        for (const block of group.blocks) {
+          if (block.type === 'tool_result') {
+            ids.add((block as ToolResultRenderBlock).tool_use_id);
+          }
+        }
+      }
+    }
+  }
+
+  // Also check fullContent for Anthropic format
+  const fullContent = message.content.fullContent;
+  if (Array.isArray(fullContent)) {
+    for (const block of fullContent) {
+      if ((block as Record<string, unknown>).type === 'tool_result') {
+        ids.add((block as Record<string, unknown>).tool_use_id as string);
+      }
+    }
+  }
+
+  return ids;
+}
+
+/**
+ * Detect unresolved tool calls in the message history.
+ * Returns the unresolved ToolUseBlocks if any, or null if all are resolved.
+ */
+function getUnresolvedToolCalls(messages: Message<unknown>[]): ToolUseBlock[] | null {
+  if (messages.length === 0) return null;
+
+  // Find last assistant message
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === MessageRole.ASSISTANT) {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+
+  if (lastAssistantIdx === -1) return null;
+
+  const lastAssistant = messages[lastAssistantIdx];
+
+  // Extract tool_use blocks from the assistant message
+  const toolUseBlocks = extractToolUseBlocksFromMessage(lastAssistant);
+  if (toolUseBlocks.length === 0) return null;
+
+  // Check if there's a following user message with tool_result for these IDs
+  const toolUseIds = new Set(toolUseBlocks.map(t => t.id));
+
+  // Look for tool_result in any message after the assistant message
+  for (let i = lastAssistantIdx + 1; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === MessageRole.USER) {
+      const resultIds = extractToolResultIdsFromMessage(msg);
+      for (const id of resultIds) {
+        toolUseIds.delete(id);
+      }
+    }
+  }
+
+  // Return unresolved blocks
+  if (toolUseIds.size === 0) return null;
+
+  return toolUseBlocks.filter(t => toolUseIds.has(t.id));
+}
+
 export interface UseChatCallbacks {
   onMessagesLoaded: (chatId: string, messages: Message<unknown>[]) => void;
   onMessageAppended: (chatId: string, message: Message<unknown>) => void;
@@ -226,6 +346,8 @@ export interface UseChatReturn {
   currentModelId: string | null;
   parentApiDefId: string | null;
   parentModelId: string | null;
+  /** Unresolved tool_use blocks that need user action (stop/continue) */
+  unresolvedToolCalls: ToolUseBlock[] | null;
   sendMessage: (
     chatId: string,
     content: string,
@@ -236,6 +358,12 @@ export interface UseChatReturn {
   forkChat: (chatId: string, messageId: string) => Promise<Chat | null>;
   overrideModel: (chatId: string, apiDefId: string | null, modelId: string | null) => Promise<void>;
   updateChatName: (chatId: string, name: string) => Promise<void>;
+  /** Resolve pending tool calls with stop (error) or continue (execute) */
+  resolvePendingToolCalls: (
+    mode: 'stop' | 'continue',
+    userMessage?: string,
+    attachments?: MessageAttachment[]
+  ) => Promise<void>;
 }
 
 export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
@@ -1312,6 +1440,283 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     await storage.saveChat(updatedChat);
   };
 
+  // Memoized detection of unresolved tool calls
+  const unresolvedToolCalls = useMemo(() => {
+    if (isLoading) return null;
+    return getUnresolvedToolCalls(messages);
+  }, [messages, isLoading]);
+
+  /**
+   * Resolve pending tool calls by either stopping (error response) or continuing (execute tools).
+   * Optionally appends a user message after the tool results.
+   */
+  const resolvePendingToolCalls = async (
+    mode: 'stop' | 'continue',
+    userMessage?: string,
+    attachments?: MessageAttachment[]
+  ) => {
+    if (!chat || !project || !apiDefinition) return;
+    if (!unresolvedToolCalls || unresolvedToolCalls.length === 0) return;
+
+    console.debug('[useChat] resolvePendingToolCalls called, mode:', mode);
+
+    const currentApiDef = apiDefinition;
+    const effectiveModelId = chat.modelId ?? project.modelId;
+    if (!effectiveModelId) return;
+
+    // Find the assistant message containing the unresolved tool calls
+    let assistantMessageIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === MessageRole.ASSISTANT) {
+        assistantMessageIdx = i;
+        break;
+      }
+    }
+    if (assistantMessageIdx === -1) return;
+
+    // Note: assistantMessage is at messages[assistantMessageIdx] but we don't need it for resolution
+
+    // Create tool results based on mode
+    const toolResults: ToolResultBlock[] = [];
+    const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+
+    if (mode === 'stop') {
+      // Create error responses for all unresolved tool calls
+      for (const toolUse of unresolvedToolCalls) {
+        const errorContent = 'Token limit reached, ask user to continue';
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: errorContent,
+          is_error: true,
+        });
+        toolResultRenderBlocks.push(
+          createToolResultRenderBlock(toolUse.id, toolUse.name, errorContent, true)
+        );
+      }
+    } else {
+      // Execute tools and collect results
+      // Create JS session if JS tool is enabled
+      let jsSessionCreated = false;
+      if (project.jsExecutionEnabled) {
+        console.debug('[useChat] Creating JS session for tool resolution');
+        await createJsSession(project.id, project.jsLibEnabled ?? true);
+        jsSessionCreated = true;
+      }
+
+      try {
+        for (const toolUse of unresolvedToolCalls) {
+          console.debug('[useChat] Executing tool:', toolUse.name, 'id:', toolUse.id);
+          const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: toolResult.content,
+            is_error: toolResult.isError,
+          });
+          toolResultRenderBlocks.push(
+            createToolResultRenderBlock(
+              toolUse.id,
+              toolUse.name,
+              toolResult.content,
+              toolResult.isError
+            )
+          );
+        }
+      } finally {
+        if (jsSessionCreated) {
+          disposeJsSession();
+        }
+      }
+    }
+
+    // Build tool result message in API-specific format
+    const toolResultMessage: Message<unknown> = {
+      id: generateUniqueId('msg_user'),
+      role: MessageRole.USER,
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: currentApiDef.apiType,
+        fullContent: toolResults,
+        renderingContent: [{ category: 'backstage' as const, blocks: toolResultRenderBlocks }],
+      },
+      timestamp: new Date(),
+    };
+
+    // Save tool result message
+    await storage.saveMessage(chat.id, toolResultMessage);
+    setMessages(prev => [...prev, toolResultMessage]);
+    callbacks.onMessageAppended(chat.id, toolResultMessage);
+
+    // If there's a user message, send it along with the tool results to API
+    if (userMessage?.trim() || attachments?.length) {
+      // Send message to API with existing messages including tool result
+      sendMessageToAPI(
+        userMessage?.trim() || '',
+        [...messages, toolResultMessage],
+        chat,
+        project,
+        currentApiDef,
+        attachments
+      );
+    }
+    // If no user message and mode is 'continue', send continuation to API
+    else if (mode === 'continue') {
+      // Build messages including the tool result for API continuation
+      const messagesForContinuation = [...messages, toolResultMessage];
+
+      setIsLoading(true);
+      setHasReceivedFirstChunk(false);
+      callbacks.onStreamingStart(chat.id, 'Continuing...');
+
+      try {
+        // Load attachments for user messages
+        const messagesWithAttachments = await Promise.all(
+          messagesForContinuation.map(async msg => {
+            if (msg.role === MessageRole.USER && msg.content.attachmentIds?.length) {
+              const loadedAttachments = await storage.getAttachments(msg.id);
+              return { ...msg, attachments: loadedAttachments };
+            }
+            return msg;
+          })
+        );
+
+        // Build enabled tools list
+        const enabledTools: string[] = [];
+        if (project.memoryEnabled) enabledTools.push('memory');
+        if (project.jsExecutionEnabled) enabledTools.push('javascript');
+        if (project.fsToolEnabled) enabledTools.push('filesystem');
+
+        // Build system prompt
+        const toolSystemPrompts = toolRegistry.getSystemPrompts(
+          currentApiDef.apiType,
+          enabledTools
+        );
+        const combinedSystemPrompt = [project.systemPrompt, ...toolSystemPrompts]
+          .filter(Boolean)
+          .join('\n\n');
+
+        // Send continuation
+        const stream = apiService.sendMessageStream(
+          messagesWithAttachments,
+          effectiveModelId,
+          currentApiDef,
+          {
+            temperature: project.temperature ?? undefined,
+            maxTokens: project.maxOutputTokens,
+            enableReasoning: project.enableReasoning,
+            reasoningBudgetTokens: project.reasoningBudgetTokens,
+            thinkingKeepTurns: project.thinkingKeepTurns,
+            reasoningEffort: project.reasoningEffort,
+            reasoningSummary: project.reasoningSummary,
+            systemPrompt: combinedSystemPrompt || undefined,
+            preFillResponse: undefined,
+            webSearchEnabled: project.webSearchEnabled,
+            enabledTools,
+          }
+        );
+
+        // Create assembler for streaming
+        assemblerRef.current = new StreamingContentAssembler();
+        setStreamingGroups([]);
+        setStreamingLastEvent('');
+
+        // Stream the response
+        let streamNext = await stream.next();
+        while (!streamNext.done) {
+          const chunk = streamNext.value;
+          if (assemblerRef.current) {
+            assemblerRef.current.pushChunk(chunk);
+            setStreamingGroups(assemblerRef.current.getGroups());
+            setStreamingLastEvent(assemblerRef.current.getLastEvent());
+          }
+          if (!hasReceivedFirstChunk) {
+            setHasReceivedFirstChunk(true);
+          }
+          streamNext = await stream.next();
+        }
+
+        const result = streamNext.done ? streamNext.value : null;
+
+        if (result) {
+          // Finalize and save assistant message
+          const renderingContent = result.error
+            ? assemblerRef.current!.finalizeWithError(result.error)
+            : assemblerRef.current!.finalize();
+
+          const assistantResponseMessage: Message<unknown> = {
+            id: generateUniqueId('msg_assistant'),
+            role: MessageRole.ASSISTANT,
+            content: {
+              type: 'text',
+              content: result.textContent,
+              modelFamily: currentApiDef.apiType,
+              fullContent: result.fullContent,
+              renderingContent,
+              stopReason: result.error
+                ? 'error'
+                : apiService.mapStopReason(currentApiDef.apiType, result.stopReason ?? null),
+            },
+            timestamp: new Date(),
+            metadata: {
+              model: effectiveModelId,
+              inputTokens: result.inputTokens ?? 0,
+              outputTokens: result.outputTokens ?? 0,
+              reasoningTokens: result.reasoningTokens,
+              cacheCreationTokens: result.cacheCreationTokens ?? 0,
+              cacheReadTokens: result.cacheReadTokens ?? 0,
+            },
+          };
+
+          await storage.saveMessage(chat.id, assistantResponseMessage);
+          setMessages(prev => [...prev, assistantResponseMessage]);
+          callbacks.onMessageAppended(chat.id, assistantResponseMessage);
+        }
+      } catch (error: unknown) {
+        const errorInfo =
+          error instanceof Error
+            ? { message: error.message, stack: error.stack }
+            : { message: String(error) || 'Unknown error' };
+
+        console.error('[useChat] Continuation failed:', errorInfo.message);
+
+        const errorRenderingContent = assemblerRef.current
+          ? assemblerRef.current.finalizeWithError(errorInfo)
+          : [
+              {
+                category: 'error' as const,
+                blocks: [{ type: 'error' as const, message: errorInfo.message }],
+              },
+            ];
+
+        const errorMessage: Message<unknown> = {
+          id: generateUniqueId('msg_assistant'),
+          role: MessageRole.ASSISTANT,
+          content: {
+            type: 'text',
+            content: '',
+            modelFamily: currentApiDef.apiType,
+            renderingContent: errorRenderingContent,
+            stopReason: 'error',
+          },
+          timestamp: new Date(),
+        };
+
+        await storage.saveMessage(chat.id, errorMessage);
+        setMessages(prev => [...prev, errorMessage]);
+        callbacks.onMessageAppended(chat.id, errorMessage);
+      } finally {
+        setIsLoading(false);
+        setStreamingGroups([]);
+        setStreamingLastEvent('');
+        assemblerRef.current = null;
+        callbacks.onStreamingEnd(chat.id);
+      }
+    }
+    // If mode is 'stop' and no user message, just save tool results (already done above)
+  };
+
   return {
     chat,
     messages,
@@ -1324,11 +1729,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     currentModelId: chat?.modelId ?? project?.modelId ?? null,
     parentApiDefId: project?.apiDefinitionId ?? null,
     parentModelId: project?.modelId ?? null,
+    unresolvedToolCalls,
     sendMessage,
     editMessage,
     copyMessage,
     forkChat,
     overrideModel,
     updateChatName,
+    resolvePendingToolCalls,
   };
 }

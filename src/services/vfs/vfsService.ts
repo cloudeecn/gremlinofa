@@ -8,6 +8,12 @@
  * - vfs_meta: One row per project containing the entire tree structure
  * - vfs_files: Current content for each file (keyed by fileId)
  * - vfs_versions: Historical snapshots (keyed by fileId_vN)
+ *
+ * Binary file support:
+ * - Binary files store base64-encoded content
+ * - VfsNode.isBinary and VfsNode.mime track file type
+ * - Text operations (strReplace, insert) blocked on binary files
+ * - Changing isBinary or mime orphans the old file
  */
 
 import type { VfsTree, VfsNode, VfsFile, VfsVersion } from '../../types';
@@ -340,6 +346,7 @@ export const VfsErrorCode = {
   STRING_NOT_FOUND: 'STRING_NOT_FOUND',
   STRING_NOT_UNIQUE: 'STRING_NOT_UNIQUE',
   INVALID_LINE: 'INVALID_LINE',
+  BINARY_FILE: 'BINARY_FILE',
 } as const;
 
 export type VfsErrorCode = (typeof VfsErrorCode)[keyof typeof VfsErrorCode];
@@ -352,6 +359,94 @@ export class VfsError extends Error {
     this.name = 'VfsError';
     this.code = code;
   }
+}
+
+// ============================================================================
+// Binary File Support
+// ============================================================================
+
+/** Input type for write operations - string for text, ArrayBuffer/Uint8Array for binary */
+export type FileContent = string | ArrayBuffer | Uint8Array;
+
+/** Result of reading a file with metadata */
+export interface ReadFileResult {
+  content: string; // Text content or base64 for binary files
+  isBinary: boolean; // Always defined (false for legacy/text)
+  mime: string; // 'text/plain' for text, detected mime for binary
+  buffer?: ArrayBuffer; // Only present for binary files
+}
+
+/** Magic bytes for common binary file types */
+const MAGIC_BYTES: Array<{ bytes: number[]; mime: string }> = [
+  { bytes: [0xff, 0xd8, 0xff], mime: 'image/jpeg' },
+  { bytes: [0x89, 0x50, 0x4e, 0x47], mime: 'image/png' },
+  { bytes: [0x47, 0x49, 0x46, 0x38], mime: 'image/gif' },
+  { bytes: [0x52, 0x49, 0x46, 0x46], mime: 'image/webp' }, // RIFF header (check WEBP later)
+  { bytes: [0x25, 0x50, 0x44, 0x46], mime: 'application/pdf' },
+  { bytes: [0x50, 0x4b, 0x03, 0x04], mime: 'application/zip' },
+];
+
+/**
+ * Detect MIME type from binary data using magic bytes
+ */
+export function detectMimeFromBuffer(data: ArrayBuffer | Uint8Array): string {
+  const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+
+  for (const { bytes: magic, mime } of MAGIC_BYTES) {
+    if (bytes.length >= magic.length) {
+      let matches = true;
+      for (let i = 0; i < magic.length; i++) {
+        if (bytes[i] !== magic[i]) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) {
+        // Special case: RIFF header needs WEBP check at offset 8
+        if (mime === 'image/webp' && bytes.length >= 12) {
+          if (bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+            return 'image/webp';
+          }
+          // RIFF but not WEBP - could be WAV, AVI, etc.
+          return 'application/octet-stream';
+        }
+        return mime;
+      }
+    }
+  }
+
+  return 'application/octet-stream';
+}
+
+/**
+ * Check if content is binary (ArrayBuffer or Uint8Array)
+ */
+export function isBinaryContent(content: FileContent): content is ArrayBuffer | Uint8Array {
+  return content instanceof ArrayBuffer || content instanceof Uint8Array;
+}
+
+/**
+ * Convert ArrayBuffer/Uint8Array to base64 string
+ */
+function bufferToBase64(data: ArrayBuffer | Uint8Array): string {
+  const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Convert base64 string to ArrayBuffer
+ */
+export function base64ToBuffer(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
 }
 
 // ============================================================================
@@ -486,6 +581,174 @@ export async function updateFile(projectId: string, path: string, content: strin
   // Update node timestamp in tree
   node.updatedAt = now;
   await saveTree(projectId, tree);
+}
+
+/**
+ * Write file content - unified function supporting both text and binary.
+ * Creates new file if not exists, updates if exists.
+ * Orphans old file if isBinary or mime changes.
+ * @param projectId Project ID
+ * @param path File path
+ * @param content Text string or binary data (ArrayBuffer/Uint8Array)
+ * @throws VfsError if path issues
+ */
+export async function writeFile(
+  projectId: string,
+  path: string,
+  content: FileContent
+): Promise<void> {
+  const tree = await loadTree(projectId);
+  const normalized = normalizePath(path);
+  const basename = getBasename(normalized);
+
+  if (!basename) {
+    throw new VfsError('Cannot write file at root path', VfsErrorCode.INVALID_PATH);
+  }
+
+  const isBinary = isBinaryContent(content);
+  const newMime = isBinary ? detectMimeFromBuffer(content) : 'text/plain';
+  const storedContent = isBinary ? bufferToBase64(content) : content;
+
+  const { node } = navigateToNode(tree, normalized);
+
+  if (node && !node.deleted && node.type === 'file') {
+    // File exists - check if we need to orphan due to type/mime change
+    const oldIsBinary = node.isBinary ?? false;
+    const oldMime = node.mime ?? 'text/plain';
+
+    if (oldIsBinary !== isBinary || oldMime !== newMime) {
+      // Type or mime changed - orphan the old file and create new
+      if (node.fileId) {
+        tree.orphans.push({
+          fileId: node.fileId,
+          originalPath: normalized,
+          orphanedAt: Date.now(),
+        });
+      }
+
+      // Create new file with new type
+      const now = Date.now();
+      const newFileId = generateUniqueId('vfs_file');
+
+      node.fileId = newFileId;
+      node.isBinary = isBinary;
+      node.mime = newMime;
+      node.updatedAt = now;
+
+      const fileData: VfsFile = {
+        content: storedContent,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      await saveFile(newFileId, fileData, projectId);
+      await saveTree(projectId, tree);
+      return;
+    }
+
+    // Same type - normal update
+    const fileId = node.fileId!;
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) {
+      throw new VfsError(`File content not found: ${normalized}`, VfsErrorCode.PATH_NOT_FOUND);
+    }
+
+    await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
+
+    const now = Date.now();
+    const newFile: VfsFile = {
+      content: storedContent,
+      version: currentFile.version + 1,
+      createdAt: currentFile.createdAt,
+      updatedAt: now,
+    };
+
+    await saveFile(fileId, newFile, projectId);
+    node.updatedAt = now;
+    await saveTree(projectId, tree);
+    return;
+  }
+
+  // File doesn't exist or is deleted - create new
+  const parent = ensureParentExists(tree, normalized);
+  if (!parent) {
+    throw new VfsError(`Parent path is not a directory`, VfsErrorCode.NOT_A_DIRECTORY);
+  }
+
+  const children = 'children' in parent ? parent.children : (parent as VfsNode).children;
+  if (!children) {
+    throw new VfsError(`Parent is not a directory`, VfsErrorCode.NOT_A_DIRECTORY);
+  }
+
+  const now = Date.now();
+  const fileId = generateUniqueId('vfs_file');
+
+  children[basename] = {
+    type: 'file',
+    fileId,
+    deleted: false,
+    createdAt: now,
+    updatedAt: now,
+    isBinary,
+    mime: newMime,
+  };
+
+  const fileData: VfsFile = {
+    content: storedContent,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await saveFile(fileId, fileData, projectId);
+  await saveTree(projectId, tree);
+}
+
+/**
+ * Read file with metadata including binary flag and mime type.
+ * For binary files, returns base64 content and ArrayBuffer.
+ * @throws VfsError if file not found or is deleted
+ */
+export async function readFileWithMeta(projectId: string, path: string): Promise<ReadFileResult> {
+  const tree = await loadTree(projectId);
+  const normalized = normalizePath(path);
+  const { node } = navigateToNode(tree, normalized);
+
+  if (!node) {
+    throw new VfsError(`Path not found: ${normalized}`, VfsErrorCode.PATH_NOT_FOUND);
+  }
+
+  if (node.type !== 'file') {
+    throw new VfsError(`Not a file: ${normalized}`, VfsErrorCode.NOT_A_FILE);
+  }
+
+  if (node.deleted) {
+    throw new VfsError(`File is deleted: ${normalized}`, VfsErrorCode.IS_DELETED);
+  }
+
+  const file = await loadFile(node.fileId!);
+  if (!file) {
+    throw new VfsError(`File content not found: ${normalized}`, VfsErrorCode.PATH_NOT_FOUND);
+  }
+
+  const isBinary = node.isBinary ?? false;
+  const mime = node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain');
+
+  if (isBinary) {
+    return {
+      content: file.content, // base64
+      isBinary: true,
+      mime,
+      buffer: base64ToBuffer(file.content),
+    };
+  }
+
+  return {
+    content: file.content,
+    isBinary: false,
+    mime,
+  };
 }
 
 /**
@@ -948,6 +1211,8 @@ export interface VfsStat {
   size: number; // Content length for files, 0 for directories
   createdAt: number; // Unix timestamp (ms)
   updatedAt: number; // Unix timestamp (ms)
+  isBinary: boolean; // true for binary files, false for text/directories
+  mime: string; // MIME type (text/plain for text, detected for binary)
 }
 
 /**
@@ -966,6 +1231,8 @@ export async function stat(projectId: string, path: string): Promise<VfsStat> {
       size: 0,
       createdAt: 0,
       updatedAt: 0,
+      isBinary: false,
+      mime: 'application/x-directory',
     };
   }
 
@@ -979,23 +1246,30 @@ export async function stat(projectId: string, path: string): Promise<VfsStat> {
     throw new VfsError(`Path is deleted: ${normalized}`, VfsErrorCode.IS_DELETED);
   }
 
-  const isFile = node.type === 'file';
-  const isDirectory = node.type === 'dir';
+  const isFileNode = node.type === 'file';
+  const isDirectoryNode = node.type === 'dir';
 
   let size = 0;
-  if (isFile && node.fileId) {
+  if (isFileNode && node.fileId) {
     const file = await loadFile(node.fileId);
     if (file) {
       size = file.content.length;
     }
   }
 
+  const isBinary = isFileNode ? (node.isBinary ?? false) : false;
+  const mime = isFileNode
+    ? (node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain'))
+    : 'application/x-directory';
+
   return {
-    isFile,
-    isDirectory,
+    isFile: isFileNode,
+    isDirectory: isDirectoryNode,
     size,
     createdAt: node.createdAt,
     updatedAt: node.updatedAt,
+    isBinary,
+    mime,
   };
 }
 

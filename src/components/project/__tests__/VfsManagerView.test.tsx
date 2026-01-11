@@ -15,14 +15,14 @@ vi.mock('react-router-dom', async () => {
 
 // Mock vfsService
 const mockReadDir = vi.fn();
-const mockReadFile = vi.fn();
+const mockReadFileWithMeta = vi.fn();
 const mockGetFileMeta = vi.fn();
 const mockDeleteFile = vi.fn();
 const mockRmdir = vi.fn();
 
 vi.mock('../../../services/vfs/vfsService', () => ({
   readDir: (...args: unknown[]) => mockReadDir(...args),
-  readFile: (...args: unknown[]) => mockReadFile(...args),
+  readFileWithMeta: (...args: unknown[]) => mockReadFileWithMeta(...args),
   getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),
   deleteFile: (...args: unknown[]) => mockDeleteFile(...args),
   rmdir: (...args: unknown[]) => mockRmdir(...args),
@@ -62,7 +62,11 @@ describe('VfsManagerView', () => {
       { name: 'notes.txt', type: 'file', size: 100 },
       { name: 'docs', type: 'dir' },
     ]);
-    mockReadFile.mockResolvedValue('File content');
+    mockReadFileWithMeta.mockResolvedValue({
+      content: 'File content',
+      isBinary: false,
+      mime: 'text/plain',
+    });
     mockGetFileMeta.mockResolvedValue({ version: 1 });
     mockShowDestructiveConfirm.mockResolvedValue(false);
   });

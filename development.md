@@ -564,8 +564,8 @@ VfsManagerView (page at /project/:projectId/vfs)
 Features:
 
 - **Directory tree**: Expand/collapse directories, lazy loading, file sizes
-- **File viewer**: Read-only content display with version badge
-- **File editor**: Edit with draft persistence (`vfs-editor` place), auto-versioning on save
+- **File viewer**: Read-only content display with version badge, binary file preview (images rendered, others show download button), MIME type badge
+- **File editor**: Edit with draft persistence (`vfs-editor` place), auto-versioning on save (text files only)
 - **Diff viewer**: Compare versions with LCS diff algorithm, rollback support
 - **Delete**: Soft-delete files and directories (recursive)
 
@@ -670,7 +670,7 @@ rename:      "Successfully renamed {old_path} to {new_path}"
 
 **Overview:**
 
-Client-side tool that provides LLM access to the project's virtual filesystem. Similar to the memory tool but operates from VFS root (`/`) with `/memories` as readonly. Useful for storing code, data files, configuration, and scripts.
+Client-side tool that provides LLM access to the project's virtual filesystem. Similar to the memory tool but operates from VFS root (`/`) with `/memories` as readonly. Useful for storing code, data files, configuration, and scripts. Supports both text and binary files.
 
 **Files:**
 
@@ -678,14 +678,22 @@ Client-side tool that provides LLM access to the project's virtual filesystem. S
 
 **Commands:**
 
-| Command       | Parameters                           | Description                                                 |
-| ------------- | ------------------------------------ | ----------------------------------------------------------- |
-| `view`        | `path`, `view_range?`                | View directory listing or file contents (with line numbers) |
-| `create`      | `path`, `file_text`                  | Create new file (error if exists)                           |
-| `str_replace` | `path`, `old_str`, `new_str`         | Replace unique string (error if not found or multiple)      |
-| `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (0-indexed)                    |
-| `delete`      | `path`                               | Delete file or directory (soft delete)                      |
-| `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)              |
+| Command       | Parameters                           | Description                                                       |
+| ------------- | ------------------------------------ | ----------------------------------------------------------------- |
+| `view`        | `path`, `view_range?`                | View directory listing, text file (with line numbers), or dataUrl |
+| `create`      | `path`, `file_text`                  | Create new file (accepts text or dataUrl for binary)              |
+| `str_replace` | `path`, `old_str`, `new_str`         | Replace unique string (text files only)                           |
+| `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (text files only)                    |
+| `delete`      | `path`                               | Delete file or directory (soft delete)                            |
+| `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                    |
+
+**Binary File Support:**
+
+- **Create binary files**: Pass dataUrl format (`data:<mime>;base64,<data>`) as `file_text`
+- **View binary files**: Returns `Binary file {path} ({mime}):\n{dataUrl}` format
+- **Text operations blocked**: `str_replace` and `insert` return error on binary files
+- MIME detection via magic bytes (JPEG, PNG, GIF, WebP, PDF, ZIP)
+- File type change (text↔binary or MIME change) orphans old file, creates new
 
 **Readonly Enforcement:**
 
@@ -787,25 +795,32 @@ UMD/IIFE Library can be loaded because:
 
 Node.js-like async filesystem operations backed by the project's VFS. All methods return Promises (must use `await`). Available as both `fs` and `__fs` on globalThis.
 
-| Method                     | Returns               | Description                             |
-| -------------------------- | --------------------- | --------------------------------------- |
-| `readFile(path)`           | `Promise<string>`     | Read file contents                      |
-| `writeFile(path, data)`    | `Promise<void>`       | Create or overwrite file                |
-| `exists(path)`             | `Promise<boolean>`    | Check if path exists                    |
-| `mkdir(path)`              | `Promise<void>`       | Create directory (via `.newdir` marker) |
-| `readdir(path)`            | `Promise<string[]>`   | List directory entries                  |
-| `unlink(path)`             | `Promise<void>`       | Delete file                             |
-| `rmdir(path)`              | `Promise<void>`       | Delete directory (recursive)            |
-| `rename(oldPath, newPath)` | `Promise<void>`       | Move/rename file or directory           |
-| `stat(path)`               | `Promise<StatResult>` | Get file/directory info                 |
+| Method                     | Returns                | Description                               |
+| -------------------------- | ---------------------- | ----------------------------------------- |
+| `readFile(path)`           | `Promise<ArrayBuffer>` | Read file as binary (Node.js Buffer-like) |
+| `readFile(path, encoding)` | `Promise<string>`      | Read file as string with encoding         |
+| `writeFile(path, data)`    | `Promise<void>`        | Create/overwrite file (string or binary)  |
+| `exists(path)`             | `Promise<boolean>`     | Check if path exists                      |
+| `mkdir(path)`              | `Promise<void>`        | Create directory (via `.newdir` marker)   |
+| `readdir(path)`            | `Promise<string[]>`    | List directory entries                    |
+| `unlink(path)`             | `Promise<void>`        | Delete file                               |
+| `rmdir(path)`              | `Promise<void>`        | Delete directory (recursive)              |
+| `rename(oldPath, newPath)` | `Promise<void>`        | Move/rename file or directory             |
+| `stat(path)`               | `Promise<StatResult>`  | Get file/directory info                   |
 
-`StatResult` type: `{ isFile: boolean, isDirectory: boolean, size: number, readonly: boolean, mtime: Date }`
+`StatResult` type: `{ isFile: boolean, isDirectory: boolean, size: number, readonly: boolean, mtime: Date, isBinary: boolean, mime: string }`
 
 **fs Readonly Enforcement:**
 
 - `/memories` path and all its contents are read-only
 - Write operations (`writeFile`, `mkdir`, `unlink`, `rmdir`, `rename`) throw `EROFS` error
 - `stat()` returns `readonly: true` for paths under `/memories`
+
+**fs Binary File Support:**
+
+- `stat()` returns `isBinary: boolean` and `mime: string` for files
+- Binary files stored as base64 in VFS, text files as UTF-8 strings
+- MIME detection via magic bytes (JPEG, PNG, GIF, WebP, PDF, ZIP)
 
 **fs Directory Creation:**
 

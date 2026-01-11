@@ -92,18 +92,26 @@ class JsToolInstance {
 
     try {
       const result = await vm.evaluate(code);
+      const libraryOutput = ephemeral ? [] : vm.getLibraryLogs();
 
       if (result.isError) {
         return {
-          content: this.formatOutput(String(result.value), result.consoleOutput),
+          content: this.formatOutput(String(result.value), libraryOutput, result.consoleOutput),
           isError: true,
         };
       }
 
       return {
-        content: this.formatOutput(this.stringify(result.value), result.consoleOutput),
+        content: this.formatOutput(
+          this.stringify(result.value),
+          libraryOutput,
+          result.consoleOutput
+        ),
       };
     } finally {
+      if (!ephemeral) {
+        vm.clearLibraryLogs();
+      }
       if (shouldDispose) {
         vm.dispose();
       }
@@ -125,23 +133,35 @@ class JsToolInstance {
     }
   }
 
-  private formatOutput(resultStr: string, consoleOutput: ConsoleEntry[]): string {
+  private formatOutput(
+    resultStr: string,
+    libraryOutput: ConsoleEntry[],
+    consoleOutput: ConsoleEntry[]
+  ): string {
     const parts: string[] = [];
+    let hasConsoleOutput = false;
 
-    // Console output with level prefixes
-    for (const entry of consoleOutput) {
-      parts.push(`[${entry.level}] ${entry.message}`);
-    }
-
-    // Result section
-    if (resultStr !== 'undefined') {
-      if (parts.length > 0) {
-        parts.push('=== Result ===');
+    if (libraryOutput.length) {
+      hasConsoleOutput = true;
+      parts.push('=== Library output ===');
+      for (const entry of libraryOutput) {
+        parts.push(`[${entry.level}] ${entry.message}`);
       }
-      parts.push(resultStr);
-    } else if (parts.length === 0) {
-      parts.push('(no output)');
     }
+
+    if (consoleOutput.length) {
+      hasConsoleOutput = true;
+      parts.push('=== Console output ===');
+      for (const entry of consoleOutput) {
+        parts.push(`[${entry.level}] ${entry.message}`);
+      }
+    }
+
+    if (hasConsoleOutput) {
+      parts.push('=== Result ===');
+    }
+
+    parts.push(resultStr ?? '(no output)');
 
     return parts.join('\n');
   }

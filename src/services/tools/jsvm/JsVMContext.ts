@@ -57,6 +57,7 @@ async function getModule(): Promise<QuickJSWASMModule> {
 export class JsVMContext {
   private context: QuickJSContext;
   private consoleOutput: ConsoleEntry[] = [];
+  private libraryConsoleOutput: ConsoleEntry[] = [];
   private nextTimerId = 1;
   private cancelledTimers = new Set<number>();
   private pendingCallbacks = new Map<number, QuickJSHandle>();
@@ -96,6 +97,7 @@ export class JsVMContext {
   /**
    * Load and execute all .js files in /lib directory.
    * Scripts are executed with their filename for better stack traces.
+   * Console output during library loading is captured in libraryConsoleOutput.
    */
   private async loadLibScripts(projectId: string): Promise<void> {
     const libPath = '/lib';
@@ -124,40 +126,68 @@ export class JsVMContext {
         jsFiles.map(f => f.name)
       );
 
-      // Execute each script with filename for stack traces
-      for (const file of jsFiles) {
-        const filePath = `${libPath}/${file.name}`;
-        try {
-          const content = await vfs.readFile(projectId, filePath);
+      // Temporarily swap consoleOutput to capture library logs separately
+      const originalConsoleOutput = this.consoleOutput;
+      this.consoleOutput = this.libraryConsoleOutput;
 
-          // Use evalCode directly (not evaluate) to avoid resetting consoleOutput
-          // and to have simpler error handling during init
-          const result = this.context.evalCode(content, filePath, {
-            type: 'global',
-            backtraceBarrier: false,
-          });
+      try {
+        // Execute each script with filename for stack traces
+        for (const file of jsFiles) {
+          const filePath = `${libPath}/${file.name}`;
+          try {
+            const content = await vfs.readFile(projectId, filePath);
 
-          if (result.error) {
-            const errorValue = this.context.dump(result.error);
-            result.error.dispose();
-            console.error('[JsVMContext] Error loading', filePath, ':', errorValue);
-          } else {
-            result.value.dispose();
-          }
+            // Use evalCode directly (not evaluate) to avoid resetting consoleOutput
+            // and to have simpler error handling during init
+            const result = this.context.evalCode(content, filePath, {
+              type: 'global',
+              backtraceBarrier: false,
+            });
 
-          // Drain any pending jobs from this script
-          while (this.context.runtime.hasPendingJob()) {
-            const pendingResult = this.context.runtime.executePendingJobs(1);
-            if (pendingResult.error) {
-              const errorValue = this.context.dump(pendingResult.error);
-              pendingResult.error.dispose();
-              console.error('[JsVMContext] Async error in', filePath, ':', errorValue);
-              break;
+            if (result.error) {
+              const errorValue = this.context.dump(result.error);
+              result.error.dispose();
+              console.error('[JsVMContext] Error loading', filePath, ':', errorValue);
+            } else {
+              result.value.dispose();
             }
+
+            // Drain pending jobs and fs operations from this script
+            const deadline = Date.now() + TIMEOUT_MS;
+            while (
+              this.context.runtime.hasPendingJob() ||
+              (this.fsBridge && this.fsBridge.hasPendingOps())
+            ) {
+              // Drain fs operations first
+              const fsError = await this.drainFsOperations(deadline);
+              if (fsError) {
+                console.error('[JsVMContext] FS error in', filePath, ':', fsError);
+                break;
+              }
+
+              // Execute promise jobs
+              while (this.context.runtime.hasPendingJob()) {
+                const pendingResult = this.context.runtime.executePendingJobs(1);
+                if (pendingResult.error) {
+                  const errorValue = this.context.dump(pendingResult.error);
+                  pendingResult.error.dispose();
+                  console.error('[JsVMContext] Async error in', filePath, ':', errorValue);
+                  break;
+                }
+              }
+
+              // Check if we have more fs operations after promise jobs resolved
+              if (!this.fsBridge || !this.fsBridge.hasPendingOps()) {
+                break;
+              }
+            }
+          } catch (error) {
+            console.error('[JsVMContext] Failed to load', filePath, ':', error);
           }
-        } catch (error) {
-          console.error('[JsVMContext] Failed to load', filePath, ':', error);
         }
+      } finally {
+        // Restore original consoleOutput
+        this.consoleOutput = originalConsoleOutput;
       }
     } catch {
       // /lib doesn't exist or can't be read - that's fine, it's optional
@@ -257,6 +287,37 @@ export class JsVMContext {
   }
 
   /**
+   * Drain pending fs operations from the FsBridge.
+   * Returns error message if something goes wrong, undefined on success.
+   */
+  private async drainFsOperations(deadline: number): Promise<string | undefined> {
+    if (!this.fsBridge) return undefined;
+
+    const fsOps = this.fsBridge.getPendingOps();
+    for (const op of fsOps) {
+      // Check timeout
+      if (Date.now() > deadline) {
+        return 'Error: Execution timeout (60s)';
+      }
+
+      try {
+        const result = (await op.execute()) as { ok: boolean; value?: unknown; error?: string };
+        const { handle, isError } = this.fsBridge.resultToHandle(result);
+        if (isError) {
+          op.reject(handle);
+        } else {
+          op.resolve(handle);
+        }
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        const errHandle = this.context.newError(errMsg);
+        op.reject(errHandle);
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Process pending jobs one at a time, yielding to browser between each.
    * Also processes pending fs operations before each job execution.
    * Returns error message if something goes wrong, undefined on success.
@@ -272,24 +333,10 @@ export class JsVMContext {
         return 'Error: Execution timeout (60s)';
       }
 
-      // Process pending fs operations first
-      if (this.fsBridge) {
-        const fsOps = this.fsBridge.getPendingOps();
-        for (const op of fsOps) {
-          try {
-            const result = (await op.execute()) as { ok: boolean; value?: unknown; error?: string };
-            const { handle, isError } = this.fsBridge.resultToHandle(result);
-            if (isError) {
-              op.reject(handle);
-            } else {
-              op.resolve(handle);
-            }
-          } catch (error) {
-            const errMsg = error instanceof Error ? error.message : String(error);
-            const errHandle = this.context.newError(errMsg);
-            op.reject(errHandle);
-          }
-        }
+      // Process pending fs operations first using helper
+      const fsError = await this.drainFsOperations(deadline);
+      if (fsError) {
+        return fsError;
       }
 
       // Yield to browser
@@ -326,6 +373,20 @@ export class JsVMContext {
    */
   getContext(): QuickJSContext {
     return this.context;
+  }
+
+  /**
+   * Get library console logs captured during /lib script loading.
+   */
+  getLibraryLogs(): ConsoleEntry[] {
+    return [...this.libraryConsoleOutput];
+  }
+
+  /**
+   * Clear library console logs (called after flushing to first tool call).
+   */
+  clearLibraryLogs(): void {
+    this.libraryConsoleOutput = [];
   }
 
   /**

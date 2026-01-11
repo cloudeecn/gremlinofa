@@ -750,7 +750,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         // Session persists across all iterations, disposed when loop ends
         if (!jsSessionCreated && currentProject.jsExecutionEnabled) {
           console.debug('[useChat] Creating JS session for agentic loop');
-          await createJsSession();
+          await createJsSession(currentProject.id);
           jsSessionCreated = true;
         }
 

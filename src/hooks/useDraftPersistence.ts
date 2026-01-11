@@ -11,7 +11,7 @@ interface DraftData {
 }
 
 interface UseDraftPersistenceOptions {
-  place: 'chatview' | 'project-chat' | 'system-prompt-modal';
+  place: 'chatview' | 'project-chat' | 'system-prompt-modal' | 'vfs-editor';
   contextId: string; // chatId, projectId, etc.
   value: string;
   onChange: (value: string) => void;

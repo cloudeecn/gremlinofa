@@ -9,6 +9,7 @@ import { processImages } from '../../utils/imageProcessor';
 import { storage } from '../../services/storage';
 import type { MessageAttachment } from '../../types';
 import ModelSelector from '../project/ModelSelector';
+import Spinner from '../ui/Spinner';
 import ChatInput from './ChatInput';
 import MessageList from './MessageList';
 
@@ -24,6 +25,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   // This prevents performance issues with large HDR images
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [isProcessingAttachments, setIsProcessingAttachments] = useState(false);
+  // Mode for resolving pending tool calls (stop = error, continue = execute)
+  const [pendingToolMode, setPendingToolMode] = useState<'stop' | 'continue'>('stop');
 
   // Draft persistence for chat input
   useDraftPersistence({
@@ -36,6 +39,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [isRenamingChat, setIsRenamingChat] = useState(false);
   const [renameChatText, setRenameChatText] = useState('');
+  const [isSavingRename, setIsSavingRename] = useState(false);
 
   // Detect mobile (same breakpoint as sidebar: 768px) - responsive to window resize
   const isMobile = useIsMobile();
@@ -139,19 +143,25 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     parentModelId,
     streamingGroups,
     streamingLastEvent,
+    hasReceivedFirstChunk,
+    unresolvedToolCalls,
     sendMessage,
     editMessage,
     copyMessage,
     forkChat,
     overrideModel,
     updateChatName,
+    resolvePendingToolCalls,
   } = useChat({
     chatId: chatId,
     callbacks,
   });
 
   // Handle message actions
-  const handleMessageAction = async (action: 'copy' | 'fork' | 'edit', messageId: string) => {
+  const handleMessageAction = async (
+    action: 'copy' | 'fork' | 'edit' | 'delete',
+    messageId: string
+  ) => {
     if (action === 'copy') {
       await copyMessage(chatId, messageId);
     } else if (action === 'fork') {
@@ -189,6 +199,17 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         // Set attachments in state (already processed, no conversion needed)
         setAttachments(loadedAttachments);
       }
+    } else if (action === 'delete') {
+      // Show confirmation dialog
+      const confirmed = await showDestructiveConfirm(
+        'Delete Message',
+        'This will delete this message and all messages after it.',
+        'Delete'
+      );
+      if (confirmed) {
+        // Delete the message and all after it (without populating input)
+        await editMessage(chatId, messageId, '');
+      }
     }
   };
 
@@ -221,7 +242,15 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
   const handleSendMessage = async () => {
     const messageText = inputMessage.trim();
-    if ((!messageText && attachments.length === 0) || isLoading || isProcessingAttachments) return;
+    const hasPendingTools = unresolvedToolCalls && unresolvedToolCalls.length > 0;
+
+    // Allow send with empty input if there are pending tool calls
+    if (
+      (!messageText && attachments.length === 0 && !hasPendingTools) ||
+      isLoading ||
+      isProcessingAttachments
+    )
+      return;
 
     // Validate API configuration
     if (!currentApiDefId || !currentModelId) {
@@ -239,7 +268,19 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     setAttachments([]); // Clear attachments
     clearDraft('chatview', chatId); // Clear draft when message is sent
 
-    await sendMessage(chatId, messageText, processedAttachments);
+    // Handle pending tool calls resolution
+    if (hasPendingTools) {
+      // Resolve pending tool calls with optional user message
+      await resolvePendingToolCalls(
+        pendingToolMode,
+        messageText || undefined,
+        processedAttachments
+      );
+      // Reset mode after resolution
+      setPendingToolMode('stop');
+    } else {
+      await sendMessage(chatId, messageText, processedAttachments);
+    }
   };
 
   const handleModelSelect = async (apiDefId: string | null, modelId: string | null) => {
@@ -258,8 +299,13 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
       return;
     }
 
-    await updateChatName(chatId, renameChatText.trim());
-    setIsRenamingChat(false);
+    setIsSavingRename(true);
+    try {
+      await updateChatName(chatId, renameChatText.trim());
+      setIsRenamingChat(false);
+    } finally {
+      setIsSavingRename(false);
+    }
   };
 
   const handleCancelRename = () => {
@@ -334,6 +380,9 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         streamingLastEvent={streamingLastEvent}
         currentApiDefId={currentApiDefId}
         currentModelId={currentModelId}
+        pendingToolCount={unresolvedToolCalls?.length}
+        pendingToolMode={pendingToolMode}
+        onPendingToolModeChange={setPendingToolMode}
       />
 
       {/* Chat Input */}
@@ -347,6 +396,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         onRemoveAttachment={handleRemoveAttachment}
         maxAttachments={10}
         isProcessing={isProcessingAttachments}
+        showSendSpinner={isLoading && !hasReceivedFirstChunk}
+        hasPendingToolCalls={!!unresolvedToolCalls && unresolvedToolCalls.length > 0}
       />
 
       {/* Model Selector Modal */}
@@ -393,14 +444,17 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
             <div className="flex justify-end gap-3">
               <button
                 onClick={handleCancelRename}
-                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50"
+                disabled={isSavingRename}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSaveRename}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
+                disabled={isSavingRename}
+                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
               >
+                {isSavingRename && <Spinner size={14} colorClass="border-white" />}
                 Save
               </button>
             </div>

@@ -1,12 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { hasMemory, clearMemory } from '../../services/memory/memoryStorage';
 import { useApp } from '../../hooks/useApp';
 import { apiService } from '../../services/api/apiService';
 import { useProject } from '../../hooks/useProject';
 import type { Project, APIType } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
 import { clearDraft } from '../../hooks/useDraftPersistence';
+import Spinner from '../ui/Spinner';
 import ModelSelector from './ModelSelector';
 import SystemPromptModal from './SystemPromptModal';
 import AnthropicReasoningConfig from './AnthropicReasoningConfig';
@@ -39,29 +39,41 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     project?.thinkingKeepTurns !== undefined ? project.thinkingKeepTurns.toString() : ''
   );
   const [webSearchEnabled, setWebSearchEnabled] = useState(project?.webSearchEnabled || false);
-  const [sendMessageMetadata, setSendMessageMetadata] = useState(
+  const [sendMessageMetadata, setSendMessageMetadata] = useState<boolean | 'template'>(
     project?.sendMessageMetadata || false
   );
   const [metadataTimestampMode, setMetadataTimestampMode] = useState<
     'utc' | 'local' | 'relative' | 'disabled'
   >(project?.metadataTimestampMode || 'disabled');
+  const [metadataIncludeModelName, setMetadataIncludeModelName] = useState(
+    project?.metadataIncludeModelName || false
+  );
   const [metadataIncludeContextWindow, setMetadataIncludeContextWindow] = useState(
     project?.metadataIncludeContextWindow || false
   );
   const [metadataIncludeCost, setMetadataIncludeCost] = useState(
     project?.metadataIncludeCost || false
   );
+  const [metadataTemplate, setMetadataTemplate] = useState(
+    project?.metadataTemplate || '{{userMessage}}'
+  );
+  const [metadataNewContext, setMetadataNewContext] = useState(
+    project?.metadataNewContext || false
+  );
+  const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
+  const tooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(project?.memoryEnabled || false);
   const [jsExecutionEnabled, setJsExecutionEnabled] = useState(
     project?.jsExecutionEnabled || false
   );
+  const [jsLibEnabled, setJsLibEnabled] = useState(project?.jsLibEnabled ?? true);
+  const [fsToolEnabled, setFsToolEnabled] = useState(project?.fsToolEnabled || false);
   const [reasoningEffort, setReasoningEffort] = useState<
     'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined
   >(project?.reasoningEffort);
   const [reasoningSummary, setReasoningSummary] = useState<
     'auto' | 'concise' | 'detailed' | undefined
   >(project?.reasoningSummary);
-  const [projectHasMemory, setProjectHasMemory] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showOtherProviderConfig, setShowOtherProviderConfig] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
@@ -72,11 +84,11 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [selectedApiDefId, setSelectedApiDefId] = useState(project?.apiDefinitionId || null);
   const [selectedModelId, setSelectedModelId] = useState(project?.modelId || null);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Update form fields when project loads
   useEffect(() => {
     if (project) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSystemPrompt(project.systemPrompt || '');
       setPreFillResponse(project.preFillResponse || '');
       setEnableReasoning(project.enableReasoning || false);
@@ -87,10 +99,15 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setWebSearchEnabled(project.webSearchEnabled || false);
       setSendMessageMetadata(project.sendMessageMetadata || false);
       setMetadataTimestampMode(project.metadataTimestampMode || 'disabled');
+      setMetadataIncludeModelName(project.metadataIncludeModelName || false);
       setMetadataIncludeContextWindow(project.metadataIncludeContextWindow || false);
       setMetadataIncludeCost(project.metadataIncludeCost || false);
+      setMetadataTemplate(project.metadataTemplate || '{{userMessage}}');
+      setMetadataNewContext(project.metadataNewContext || false);
       setMemoryEnabled(project.memoryEnabled || false);
       setJsExecutionEnabled(project.jsExecutionEnabled || false);
+      setJsLibEnabled(project.jsLibEnabled ?? true);
+      setFsToolEnabled(project.fsToolEnabled || false);
       setReasoningEffort(project.reasoningEffort);
       setReasoningSummary(project.reasoningSummary);
       setTemperature(project.temperature?.toString() || '');
@@ -99,17 +116,6 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setSelectedModelId(project.modelId || null);
     }
   }, [project]);
-
-  // Check if project has memory data
-  useEffect(() => {
-    let mounted = true;
-    hasMemory(projectId).then(exists => {
-      if (mounted) setProjectHasMemory(exists);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [projectId]);
 
   // Get API definition and model names for display
   const apiDef = selectedApiDefId ? apiDefinitions.find(a => a.id === selectedApiDefId) : null;
@@ -136,36 +142,74 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     ? `${apiDef?.name || 'Unknown'} • ${selectedModelId}`
     : 'Select a model to get started';
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!project) return;
 
-    const updatedProject: Project = {
-      ...project,
-      apiDefinitionId: selectedApiDefId,
-      modelId: selectedModelId,
-      systemPrompt,
-      preFillResponse,
-      enableReasoning,
-      reasoningBudgetTokens: parseInt(reasoningBudgetTokens) || 1024,
-      thinkingKeepTurns: thinkingKeepTurns === '' ? undefined : parseInt(thinkingKeepTurns),
-      webSearchEnabled,
-      sendMessageMetadata,
-      metadataTimestampMode,
-      memoryEnabled,
-      jsExecutionEnabled,
-      metadataIncludeContextWindow,
-      metadataIncludeCost,
-      reasoningEffort,
-      reasoningSummary,
-      temperature: temperature === '' ? null : parseFloat(temperature),
-      maxOutputTokens: parseInt(maxOutputTokens) || 1536,
-      lastUsedAt: new Date(),
-    };
+    setIsSaving(true);
+    try {
+      const updatedProject: Project = {
+        ...project,
+        apiDefinitionId: selectedApiDefId,
+        modelId: selectedModelId,
+        systemPrompt,
+        preFillResponse,
+        enableReasoning,
+        reasoningBudgetTokens: parseInt(reasoningBudgetTokens) || 1024,
+        thinkingKeepTurns: thinkingKeepTurns === '' ? undefined : parseInt(thinkingKeepTurns),
+        webSearchEnabled,
+        sendMessageMetadata,
+        metadataTimestampMode,
+        metadataIncludeModelName,
+        metadataIncludeContextWindow,
+        metadataIncludeCost,
+        metadataTemplate,
+        metadataNewContext,
+        memoryEnabled,
+        jsExecutionEnabled,
+        jsLibEnabled,
+        fsToolEnabled,
+        reasoningEffort,
+        reasoningSummary,
+        temperature: temperature === '' ? null : parseFloat(temperature),
+        maxOutputTokens: parseInt(maxOutputTokens) || 1536,
+        lastUsedAt: new Date(),
+      };
 
-    await updateProject(updatedProject);
-    clearDraft('system-prompt-modal', projectId); // Clear draft when settings are saved
-    navigate(`/project/${projectId}`);
-  };
+      await updateProject(updatedProject);
+      clearDraft('system-prompt-modal', projectId); // Clear draft when settings are saved
+      navigate(`/project/${projectId}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    project,
+    selectedApiDefId,
+    selectedModelId,
+    systemPrompt,
+    preFillResponse,
+    enableReasoning,
+    reasoningBudgetTokens,
+    thinkingKeepTurns,
+    webSearchEnabled,
+    sendMessageMetadata,
+    metadataTimestampMode,
+    metadataIncludeModelName,
+    metadataIncludeContextWindow,
+    metadataIncludeCost,
+    metadataTemplate,
+    metadataNewContext,
+    memoryEnabled,
+    jsExecutionEnabled,
+    jsLibEnabled,
+    fsToolEnabled,
+    reasoningEffort,
+    reasoningSummary,
+    temperature,
+    maxOutputTokens,
+    updateProject,
+    projectId,
+    navigate,
+  ]);
 
   const handleCancel = () => {
     navigate(`/project/${projectId}`);
@@ -358,125 +402,320 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
               </div>
             )}
 
-            {/* Metadata Section */}
+            {/* Message Format Section */}
             <div className="mb-6 overflow-hidden rounded-lg border border-gray-200">
-              {/* Section Header - full width clickable */}
-              <label className="flex w-full cursor-pointer items-center justify-between bg-gray-50 px-4 py-3">
-                <span className="text-sm font-semibold text-gray-900">Message Metadata</span>
-                <input
-                  type="checkbox"
-                  checked={sendMessageMetadata}
-                  onChange={e => setSendMessageMetadata(e.target.checked)}
-                  className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-                />
-              </label>
+              {/* Section Header */}
+              <div className="bg-gray-50 px-4 py-3">
+                <span className="text-sm font-semibold text-gray-900">Message Format</span>
+              </div>
               {/* Section Content */}
-              {sendMessageMetadata && (
-                <div className="space-y-4 bg-white p-4">
-                  {/* Timestamp Mode */}
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-gray-900">
-                      Timestamp
-                    </label>
-                    <div className="flex flex-wrap gap-4">
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="timestampUtc"
-                          type="radio"
-                          checked={metadataTimestampMode === 'utc'}
-                          onChange={() => setMetadataTimestampMode('utc')}
-                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                        />
-                        <label
-                          htmlFor="timestampUtc"
-                          className="cursor-pointer text-sm text-gray-900"
-                        >
-                          UTC
-                        </label>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="timestampLocal"
-                          type="radio"
-                          checked={metadataTimestampMode === 'local'}
-                          onChange={() => setMetadataTimestampMode('local')}
-                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                        />
-                        <label
-                          htmlFor="timestampLocal"
-                          className="cursor-pointer text-sm text-gray-900"
-                        >
-                          Local
-                        </label>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="timestampRelative"
-                          type="radio"
-                          checked={metadataTimestampMode === 'relative'}
-                          onChange={() => setMetadataTimestampMode('relative')}
-                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                        />
-                        <label
-                          htmlFor="timestampRelative"
-                          className="cursor-pointer text-sm text-gray-900"
-                        >
-                          Relative
-                        </label>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="timestampDisabled"
-                          type="radio"
-                          checked={metadataTimestampMode === 'disabled'}
-                          onChange={() => setMetadataTimestampMode('disabled')}
-                          className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
-                        />
-                        <label
-                          htmlFor="timestampDisabled"
-                          className="cursor-pointer text-sm text-gray-900"
-                        >
-                          Disabled
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Context Window */}
-                  <div className="flex items-center justify-between">
-                    <label
-                      htmlFor="includeContextWindow"
-                      className="cursor-pointer text-sm font-medium text-gray-900"
-                    >
-                      Include Context Window Usage
-                    </label>
+              <div className="space-y-4 bg-white p-4">
+                {/* Radio Options */}
+                <div className="flex flex-wrap gap-4">
+                  <div className="flex items-center gap-2">
                     <input
-                      id="includeContextWindow"
-                      type="checkbox"
-                      checked={metadataIncludeContextWindow}
-                      onChange={e => setMetadataIncludeContextWindow(e.target.checked)}
-                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      id="metadataModeDisabled"
+                      type="radio"
+                      checked={sendMessageMetadata === false}
+                      onChange={() => setSendMessageMetadata(false)}
+                      className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
-                  </div>
-
-                  {/* Cost */}
-                  <div className="flex items-center justify-between">
                     <label
-                      htmlFor="includeCost"
-                      className="cursor-pointer text-sm font-medium text-gray-900"
+                      htmlFor="metadataModeDisabled"
+                      className="cursor-pointer text-sm text-gray-900"
                     >
-                      Include Current Cost
+                      User message
                     </label>
+                  </div>
+                  <div className="flex items-center gap-2">
                     <input
-                      id="includeCost"
-                      type="checkbox"
-                      checked={metadataIncludeCost}
-                      onChange={e => setMetadataIncludeCost(e.target.checked)}
-                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      id="metadataModeEnabled"
+                      type="radio"
+                      checked={sendMessageMetadata === true}
+                      onChange={() => setSendMessageMetadata(true)}
+                      className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
+                    <label
+                      htmlFor="metadataModeEnabled"
+                      className="cursor-pointer text-sm text-gray-900"
+                    >
+                      With metadata
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="metadataModeTemplate"
+                      type="radio"
+                      checked={sendMessageMetadata === 'template'}
+                      onChange={() => setSendMessageMetadata('template')}
+                      className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
+                    <label
+                      htmlFor="metadataModeTemplate"
+                      className="cursor-pointer text-sm text-gray-900"
+                    >
+                      Use template
+                    </label>
                   </div>
                 </div>
-              )}
+
+                {/* With Metadata Options */}
+                {sendMessageMetadata === true && (
+                  <div className="space-y-4 border-t border-gray-100 pt-4">
+                    {/* Timestamp Mode */}
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">
+                        Timestamp
+                      </label>
+                      <div className="flex flex-wrap gap-4">
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="timestampUtc"
+                            type="radio"
+                            checked={metadataTimestampMode === 'utc'}
+                            onChange={() => setMetadataTimestampMode('utc')}
+                            className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                          />
+                          <label
+                            htmlFor="timestampUtc"
+                            className="cursor-pointer text-sm text-gray-900"
+                          >
+                            UTC
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="timestampLocal"
+                            type="radio"
+                            checked={metadataTimestampMode === 'local'}
+                            onChange={() => setMetadataTimestampMode('local')}
+                            className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                          />
+                          <label
+                            htmlFor="timestampLocal"
+                            className="cursor-pointer text-sm text-gray-900"
+                          >
+                            Local
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="timestampRelative"
+                            type="radio"
+                            checked={metadataTimestampMode === 'relative'}
+                            onChange={() => setMetadataTimestampMode('relative')}
+                            className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                          />
+                          <label
+                            htmlFor="timestampRelative"
+                            className="cursor-pointer text-sm text-gray-900"
+                          >
+                            Relative
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="timestampDisabled"
+                            type="radio"
+                            checked={metadataTimestampMode === 'disabled'}
+                            onChange={() => setMetadataTimestampMode('disabled')}
+                            className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                          />
+                          <label
+                            htmlFor="timestampDisabled"
+                            className="cursor-pointer text-sm text-gray-900"
+                          >
+                            Disabled
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Model Name */}
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="includeModelName"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        Include Model Name
+                      </label>
+                      <input
+                        id="includeModelName"
+                        type="checkbox"
+                        checked={metadataIncludeModelName}
+                        onChange={e => setMetadataIncludeModelName(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    {/* Context Window */}
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="includeContextWindow"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        Include Context Window Usage
+                      </label>
+                      <input
+                        id="includeContextWindow"
+                        type="checkbox"
+                        checked={metadataIncludeContextWindow}
+                        onChange={e => setMetadataIncludeContextWindow(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    {/* Cost */}
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="includeCost"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        Include Current Cost
+                      </label>
+                      <input
+                        id="includeCost"
+                        type="checkbox"
+                        checked={metadataIncludeCost}
+                        onChange={e => setMetadataIncludeCost(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Template Mode Options */}
+                {sendMessageMetadata === 'template' && (
+                  <div className="space-y-4 border-t border-gray-100 pt-4">
+                    {/* Available Variables */}
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">
+                        Available Variables
+                      </label>
+                      <div className="relative flex flex-wrap gap-2">
+                        {[
+                          { name: 'userMessage', desc: 'The message you type in the chat input' },
+                          {
+                            name: 'timestamp',
+                            desc: 'Local time (e.g., Wed, Jan 8, 2026, 11:22 PM PST)',
+                          },
+                          {
+                            name: 'timestampUtc',
+                            desc: 'UTC time (e.g., Thu, Jan 9, 2026, 7:22 AM UTC)',
+                          },
+                          {
+                            name: 'timestampRelative',
+                            desc: "Seconds since chat started (e.g., '45 seconds since chat start')",
+                          },
+                          {
+                            name: 'modelName',
+                            desc: 'Current model ID (e.g., claude-sonnet-4-20250514)',
+                          },
+                          {
+                            name: 'contextWindowUsage',
+                            desc: "Tokens used in context (e.g., '12500 tokens')",
+                          },
+                          { name: 'currentCost', desc: "Accumulated cost (e.g., '$0.023')" },
+                        ].map(v => (
+                          <button
+                            key={v.name}
+                            type="button"
+                            onClick={() => {
+                              if (tooltipTimeoutRef.current) {
+                                clearTimeout(tooltipTimeoutRef.current);
+                              }
+                              setActiveTooltip(activeTooltip === v.name ? null : v.name);
+                              if (activeTooltip !== v.name) {
+                                tooltipTimeoutRef.current = setTimeout(
+                                  () => setActiveTooltip(null),
+                                  3000
+                                );
+                              }
+                            }}
+                            className={`rounded-md px-2 py-1 font-mono text-xs transition-colors ${
+                              activeTooltip === v.name
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            }`}
+                          >
+                            {`{{${v.name}}}`}
+                          </button>
+                        ))}
+                        {/* Tooltip */}
+                        {activeTooltip && (
+                          <div className="absolute top-full right-0 left-0 z-10 mt-2 rounded-lg border border-gray-200 bg-white p-2 text-sm text-gray-700 shadow-lg">
+                            {
+                              [
+                                {
+                                  name: 'userMessage',
+                                  desc: 'The message you type in the chat input',
+                                },
+                                {
+                                  name: 'timestamp',
+                                  desc: 'Local time (e.g., Wed, Jan 8, 2026, 11:22 PM PST)',
+                                },
+                                {
+                                  name: 'timestampUtc',
+                                  desc: 'UTC time (e.g., Thu, Jan 9, 2026, 7:22 AM UTC)',
+                                },
+                                {
+                                  name: 'timestampRelative',
+                                  desc: "Seconds since chat started (e.g., '45 seconds since chat start')",
+                                },
+                                {
+                                  name: 'modelName',
+                                  desc: 'Current model ID (e.g., claude-sonnet-4-20250514)',
+                                },
+                                {
+                                  name: 'contextWindowUsage',
+                                  desc: "Tokens used in context (e.g., '12500 tokens')",
+                                },
+                                { name: 'currentCost', desc: "Accumulated cost (e.g., '$0.023')" },
+                              ].find(v => v.name === activeTooltip)?.desc
+                            }
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Template Textarea */}
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-900">
+                        Template
+                      </label>
+                      <textarea
+                        value={metadataTemplate}
+                        onChange={e => setMetadataTemplate(e.target.value)}
+                        placeholder="{{userMessage}}"
+                        rows={4}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      />
+                    </div>
+
+                    {/* New Context Option */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label
+                          htmlFor="newContext"
+                          className="cursor-pointer text-sm font-medium text-gray-900"
+                        >
+                          Start new context per message
+                        </label>
+                        <p className="text-xs text-gray-500">
+                          Each message ignores chat history (keeps system prompt)
+                        </p>
+                      </div>
+                      <input
+                        id="newContext"
+                        type="checkbox"
+                        checked={metadataNewContext}
+                        onChange={e => setMetadataNewContext(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Tools Section - hidden for WebLLM */}
@@ -526,7 +765,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                           Memory
                         </label>
                         <p className="text-xs text-gray-500">
-                          Claude remembers across conversations (Anthropic only)
+                          Use a virtual FS to remember across conversations (Optimized for
+                          Anthropic)
                         </p>
                       </div>
                       <input
@@ -537,34 +777,12 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                         className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
-                    {memoryEnabled && (
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          onClick={() => navigate(`/project/${projectId}/memories`)}
-                          className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
-                        >
-                          📂 View Memory Files
-                        </button>
-                        {projectHasMemory && (
-                          <button
-                            onClick={async () => {
-                              const confirmed = await showDestructiveConfirm(
-                                'Clear Memory',
-                                'Delete all memory files for this project? Claude will forget everything.',
-                                'Clear'
-                              );
-                              if (confirmed) {
-                                await clearMemory(projectId);
-                                setProjectHasMemory(false);
-                              }
-                            }}
-                            className="rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
-                          >
-                            🗑️ Clear
-                          </button>
-                        )}
-                      </div>
-                    )}
+                    <Link
+                      to={`/project/${projectId}/vfs/memories`}
+                      className="mt-2 block text-sm text-blue-600 hover:text-blue-700 hover:underline"
+                    >
+                      📁 Manage Memory Files
+                    </Link>
                   </div>
 
                   {/* JavaScript Execution */}
@@ -576,13 +794,61 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       >
                         JavaScript Execution
                       </label>
-                      <p className="text-xs text-gray-500">Execute code in a secure sandbox</p>
+                      <p className="text-xs text-gray-500">
+                        Execute code in a secure sandbox in your browser
+                      </p>
                     </div>
                     <input
                       id="jsExecutionEnabled"
                       type="checkbox"
                       checked={jsExecutionEnabled}
                       onChange={e => setJsExecutionEnabled(e.target.checked)}
+                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* JS Library Preloading - nested under JS Execution */}
+                  {jsExecutionEnabled && (
+                    <div className="ml-4 flex items-center justify-between border-l-2 border-gray-200 pl-4">
+                      <div>
+                        <label
+                          htmlFor="jsLibEnabled"
+                          className="cursor-pointer text-sm font-medium text-gray-900"
+                        >
+                          Load /lib Scripts
+                        </label>
+                        <p className="text-xs text-gray-500">
+                          Auto-load .js files from /lib when JS session starts
+                        </p>
+                      </div>
+                      <input
+                        id="jsLibEnabled"
+                        type="checkbox"
+                        checked={jsLibEnabled}
+                        onChange={e => setJsLibEnabled(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Filesystem Tool */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label
+                        htmlFor="fsToolEnabled"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        Filesystem Access
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        Read/write VFS files (/memories readonly)
+                      </p>
+                    </div>
+                    <input
+                      id="fsToolEnabled"
+                      type="checkbox"
+                      checked={fsToolEnabled}
+                      onChange={e => setFsToolEnabled(e.target.checked)}
                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -767,14 +1033,17 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         <div className="flex gap-3 p-4">
           <button
             onClick={handleCancel}
-            className="flex-1 rounded-lg border border-gray-300 px-4 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+            disabled={isSaving}
+            className="flex-1 rounded-lg border border-gray-300 px-4 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="flex-1 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700"
+            disabled={isSaving}
+            className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
           >
+            {isSaving && <Spinner size={16} colorClass="border-white" />}
             Save
           </button>
         </div>

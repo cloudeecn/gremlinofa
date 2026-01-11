@@ -82,14 +82,20 @@ export interface Project {
   reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; // undefined = auto
   reasoningSummary?: 'auto' | 'concise' | 'detailed'; // undefined = auto
   // Message metadata settings
-  sendMessageMetadata?: boolean;
+  sendMessageMetadata?: boolean | 'template';
   metadataTimestampMode?: 'utc' | 'local' | 'relative' | 'disabled';
+  metadataIncludeModelName?: boolean;
   metadataIncludeContextWindow?: boolean;
   metadataIncludeCost?: boolean;
+  metadataTemplate?: string;
+  metadataNewContext?: boolean;
   // Memory tool
   memoryEnabled?: boolean;
   // JavaScript execution tool
   jsExecutionEnabled?: boolean;
+  jsLibEnabled?: boolean; // Auto-load /lib/*.js scripts when JS session starts
+  // Filesystem tool
+  fsToolEnabled?: boolean;
 }
 
 // Chat pending state types
@@ -261,4 +267,40 @@ export interface ClientSideTool {
   iconInput?: string;
   /** Icon for tool_result blocks (emoji/unicode). Default:  or L based on error state */
   iconOutput?: string;
+}
+
+// Virtual Filesystem (VFS) types
+export interface VfsNode {
+  type: 'file' | 'dir';
+  fileId?: string; // only for type: 'file'
+  deleted: boolean;
+  createdAt: number; // Unix timestamp (ms)
+  updatedAt: number; // Unix timestamp (ms)
+  children?: Record<string, VfsNode>; // only for type: 'dir'
+  isBinary?: boolean; // true for binary files, false for text, undefined for legacy
+  mime?: string; // MIME type (text/plain for text, detected or application/octet-stream for binary)
+}
+
+export interface VfsOrphan {
+  fileId: string;
+  originalPath: string;
+  orphanedAt: number; // Unix timestamp (ms)
+}
+
+export interface VfsTree {
+  children: Record<string, VfsNode>;
+  orphans: VfsOrphan[];
+}
+
+export interface VfsFile {
+  content: string;
+  version: number;
+  createdAt: number; // Unix timestamp (ms)
+  updatedAt: number; // Unix timestamp (ms)
+}
+
+export interface VfsVersion {
+  content: string;
+  version: number;
+  createdAt: number; // Unix timestamp (ms)
 }

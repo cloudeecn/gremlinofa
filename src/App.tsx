@@ -10,7 +10,7 @@ import DataManagerPage from './components/DataManagerPage';
 import { useApp } from './hooks/useApp';
 import ProjectView from './components/project/ProjectView';
 import ProjectSettingsView from './components/project/ProjectSettingsView';
-import MemoryManagerView from './components/project/MemoryManagerView';
+import VfsManagerView from './components/project/VfsManagerView';
 import ChatView from './components/chat/ChatView';
 import { AttachmentManagerView } from './components/AttachmentManagerView';
 import { OOBEScreen } from './components/OOBEScreen';
@@ -91,8 +91,8 @@ function AppContent() {
             element={<ProjectSettingsViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
           />
           <Route
-            path="/project/:projectId/memories"
-            element={<MemoryManagerView onMenuPress={() => setIsMobileSidebarOpen(true)} />}
+            path="/project/:projectId/vfs/*"
+            element={<VfsManagerViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
           />
           <Route
             path="/chat/:chatId"
@@ -153,6 +153,21 @@ function ProjectSettingsViewRoute({ onMenuPress }: { onMenuPress?: () => void })
   const { projectId } = useParams<{ projectId: string }>();
   if (!projectId) return null;
   return <ProjectSettingsView projectId={projectId} onMenuPress={onMenuPress} />;
+}
+
+function VfsManagerViewRoute({ onMenuPress }: { onMenuPress?: () => void }) {
+  const { projectId, '*': splatPath } = useParams<{ projectId: string; '*': string }>();
+  if (!projectId) return null;
+  // Convert splat path to VFS path (add leading slash if present)
+  const initialPath = splatPath ? `/${splatPath}` : undefined;
+  return (
+    <VfsManagerView
+      key={initialPath || 'root'}
+      projectId={projectId}
+      initialPath={initialPath}
+      onMenuPress={onMenuPress}
+    />
+  );
 }
 
 function ChatViewRoute({ onMenuPress }: { onMenuPress?: () => void }) {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import Spinner from '../ui/Spinner';
 import { useApp } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
 import type { MessageAttachment, Project } from '../../types';
@@ -282,6 +283,16 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
                   <span>📝</span>
                   <span>Project Instructions</span>
                 </button>
+                <button
+                  onClick={() => {
+                    setShowSettingsDropdown(false);
+                    navigate(`/project/${projectId}/vfs`);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  <span>📁</span>
+                  <span>Files</span>
+                </button>
               </div>
             )}
           </div>
@@ -426,8 +437,9 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
                 isCreatingChat ||
                 isProcessingAttachments
               }
-              className="flex-1 rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
             >
+              {isCreatingChat && <Spinner size={16} colorClass="border-white" />}
               {isCreatingChat ? 'Creating...' : isProcessingAttachments ? 'Processing...' : 'Send'}
             </button>
           </div>

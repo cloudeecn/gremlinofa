@@ -129,6 +129,9 @@ export const VALID_TABLES = [
   'memories',
   'memory_journals',
   'app_metadata',
+  'vfs_meta',
+  'vfs_files',
+  'vfs_versions',
 ] as const;
 
 export type TableName = (typeof VALID_TABLES)[number];

@@ -25,7 +25,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 ### Core Features (Implemented)
 
 - [x] Project & chat management with cascading deletion
-- [x] Project settings (system prompt, pre-fill, model, temperature, reasoning, web search, metadata)
+- [x] Project settings (system prompt, pre-fill, model, temperature, reasoning, web search, message format)
 - [x] Chat with streaming responses, message editing, forking, and cost tracking
 - [x] Message rendering (Markdown, syntax highlighting, LaTeX math with horizontal scroll, thinking blocks, citations, code block copy)
 - [x] Image attachments (resize, compress, multi-select, preview, lightbox)
@@ -140,8 +140,8 @@ Projects organize chats with shared settings:
 - **Anthropic reasoning**: enable toggle + budget tokens (default: 1024) + keep thinking turns
 - **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
-- **Message metadata**: timestamp mode (UTC/Local/Disabled), context window usage, current cost
-- **Tools**: Memory (Anthropic only), JavaScript Execution
+- **Message format**: three modes (user message / with metadata / use template)
+- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem
 - **Advanced** (collapsed): temperature, max output tokens (default: 1536)
 
 ### Chats
@@ -196,7 +196,7 @@ public/             # Static assets and PWA icons
 - `storageConfig.ts` stores user's storage mode preference (localStorage key: `gremlinofa_storage_config`)
 - **Auto-routing**: `index.ts` reads config at startup and creates the appropriate adapter automatically
 - Factory functions: `createStorage()` and `createStorageAdapter()` for creating instances (useful for migration/sync)
-- Tables: `api_definitions`, `models_cache`, `projects`, `chats`, `messages`, `attachments`, `memories`, `memory_journals`, `app_metadata`
+- Tables: `api_definitions`, `models_cache`, `projects`, `chats`, `messages`, `attachments`, `memories`, `memory_journals`, `app_metadata`, `vfs_meta`, `vfs_files`, `vfs_versions`
 - All tables have the same columns
 
 **Remote Storage:**
@@ -332,6 +332,14 @@ public/             # Static assets and PWA icons
   4. Save intermediate messages to storage + update UI state
   5. Send continuation request
   6. Loop until `stop_reason !== 'tool_use'` or max iterations (10)
+- **Unresolved tool call recovery**: When a response ends with unresolved `tool_use` blocks (e.g., token limit reached mid-agentic-loop):
+  1. `unresolvedToolCalls` detected via `getUnresolvedToolCalls()` in `useChat.ts`
+  2. `PendingToolCallsBanner` shows in MessageList with Stop/Continue toggle (default: Stop)
+  3. User can optionally type a message before sending
+  4. On send: `resolvePendingToolCalls(mode, userMessage?)` creates tool_result blocks
+     - **Stop**: Returns error "Token limit reached, ask user to continue"
+     - **Continue**: Executes tools, optionally sends continuation to API
+  5. ChatInput send button enabled even with empty input when pending tools exist
 - Intermediate messages persisted with proper `renderingContent`:
   - Assistant messages with `tool_use` render in `BackstageView` as expandable "Calling [tool_name]" blocks
   - User messages with `tool_result` render via `ToolResultBubble` (detected by `fullContent` containing `tool_result` blocks)
@@ -356,6 +364,13 @@ public/             # Static assets and PWA icons
 3. Pre-grouped storage (avoid runtime grouping)
 4. Text consolidation (continuous text blocks merged)
 
+**User Message renderingContent:**
+
+- User messages store original input in `renderingContent` as `TextRenderBlock`
+- Format: `[{ category: 'text', blocks: [{ type: 'text', text: originalInput }] }]`
+- Display extracts text from renderingContent, falls back to `stripMetadata(content)` for old messages
+- Separates API payload (`content` with metadata) from display (`renderingContent` without metadata)
+
 **StreamingContentAssembler:**
 
 - Assembles `StreamChunk` events into `RenderingBlockGroup[]` during streaming
@@ -371,8 +386,8 @@ public/             # Static assets and PWA icons
 ```
 MessageList.tsx                    # Container with virtual scrolling
 ├── MessageBubble.tsx              # Container with virtual scrolling logic, delegates rendering
-│   ├── UserMessageBubble.tsx      # User messages (blue bubble, attachments, edit/fork/copy)
-│   ├── ToolResultBubble.tsx       # Tool result messages (role: USER with tool_result blocks)
+│   ├── UserMessageBubble.tsx      # User messages (blue bubble, attachments, edit/fork/copy/dump JSON)
+│   ├── ToolResultBubble.tsx       # Tool result messages (role: USER with tool_result blocks, delete action)
 │   ├── AssistantMessageBubble.tsx # Assistant messages with renderingContent (new format)
 │   │   ├── BackstageView          # Collapsible thinking/search/fetch/tool_use/tool_result
 │   │   ├── ErrorBlockView         # Collapsible error with stack trace
@@ -516,6 +531,7 @@ MessageList.tsx                    # Container with virtual scrolling
 - `/` - Welcome screen
 - `/project/:projectId` - Project view (shows default model under title)
 - `/project/:projectId/settings` - Project settings
+- `/project/:projectId/vfs/*` - VFS Manager (memory files, supports deep links to paths)
 - `/chat/:chatId` - Chat conversation
 - `/attachments` - Attachment manager
 - `/settings` - API definitions configuration
@@ -527,6 +543,31 @@ MessageList.tsx                    # Container with virtual scrolling
 - Desktop: Side-by-side two-panel (sidebar 280px fixed)
 - Mobile: Overlay drawer, hamburger menu per view
 - `useIsMobile()` hook for responsive components (no prop drilling)
+
+**VFS Manager:**
+
+UI for viewing and editing files stored in the VFS (memory tool). Accessible from Project Settings > Tools > Memory > "Manage Memory Files" link.
+
+Component structure:
+
+```
+VfsManagerView (page at /project/:projectId/vfs)
+├── Header (back to project settings, title)
+├── Desktop Layout (side-by-side via flex)
+│   ├── VfsDirectoryTree (left panel ~40%)
+│   └── Content panel (right ~60%): VfsFileViewer / VfsFileEditor / VfsDiffViewer
+└── Mobile Layout
+    ├── VfsDirectoryTree (full width)
+    └── VfsFileModal (when file selected)
+```
+
+Features:
+
+- **Directory tree**: Expand/collapse directories, lazy loading, file sizes
+- **File viewer**: Read-only content display with version badge, binary file preview (images rendered, others show download button), MIME type badge
+- **File editor**: Edit with draft persistence (`vfs-editor` place), auto-versioning on save (text files only)
+- **Diff viewer**: Compare versions with LCS diff algorithm, rollback support
+- **Delete**: Soft-delete files and directories (recursive)
 
 **Provider-Specific Settings Pattern:**
 
@@ -555,13 +596,12 @@ Settings that apply to the currently selected API provider appear in the main se
 
 **Overview:**
 
-Implements Anthropic's memory tool specification - a persistent virtual filesystem that allows Claude to store and retrieve information across conversations. Files persist per project and survive page reloads.
+Implements Anthropic's memory tool specification - a persistent virtual filesystem that allows LLMs to store and retrieve information across conversations. Files persist per project and survive page reloads. Uses VfsService for tree-structured storage with per-file versioning.
 
 **Files:**
 
 - `src/services/tools/memoryTool.ts` - Tool implementation with `MemoryToolInstance` class
-- `src/services/memory/memoryStorage.ts` - Persistent storage layer (encrypted, compressed)
-- `src/components/project/MemoryManagerView.tsx` - UI for viewing/managing memory files
+- `src/services/vfs/vfsService.ts` - VFS backend with tree structure and versioning
 
 **Commands (Anthropic spec compliant):**
 
@@ -571,57 +611,39 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 | `create`      | `path`, `file_text`                  | Create new file (error if exists)                                             |
 | `str_replace` | `path`, `old_str`, `new_str`         | Replace unique string (error if not found or multiple matches)                |
 | `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (0-indexed)                                      |
-| `delete`      | `path`                               | Delete file or directory                                                      |
+| `delete`      | `path`                               | Delete file or directory (soft delete)                                        |
 | `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                                |
 
-**Virtual Filesystem:**
+**VFS Architecture:**
 
 - Root path: `/memories` (all paths normalized to this)
-- Flat file structure stored as `Record<string, MemoryFile>`
-- Each file tracks `content`, `createdAt`, `updatedAt` timestamps
+- Tree-structured filesystem stored in `vfs_meta` table (JSON tree per project)
+- Files stored in `vfs_files` table with stable UUID (`fileId`) that survives renames
+- Per-file versioning in `vfs_versions` table (auto-versioned on every update)
+- Soft-delete with orphan tracking for displaced files during renames
 - 999,999 line limit per file (returns error if exceeded)
 
-**Storage:**
+**Storage Tables:**
 
-- Uses same encryption/compression as messages (`encryptWithCompression`)
-- Keyed by `projectId` in `memories` table
-- Auto-save: dirty flag cleared after each write operation
+- `vfs_meta`: Tree structure + orphans per project
+- `vfs_files`: Current file content (parentId = projectId)
+- `vfs_versions`: Historical snapshots (parentId = fileId)
+- VFS data cleaned up automatically when project is deleted
 
-**Journal (Version History):**
+**Migration:**
 
-- Every write operation (create, str_replace, insert, delete, rename) logs a journal entry
-- Journal stored in `memory_journals` table with `parentId` = projectId
-- Each entry stores the full command parameters as encrypted JSON
-- `getJournalVersion(projectId)` returns the write count (version number)
-- `loadJournal(projectId)` returns all entries sorted by timestamp
+Old memory system data (`memories`, `memory_journals` tables) is automatically migrated to VFS on app startup via `UnifiedStorage.initialize()`. Migration is idempotent - skips projects that already have VFS data. Process:
 
-**Memory Manager UI (`MemoryManagerView.tsx`):**
-
-- Shows version number (total writes) in header
-- "Verify" button reconstructs filesystem from journal, compares with current state
-- If differences found, offers to overwrite current state with replayed version
-- "Edit" button opens modal with textarea to manually edit file content
-- "Diff" button on file view compares current vs previous version using LCS diff
-- Navigation buttons (◀ ▶) to browse diff between any two versions
-- "Rollback" button (in diff mode) restores file to the currently viewed version
-- Manual file deletion (🗑️ button) records a `delete` command in journal
-- "Clear All" deletes both filesystem and journal history
-
-**User Actions (journal commands):**
-
-| Command         | Source               | Description                                    |
-| --------------- | -------------------- | ---------------------------------------------- |
-| `user_edit`     | Edit modal → Save    | Full file replacement with user-edited content |
-| `user_rollback` | Diff view → Rollback | Full file replacement with historical version  |
-
-Both commands store `{ command, path, file_text }` and are replayed as delete + create.
+1. Replay journal entries chronologically (builds version history in VFS)
+2. Compare VFS state with current `memories` table and sync differences
+3. Delete old `memories` and `memory_journals` records after successful migration
 
 **Instance Management:**
 
-- `MemoryToolInstance` class holds filesystem state per project
-- `initMemoryTool(projectId)` - Load from storage or create empty (cached in Map)
+- `MemoryToolInstance` class wraps VfsService for memory tool operations
+- `initMemoryTool(projectId)` - Create instance, register with toolRegistry
 - `getMemoryTool(projectId)` - Get cached instance
-- `disposeMemoryTool(projectId)` - Remove from cache when chat closes
+- `disposeMemoryTool(projectId)` - Unregister and remove from cache
 
 **Message Format (exact wording per spec):**
 
@@ -644,20 +666,64 @@ rename:      "Successfully renamed {old_path} to {new_path}"
 - Invalid line (insert): `"Error: Invalid \`insert_line\` parameter: {n}. It should be within the range of lines of the file: [0, {max}]"`
 - Destination exists (rename): `"Error: The destination {path} already exists"`
 
+### Filesystem Tool
+
+**Overview:**
+
+Client-side tool that provides LLM access to the project's virtual filesystem. Similar to the memory tool but operates from VFS root (`/`) with `/memories` as readonly. Useful for storing code, data files, configuration, and scripts. Supports both text and binary files.
+
+**Files:**
+
+- `src/services/tools/fsTool.ts` - Tool implementation with `FsToolInstance` class
+
+**Commands:**
+
+| Command       | Parameters                           | Description                                                       |
+| ------------- | ------------------------------------ | ----------------------------------------------------------------- |
+| `view`        | `path`, `view_range?`                | View directory listing, text file (with line numbers), or dataUrl |
+| `create`      | `path`, `file_text`                  | Create new file (accepts text or dataUrl for binary)              |
+| `str_replace` | `path`, `old_str`, `new_str`         | Replace unique string (text files only)                           |
+| `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (text files only)                    |
+| `delete`      | `path`                               | Delete file or directory (soft delete)                            |
+| `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                    |
+
+**Binary File Support:**
+
+- **Create binary files**: Pass dataUrl format (`data:<mime>;base64,<data>`) as `file_text`
+- **View binary files**: Returns `Binary file {path} ({mime}):\n{dataUrl}` format
+- **Text operations blocked**: `str_replace` and `insert` return error on binary files
+- MIME detection via magic bytes (JPEG, PNG, GIF, WebP, PDF, ZIP)
+- File type change (text↔binary or MIME change) orphans old file, creates new
+
+**Readonly Enforcement:**
+
+- `/memories` path and all its contents are readonly
+- Write operations (`create`, `str_replace`, `insert`, `delete`, `rename` into /memories) return error
+- Error message explains that /memories is managed by the memory tool
+
+**Instance Management:**
+
+- `initFsTool(projectId)` - Create instance, register with toolRegistry
+- `getFsTool(projectId)` - Get cached instance
+- `disposeFsTool(projectId)` - Unregister and remove from cache
+
 ### JavaScript Execution Tool
 
 **Overview:**
 
-Client-side tool that executes JavaScript code in a secure QuickJS sandbox. Enables the AI to perform calculations, data transformations, and algorithm demonstrations. Supports persistent sessions within an agentic loop.
+Client-side tool that executes JavaScript code in a secure QuickJS-ng sandbox. Enables the AI to perform calculations, data transformations, and algorithm demonstrations. Supports persistent sessions within an agentic loop, with browser-like event loop semantics.
 
 **Files:**
 
-- `src/services/tools/jsTool.ts` - Tool implementation
+- `src/services/tools/jsTool.ts` - Tool registration and input/output formatting
+- `src/services/tools/jsvm/JsVMContext.ts` - QuickJS context wrapper with event loop
+- `src/services/tools/jsvm/polyfills.ts` - Browser API polyfills (setTimeout, TextEncoder, etc.)
+- `src/services/tools/jsvm/fsPolyfill.ts` - VFS filesystem bridge for `fs` API
 
 **Dependencies:**
 
 - `quickjs-emscripten-core` - QuickJS WASM bindings with context management
-- `@jitl/quickjs-singlefile-browser-release-sync` - Browser-compatible WASM variant
+- `@jitl/quickjs-ng-wasmfile-release-sync` - QuickJS-ng WASM variant (ES2023 support)
 
 **Input Parameters:**
 
@@ -685,16 +751,111 @@ If no console output and result is undefined: `(no output)`
 - No access to browser APIs (DOM, fetch, localStorage)
 - No network access
 
+**JsVMContext Architecture:**
+
+The `JsVMContext` class provides a browser-like JavaScript execution environment:
+
+- **Event Loop**: Promise-based via `executePendingJobs(1)` per tick with browser yields
+- **Timeout**: 60s execution limit via `setInterruptHandler()` (kills infinite loops mid-execution)
+- **Console Capture**: All console methods (log, warn, error, info, debug) captured
+
+**Event Loop Semantics:**
+
+1. User code evaluates synchronously
+2. While `hasPendingJob()` is true:
+   - Yield to browser (`setTimeout(0)`)
+   - `executePendingJobs(1)` processes one microtask
+   - Check 60s timeout deadline
+3. setTimeout uses `Promise.resolve().then(wrapper)` internally
+
+**Polyfills (injected into every context):**
+
+| API                      | Description                                             |
+| ------------------------ | ------------------------------------------------------- |
+| `self`                   | Points to `globalThis` (UMD/IIFE library compatibility) |
+| `setTimeout(cb, delay?)` | Queues callback to microtask queue (delay ignored)      |
+| `clearTimeout(id)`       | Cancels pending timeout                                 |
+| `setInterval`            | Stub (runs once, returns ID)                            |
+| `clearInterval`          | Same as clearTimeout                                    |
+| `TextEncoder`            | UTF-8 string to bytes                                   |
+| `TextDecoder`            | UTF-8 bytes to string                                   |
+| `btoa(str)`              | Base64 encode                                           |
+| `atob(str)`              | Base64 decode                                           |
+| `fs` / `__fs`            | VFS filesystem API (see below)                          |
+
+**UMD/IIFE Library Compatibility:**
+
+UMD/IIFE Library can be loaded because:
+
+- `self` global exists (browser environment detection)
+- setTimeout/clearTimeout available (async patterns)
+- Standard execution in global scope (not module mode)
+
+**Filesystem API (`fs` / `__fs`):**
+
+Node.js-like async filesystem operations backed by the project's VFS. All methods return Promises (must use `await`). Available as both `fs` and `__fs` on globalThis.
+
+| Method                     | Returns                | Description                               |
+| -------------------------- | ---------------------- | ----------------------------------------- |
+| `readFile(path)`           | `Promise<ArrayBuffer>` | Read file as binary (Node.js Buffer-like) |
+| `readFile(path, encoding)` | `Promise<string>`      | Read file as string with encoding         |
+| `writeFile(path, data)`    | `Promise<void>`        | Create/overwrite file (string or binary)  |
+| `exists(path)`             | `Promise<boolean>`     | Check if path exists                      |
+| `mkdir(path)`              | `Promise<void>`        | Create directory (via `.newdir` marker)   |
+| `readdir(path)`            | `Promise<string[]>`    | List directory entries                    |
+| `unlink(path)`             | `Promise<void>`        | Delete file                               |
+| `rmdir(path)`              | `Promise<void>`        | Delete directory (recursive)              |
+| `rename(oldPath, newPath)` | `Promise<void>`        | Move/rename file or directory             |
+| `stat(path)`               | `Promise<StatResult>`  | Get file/directory info                   |
+
+`StatResult` type: `{ isFile: boolean, isDirectory: boolean, size: number, readonly: boolean, mtime: Date, isBinary: boolean, mime: string }`
+
+**fs Readonly Enforcement:**
+
+- `/memories` path and all its contents are read-only
+- Write operations (`writeFile`, `mkdir`, `unlink`, `rmdir`, `rename`) throw `EROFS` error
+- `stat()` returns `readonly: true` for paths under `/memories`
+
+**fs Binary File Support:**
+
+- `stat()` returns `isBinary: boolean` and `mime: string` for files
+- Binary files stored as base64 in VFS, text files as UTF-8 strings
+- MIME detection via magic bytes (JPEG, PNG, GIF, WebP, PDF, ZIP)
+
+**fs Directory Creation:**
+
+- `mkdir(path)` creates directories by placing a `.newdir` marker file inside
+- `readdir()` automatically filters out `.newdir` markers from listings
+- This approach leverages VFS's auto-parent-creation behavior
+
+**fs Error Codes (Node.js-style):**
+
+- `ENOENT` - Path not found
+- `EEXIST` - File/directory already exists
+- `EISDIR` - Illegal operation on directory (read file on dir)
+- `ENOTDIR` - Not a directory
+- `ENOTEMPTY` - Directory not empty
+- `EINVAL` - Invalid argument
+- `EROFS` - Read-only filesystem
+
+**fs Event Loop Integration:**
+
+Filesystem operations are async and resolved during the QuickJS event loop. Each fs method queues a pending operation that executes during `executePendingJobs()`. The `FsBridge` class manages:
+
+- Pending operations queue (`PendingFsOp[]`)
+- Promise handle creation and resolution
+- Result marshalling between JS host and QuickJS context
+
 **Execution Modes:**
 
-1. **Ephemeral** (default): Each tool call is isolated, no state persists
-2. **Session**: VM state persists across multiple tool calls within an agentic loop
+1. **Ephemeral**: Each tool call creates fresh context, disposed after execution
+2. **Session**: VM state persists across multiple tool calls within agentic loop
 
 **Session Lifecycle:**
 
 Sessions enable the AI to build up state across multiple tool calls:
 
-- `createJsSession()` - Create persistent QuickJS context with console redirection
+- `createJsSession()` - Create persistent JsVMContext
 - `hasJsSession()` - Check if session is active
 - `disposeJsSession()` - Release context and free memory
 
@@ -704,6 +865,17 @@ Sessions enable the AI to build up state across multiple tool calls:
 2. All JS tool executions within the loop share the same context (variables persist)
 3. When loop completes (stop_reason changes or max iterations) → `disposeJsSession()`
 4. On error → `disposeJsSession()` in catch block
+
+**Library Preloading (`/lib`):**
+
+When a JS session is created with a projectId, the VM automatically loads and executes all `.js` files in the `/lib` directory:
+
+- Checks if `/lib` exists in VFS
+- Lists all `.js` files, sorts alphabetically for deterministic order
+- Executes each script with the filename parameter for proper stack traces
+- Scripts run during session creation (before any tool calls)
+- Use for: loading utility libraries (lodash, date-fns UMD builds), custom helpers, polyfills
+- Errors logged to console but don't prevent session creation
 
 **Use Case Example:**
 

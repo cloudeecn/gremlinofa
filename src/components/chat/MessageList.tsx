@@ -5,6 +5,7 @@ import StreamingMessage from './StreamingMessage';
 import BouncingDots from './BouncingDots';
 import CacheWarning from './CacheWarning';
 import WebLLMLoadingView from './WebLLMLoadingView';
+import PendingToolCallsBanner from './PendingToolCallsBanner';
 import { useVirtualScroll } from '../../hooks/useVirtualScroll';
 import { subscribeToLoadingState, type WebLLMLoadingState } from '../../services/api/webllmClient';
 import { getModelInfo } from '../../services/api/webllmModelInfo';
@@ -20,6 +21,9 @@ export default function MessageList({
   streamingLastEvent,
   currentApiDefId,
   currentModelId,
+  pendingToolCount,
+  pendingToolMode,
+  onPendingToolModeChange,
 }: MessageListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -197,6 +201,19 @@ export default function MessageList({
               }}
             />
           )}
+
+          {/* Pending tool calls banner */}
+          {!isLoading &&
+            pendingToolCount !== undefined &&
+            pendingToolCount > 0 &&
+            pendingToolMode &&
+            onPendingToolModeChange && (
+              <PendingToolCallsBanner
+                toolCount={pendingToolCount}
+                mode={pendingToolMode}
+                onModeChange={onPendingToolModeChange}
+              />
+            )}
         </div>
       </div>
 

@@ -5,13 +5,14 @@ import { formatTimestamp } from '../../utils/messageFormatters';
 
 export interface ToolResultBubbleProps {
   message: Message<unknown>;
+  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete', messageId: string) => void;
 }
 
 /**
  * Renders a tool result message (role: USER but contains tool_result blocks).
  * Styled to match BackstageView - purple theme, collapsible, shows tool name.
  */
-export default function ToolResultBubble({ message }: ToolResultBubbleProps) {
+export default function ToolResultBubble({ message, onAction }: ToolResultBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Extract tool_result blocks from renderingContent (normalized format for all APIs)
@@ -92,8 +93,19 @@ export default function ToolResultBubble({ message }: ToolResultBubbleProps) {
         )}
       </div>
 
-      {/* Timestamp */}
-      <div className="mt-1 text-[10px] text-gray-500">{formatTimestamp(message.timestamp)}</div>
+      {/* Timestamp and actions */}
+      <div className="mt-1 flex items-center gap-2">
+        <span className="text-[10px] text-gray-500">{formatTimestamp(message.timestamp)}</span>
+        {onAction && (
+          <button
+            onClick={() => onAction('delete', message.id)}
+            className="text-[10px] text-gray-400 transition-colors hover:text-red-600"
+            title="Delete this message and all after"
+          >
+            🗑️
+          </button>
+        )}
+      </div>
     </div>
   );
 }

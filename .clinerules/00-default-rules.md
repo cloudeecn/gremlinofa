@@ -13,12 +13,11 @@ This is a general-purpose AI chatbot built with React (Vite).
 - ALWAYS keep your todo/task_progress list when condensing the conversation. The TODO list does not take much tokens and is essential to preserve the context. Even the completed item ensures you have the full picture.
 - NEVER use `sed -i` to modify file. It corrupts file and make you lose situational awareness.
 - Before completing a task, run following checklist:
-  - Look for any slop in modified file, fix them.
-  - Run `npm run verify` to test compile and `npm run test:silent` to make sure unit tests pass.
+  - Look for any slop in modified file base on anti-slop rules, fix them.
+  - Run `npm run format:silent && npm run verify` to format and test compile, then `npm run test:silent` to make sure unit tests pass.
   - Add unit tests to new features. Update unit tests to updated code.
   - Check if `development.md` or `README.md` contains obsolete information, update if necessery.
-- VERY IMPORTANT: Whenever you see `Context Window Usage` in a message goes beyound 150k (150,000), IMMEDIATELY STOP what are you doing and use `ask_followup_question` tool to ask user to use `/smol` command to compact the context window.
-- DON'T TOUCH THE CONTENT BEFORE `## Overview` when updating README.md
+- DON'T TOUCH THE CONTENT BEFORE `## Overview` when updating `README.md`. Make sure any new document follows `documentation-tone`
 
 ## standalone packages
 

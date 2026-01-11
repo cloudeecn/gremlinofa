@@ -17,6 +17,7 @@ import {
 } from 'quickjs-emscripten-core';
 import variant from '@jitl/quickjs-ng-wasmfile-release-sync';
 import { injectPolyfills } from './polyfills';
+import { FsBridge } from './fsPolyfill';
 
 export type ConsoleLevel = 'LOG' | 'WARN' | 'ERROR' | 'INFO' | 'DEBUG';
 
@@ -58,6 +59,7 @@ export class JsVMContext {
   private nextTimerId = 1;
   private cancelledTimers = new Set<number>();
   private pendingCallbacks = new Map<number, QuickJSHandle>();
+  private fsBridge: FsBridge | null = null;
 
   private constructor(context: QuickJSContext) {
     this.context = context;
@@ -65,14 +67,22 @@ export class JsVMContext {
 
   /**
    * Create a new JsVMContext with polyfills injected.
+   * @param projectId - Optional project ID to enable fs operations
    */
-  static async create(): Promise<JsVMContext> {
+  static async create(projectId?: string): Promise<JsVMContext> {
     const module = await getModule();
     const context = module.newContext();
     const vm = new JsVMContext(context);
     vm.setupConsole();
     vm.setupTimers();
     injectPolyfills(context);
+
+    // Set up fs bridge if projectId provided
+    if (projectId) {
+      vm.fsBridge = new FsBridge(projectId, context);
+      vm.fsBridge.injectFs();
+    }
+
     return vm;
   }
 
@@ -169,24 +179,51 @@ export class JsVMContext {
 
   /**
    * Process pending jobs one at a time, yielding to browser between each.
+   * Also processes pending fs operations before each job execution.
    * Returns error message if something goes wrong, undefined on success.
    */
   private async drainPendingJobs(deadline: number): Promise<string | undefined> {
-    while (this.context.runtime.hasPendingJob()) {
+    // Keep looping while there are pending jobs OR pending fs operations
+    while (
+      this.context.runtime.hasPendingJob() ||
+      (this.fsBridge && this.fsBridge.hasPendingOps())
+    ) {
       // Check timeout
       if (Date.now() > deadline) {
         return 'Error: Execution timeout (60s)';
       }
 
+      // Process pending fs operations first
+      if (this.fsBridge) {
+        const fsOps = this.fsBridge.getPendingOps();
+        for (const op of fsOps) {
+          try {
+            const result = (await op.execute()) as { ok: boolean; value?: unknown; error?: string };
+            const { handle, isError } = this.fsBridge.resultToHandle(result);
+            if (isError) {
+              op.reject(handle);
+            } else {
+              op.resolve(handle);
+            }
+          } catch (error) {
+            const errMsg = error instanceof Error ? error.message : String(error);
+            const errHandle = this.context.newError(errMsg);
+            op.reject(errHandle);
+          }
+        }
+      }
+
       // Yield to browser
       await new Promise(resolve => globalThis.setTimeout(resolve, 0));
 
-      // Execute one pending job
-      const pendingResult = this.context.runtime.executePendingJobs(1);
-      if (pendingResult.error) {
-        const errorValue = this.context.dump(pendingResult.error);
-        pendingResult.error.dispose();
-        return this.formatError(errorValue);
+      // Execute one pending job if there are any
+      if (this.context.runtime.hasPendingJob()) {
+        const pendingResult = this.context.runtime.executePendingJobs(1);
+        if (pendingResult.error) {
+          const errorValue = this.context.dump(pendingResult.error);
+          pendingResult.error.dispose();
+          return this.formatError(errorValue);
+        }
       }
     }
     return undefined;

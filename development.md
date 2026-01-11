@@ -731,6 +731,7 @@ The `JsVMContext` class provides a browser-like JavaScript execution environment
 | `TextDecoder`            | UTF-8 bytes to string                                   |
 | `btoa(str)`              | Base64 encode                                           |
 | `atob(str)`              | Base64 decode                                           |
+| `fs` / `__fs`            | VFS filesystem API (see below)                          |
 
 **UMD/IIFE Library Compatibility:**
 
@@ -739,6 +740,54 @@ UMD/IIFE Library can be loaded because:
 - `self` global exists (browser environment detection)
 - setTimeout/clearTimeout available (async patterns)
 - Standard execution in global scope (not module mode)
+
+**Filesystem API (`fs` / `__fs`):**
+
+Node.js-like async filesystem operations backed by the project's VFS. All methods return Promises (must use `await`). Available as both `fs` and `__fs` on globalThis.
+
+| Method                     | Returns               | Description                             |
+| -------------------------- | --------------------- | --------------------------------------- |
+| `readFile(path)`           | `Promise<string>`     | Read file contents                      |
+| `writeFile(path, data)`    | `Promise<void>`       | Create or overwrite file                |
+| `exists(path)`             | `Promise<boolean>`    | Check if path exists                    |
+| `mkdir(path)`              | `Promise<void>`       | Create directory (via `.newdir` marker) |
+| `readdir(path)`            | `Promise<string[]>`   | List directory entries                  |
+| `unlink(path)`             | `Promise<void>`       | Delete file                             |
+| `rmdir(path)`              | `Promise<void>`       | Delete directory (recursive)            |
+| `rename(oldPath, newPath)` | `Promise<void>`       | Move/rename file or directory           |
+| `stat(path)`               | `Promise<StatResult>` | Get file/directory info                 |
+
+`StatResult` type: `{ isFile: boolean, isDirectory: boolean, size: number, readonly: boolean, mtime: Date }`
+
+**fs Readonly Enforcement:**
+
+- `/memories` path and all its contents are read-only
+- Write operations (`writeFile`, `mkdir`, `unlink`, `rmdir`, `rename`) throw `EROFS` error
+- `stat()` returns `readonly: true` for paths under `/memories`
+
+**fs Directory Creation:**
+
+- `mkdir(path)` creates directories by placing a `.newdir` marker file inside
+- `readdir()` automatically filters out `.newdir` markers from listings
+- This approach leverages VFS's auto-parent-creation behavior
+
+**fs Error Codes (Node.js-style):**
+
+- `ENOENT` - Path not found
+- `EEXIST` - File/directory already exists
+- `EISDIR` - Illegal operation on directory (read file on dir)
+- `ENOTDIR` - Not a directory
+- `ENOTEMPTY` - Directory not empty
+- `EINVAL` - Invalid argument
+- `EROFS` - Read-only filesystem
+
+**fs Event Loop Integration:**
+
+Filesystem operations are async and resolved during the QuickJS event loop. Each fs method queues a pending operation that executes during `executePendingJobs()`. The `FsBridge` class manages:
+
+- Pending operations queue (`PendingFsOp[]`)
+- Promise handle creation and resolution
+- Result marshalling between JS host and QuickJS context
 
 **Execution Modes:**
 

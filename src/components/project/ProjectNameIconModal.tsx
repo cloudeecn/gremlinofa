@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
+import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import type { Project } from '../../types';
 import { PROJECT_EMOJIS } from '../../constants/emojis';
@@ -23,6 +24,7 @@ export default function ProjectNameIconModal({
   const [name, setName] = useState(project.name);
   // Store empty string if using default, so placeholder shows
   const [icon, setIcon] = useState(project.icon === DEFAULT_ICON ? '' : project.icon || '');
+  const [isSaving, setIsSaving] = useState(false);
 
   // Reset state when modal opens
   const handleModalOpen = () => {
@@ -38,22 +40,27 @@ export default function ProjectNameIconModal({
   // Effective icon for display and comparison (empty → default)
   const effectiveIcon = icon.trim() || DEFAULT_ICON;
 
-  const handleSave = () => {
+  const handleSave = useCallback(async () => {
     // Validate required fields
     if (!name.trim()) {
       showAlert('Validation Error', 'Project name is required');
       return;
     }
 
-    const updatedProject: Project = {
-      ...project,
-      name: name.trim(),
-      icon: effectiveIcon,
-      lastUsedAt: new Date(),
-    };
+    setIsSaving(true);
+    try {
+      const updatedProject: Project = {
+        ...project,
+        name: name.trim(),
+        icon: effectiveIcon,
+        lastUsedAt: new Date(),
+      };
 
-    onSave(updatedProject);
-  };
+      await onSave(updatedProject);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [name, effectiveIcon, project, onSave]);
 
   return (
     <Modal isOpen={isOpen} onClose={onCancel} size="lg" position="bottom">
@@ -81,7 +88,7 @@ export default function ProjectNameIconModal({
                 value={icon}
                 onChange={e => setIcon(e.target.value)}
                 placeholder={DEFAULT_ICON}
-                maxLength={2}
+                maxLength={3}
                 className="w-12 shrink-0 rounded-lg border border-gray-300 text-center text-2xl focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
               />
               {/* Name input */}
@@ -120,14 +127,17 @@ export default function ProjectNameIconModal({
         <div className="flex gap-3 rounded-b-2xl border-t border-gray-200 bg-white p-4">
           <button
             onClick={onCancel}
-            className="flex-1 rounded-lg border border-gray-300 px-4 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+            disabled={isSaving}
+            className="flex-1 rounded-lg border border-gray-300 px-4 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="flex-1 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700"
+            disabled={isSaving}
+            className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
           >
+            {isSaving && <Spinner size={16} colorClass="border-white" />}
             Save
           </button>
         </div>

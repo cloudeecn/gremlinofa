@@ -17,7 +17,7 @@ This is a general-purpose AI chatbot built with React (Vite).
   - Run `npm run format:silent && npm run verify` to format and test compile, then `npm run test:silent` to make sure unit tests pass.
   - Add unit tests to new features. Update unit tests to updated code.
   - Check if `development.md` or `README.md` contains obsolete information, update if necessery.
-- VERY IMPORTANT: Whenever you see `Context Window Usage` in a message goes above 150k (150,000), or above 75% usage, IMMEDIATELY STOP what are you doing and use `ask_followup_question` tool to ask user to use `/smol` command to compact the context window.
+- VERY IMPORTANT: Whenever you see `Context Window Usage` in a message goes above 130k (150,000), or above 70% usage, IMMEDIATELY STOP what are you doing and use `ask_followup_question` tool to ask user to use `/smol` command to compact the context window.
 - DON'T TOUCH THE CONTENT BEFORE `## Overview` when updating `README.md`. Make sure any new document follows `documentation-tone`
 
 ## standalone packages

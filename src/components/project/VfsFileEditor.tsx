@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import Spinner from '../ui/Spinner';
 import { useDraftPersistence, clearDraft } from '../../hooks/useDraftPersistence';
 import * as vfsService from '../../services/vfs/vfsService';
 import { getBasename } from '../../services/vfs/vfsService';
@@ -107,11 +108,12 @@ export default function VfsFileEditor({
         </button>
         <button
           type="button"
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+          className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
           onClick={handleSave}
           disabled={saving}
         >
-          {saving ? 'Saving...' : 'Save'}
+          {saving && <Spinner size={14} colorClass="border-white" />}
+          Save
         </button>
       </div>
     </div>

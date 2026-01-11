@@ -938,6 +938,67 @@ export async function hasVfs(projectId: string): Promise<boolean> {
   return record !== null;
 }
 
+// ============================================================================
+// Stat Operation
+// ============================================================================
+
+export interface VfsStat {
+  isFile: boolean;
+  isDirectory: boolean;
+  size: number; // Content length for files, 0 for directories
+  createdAt: number; // Unix timestamp (ms)
+  updatedAt: number; // Unix timestamp (ms)
+}
+
+/**
+ * Get stat information for a path
+ * @throws VfsError if path not found or is deleted
+ */
+export async function stat(projectId: string, path: string): Promise<VfsStat> {
+  const tree = await loadTree(projectId);
+  const normalized = normalizePath(path);
+
+  // Handle root directory
+  if (isRootPath(normalized)) {
+    return {
+      isFile: false,
+      isDirectory: true,
+      size: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+  }
+
+  const { node } = navigateToNode(tree, normalized);
+
+  if (!node) {
+    throw new VfsError(`Path not found: ${normalized}`, VfsErrorCode.PATH_NOT_FOUND);
+  }
+
+  if (node.deleted) {
+    throw new VfsError(`Path is deleted: ${normalized}`, VfsErrorCode.IS_DELETED);
+  }
+
+  const isFile = node.type === 'file';
+  const isDirectory = node.type === 'dir';
+
+  let size = 0;
+  if (isFile && node.fileId) {
+    const file = await loadFile(node.fileId);
+    if (file) {
+      size = file.content.length;
+    }
+  }
+
+  return {
+    isFile,
+    isDirectory,
+    size,
+    createdAt: node.createdAt,
+    updatedAt: node.updatedAt,
+  };
+}
+
 /**
  * Get file metadata (version, timestamps) without loading content
  */

@@ -18,6 +18,14 @@ import { JsVMContext, type ConsoleEntry } from './jsvm/JsVMContext';
  */
 class JsToolInstance {
   private session: JsVMContext | null = null;
+  private projectId: string | null = null;
+
+  /**
+   * Set the project ID for fs operations.
+   */
+  setProjectId(projectId: string): void {
+    this.projectId = projectId;
+  }
 
   /**
    * Create a persistent session for the agentic loop.
@@ -29,8 +37,9 @@ class JsToolInstance {
       this.disposeSession();
     }
 
-    this.session = await JsVMContext.create();
-    console.debug('[JsTool] Session created');
+    // Pass projectId to enable fs operations
+    this.session = await JsVMContext.create(this.projectId ?? undefined);
+    console.debug('[JsTool] Session created', this.projectId ? 'with fs' : 'without fs');
   }
 
   /**
@@ -173,10 +182,14 @@ export function isJsToolInitialized(): boolean {
 /**
  * Create a persistent JS session for the agentic loop.
  * State persists across multiple tool calls until disposeJsSession is called.
+ * @param projectId - Project ID to enable fs operations (optional)
  */
-export async function createJsSession(): Promise<void> {
+export async function createJsSession(projectId?: string): Promise<void> {
   if (!instance) {
     throw new Error('JavaScript tool not initialized');
+  }
+  if (projectId) {
+    instance.setProjectId(projectId);
   }
   await instance.createSession();
 }
@@ -219,19 +232,16 @@ function createJsClientSideTool(): ClientSideTool {
     name: 'javascript',
     description: `
 Execute JavaScript in a QuickJS sandbox (ES2023). Returns console output and the final expression value. 
-  - Usage examples: calculations, data transformation, string manipulation, JSON processing, algorithm implementation, date manipulation.
-  - Available APIs: ES2023 core features, setTimeout, TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await. Resolves Promise in the final expression value.
-  - Limitations: No fetch, DOM, or file access. setInterval runs once only, no ES modules.
-  - JS context persists across tool calls within the same conversation turn. (unless 'ephemeral' parameter is true)
-    - Note: because of shared context, const variables with the same name will conflict. 
-      Beware of this and unintended variable / global pollution, make use of ephemeral mode if needed.
-  - Output example: 
-    - \`console.log("test"); const result = 1 + 1; result\` → 
-      [LOG] test
-      === Result ===
-      2
-    - \`async function calculate() { /*some awaits*/; return 42;};  calculate();\` →
-      42`,
+  - Usage: calculations, data transformation, string/JSON processing, algorithm implementation, file operations.
+  - Available APIs: ES2023 core, setTimeout, TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await.
+  - fs API (async only, use with await): readFile, writeFile, exists, mkdir, readdir, unlink, rmdir, rename, stat.
+    - Example: \`await fs.writeFile('/data/result.txt', JSON.stringify(data))\`
+    - Note: /memories is read-only. stat() returns {isFile, isDirectory, size, readonly, mtime}.
+  - Limitations: No fetch or DOM. setInterval runs once only. No ES modules.
+  - JS context persists across tool calls within same turn (unless 'ephemeral' is true).
+    - Beware const name conflicts and variable pollution; use ephemeral mode if needed.
+  - The sandbox is running in global mode, root level await is not supported. you can use the \`async function fun(){/*await here*/}; fun();\` pattern. The return value will get resolved automatically.
+  - Output example: \`1 + 1\` → 2`,
     iconInput: '📜',
     renderInput: renderJsInput,
     inputSchema: {

@@ -147,6 +147,44 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
 }
 
+/** Entry with full path for directory listing */
+interface ListingEntry {
+  path: string;
+  size?: number;
+}
+
+/**
+ * List directory contents up to 2 levels deep
+ */
+async function listTwoLevels(projectId: string, basePath: string): Promise<ListingEntry[]> {
+  const entries: ListingEntry[] = [];
+
+  // Level 1: direct children
+  const level1 = await vfs.readDir(projectId, basePath);
+
+  for (const entry of level1) {
+    const entryPath = `${basePath}/${entry.name}`;
+    entries.push({ path: entryPath, size: entry.size });
+
+    // Level 2: children of directories
+    if (entry.type === 'dir') {
+      try {
+        const level2 = await vfs.readDir(projectId, entryPath);
+        for (const child of level2) {
+          entries.push({
+            path: `${entryPath}/${child.name}`,
+            size: child.size,
+          });
+        }
+      } catch {
+        // Directory might be empty or inaccessible, skip
+      }
+    }
+  }
+
+  return entries;
+}
+
 /**
  * Memory Tool instance for a specific project.
  * Uses VfsService for persistent storage with versioning.
@@ -173,7 +211,7 @@ export class MemoryToolInstance {
           };
         }
 
-        const entries = await vfs.readDir(this.projectId, MEMORIES_ROOT);
+        const entries = await listTwoLevels(this.projectId, MEMORIES_ROOT);
 
         if (entries.length === 0) {
           return {
@@ -184,7 +222,7 @@ export class MemoryToolInstance {
         const listing = entries
           .map(entry => {
             const size = entry.size !== undefined ? formatSize(entry.size) : '0';
-            return `${size}\t${MEMORIES_ROOT}/${entry.name}`;
+            return `${size}\t${entry.path}`;
           })
           .join('\n');
 
@@ -239,12 +277,12 @@ export class MemoryToolInstance {
           };
         }
         if (error.code === VfsErrorCode.NOT_A_FILE) {
-          // It's a directory, list its contents
-          const entries = await vfs.readDir(this.projectId, vfsPath);
+          // It's a directory, list its contents (2 levels deep)
+          const entries = await listTwoLevels(this.projectId, vfsPath);
           const listing = entries
             .map(entry => {
               const size = entry.size !== undefined ? formatSize(entry.size) : '0';
-              return `${size}\t${vfsPath}/${entry.name}`;
+              return `${size}\t${entry.path}`;
             })
             .join('\n');
 

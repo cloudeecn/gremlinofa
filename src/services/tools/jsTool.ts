@@ -236,9 +236,12 @@ function createJsClientSideTool(): ClientSideTool {
 Execute JavaScript in a QuickJS sandbox (ES2023). Returns console output and the final expression value. 
   - Usage: calculations, data transformation, string/JSON processing, algorithm implementation, file operations.
   - Available APIs: ES2023 core, setTimeout, TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await.
-  - fs API (async only, use with await): readFile, writeFile, exists, mkdir, readdir, unlink, rmdir, rename, stat.
+  - fs API (async only, use with await. works like NodeJS' fs module but no need to import): fs.readFile, fs.writeFile, fs.exists, fs.mkdir, fs.readdir, fs.unlink, fs.rmdir, fs.rename, fs.stat.
+    - readFile(path) returns ArrayBuffer (binary), readFile(path, 'utf-8') returns string.
+    - writeFile(path, data) accepts string or ArrayBuffer for binary files.
+    - stat() returns {isFile, isDirectory, size, readonly, mtime, isBinary, mime}.
     - Example: \`await fs.writeFile('/data/result.txt', JSON.stringify(data))\`
-    - Note: /memories is read-only. stat() returns {isFile, isDirectory, size, readonly, mtime}.
+    - Note: /memories is read-only.
   - Limitations: No fetch or DOM. setInterval runs once only. No ES modules.
   - JS context persists across tool calls within same turn (unless 'ephemeral' is true).
     - Beware const name conflicts and variable pollution; use ephemeral mode if needed.

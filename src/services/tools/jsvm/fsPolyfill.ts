@@ -63,6 +63,10 @@ function vfsErrorToErrno(error: VfsError, path: string): string {
     case VfsErrorCode.STRING_NOT_UNIQUE:
       // These are for str_replace, not used in fs operations
       return `EIO: ${error.message}`;
+    case VfsErrorCode.BINARY_FILE:
+      return `EINVAL: binary file, '${path}'`;
+    default:
+      return `EIO: ${error.message}`;
   }
 }
 
@@ -129,42 +133,92 @@ export class FsBridge {
   injectFs(): void {
     const fsObj = this.context.newObject();
 
-    // fs.readFile(path) -> Promise<string>
-    const readFileFn = this.context.newFunction('readFile', (pathHandle: QuickJSHandle) => {
-      const path = this.context.getString(pathHandle);
-      return this.queueOp(async () => {
-        try {
-          const content = await vfs.readFile(this.projectId, path);
-          return { ok: true, value: content };
-        } catch (error) {
-          if (error instanceof VfsError) {
-            return { ok: false, error: vfsErrorToErrno(error, path) };
+    // fs.readFile(path, encoding?) -> Promise<Buffer | string>
+    // Without encoding: returns Buffer (ArrayBuffer for binary, or UTF-8 encoded for text)
+    // With encoding: returns string (decodes binary as that encoding)
+    const readFileFn = this.context.newFunction(
+      'readFile',
+      (pathHandle: QuickJSHandle, encodingHandle?: QuickJSHandle) => {
+        const path = this.context.getString(pathHandle);
+        const encoding = encodingHandle ? this.context.getString(encodingHandle) : undefined;
+        return this.queueOp(async () => {
+          try {
+            const result = await vfs.readFileWithMeta(this.projectId, path);
+
+            if (result.isBinary) {
+              // Binary file
+              if (encoding) {
+                // With encoding, decode base64 and convert to string
+                // Most common case: 'utf-8' or 'utf8'
+                const buffer = result.buffer!;
+                const decoder = new TextDecoder(encoding);
+                return { ok: true, value: decoder.decode(buffer) };
+              }
+              // No encoding: return as ArrayBuffer (Node.js Buffer behavior)
+              return { ok: true, value: result.buffer!, isArrayBuffer: true };
+            } else {
+              // Text file - content is already string
+              if (encoding) {
+                return { ok: true, value: result.content };
+              }
+              // No encoding: return as Buffer (encode string to ArrayBuffer)
+              const encoder = new TextEncoder();
+              return {
+                ok: true,
+                value: encoder.encode(result.content).buffer,
+                isArrayBuffer: true,
+              };
+            }
+          } catch (error) {
+            if (error instanceof VfsError) {
+              return { ok: false, error: vfsErrorToErrno(error, path) };
+            }
+            throw error;
           }
-          throw error;
-        }
-      });
-    });
+        });
+      }
+    );
     this.context.setProp(fsObj, 'readFile', readFileFn);
     readFileFn.dispose();
 
     // fs.writeFile(path, data) -> Promise<void>
+    // data can be string or ArrayBuffer/Uint8Array
     const writeFileFn = this.context.newFunction(
       'writeFile',
       (pathHandle: QuickJSHandle, dataHandle: QuickJSHandle) => {
         const path = this.context.getString(pathHandle);
-        const data = this.context.getString(dataHandle);
+
+        // Try to get data as ArrayBuffer first, fall back to string
+        let data: string | ArrayBuffer;
+        try {
+          // Check if it's an ArrayBuffer by trying to get its byteLength
+          const byteLengthHandle = this.context.getProp(dataHandle, 'byteLength');
+          const byteLength = this.context.getNumber(byteLengthHandle);
+          byteLengthHandle.dispose();
+
+          if (typeof byteLength === 'number' && !isNaN(byteLength)) {
+            // It's an ArrayBuffer or TypedArray - get the underlying buffer
+            // getArrayBuffer returns { value: Uint8Array }, so we need to copy to ArrayBuffer
+            const uint8 = this.context.getArrayBuffer(dataHandle).value;
+            const buffer = new ArrayBuffer(uint8.byteLength);
+            new Uint8Array(buffer).set(uint8);
+            data = buffer;
+          } else {
+            data = this.context.getString(dataHandle);
+          }
+        } catch {
+          // Not an ArrayBuffer, treat as string
+          data = this.context.getString(dataHandle);
+        }
+
         return this.queueOp(async () => {
           // Check readonly
           if (isReadonly(path)) {
             return { ok: false, error: `EROFS: read-only file system, write '${path}'` };
           }
           try {
-            const fileExists = await vfs.isFile(this.projectId, path);
-            if (fileExists) {
-              await vfs.updateFile(this.projectId, path, data);
-            } else {
-              await vfs.createFile(this.projectId, path, data);
-            }
+            // Use vfs.writeFile which handles both string and ArrayBuffer
+            await vfs.writeFile(this.projectId, path, data);
             return { ok: true, value: undefined };
           } catch (error) {
             if (error instanceof VfsError) {
@@ -313,7 +367,7 @@ export class FsBridge {
     this.context.setProp(fsObj, 'rename', renameFn);
     renameFn.dispose();
 
-    // fs.stat(path) -> Promise<{isFile, isDirectory, size, readonly, mtime}>
+    // fs.stat(path) -> Promise<{isFile, isDirectory, size, readonly, mtime, isBinary, mime}>
     const statFn = this.context.newFunction('stat', (pathHandle: QuickJSHandle) => {
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
@@ -327,6 +381,8 @@ export class FsBridge {
               size: st.size,
               readonly: isReadonly(path),
               mtime: st.updatedAt,
+              isBinary: st.isBinary,
+              mime: st.mime,
             },
           };
         } catch (error) {
@@ -348,12 +404,22 @@ export class FsBridge {
 
   /**
    * Convert result object to QuickJS handle
+   * Handles isArrayBuffer flag for binary data returns
    */
-  resultToHandle(result: { ok: boolean; value?: unknown; error?: string }): {
+  resultToHandle(result: {
+    ok: boolean;
+    value?: unknown;
+    error?: string;
+    isArrayBuffer?: boolean;
+  }): {
     handle: QuickJSHandle;
     isError: boolean;
   } {
     if (result.ok) {
+      if (result.isArrayBuffer && result.value instanceof ArrayBuffer) {
+        // Return as ArrayBuffer for Node.js Buffer-like behavior
+        return { handle: this.context.newArrayBuffer(result.value), isError: false };
+      }
       return { handle: this.valueToHandle(result.value), isError: false };
     } else {
       return { handle: this.createError(result.error!), isError: true };
@@ -378,6 +444,18 @@ export class FsBridge {
     }
     if (typeof value === 'string') {
       return this.context.newString(value);
+    }
+    // Handle ArrayBuffer
+    if (value instanceof ArrayBuffer) {
+      return this.context.newArrayBuffer(value);
+    }
+    // Handle TypedArrays (Uint8Array, etc.)
+    if (ArrayBuffer.isView(value)) {
+      // Copy the relevant portion to a new ArrayBuffer
+      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      const buffer = new ArrayBuffer(bytes.length);
+      new Uint8Array(buffer).set(bytes);
+      return this.context.newArrayBuffer(buffer);
     }
     if (Array.isArray(value)) {
       const arr = this.context.newArray();

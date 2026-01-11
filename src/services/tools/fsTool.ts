@@ -9,7 +9,7 @@
 
 import type { ClientSideTool, ToolResult } from '../../types';
 import * as vfs from '../vfs/vfsService';
-import { VfsError, VfsErrorCode, normalizePath } from '../vfs/vfsService';
+import { VfsError, VfsErrorCode, normalizePath, base64ToBuffer } from '../vfs/vfsService';
 import { toolRegistry } from './clientSideTools';
 
 const MAX_LINE_COUNT = 999999;
@@ -206,9 +206,19 @@ export class FsToolInstance {
         };
       }
 
-      // File content
-      const content = await vfs.readFile(this.projectId, vfsPath);
-      const lines = content.split('\n');
+      // File content - use readFileWithMeta to handle binary files
+      const result = await vfs.readFileWithMeta(this.projectId, vfsPath);
+
+      // Binary files return as dataUrl
+      if (result.isBinary) {
+        const dataUrl = `data:${result.mime};base64,${result.content}`;
+        return {
+          content: `Binary file ${vfsPath} (${result.mime}):\n${dataUrl}`,
+        };
+      }
+
+      // Text file
+      const lines = result.content.split('\n');
 
       if (lines.length > MAX_LINE_COUNT) {
         return {
@@ -220,9 +230,9 @@ export class FsToolInstance {
       let numberedContent: string;
       if (viewRange) {
         const [start, end] = viewRange;
-        numberedContent = formatFileWithLineNumbers(content, start, end);
+        numberedContent = formatFileWithLineNumbers(result.content, start, end);
       } else {
-        numberedContent = formatFileWithLineNumbers(content);
+        numberedContent = formatFileWithLineNumbers(result.content);
       }
 
       return {
@@ -261,7 +271,20 @@ export class FsToolInstance {
     }
 
     try {
-      await vfs.createFile(this.projectId, vfsPath, fileText);
+      // Check for dataUrl format: data:<mime>;base64,<data>
+      const dataUrlMatch = fileText.match(/^data:([^;]+);base64,(.+)$/s);
+      if (dataUrlMatch) {
+        // Binary file via dataUrl
+        const base64Data = dataUrlMatch[2];
+        const buffer = base64ToBuffer(base64Data);
+        await vfs.writeFile(this.projectId, vfsPath, buffer);
+        return {
+          content: `Binary file created successfully at: ${vfsPath}`,
+        };
+      }
+
+      // Text file
+      await vfs.writeFile(this.projectId, vfsPath, fileText);
 
       return {
         content: `File created successfully at: ${vfsPath}`,
@@ -297,6 +320,15 @@ export class FsToolInstance {
     }
 
     try {
+      // Check if file is binary
+      const fileStat = await vfs.stat(this.projectId, vfsPath);
+      if (fileStat.isBinary) {
+        return {
+          content: `Error: Cannot use str_replace on binary file ${vfsPath}. Use create command with dataUrl to overwrite.`,
+          isError: true,
+        };
+      }
+
       const content = await vfs.readFile(this.projectId, vfsPath);
 
       const occurrences = countOccurrences(content, oldStr);
@@ -366,6 +398,15 @@ export class FsToolInstance {
     }
 
     try {
+      // Check if file is binary
+      const fileStat = await vfs.stat(this.projectId, vfsPath);
+      if (fileStat.isBinary) {
+        return {
+          content: `Error: Cannot use insert on binary file ${vfsPath}. Use create command with dataUrl to overwrite.`,
+          isError: true,
+        };
+      }
+
       const content = await vfs.readFile(this.projectId, vfsPath);
       const lines = content.split('\n');
       const nLines = lines.length;
@@ -598,7 +639,8 @@ function renderFsInput(input: Record<string, unknown>): string {
 export function createFsClientSideTool(projectId: string): ClientSideTool {
   return {
     name: 'filesystem',
-    description: `Access the project's virtual filesystem. Read/write files anywhere except /memories (readonly, managed by memory tool). Use for: storing code, data files, configuration, scripts.`,
+    description: `Access the project's virtual filesystem. Read/write files anywhere except /memories (readonly, managed by memory tool). Use for: storing code, data files, configuration, scripts.
+Binary file support: view returns dataUrl format for binary files, create accepts dataUrl format (data:<mime>;base64,<data>) to write binary files. str_replace and insert are blocked on binary files.`,
     iconInput: '📁',
     renderInput: renderFsInput,
     inputSchema: {

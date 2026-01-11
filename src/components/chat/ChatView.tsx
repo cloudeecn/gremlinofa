@@ -9,6 +9,7 @@ import { processImages } from '../../utils/imageProcessor';
 import { storage } from '../../services/storage';
 import type { MessageAttachment } from '../../types';
 import ModelSelector from '../project/ModelSelector';
+import Spinner from '../ui/Spinner';
 import ChatInput from './ChatInput';
 import MessageList from './MessageList';
 
@@ -36,6 +37,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [isRenamingChat, setIsRenamingChat] = useState(false);
   const [renameChatText, setRenameChatText] = useState('');
+  const [isSavingRename, setIsSavingRename] = useState(false);
 
   // Detect mobile (same breakpoint as sidebar: 768px) - responsive to window resize
   const isMobile = useIsMobile();
@@ -139,6 +141,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     parentModelId,
     streamingGroups,
     streamingLastEvent,
+    hasReceivedFirstChunk,
     sendMessage,
     editMessage,
     copyMessage,
@@ -258,8 +261,13 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
       return;
     }
 
-    await updateChatName(chatId, renameChatText.trim());
-    setIsRenamingChat(false);
+    setIsSavingRename(true);
+    try {
+      await updateChatName(chatId, renameChatText.trim());
+      setIsRenamingChat(false);
+    } finally {
+      setIsSavingRename(false);
+    }
   };
 
   const handleCancelRename = () => {
@@ -347,6 +355,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         onRemoveAttachment={handleRemoveAttachment}
         maxAttachments={10}
         isProcessing={isProcessingAttachments}
+        showSendSpinner={isLoading && !hasReceivedFirstChunk}
       />
 
       {/* Model Selector Modal */}
@@ -393,14 +402,17 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
             <div className="flex justify-end gap-3">
               <button
                 onClick={handleCancelRename}
-                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50"
+                disabled={isSavingRename}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSaveRename}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
+                disabled={isSavingRename}
+                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
               >
+                {isSavingRename && <Spinner size={14} colorClass="border-white" />}
                 Save
               </button>
             </div>

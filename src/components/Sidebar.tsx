@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
+import Spinner from './ui/Spinner';
 import { useApp } from '../hooks/useApp';
 import { useAlert } from '../hooks/useAlert';
 import type { Project } from '../types';
@@ -18,6 +19,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [devAvailable, setDevAvailable] = useState(false);
+  const [isSavingProject, setIsSavingProject] = useState(false);
 
   const baseUrl = import.meta.env.BASE_URL;
   const isDevMode = baseUrl.includes('/dev/');
@@ -41,39 +43,44 @@ export default function Sidebar({ onClose }: SidebarProps) {
     onClose?.();
   };
 
-  const handleCreateProject = async () => {
+  const handleCreateProject = useCallback(async () => {
     if (!newProjectName.trim()) {
       await showAlert('Error', 'Project name cannot be empty');
       return;
     }
 
-    const newProject: Project = {
-      id: generateUniqueId('project'),
-      name: newProjectName.trim(),
-      icon: '📁',
-      createdAt: new Date(),
-      lastUsedAt: new Date(),
-      systemPrompt: '',
-      preFillResponse: '',
-      apiDefinitionId: null, // User must configure
-      modelId: null, // User must configure
-      webSearchEnabled: false,
-      temperature: null, // Use API-level default
-      maxOutputTokens: 1536,
-      enableReasoning: false,
-      reasoningBudgetTokens: 1024,
-      // Message metadata defaults
-      sendMessageMetadata: false,
-      metadataTimestampMode: 'utc',
-      metadataIncludeContextWindow: false,
-      metadataIncludeCost: false,
-    };
+    setIsSavingProject(true);
+    try {
+      const newProject: Project = {
+        id: generateUniqueId('project'),
+        name: newProjectName.trim(),
+        icon: '📁',
+        createdAt: new Date(),
+        lastUsedAt: new Date(),
+        systemPrompt: '',
+        preFillResponse: '',
+        apiDefinitionId: null, // User must configure
+        modelId: null, // User must configure
+        webSearchEnabled: false,
+        temperature: null, // Use API-level default
+        maxOutputTokens: 1536,
+        enableReasoning: false,
+        reasoningBudgetTokens: 1024,
+        // Message metadata defaults
+        sendMessageMetadata: false,
+        metadataTimestampMode: 'utc',
+        metadataIncludeContextWindow: false,
+        metadataIncludeCost: false,
+      };
 
-    await saveProject(newProject);
-    setNewProjectName('');
-    setIsCreatingProject(false);
-    navigate(`/project/${newProject.id}`);
-  };
+      await saveProject(newProject);
+      setNewProjectName('');
+      setIsCreatingProject(false);
+      navigate(`/project/${newProject.id}`);
+    } finally {
+      setIsSavingProject(false);
+    }
+  }, [newProjectName, saveProject, navigate, showAlert]);
 
   return (
     <div className="flex h-full w-full flex-col bg-gray-900 text-white">
@@ -154,8 +161,10 @@ export default function Sidebar({ onClose }: SidebarProps) {
             </button>
             <button
               onClick={handleCreateProject}
-              className="flex-1 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+              disabled={isSavingProject}
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
             >
+              {isSavingProject && <Spinner size={14} colorClass="border-white" />}
               Create
             </button>
           </div>

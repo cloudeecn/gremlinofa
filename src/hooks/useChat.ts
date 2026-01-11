@@ -214,6 +214,8 @@ export interface UseChatReturn {
   chat: Chat | null;
   messages: Message<unknown>[];
   isLoading: boolean;
+  /** True once the first stream chunk has been received (reset when streaming ends) */
+  hasReceivedFirstChunk: boolean;
   tokenUsage: TokenUsage;
   /** Streaming content groups for rendering during streaming */
   streamingGroups: RenderingBlockGroup[];
@@ -241,6 +243,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   const [messages, setMessages] = useState<Message<unknown>[]>([]);
   const [apiDefinition, setApiDefinition] = useState<APIDefinition | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [hasReceivedFirstChunk, setHasReceivedFirstChunk] = useState(false);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({
     input: 0,
     output: 0,
@@ -596,6 +599,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     callbacks.onMessageAppended(streamingChatId, userMessage);
 
     setIsLoading(true);
+    setHasReceivedFirstChunk(false);
     callbacks.onStreamingStart(streamingChatId, 'Thinking...');
 
     const updateChat: Partial<Chat> = {};
@@ -685,8 +689,15 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
       // Manually iterate to get both chunks and final return value
       let streamNext = await stream.next();
+      let firstChunkNotified = false;
       while (!streamNext.done) {
         const chunk = streamNext.value;
+
+        // Notify UI on first chunk received
+        if (!firstChunkNotified) {
+          setHasReceivedFirstChunk(true);
+          firstChunkNotified = true;
+        }
 
         // Push chunk to assembler (only if still on same chat)
         if (chatId === streamingChatId && assemblerRef.current) {
@@ -1284,6 +1295,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     chat,
     messages,
     isLoading,
+    hasReceivedFirstChunk,
     tokenUsage,
     streamingGroups,
     streamingLastEvent,

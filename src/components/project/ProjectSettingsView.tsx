@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../../hooks/useApp';
 import { apiService } from '../../services/api/apiService';
@@ -6,6 +6,7 @@ import { useProject } from '../../hooks/useProject';
 import type { Project, APIType } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
 import { clearDraft } from '../../hooks/useDraftPersistence';
+import Spinner from '../ui/Spinner';
 import ModelSelector from './ModelSelector';
 import SystemPromptModal from './SystemPromptModal';
 import AnthropicReasoningConfig from './AnthropicReasoningConfig';
@@ -81,6 +82,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [selectedApiDefId, setSelectedApiDefId] = useState(project?.apiDefinitionId || null);
   const [selectedModelId, setSelectedModelId] = useState(project?.modelId || null);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Update form fields when project loads
   useEffect(() => {
@@ -137,39 +139,70 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     ? `${apiDef?.name || 'Unknown'} • ${selectedModelId}`
     : 'Select a model to get started';
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!project) return;
 
-    const updatedProject: Project = {
-      ...project,
-      apiDefinitionId: selectedApiDefId,
-      modelId: selectedModelId,
-      systemPrompt,
-      preFillResponse,
-      enableReasoning,
-      reasoningBudgetTokens: parseInt(reasoningBudgetTokens) || 1024,
-      thinkingKeepTurns: thinkingKeepTurns === '' ? undefined : parseInt(thinkingKeepTurns),
-      webSearchEnabled,
-      sendMessageMetadata,
-      metadataTimestampMode,
-      metadataIncludeModelName,
-      metadataIncludeContextWindow,
-      metadataIncludeCost,
-      metadataTemplate,
-      metadataNewContext,
-      memoryEnabled,
-      jsExecutionEnabled,
-      reasoningEffort,
-      reasoningSummary,
-      temperature: temperature === '' ? null : parseFloat(temperature),
-      maxOutputTokens: parseInt(maxOutputTokens) || 1536,
-      lastUsedAt: new Date(),
-    };
+    setIsSaving(true);
+    try {
+      const updatedProject: Project = {
+        ...project,
+        apiDefinitionId: selectedApiDefId,
+        modelId: selectedModelId,
+        systemPrompt,
+        preFillResponse,
+        enableReasoning,
+        reasoningBudgetTokens: parseInt(reasoningBudgetTokens) || 1024,
+        thinkingKeepTurns: thinkingKeepTurns === '' ? undefined : parseInt(thinkingKeepTurns),
+        webSearchEnabled,
+        sendMessageMetadata,
+        metadataTimestampMode,
+        metadataIncludeModelName,
+        metadataIncludeContextWindow,
+        metadataIncludeCost,
+        metadataTemplate,
+        metadataNewContext,
+        memoryEnabled,
+        jsExecutionEnabled,
+        reasoningEffort,
+        reasoningSummary,
+        temperature: temperature === '' ? null : parseFloat(temperature),
+        maxOutputTokens: parseInt(maxOutputTokens) || 1536,
+        lastUsedAt: new Date(),
+      };
 
-    await updateProject(updatedProject);
-    clearDraft('system-prompt-modal', projectId); // Clear draft when settings are saved
-    navigate(`/project/${projectId}`);
-  };
+      await updateProject(updatedProject);
+      clearDraft('system-prompt-modal', projectId); // Clear draft when settings are saved
+      navigate(`/project/${projectId}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    project,
+    selectedApiDefId,
+    selectedModelId,
+    systemPrompt,
+    preFillResponse,
+    enableReasoning,
+    reasoningBudgetTokens,
+    thinkingKeepTurns,
+    webSearchEnabled,
+    sendMessageMetadata,
+    metadataTimestampMode,
+    metadataIncludeModelName,
+    metadataIncludeContextWindow,
+    metadataIncludeCost,
+    metadataTemplate,
+    metadataNewContext,
+    memoryEnabled,
+    jsExecutionEnabled,
+    reasoningEffort,
+    reasoningSummary,
+    temperature,
+    maxOutputTokens,
+    updateProject,
+    projectId,
+    navigate,
+  ]);
 
   const handleCancel = () => {
     navigate(`/project/${projectId}`);
@@ -947,14 +980,17 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         <div className="flex gap-3 p-4">
           <button
             onClick={handleCancel}
-            className="flex-1 rounded-lg border border-gray-300 px-4 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+            disabled={isSaving}
+            className="flex-1 rounded-lg border border-gray-300 px-4 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="flex-1 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700"
+            disabled={isSaving}
+            className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
           >
+            {isSaving && <Spinner size={16} colorClass="border-white" />}
             Save
           </button>
         </div>

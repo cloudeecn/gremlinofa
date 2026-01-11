@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import Spinner from './ui/Spinner';
 import { useApp } from '../hooks/useApp';
 import { useAlert } from '../hooks/useAlert';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -28,6 +29,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [formApiKey, setFormApiKey] = useState('');
   const [formIsLocal, setFormIsLocal] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // WebGPU capability state
   const [webgpuCapabilities, setWebgpuCapabilities] = useState<WebGPUCapabilities | null>(null);
@@ -86,7 +88,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormIsLocal(false);
   };
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     // Validate name is always required
     if (!formName.trim()) {
       await showAlert('Error', 'Name is required');
@@ -99,35 +101,51 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
       return;
     }
 
-    const existingDef = editingId ? apiDefinitions.find(d => d.id === editingId) : null;
-    const hadNoApiKey = existingDef
-      ? !existingDef.apiKey || existingDef.apiKey.trim() === ''
-      : true;
-    const nowHasApiKey = formApiKey.trim() !== '';
+    setIsSaving(true);
+    try {
+      const existingDef = editingId ? apiDefinitions.find(d => d.id === editingId) : null;
+      const hadNoApiKey = existingDef
+        ? !existingDef.apiKey || existingDef.apiKey.trim() === ''
+        : true;
+      const nowHasApiKey = formApiKey.trim() !== '';
 
-    const def: APIDefinition = {
-      id: editingId || generateUniqueId(`api_${formApiType}`),
-      apiType: formApiType,
-      name: formName.trim(),
-      baseUrl: formBaseUrl.trim(),
-      apiKey: formApiKey.trim(),
-      isDefault: editingId ? apiDefinitions.find(d => d.id === editingId)?.isDefault : false,
-      isLocal: formIsLocal,
-      createdAt: editingId
-        ? apiDefinitions.find(d => d.id === editingId)?.createdAt || new Date()
-        : new Date(),
-      updatedAt: new Date(),
-    };
+      const def: APIDefinition = {
+        id: editingId || generateUniqueId(`api_${formApiType}`),
+        apiType: formApiType,
+        name: formName.trim(),
+        baseUrl: formBaseUrl.trim(),
+        apiKey: formApiKey.trim(),
+        isDefault: editingId ? apiDefinitions.find(d => d.id === editingId)?.isDefault : false,
+        isLocal: formIsLocal,
+        createdAt: editingId
+          ? apiDefinitions.find(d => d.id === editingId)?.createdAt || new Date()
+          : new Date(),
+        updatedAt: new Date(),
+      };
 
-    await saveAPIDefinition(def);
+      await saveAPIDefinition(def);
 
-    // Auto-refresh models if API key was just added
-    if (hadNoApiKey && nowHasApiKey) {
-      await refreshModels(def.id);
+      // Auto-refresh models if API key was just added
+      if (hadNoApiKey && nowHasApiKey) {
+        await refreshModels(def.id);
+      }
+
+      handleCancel();
+    } finally {
+      setIsSaving(false);
     }
-
-    handleCancel();
-  };
+  }, [
+    formName,
+    formApiType,
+    formIsLocal,
+    formApiKey,
+    editingId,
+    apiDefinitions,
+    formBaseUrl,
+    saveAPIDefinition,
+    refreshModels,
+    showAlert,
+  ]);
 
   const handleDelete = async (def: APIDefinition) => {
     if (def.isDefault) {
@@ -343,8 +361,10 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           </button>
                           <button
                             onClick={handleSave}
-                            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+                            disabled={isSaving}
+                            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
                           >
+                            {isSaving && <Spinner size={14} colorClass="border-white" />}
                             Save
                           </button>
                         </div>
@@ -461,8 +481,10 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                     </button>
                     <button
                       onClick={handleSave}
-                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+                      disabled={isSaving}
+                      className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
                     >
+                      {isSaving && <Spinner size={14} colorClass="border-white" />}
                       Add
                     </button>
                   </div>

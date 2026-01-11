@@ -52,4 +52,6 @@ export interface ChatInputProps {
   maxAttachments?: number;
   /** Whether image processing is in progress */
   isProcessing?: boolean;
+  /** Show spinner on send button (waiting for first stream chunk) */
+  showSendSpinner?: boolean;
 }

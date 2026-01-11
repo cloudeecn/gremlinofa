@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useIsMobile } from '../../hooks/useIsMobile';
+import Spinner from '../ui/Spinner';
 import type { ChatInputProps } from './types';
 
 export default function ChatInput({
@@ -12,6 +13,7 @@ export default function ChatInput({
   onRemoveAttachment,
   maxAttachments = 10,
   isProcessing = false,
+  showSendSpinner = false,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -188,11 +190,20 @@ export default function ChatInput({
           {/* Send Button */}
           <button
             onClick={onSend}
-            disabled={(!value.trim() && attachments.length === 0) || disabled || isProcessing}
+            disabled={
+              (!value.trim() && attachments.length === 0) ||
+              disabled ||
+              isProcessing ||
+              showSendSpinner
+            }
             className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
             title="Send message (Enter)"
           >
-            <span className="text-lg">➤</span>
+            {showSendSpinner ? (
+              <Spinner size={16} colorClass="border-white" />
+            ) : (
+              <span className="text-lg">➤</span>
+            )}
           </button>
         </div>
       </div>

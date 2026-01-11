@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import Spinner from '../ui/Spinner';
 import { useApp } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
 import type { MessageAttachment, Project } from '../../types';
@@ -436,8 +437,9 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
                 isCreatingChat ||
                 isProcessingAttachments
               }
-              className="flex-1 rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
             >
+              {isCreatingChat && <Spinner size={16} colorClass="border-white" />}
               {isCreatingChat ? 'Creating...' : isProcessingAttachments ? 'Processing...' : 'Send'}
             </button>
           </div>

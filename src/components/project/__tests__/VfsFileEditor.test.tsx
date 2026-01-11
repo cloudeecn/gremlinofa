@@ -123,14 +123,14 @@ describe('VfsFileEditor', () => {
       vi.useFakeTimers();
     });
 
-    it('shows "Saving..." text while saving', () => {
+    it('shows spinner while saving', () => {
       mockUpdateFile.mockImplementation(() => new Promise(() => {}));
 
       render(<VfsFileEditor {...defaultProps} />);
 
       fireEvent.click(screen.getByText('Save'));
 
-      expect(screen.getByText('Saving...')).toBeInTheDocument();
+      expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
     });
 
     it('disables buttons while saving', () => {
@@ -140,7 +140,9 @@ describe('VfsFileEditor', () => {
 
       fireEvent.click(screen.getByText('Save'));
 
-      expect(screen.getByText('Saving...')).toBeDisabled();
+      // Save button contains spinner + text, get button by role
+      const saveButton = screen.getByRole('button', { name: /save/i });
+      expect(saveButton).toBeDisabled();
       expect(screen.getByText('Cancel')).toBeDisabled();
     });
 

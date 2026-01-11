@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import {
   clearDraft,
@@ -40,6 +41,7 @@ export default function SystemPromptModal({
   const [systemPrompt, setSystemPrompt] = useState(() =>
     getInitialSystemPrompt(projectId, initialValue)
   );
+  const [isSaving, setIsSaving] = useState(false);
 
   // Draft persistence with difference detection
   const { hasDraftDifference } = useDraftPersistence({
@@ -51,10 +53,15 @@ export default function SystemPromptModal({
     initialDbValue: initialValue,
   });
 
-  const handleSave = useCallback(() => {
-    clearDraft('system-prompt-modal', projectId);
-    clearDraftDifference('system-prompt-modal', projectId);
-    onSave(systemPrompt);
+  const handleSave = useCallback(async () => {
+    setIsSaving(true);
+    try {
+      clearDraft('system-prompt-modal', projectId);
+      clearDraftDifference('system-prompt-modal', projectId);
+      await onSave(systemPrompt);
+    } finally {
+      setIsSaving(false);
+    }
   }, [systemPrompt, projectId, onSave]);
 
   const handleCancel = useCallback(() => {
@@ -110,14 +117,17 @@ export default function SystemPromptModal({
         <div className="flex gap-3 rounded-b-2xl border-t border-gray-200 bg-white p-4">
           <button
             onClick={handleCancel}
-            className="flex-1 rounded-lg border border-gray-300 px-4 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-50"
+            disabled={isSaving}
+            className="flex-1 rounded-lg border border-gray-300 px-4 py-3 font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="flex-1 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700"
+            disabled={isSaving}
+            className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
           >
+            {isSaving && <Spinner size={16} colorClass="border-white" />}
             Save
           </button>
         </div>

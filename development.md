@@ -854,16 +854,6 @@ Headers use `h-14` (56px) for content, but adding `safe-area-inset-top` as paddi
 
 **Input Font Size:** All `<input>` elements must use `text-base` (16px) or larger. iOS Safari auto-zooms the viewport when focusing inputs with font-size < 16px.
 
-**iOS Keyboard Handling:**
-
-iOS Safari/PWA has viewport bugs where the virtual keyboard doesn't properly resize the layout, causing touch targets to become misaligned with visual elements.
-
-- `useIOSKeyboard` hook tracks keyboard state via `visualViewport` API
-- Sets `--keyboard-offset` CSS variable on document root (0px when keyboard closed)
-- `ChatView` applies `paddingBottom: var(--keyboard-offset)` to compensate for iOS viewport issues
-- `ChatInput` calls `scrollIntoView()` on focus (with 100ms delay for keyboard animation)
-- No effect on desktop/Android (offset stays 0px when viewport behaves correctly)
-
 ## Known Issues 🐛
 
 ### Anthropic Citation Document Index

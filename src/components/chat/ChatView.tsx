@@ -2,7 +2,6 @@ import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChat } from '../../hooks/useChat';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import { useIOSKeyboard } from '../../hooks/useIOSKeyboard';
 import { showAlert, showDestructiveConfirm } from '../../utils/alerts';
 import { formatTokens, stripMetadata } from '../../utils/messageFormatters';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
@@ -40,9 +39,6 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
   // Detect mobile (same breakpoint as sidebar: 768px) - responsive to window resize
   const isMobile = useIsMobile();
-
-  // iOS keyboard viewport compensation - sets --keyboard-offset CSS variable
-  useIOSKeyboard();
 
   // Memoize callbacks to prevent unnecessary re-renders
   const handleMessagesLoaded = React.useCallback(
@@ -282,10 +278,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   if (!chat) return null;
 
   return (
-    <div
-      className="flex h-full flex-col bg-white"
-      style={{ paddingBottom: 'var(--keyboard-offset, 0px)' }}
-    >
+    <div className="flex h-full flex-col bg-white">
       {/* Header with safe area */}
       <div className="border-b border-gray-200 bg-white">
         <div className="safe-area-inset-top" />

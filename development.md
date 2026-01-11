@@ -332,6 +332,14 @@ public/             # Static assets and PWA icons
   4. Save intermediate messages to storage + update UI state
   5. Send continuation request
   6. Loop until `stop_reason !== 'tool_use'` or max iterations (10)
+- **Unresolved tool call recovery**: When a response ends with unresolved `tool_use` blocks (e.g., token limit reached mid-agentic-loop):
+  1. `unresolvedToolCalls` detected via `getUnresolvedToolCalls()` in `useChat.ts`
+  2. `PendingToolCallsBanner` shows in MessageList with Stop/Continue toggle (default: Stop)
+  3. User can optionally type a message before sending
+  4. On send: `resolvePendingToolCalls(mode, userMessage?)` creates tool_result blocks
+     - **Stop**: Returns error "Token limit reached, ask user to continue"
+     - **Continue**: Executes tools, optionally sends continuation to API
+  5. ChatInput send button enabled even with empty input when pending tools exist
 - Intermediate messages persisted with proper `renderingContent`:
   - Assistant messages with `tool_use` render in `BackstageView` as expandable "Calling [tool_name]" blocks
   - User messages with `tool_result` render via `ToolResultBubble` (detected by `fullContent` containing `tool_result` blocks)
@@ -379,7 +387,7 @@ public/             # Static assets and PWA icons
 MessageList.tsx                    # Container with virtual scrolling
 ├── MessageBubble.tsx              # Container with virtual scrolling logic, delegates rendering
 │   ├── UserMessageBubble.tsx      # User messages (blue bubble, attachments, edit/fork/copy/dump JSON)
-│   ├── ToolResultBubble.tsx       # Tool result messages (role: USER with tool_result blocks)
+│   ├── ToolResultBubble.tsx       # Tool result messages (role: USER with tool_result blocks, delete action)
 │   ├── AssistantMessageBubble.tsx # Assistant messages with renderingContent (new format)
 │   │   ├── BackstageView          # Collapsible thinking/search/fetch/tool_use/tool_result
 │   │   ├── ErrorBlockView         # Collapsible error with stack trace

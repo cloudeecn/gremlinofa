@@ -277,6 +277,8 @@ export interface VfsNode {
   createdAt: number; // Unix timestamp (ms)
   updatedAt: number; // Unix timestamp (ms)
   children?: Record<string, VfsNode>; // only for type: 'dir'
+  isBinary?: boolean; // true for binary files, false for text, undefined for legacy
+  mime?: string; // MIME type (text/plain for text, detected or application/octet-stream for binary)
 }
 
 export interface VfsOrphan {

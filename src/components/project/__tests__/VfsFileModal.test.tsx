@@ -4,6 +4,7 @@ import VfsFileModal from '../VfsFileModal';
 
 // Mock vfsService
 const mockReadFile = vi.fn();
+const mockReadFileWithMeta = vi.fn();
 const mockGetFileMeta = vi.fn();
 const mockDeleteFile = vi.fn();
 const mockGetFileId = vi.fn();
@@ -13,6 +14,7 @@ const mockUpdateFile = vi.fn();
 
 vi.mock('../../../services/vfs/vfsService', () => ({
   readFile: (...args: unknown[]) => mockReadFile(...args),
+  readFileWithMeta: (...args: unknown[]) => mockReadFileWithMeta(...args),
   getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),
   deleteFile: (...args: unknown[]) => mockDeleteFile(...args),
   getFileId: (...args: unknown[]) => mockGetFileId(...args),
@@ -45,6 +47,11 @@ describe('VfsFileModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockReadFile.mockResolvedValue('File content here');
+    mockReadFileWithMeta.mockResolvedValue({
+      content: 'File content here',
+      isBinary: false,
+      mime: 'text/plain',
+    });
     mockGetFileMeta.mockResolvedValue({
       version: 3,
       createdAt: Date.now() - 86400000,
@@ -277,9 +284,19 @@ describe('VfsFileModal', () => {
 
   describe('Content Refresh', () => {
     it('refreshes content after save', async () => {
-      mockReadFile.mockResolvedValueOnce('Original content');
+      // VfsFileViewer uses readFileWithMeta, VfsFileEditor uses readFile
+      mockReadFileWithMeta.mockResolvedValueOnce({
+        content: 'Original content',
+        isBinary: false,
+        mime: 'text/plain',
+      });
+      mockReadFile.mockResolvedValueOnce('Original content'); // For editor
       mockUpdateFile.mockResolvedValue(undefined);
-      mockReadFile.mockResolvedValueOnce('Updated content');
+      mockReadFileWithMeta.mockResolvedValueOnce({
+        content: 'Updated content',
+        isBinary: false,
+        mime: 'text/plain',
+      });
 
       render(<VfsFileModal {...defaultProps} />);
 
@@ -299,7 +316,7 @@ describe('VfsFileModal', () => {
 
       await waitFor(() => {
         // View mode should reload content
-        expect(mockReadFile).toHaveBeenCalledTimes(3); // Initial + edit load + refresh
+        expect(mockReadFileWithMeta).toHaveBeenCalledTimes(2); // Initial + refresh
       });
     });
   });

@@ -25,6 +25,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   // This prevents performance issues with large HDR images
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [isProcessingAttachments, setIsProcessingAttachments] = useState(false);
+  // Mode for resolving pending tool calls (stop = error, continue = execute)
+  const [pendingToolMode, setPendingToolMode] = useState<'stop' | 'continue'>('stop');
 
   // Draft persistence for chat input
   useDraftPersistence({
@@ -142,19 +144,24 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     streamingGroups,
     streamingLastEvent,
     hasReceivedFirstChunk,
+    unresolvedToolCalls,
     sendMessage,
     editMessage,
     copyMessage,
     forkChat,
     overrideModel,
     updateChatName,
+    resolvePendingToolCalls,
   } = useChat({
     chatId: chatId,
     callbacks,
   });
 
   // Handle message actions
-  const handleMessageAction = async (action: 'copy' | 'fork' | 'edit', messageId: string) => {
+  const handleMessageAction = async (
+    action: 'copy' | 'fork' | 'edit' | 'delete',
+    messageId: string
+  ) => {
     if (action === 'copy') {
       await copyMessage(chatId, messageId);
     } else if (action === 'fork') {
@@ -192,6 +199,17 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         // Set attachments in state (already processed, no conversion needed)
         setAttachments(loadedAttachments);
       }
+    } else if (action === 'delete') {
+      // Show confirmation dialog
+      const confirmed = await showDestructiveConfirm(
+        'Delete Message',
+        'This will delete this message and all messages after it.',
+        'Delete'
+      );
+      if (confirmed) {
+        // Delete the message and all after it (without populating input)
+        await editMessage(chatId, messageId, '');
+      }
     }
   };
 
@@ -224,7 +242,15 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
   const handleSendMessage = async () => {
     const messageText = inputMessage.trim();
-    if ((!messageText && attachments.length === 0) || isLoading || isProcessingAttachments) return;
+    const hasPendingTools = unresolvedToolCalls && unresolvedToolCalls.length > 0;
+
+    // Allow send with empty input if there are pending tool calls
+    if (
+      (!messageText && attachments.length === 0 && !hasPendingTools) ||
+      isLoading ||
+      isProcessingAttachments
+    )
+      return;
 
     // Validate API configuration
     if (!currentApiDefId || !currentModelId) {
@@ -242,7 +268,19 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     setAttachments([]); // Clear attachments
     clearDraft('chatview', chatId); // Clear draft when message is sent
 
-    await sendMessage(chatId, messageText, processedAttachments);
+    // Handle pending tool calls resolution
+    if (hasPendingTools) {
+      // Resolve pending tool calls with optional user message
+      await resolvePendingToolCalls(
+        pendingToolMode,
+        messageText || undefined,
+        processedAttachments
+      );
+      // Reset mode after resolution
+      setPendingToolMode('stop');
+    } else {
+      await sendMessage(chatId, messageText, processedAttachments);
+    }
   };
 
   const handleModelSelect = async (apiDefId: string | null, modelId: string | null) => {
@@ -342,6 +380,9 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         streamingLastEvent={streamingLastEvent}
         currentApiDefId={currentApiDefId}
         currentModelId={currentModelId}
+        pendingToolCount={unresolvedToolCalls?.length}
+        pendingToolMode={pendingToolMode}
+        onPendingToolModeChange={setPendingToolMode}
       />
 
       {/* Chat Input */}
@@ -356,6 +397,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         maxAttachments={10}
         isProcessing={isProcessingAttachments}
         showSendSpinner={isLoading && !hasReceivedFirstChunk}
+        hasPendingToolCalls={!!unresolvedToolCalls && unresolvedToolCalls.length > 0}
       />
 
       {/* Model Selector Modal */}

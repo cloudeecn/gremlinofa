@@ -14,6 +14,7 @@ export default function ChatInput({
   maxAttachments = 10,
   isProcessing = false,
   showSendSpinner = false,
+  hasPendingToolCalls = false,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -191,13 +192,13 @@ export default function ChatInput({
           <button
             onClick={onSend}
             disabled={
-              (!value.trim() && attachments.length === 0) ||
+              (!value.trim() && attachments.length === 0 && !hasPendingToolCalls) ||
               disabled ||
               isProcessing ||
               showSendSpinner
             }
             className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
-            title="Send message (Enter)"
+            title={hasPendingToolCalls ? 'Resolve pending tool calls' : 'Send message (Enter)'}
           >
             {showSendSpinner ? (
               <Spinner size={16} colorClass="border-white" />

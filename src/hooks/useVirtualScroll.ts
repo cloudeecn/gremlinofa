@@ -14,9 +14,9 @@ interface UseVirtualScrollReturn {
  * Hook for managing virtual scrolling of messages.
  * Tracks which messages are visible (within viewport + buffer) and caches their heights.
  *
- * @param bufferScreens - Number of screen heights to buffer above/below viewport (default: 2)
+ * @param bufferScreens - Number of screen heights to buffer above/below viewport (default: 5)
  */
-export function useVirtualScroll(bufferScreens: number = 2): UseVirtualScrollReturn {
+export function useVirtualScroll(bufferScreens: number = 5): UseVirtualScrollReturn {
   const [visibleMessageIds, setVisibleMessageIds] = useState<Set<string>>(new Set());
   const observerRef = useRef<IntersectionObserver | null>(null);
   const elementMapRef = useRef<Map<string, HTMLElement>>(new Map());
@@ -58,7 +58,21 @@ export function useVirtualScroll(bufferScreens: number = 2): UseVirtualScrollRet
         entries.forEach(entry => {
           const messageId = entry.target.getAttribute('data-message-id');
           if (messageId) {
-            pendingUpdatesRef.current.set(messageId, entry.isIntersecting);
+            const isIntersecting = entry.isIntersecting;
+            pendingUpdatesRef.current.set(messageId, isIntersecting);
+
+            // Debug logging to verify buffer behavior
+            if (isIntersecting) {
+              console.debug(
+                `[VirtualScroll] Message ${messageId} ENTERING buffer zone`,
+                entry.boundingClientRect
+              );
+            } else {
+              console.debug(
+                `[VirtualScroll] Message ${messageId} LEAVING buffer zone`,
+                entry.boundingClientRect
+              );
+            }
           }
         });
       },

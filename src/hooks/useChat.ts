@@ -1,17 +1,18 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import Mustache from 'mustache';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
-import { StreamingContentAssembler } from '../services/streaming/StreamingContentAssembler';
-import { executeClientSideTool, toolRegistry } from '../services/tools/clientSideTools';
+import { executeClientSideTool } from '../services/tools/clientSideTools';
 import { initMemoryTool, disposeMemoryTool } from '../services/tools/memoryTool';
 import { initFsTool, disposeFsTool } from '../services/tools/fsTool';
+import { initJsTool, disposeJsTool } from '../services/tools/jsTool';
 import {
-  initJsTool,
-  disposeJsTool,
-  createJsSession,
-  disposeJsSession,
-} from '../services/tools/jsTool';
+  runAgenticLoop,
+  createToolResultRenderBlock,
+  type AgenticLoopContext,
+  type AgenticLoopCallbacks,
+  type PendingMessage,
+} from './agenticLoop';
 import type {
   APIDefinition,
   Chat,
@@ -28,56 +29,6 @@ import type { ToolResultRenderBlock, ToolUseRenderBlock } from '../types/content
 import { MessageRole } from '../types';
 import { generateUniqueId } from '../utils/idGenerator';
 import { showAlert } from '../utils/alerts';
-
-// Maximum agentic loop iterations to prevent infinite loops
-const MAX_TOOL_ITERATIONS = 10;
-
-/**
- * Post-process rendering content to populate rendered fields on tool blocks.
- * This ensures the rendered content is persisted with the message, so it displays
- * correctly even if the tool is later disabled.
- */
-function populateToolRenderFields(groups: RenderingBlockGroup[]): void {
-  for (const group of groups) {
-    for (const block of group.blocks) {
-      if (block.type === 'tool_use') {
-        const toolUseBlock = block as ToolUseRenderBlock;
-        const tool = toolRegistry.get(toolUseBlock.name);
-        if (tool) {
-          const hasInput = Object.keys(toolUseBlock.input).length > 0;
-          toolUseBlock.icon = tool.iconInput ?? '🔧';
-          toolUseBlock.renderedInput = hasInput
-            ? (tool.renderInput?.(toolUseBlock.input) ??
-              JSON.stringify(toolUseBlock.input, null, 2))
-            : '';
-        }
-      }
-    }
-  }
-}
-
-/**
- * Create a tool_result render block with pre-rendered display fields.
- */
-function createToolResultRenderBlock(
-  toolUseId: string,
-  toolName: string,
-  content: string,
-  isError?: boolean
-): ToolResultRenderBlock {
-  const tool = toolRegistry.get(toolName);
-  const defaultIcon = isError ? '❌' : '✅';
-
-  return {
-    type: 'tool_result',
-    tool_use_id: toolUseId,
-    content,
-    is_error: isError,
-    name: toolName,
-    icon: tool?.iconOutput ?? defaultIcon,
-    renderedContent: tool?.renderOutput?.(content, isError) ?? content,
-  };
-}
 
 /** Format timestamp for local timezone */
 function formatTimestampLocal(): string {
@@ -195,6 +146,25 @@ function generateMessageWithMetadata(
  */
 function stripMetadata(content: string): string {
   return content.replace(/^<metadata>.*?<\/metadata>\s*/s, '');
+}
+
+/**
+ * Calculate context window usage from message metadata.
+ */
+function getContextWindowUsage(metadata?: {
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+}): number {
+  return (
+    (metadata?.inputTokens || 0) +
+    (metadata?.outputTokens || 0) +
+    (metadata?.cacheCreationTokens || 0) +
+    (metadata?.cacheReadTokens || 0) -
+    (metadata?.reasoningTokens || 0)
+  );
 }
 
 /**
@@ -373,21 +343,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   const [apiDefinition, setApiDefinition] = useState<APIDefinition | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [hasReceivedFirstChunk, setHasReceivedFirstChunk] = useState(false);
-  const [tokenUsage, setTokenUsage] = useState<TokenUsage>({
-    input: 0,
-    output: 0,
-    cost: 0,
-  });
 
   // Streaming state for UI rendering
   const [streamingGroups, setStreamingGroups] = useState<RenderingBlockGroup[]>([]);
   const [streamingLastEvent, setStreamingLastEvent] = useState<string>('');
 
-  // Streaming assembler ref (created per API call)
-  const assemblerRef = useRef<StreamingContentAssembler | null>(null);
-
   // Track if we've resolved pending state to avoid double resolution
-  const pendingStateResolved = useRef(false);
+  const [pendingStateResolved, setPendingStateResolved] = useState(false);
 
   // Verification helper to ensure chatId matches
   const verifyChatId = (incomingChatId: string, methodName: string): boolean => {
@@ -408,7 +370,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       console.debug('[useChat] Starting load sequence');
 
       // Reset pending state flag when chat changes
-      pendingStateResolved.current = false;
+      setPendingStateResolved(false);
 
       // 1. Load chat first
       let loadedChat = await storage.getChat(chatId);
@@ -566,9 +528,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       }
 
       // 5. Resolve pending state (if any)
-      if (loadedChat.pendingState && !pendingStateResolved.current) {
+      if (loadedChat.pendingState && !pendingStateResolved) {
         console.debug('[useChat] Resolving pending state, type:', loadedChat.pendingState.type);
-        pendingStateResolved.current = true;
+        setPendingStateResolved(true);
 
         // Clear pending state first
         const updatedChat: Chat = {
@@ -588,18 +550,99 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         if (loadedChat.pendingState.type === 'userMessage' && loadedApiDef) {
           // Send message to API with attachments if present
           if ((messageText || attachments?.length) && !isCancelled) {
-            console.debug('[useChat] Calling sendMessageToAPI for pending message');
+            console.debug('[useChat] Running agentic loop for pending message');
             if (!messageText) {
               updatedChat.name = 'Unnamed Image';
+              await storage.saveChat(updatedChat);
             }
-            sendMessageToAPI(
-              messageText,
-              loadedMessages,
-              updatedChat,
-              loadedProject,
-              loadedApiDef,
-              attachments
-            );
+
+            const effectiveModelId = updatedChat.modelId ?? loadedProject.modelId;
+            if (effectiveModelId) {
+              // Generate message with metadata/template applied
+              const firstMessageTimestamp =
+                loadedMessages.length > 0 ? loadedMessages[0].timestamp : undefined;
+              const messageWithMetadata = generateMessageWithMetadata(
+                messageText,
+                loadedProject,
+                updatedChat,
+                effectiveModelId,
+                firstMessageTimestamp
+              );
+
+              // Extract attachment IDs if any
+              const attachmentIds = attachments?.map(att => att.id) || [];
+
+              // Create user message
+              const userMessage: Message<string> = {
+                id: generateUniqueId('msg_user'),
+                role: MessageRole.USER,
+                content: {
+                  type: 'text',
+                  content: messageWithMetadata,
+                  renderingContent: [
+                    { category: 'text', blocks: [{ type: 'text', text: messageText }] },
+                  ],
+                  ...(attachmentIds.length > 0 && {
+                    attachmentIds,
+                    originalAttachmentCount: attachmentIds.length,
+                  }),
+                },
+                timestamp: new Date(),
+              };
+
+              // Save attachments if any
+              if (attachments && attachments.length > 0) {
+                for (const attachment of attachments) {
+                  await storage.saveAttachment(userMessage.id, attachment);
+                }
+              }
+
+              // Build context for agentic loop using loaded variables (not React state)
+              const context: AgenticLoopContext = {
+                chatId,
+                chat: updatedChat,
+                project: loadedProject,
+                apiDef: loadedApiDef,
+                modelId: effectiveModelId,
+                currentMessages: loadedMessages,
+              };
+
+              // Build callbacks that update React state
+              const loopCallbacks: AgenticLoopCallbacks = {
+                onMessageSaved: (msg: Message<unknown>) => {
+                  setMessages(prev => [...prev, msg]);
+                  callbacks.onMessageAppended(chatId, msg);
+                },
+                onStreamingStart: (text: string) => {
+                  setIsLoading(true);
+                  setHasReceivedFirstChunk(false);
+                  callbacks.onStreamingStart(chatId, text);
+                },
+                onStreamingUpdate: (groups: RenderingBlockGroup[], lastEvent: string) => {
+                  setStreamingGroups(groups);
+                  setStreamingLastEvent(lastEvent);
+                },
+                onStreamingEnd: () => {
+                  setIsLoading(false);
+                  setStreamingGroups([]);
+                  setStreamingLastEvent('');
+                  callbacks.onStreamingEnd(chatId);
+                },
+                onFirstChunk: () => setHasReceivedFirstChunk(true),
+                onChatUpdated: (chat: Chat) => {
+                  setChat(chat);
+                  callbacks.onChatMetadataChanged?.(chatId, chat);
+                },
+                onProjectUpdated: (project: Project) => {
+                  setProject(project);
+                },
+                onError: (error: Error) => console.error('[useChat] Loop error:', error),
+              };
+
+              // Run the agentic loop with the user message
+              const pendingMessage: PendingMessage = { type: 'user', message: userMessage };
+              runAgenticLoop(context, [pendingMessage], loopCallbacks);
+            }
           }
         } else if (loadedChat.pendingState.type === 'forkMessage') {
           // Just populate the input box, don't send
@@ -620,12 +663,21 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     };
   }, [chatId, callbacks]);
 
-  // Calculate token usage when messages change
-  useEffect(() => {
-    if (messages.length > 0 && chat) {
-      calculateTotalTokens();
+  // Token usage derived from chat-level totals
+  const tokenUsage: TokenUsage = useMemo(() => {
+    if (!chat) {
+      return { input: 0, output: 0, cost: 0 };
     }
-  }, [messages, chat]);
+    return {
+      input: chat.totalInputTokens || 0,
+      output: chat.totalOutputTokens || 0,
+      reasoning: (chat.totalReasoningTokens || 0) > 0 ? chat.totalReasoningTokens : undefined,
+      cacheCreation:
+        (chat.totalCacheCreationTokens || 0) > 0 ? chat.totalCacheCreationTokens : undefined,
+      cacheRead: (chat.totalCacheReadTokens || 0) > 0 ? chat.totalCacheReadTokens : undefined,
+      cost: chat.totalCost || 0,
+    };
+  }, [chat]);
 
   // Cleanup memory tool when project changes or unmounts
   useEffect(() => {
@@ -675,36 +727,67 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     }
   }, [chat?.apiDefinitionId, project?.apiDefinitionId, apiDefinition?.id]);
 
-  const sendMessageToAPI = async (
-    messageText: string,
-    currentMessages: Message<unknown>[],
-    currentChat: Chat,
-    currentProject: Project,
-    currentApiDef: APIDefinition,
+  /**
+   * Build agentic loop callbacks that update React state.
+   * The loop handles storage saves; callbacks are pure state setters.
+   */
+  const buildLoopCallbacks = useCallback(
+    (): AgenticLoopCallbacks => ({
+      onMessageSaved: (msg: Message<unknown>) => {
+        setMessages(prev => [...prev, msg]);
+        callbacks.onMessageAppended(chatId, msg);
+      },
+      onStreamingStart: (text: string) => {
+        setIsLoading(true);
+        setHasReceivedFirstChunk(false);
+        callbacks.onStreamingStart(chatId, text);
+      },
+      onStreamingUpdate: (groups: RenderingBlockGroup[], lastEvent: string) => {
+        setStreamingGroups(groups);
+        setStreamingLastEvent(lastEvent);
+      },
+      onStreamingEnd: () => {
+        setIsLoading(false);
+        setStreamingGroups([]);
+        setStreamingLastEvent('');
+        callbacks.onStreamingEnd(chatId);
+      },
+      onFirstChunk: () => setHasReceivedFirstChunk(true),
+      onChatUpdated: (updatedChat: Chat) => {
+        setChat(updatedChat);
+        callbacks.onChatMetadataChanged?.(chatId, updatedChat);
+      },
+      onProjectUpdated: (updatedProject: Project) => {
+        setProject(updatedProject);
+      },
+      onError: (error: Error) => console.error('[useChat] Loop error:', error),
+    }),
+    [chatId, callbacks]
+  );
+
+  const sendMessage = async (
+    incomingChatId: string,
+    content: string,
     attachments?: MessageAttachment[]
   ) => {
-    console.debug('[useChat] sendMessageToAPI called');
+    if (!verifyChatId(incomingChatId, 'sendMessage')) return;
 
-    const streamingChatId = currentChat.id;
-    const effectiveApiDefId = currentChat.apiDefinitionId ?? currentProject.apiDefinitionId;
-    const effectiveModelId = currentChat.modelId ?? currentProject.modelId;
+    const messageText = content.trim();
+    // Allow sending if there's text OR attachments
+    if ((!messageText && !attachments?.length) || !chat || !project || !apiDefinition) return;
 
-    if (!effectiveApiDefId || !effectiveModelId) {
-      console.debug('[useChat] Missing API/model configuration');
-      showAlert(
-        'Configuration Required',
-        'Please configure an API and model for this chat or project.'
-      );
+    const effectiveModelId = chat.modelId ?? project.modelId;
+    if (!effectiveModelId) {
+      showAlert('Configuration Required', 'Please configure a model for this chat or project.');
       return;
     }
 
     // Generate message with metadata/template applied
-    const firstMessageTimestamp =
-      currentMessages.length > 0 ? currentMessages[0].timestamp : undefined;
+    const firstMessageTimestamp = messages.length > 0 ? messages[0].timestamp : undefined;
     const messageWithMetadata = generateMessageWithMetadata(
       messageText,
-      currentProject,
-      currentChat,
+      project,
+      chat,
       effectiveModelId,
       firstMessageTimestamp
     );
@@ -712,7 +795,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     // Extract attachment IDs if any
     const attachmentIds = attachments?.map(att => att.id) || [];
 
-    // Create and save user message
+    // Create user message
     const userMessage: Message<string> = {
       id: generateUniqueId('msg_user'),
       role: MessageRole.USER,
@@ -728,9 +811,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       timestamp: new Date(),
     };
 
-    await storage.saveMessage(streamingChatId, userMessage);
-    console.debug('[useChat] User message saved');
-
     // Save attachments if any
     if (attachments && attachments.length > 0) {
       console.debug(
@@ -739,603 +819,21 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       for (const attachment of attachments) {
         await storage.saveAttachment(userMessage.id, attachment);
       }
-      console.debug('[useChat] All attachments saved');
     }
-    setMessages(prev => [...prev, userMessage]);
-    callbacks.onMessageAppended(streamingChatId, userMessage);
 
-    setIsLoading(true);
-    setHasReceivedFirstChunk(false);
-    callbacks.onStreamingStart(streamingChatId, 'Thinking...');
-
-    const updateChat: Partial<Chat> = {};
-    try {
-      // Load attachments for all user messages that have them
-      // Check for missing attachments and prepend system note if any are missing
-      const messagesWithAttachments = await Promise.all(
-        [...currentMessages, userMessage].map(async msg => {
-          if (
-            msg.role === MessageRole.USER &&
-            (msg.content.attachmentIds?.length || msg.content.originalAttachmentCount)
-          ) {
-            const attachments = await storage.getAttachments(msg.id);
-            const loadedIds = new Set(attachments.map(att => att.id));
-
-            // Use originalAttachmentCount if available (accurate even after attachment deletion)
-            // Fall back to attachmentIds.length for backward compatibility with old messages
-            const originalCount =
-              msg.content.originalAttachmentCount ?? msg.content.attachmentIds?.length ?? 0;
-            const currentCount = attachments.length;
-            const missingCount = originalCount - currentCount;
-
-            if (missingCount > 0) {
-              // Prepend system note about missing attachments
-              const systemNote = `<system-note>${missingCount} attachment(s) removed to save space.</system-note>\n\n`;
-              return {
-                ...msg,
-                content: {
-                  ...msg.content,
-                  content: systemNote + msg.content.content,
-                  // Filter attachmentIds to only include found attachments for the API call
-                  attachmentIds: (msg.content.attachmentIds ?? []).filter(id => loadedIds.has(id)),
-                },
-                attachments,
-              };
-            }
-
-            return { ...msg, attachments };
-          }
-          return msg;
-        })
-      );
-
-      // Build enabled tools list from project settings
-      const enabledTools: string[] = [];
-      if (currentProject.memoryEnabled) {
-        enabledTools.push('memory');
-      }
-      if (currentProject.jsExecutionEnabled) {
-        enabledTools.push('javascript');
-      }
-      if (currentProject.fsToolEnabled) {
-        enabledTools.push('filesystem');
-      }
-      // Note: ping tool is alwaysEnabled, no need to add explicitly
-
-      // Build combined system prompt: project prompt + tool prompts (if not using apiOverrides)
-      const toolSystemPrompts = toolRegistry.getSystemPrompts(currentApiDef.apiType, enabledTools);
-      const combinedSystemPrompt = [currentProject.systemPrompt, ...toolSystemPrompts]
-        .filter(Boolean)
-        .join('\n\n');
-
-      // Apply metadataNewContext: if enabled, only send current user message (ignore history)
-      const messagesToSend =
-        currentProject.sendMessageMetadata === 'template' && currentProject.metadataNewContext
-          ? [messagesWithAttachments[messagesWithAttachments.length - 1]] // Only the new user message
-          : messagesWithAttachments;
-
-      console.debug('[useChat] Starting API stream');
-      const stream = apiService.sendMessageStream(messagesToSend, effectiveModelId, currentApiDef, {
-        temperature: currentProject.temperature ?? undefined,
-        maxTokens: currentProject.maxOutputTokens,
-        enableReasoning: currentProject.enableReasoning,
-        reasoningBudgetTokens: currentProject.reasoningBudgetTokens,
-        thinkingKeepTurns: currentProject.thinkingKeepTurns,
-        reasoningEffort: currentProject.reasoningEffort,
-        reasoningSummary: currentProject.reasoningSummary,
-        systemPrompt: combinedSystemPrompt || undefined,
-        preFillResponse: currentProject.preFillResponse,
-        webSearchEnabled: currentProject.webSearchEnabled,
-        enabledTools,
-      });
-
-      let isFirstChunk = true;
-
-      // Create new assembler for this streaming session
-      assemblerRef.current = new StreamingContentAssembler();
-      setStreamingGroups([]);
-      setStreamingLastEvent('');
-
-      // Manually iterate to get both chunks and final return value
-      let streamNext = await stream.next();
-      let firstChunkNotified = false;
-      while (!streamNext.done) {
-        const chunk = streamNext.value;
-
-        // Notify UI on first chunk received
-        if (!firstChunkNotified) {
-          setHasReceivedFirstChunk(true);
-          firstChunkNotified = true;
-        }
-
-        // Push chunk to assembler (only if still on same chat)
-        if (chatId === streamingChatId && assemblerRef.current) {
-          // Handle prefill prepending for content chunks
-          if (
-            chunk.type === 'content' &&
-            isFirstChunk &&
-            currentProject.preFillResponse &&
-            apiService.shouldPrependPrefill(currentApiDef)
-          ) {
-            // Push prefilled chunk with prepended content
-            assemblerRef.current.pushChunk({
-              type: 'content',
-              content: currentProject.preFillResponse + chunk.content,
-            });
-            isFirstChunk = false;
-          } else {
-            assemblerRef.current.pushChunk(chunk);
-          }
-
-          // Update React state for UI rendering
-          setStreamingGroups(assemblerRef.current.getGroups());
-          setStreamingLastEvent(assemblerRef.current.getLastEvent());
-        }
-
-        // Track first content chunk for prefill handling
-        if (chunk.type === 'content' && isFirstChunk) {
-          isFirstChunk = false;
-        }
-
-        streamNext = await stream.next();
-      }
-
-      // Get final result with tokens and content (from generator return value)
-      // Type narrow: when done is true, value is StreamResult
-      let result = streamNext.done ? streamNext.value : null;
-
-      // Agentic tool loop - continue if stop_reason is tool_use
-      let toolIterations = 0;
-      // Track messages for tool loop continuation
-      let loopMessages = [...messagesWithAttachments];
-      // Track if we created a JS session for this loop
-      let jsSessionCreated = false;
-
-      while (result && result.stopReason === 'tool_use' && toolIterations < MAX_TOOL_ITERATIONS) {
-        toolIterations++;
-        console.debug('[useChat] Tool use detected, iteration:', toolIterations);
-
-        // Create JS session on first tool iteration if JS tool is enabled
-        // Session persists across all iterations, disposed when loop ends
-        if (!jsSessionCreated && currentProject.jsExecutionEnabled) {
-          console.debug('[useChat] Creating JS session for agentic loop');
-          await createJsSession(currentProject.id, currentProject.jsLibEnabled ?? true);
-          jsSessionCreated = true;
-        }
-
-        // Extract ALL tool_use blocks - unknown tools will receive error responses
-        const toolUseBlocks = apiService.extractToolUseBlocks(
-          currentApiDef.apiType,
-          result.fullContent
-        );
-        if (toolUseBlocks.length === 0) {
-          console.debug('[useChat] No client-side tools to execute');
-          break;
-        }
-
-        // Execute each tool and collect results
-        const toolResults: ToolResultBlock[] = [];
-        for (const toolUse of toolUseBlocks) {
-          console.debug('[useChat] Executing tool:', toolUse.name, 'id:', toolUse.id);
-
-          const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
-
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            content: toolResult.content,
-            is_error: toolResult.isError,
-          });
-        }
-
-        // Finalize assembler - tool_use blocks already pushed during streaming
-        const assistantRenderingContent = assemblerRef.current?.finalize() ?? [];
-        // Populate rendered fields on tool_use blocks before saving
-        populateToolRenderFields(assistantRenderingContent);
-
-        // Build renderingContent for tool result message with pre-rendered fields
-        const toolResultRenderBlocks: ToolResultRenderBlock[] = toolResults.map((tr, idx) =>
-          createToolResultRenderBlock(
-            tr.tool_use_id,
-            toolUseBlocks[idx].name,
-            tr.content,
-            tr.is_error
-          )
-        );
-
-        // Build continuation messages using API-specific format
-        const [assistantToolMessage, toolResultMessage] = apiService.buildToolResultMessages(
-          currentApiDef.apiType,
-          result.fullContent,
-          toolResults,
-          result.textContent
-        );
-
-        // Add rendering content to the messages
-        assistantToolMessage.content.renderingContent = assistantRenderingContent;
-        assistantToolMessage.content.stopReason = 'tool_use';
-        toolResultMessage.content.renderingContent = [
-          { category: 'backstage' as const, blocks: toolResultRenderBlocks },
-        ];
-
-        // Extract tokens and calculate pricing for intermediate message
-        const iterInputTokens = result.inputTokens ?? 0;
-        const iterOutputTokens = result.outputTokens ?? 0;
-        const iterReasoningTokens = result.reasoningTokens;
-        const iterCacheCreationTokens = result.cacheCreationTokens ?? 0;
-        const iterCacheReadTokens = result.cacheReadTokens ?? 0;
-
-        const iterPricingSnapshot = await getPricingSnapshot(
-          currentApiDef,
-          effectiveModelId,
-          iterInputTokens,
-          iterOutputTokens,
-          iterReasoningTokens || 0,
-          iterCacheCreationTokens,
-          iterCacheReadTokens
-        );
-
-        // Add metadata to intermediate assistant message
-        assistantToolMessage.metadata = {
-          model: effectiveModelId,
-          inputTokens: iterInputTokens,
-          outputTokens: iterOutputTokens,
-          reasoningTokens: iterReasoningTokens,
-          cacheCreationTokens: iterCacheCreationTokens,
-          cacheReadTokens: iterCacheReadTokens,
-          ...iterPricingSnapshot,
-        };
-
-        // Save intermediate messages to storage and update UI
-        await storage.saveMessage(streamingChatId, assistantToolMessage);
-        setMessages(prev => [...prev, assistantToolMessage]);
-        callbacks.onMessageAppended(streamingChatId, assistantToolMessage);
-
-        await storage.saveMessage(streamingChatId, toolResultMessage);
-        setMessages(prev => [...prev, toolResultMessage]);
-        callbacks.onMessageAppended(streamingChatId, toolResultMessage);
-
-        console.debug('[useChat] Saved intermediate tool messages');
-
-        loopMessages = [...loopMessages, assistantToolMessage, toolResultMessage];
-
-        // Update token/cost totals from this iteration
-        updateChat.totalInputTokens =
-          (updateChat.totalInputTokens ?? currentChat.totalInputTokens ?? 0) + iterInputTokens;
-        updateChat.totalOutputTokens =
-          (updateChat.totalOutputTokens ?? currentChat.totalOutputTokens ?? 0) + iterOutputTokens;
-        updateChat.totalReasoningTokens =
-          (updateChat.totalReasoningTokens ?? currentChat.totalReasoningTokens ?? 0) +
-          (iterReasoningTokens || 0);
-        updateChat.totalCacheCreationTokens =
-          (updateChat.totalCacheCreationTokens ?? currentChat.totalCacheCreationTokens ?? 0) +
-          iterCacheCreationTokens;
-        updateChat.totalCacheReadTokens =
-          (updateChat.totalCacheReadTokens ?? currentChat.totalCacheReadTokens ?? 0) +
-          iterCacheReadTokens;
-        updateChat.totalCost =
-          (updateChat.totalCost ?? currentChat.totalCost ?? 0) + iterPricingSnapshot.messageCost;
-
-        // Send continuation request
-        console.debug('[useChat] Sending tool result continuation');
-        const continueStream = apiService.sendMessageStream(
-          loopMessages,
-          effectiveModelId,
-          currentApiDef,
-          {
-            temperature: currentProject.temperature ?? undefined,
-            maxTokens: currentProject.maxOutputTokens,
-            enableReasoning: currentProject.enableReasoning,
-            reasoningBudgetTokens: currentProject.reasoningBudgetTokens,
-            thinkingKeepTurns: currentProject.thinkingKeepTurns,
-            reasoningEffort: currentProject.reasoningEffort,
-            reasoningSummary: currentProject.reasoningSummary,
-            systemPrompt: combinedSystemPrompt || undefined,
-            preFillResponse: undefined, // No prefill for continuation
-            webSearchEnabled: currentProject.webSearchEnabled,
-            enabledTools,
-          }
-        );
-
-        // Reset assembler for continuation
-        assemblerRef.current = new StreamingContentAssembler();
-        setStreamingGroups([]);
-
-        // Stream continuation response
-        let continueNext = await continueStream.next();
-        while (!continueNext.done) {
-          const chunk = continueNext.value;
-          if (chatId === streamingChatId && assemblerRef.current) {
-            assemblerRef.current.pushChunk(chunk);
-            setStreamingGroups(assemblerRef.current.getGroups());
-            setStreamingLastEvent(assemblerRef.current.getLastEvent());
-          }
-          continueNext = await continueStream.next();
-        }
-
-        result = continueNext.done ? continueNext.value : null;
-      }
-
-      // Dispose JS session after tool loop completes
-      if (jsSessionCreated) {
-        console.debug('[useChat] Disposing JS session after tool loop');
-        disposeJsSession();
-      }
-
-      if (result) {
-        // Extract token values from result
-        const inputTokens = result.inputTokens ?? 0;
-        const outputTokens = result.outputTokens ?? 0;
-        const reasoningTokens = result.reasoningTokens;
-        const cacheCreationTokens = result.cacheCreationTokens ?? 0;
-        const cacheReadTokens = result.cacheReadTokens ?? 0;
-
-        console.debug('[useChat] Stream complete, final tokens:', {
-          inputTokens,
-          outputTokens,
-          reasoningTokens,
-          cacheCreationTokens,
-          cacheReadTokens,
-        });
-
-        // Get pricing snapshot
-        const pricingSnapshot = await getPricingSnapshot(
-          currentApiDef,
-          effectiveModelId,
-          inputTokens,
-          outputTokens,
-          reasoningTokens || 0,
-          cacheCreationTokens,
-          cacheReadTokens
-        );
-
-        // Finalize streaming content from assembler (single source of truth)
-        const { renderingContent, stopReason } = result.error
-          ? {
-              renderingContent: assemblerRef.current!.finalizeWithError(result.error),
-              stopReason: 'error' as const,
-            }
-          : {
-              renderingContent: assemblerRef.current!.finalize(),
-              stopReason: apiService.mapStopReason(
-                currentApiDef.apiType,
-                result.stopReason ?? null
-              ),
-            };
-
-        const assistantMessage: Message<unknown> = {
-          id: generateUniqueId('msg_assistant'),
-          role: MessageRole.ASSISTANT,
-          content: {
-            type: 'text',
-            content: result.textContent,
-            modelFamily: currentApiDef.apiType,
-            fullContent: result.fullContent,
-            renderingContent,
-            stopReason,
-          },
-          timestamp: new Date(),
-          metadata: {
-            model: effectiveModelId,
-            inputTokens,
-            outputTokens,
-            reasoningTokens,
-            cacheCreationTokens,
-            cacheReadTokens,
-            ...pricingSnapshot,
-          },
-        };
-
-        await storage.saveMessage(streamingChatId, assistantMessage);
-        console.debug('[useChat] Assistant message saved');
-        setMessages(prev => [...prev, assistantMessage]);
-        callbacks.onMessageAppended(streamingChatId, assistantMessage);
-
-        // Update token totals - use existing loop totals if we went through tool loop
-        updateChat.totalInputTokens =
-          (updateChat.totalInputTokens ?? currentChat.totalInputTokens ?? 0) + inputTokens;
-        updateChat.totalOutputTokens =
-          (updateChat.totalOutputTokens ?? currentChat.totalOutputTokens ?? 0) + outputTokens;
-        updateChat.totalReasoningTokens =
-          (updateChat.totalReasoningTokens ?? currentChat.totalReasoningTokens ?? 0) +
-          (reasoningTokens || 0);
-        updateChat.totalCacheCreationTokens =
-          (updateChat.totalCacheCreationTokens ?? currentChat.totalCacheCreationTokens ?? 0) +
-          cacheCreationTokens;
-        updateChat.totalCacheReadTokens =
-          (updateChat.totalCacheReadTokens ?? currentChat.totalCacheReadTokens ?? 0) +
-          cacheReadTokens;
-        // Use accumulated cost from tool loop if present, otherwise use chat's base cost
-        updateChat.totalCost =
-          (updateChat.totalCost ?? currentChat.totalCost ?? 0) + pricingSnapshot.messageCost;
-        updateChat.contextWindowUsage = pricingSnapshot.contextWindowUsage;
-      } else {
-        // Stream returned no result - create error message
-        const errorRenderingContent = assemblerRef.current
-          ? assemblerRef.current.finalizeWithError({ message: 'Stream returned no result' })
-          : [
-              {
-                category: 'error' as const,
-                blocks: [{ type: 'error' as const, message: 'Stream returned no result' }],
-              },
-            ];
-
-        const errorMessage: Message<unknown> = {
-          id: generateUniqueId('msg_assistant'),
-          role: MessageRole.ASSISTANT,
-          content: {
-            type: 'text',
-            content: '',
-            modelFamily: currentApiDef.apiType,
-            renderingContent: errorRenderingContent,
-            stopReason: 'error',
-          },
-          timestamp: new Date(),
-        };
-
-        await storage.saveMessage(streamingChatId, errorMessage);
-        console.debug('[useChat] Error message saved (no result)');
-        setMessages(prev => [...prev, errorMessage]);
-        callbacks.onMessageAppended(streamingChatId, errorMessage);
-      }
-
-      // Update chat totals with this message's tokens/cost
-      // Add 2 to messageCount for user message + assistant message
-      const updatedChat: Chat = {
-        ...currentChat,
-        ...updateChat,
-        messageCount: (currentChat.messageCount || 0) + 2, // +1 user, +1 assistant
-        lastModifiedAt: new Date(),
-      };
-
-      await storage.saveChat(updatedChat);
-      console.debug('[useChat] Chat totals updated');
-      setChat(updatedChat);
-      callbacks.onChatMetadataChanged?.(streamingChatId, updatedChat);
-
-      // Update project's lastUsedAt to reflect recent activity (for sorting)
-      const updatedProject: Project = {
-        ...currentProject,
-        lastUsedAt: new Date(),
-      };
-      await storage.saveProject(updatedProject);
-      setProject(updatedProject);
-      console.debug('[useChat] Project lastUsedAt updated');
-    } catch (error: unknown) {
-      // Ensure JS session is cleaned up on error
-      disposeJsSession();
-
-      // Extract error info from the caught exception
-      const errorInfo =
-        error instanceof Error
-          ? { message: error.message, stack: error.stack }
-          : { message: String(error) || 'Unknown error' };
-
-      console.error('[useChat] API call failed:', errorInfo.message);
-
-      // Create error message using assembler if available, otherwise create manually
-      const errorRenderingContent = assemblerRef.current
-        ? assemblerRef.current.finalizeWithError(errorInfo)
-        : [
-            {
-              category: 'error' as const,
-              blocks: [
-                {
-                  type: 'error' as const,
-                  message: errorInfo.message,
-                  ...(errorInfo.stack && { stack: errorInfo.stack }),
-                },
-              ],
-            },
-          ];
-
-      const errorAssistantMessage: Message<unknown> = {
-        id: generateUniqueId('msg_assistant'),
-        role: MessageRole.ASSISTANT,
-        content: {
-          type: 'text',
-          content: '',
-          modelFamily: currentApiDef.apiType,
-          renderingContent: errorRenderingContent,
-          stopReason: 'error',
-        },
-        timestamp: new Date(),
-      };
-
-      await storage.saveMessage(streamingChatId, errorAssistantMessage);
-      console.debug('[useChat] Error message saved (exception)');
-      setMessages(prev => [...prev, errorAssistantMessage]);
-      callbacks.onMessageAppended(streamingChatId, errorAssistantMessage);
-    } finally {
-      // Only update loading state if still in the same chat (use hook's chatId, not state)
-      if (chatId === streamingChatId) {
-        setIsLoading(false);
-        setStreamingGroups([]);
-        setStreamingLastEvent('');
-        assemblerRef.current = null;
-        callbacks.onStreamingEnd(streamingChatId);
-      }
-      console.debug('[useChat] API call finished, still same chat:', chatId === streamingChatId);
-    }
-  };
-
-  const calculateTotalTokens = () => {
-    if (!chat) return;
-
-    // Read directly from chat-level totals (no more summing messages)
-    setTokenUsage({
-      input: chat.totalInputTokens || 0,
-      output: chat.totalOutputTokens || 0,
-      reasoning: (chat.totalReasoningTokens || 0) > 0 ? chat.totalReasoningTokens : undefined,
-      cacheCreation:
-        (chat.totalCacheCreationTokens || 0) > 0 ? chat.totalCacheCreationTokens : undefined,
-      cacheRead: (chat.totalCacheReadTokens || 0) > 0 ? chat.totalCacheReadTokens : undefined,
-      cost: chat.totalCost || 0,
-    });
-  };
-
-  const sendMessage = async (
-    incomingChatId: string,
-    content: string,
-    attachments?: MessageAttachment[]
-  ) => {
-    if (!verifyChatId(incomingChatId, 'sendMessage')) return;
-
-    const messageText = content.trim();
-    // Allow sending if there's text OR attachments
-    if ((!messageText && !attachments?.length) || !chat || !project || !apiDefinition) return;
-
-    sendMessageToAPI(messageText, messages, chat, project, apiDefinition, attachments);
-  };
-
-  const getContextWindowUsage = (metadata?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    reasoningTokens?: number;
-    cacheCreationTokens?: number;
-    cacheReadTokens?: number;
-  }) => {
-    return (
-      (metadata?.inputTokens || 0) +
-      (metadata?.outputTokens || 0) +
-      (metadata?.cacheCreationTokens || 0) +
-      (metadata?.cacheReadTokens || 0) -
-      (metadata?.reasoningTokens || 0)
-    );
-  };
-
-  const getPricingSnapshot = async (
-    apiDef: APIDefinition,
-    modelId: string,
-    inputTokens: number,
-    outputTokens: number,
-    reasoningTokens: number,
-    cacheCreationTokens: number,
-    cacheReadTokens: number
-  ) => {
-    // Calculate total cost using apiService
-    const totalCost = apiService.calculateCost(
-      apiDef.apiType,
-      modelId,
-      inputTokens,
-      outputTokens,
-      reasoningTokens,
-      cacheCreationTokens,
-      cacheReadTokens
-    );
-
-    // Get context window from storage
-    const models = await storage.getModels(apiDef.id);
-    const model = models.find(m => m.id === modelId);
-    const contextWindowUsage =
-      inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens - (reasoningTokens || 0);
-    const contextWindow = model?.contextWindow || 0;
-
-    return {
-      messageCost: totalCost,
-      contextWindow,
-      contextWindowUsage,
+    // Build context for agentic loop
+    const context: AgenticLoopContext = {
+      chatId,
+      chat,
+      project,
+      apiDef: apiDefinition,
+      modelId: effectiveModelId,
+      currentMessages: messages,
     };
+
+    // Run the agentic loop with the user message
+    const pendingMessage: PendingMessage = { type: 'user', message: userMessage };
+    await runAgenticLoop(context, [pendingMessage], buildLoopCallbacks());
   };
 
   const editMessage = async (incomingChatId: string, messageId: string, _content: string) => {
@@ -1448,7 +946,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
   /**
    * Resolve pending tool calls by either stopping (error response) or continuing (execute tools).
-   * Optionally appends a user message after the tool results.
+   * Both modes send to API via runAgenticLoop. Optionally appends a user message after the tool results.
    */
   const resolvePendingToolCalls = async (
     mode: 'stop' | 'continue',
@@ -1460,21 +958,11 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
     console.debug('[useChat] resolvePendingToolCalls called, mode:', mode);
 
-    const currentApiDef = apiDefinition;
     const effectiveModelId = chat.modelId ?? project.modelId;
     if (!effectiveModelId) return;
 
-    // Find the assistant message containing the unresolved tool calls
-    let assistantMessageIdx = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === MessageRole.ASSISTANT) {
-        assistantMessageIdx = i;
-        break;
-      }
-    }
-    if (assistantMessageIdx === -1) return;
-
-    // Note: assistantMessage is at messages[assistantMessageIdx] but we don't need it for resolution
+    // Build pending messages for the agentic loop
+    const pending: PendingMessage[] = [];
 
     // Create tool results based on mode
     const toolResults: ToolResultBlock[] = [];
@@ -1495,226 +983,94 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         );
       }
     } else {
-      // Execute tools and collect results
-      // Create JS session if JS tool is enabled
-      let jsSessionCreated = false;
-      if (project.jsExecutionEnabled) {
-        console.debug('[useChat] Creating JS session for tool resolution');
-        await createJsSession(project.id, project.jsLibEnabled ?? true);
-        jsSessionCreated = true;
-      }
-
-      try {
-        for (const toolUse of unresolvedToolCalls) {
-          console.debug('[useChat] Executing tool:', toolUse.name, 'id:', toolUse.id);
-          const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            content: toolResult.content,
-            is_error: toolResult.isError,
-          });
-          toolResultRenderBlocks.push(
-            createToolResultRenderBlock(
-              toolUse.id,
-              toolUse.name,
-              toolResult.content,
-              toolResult.isError
-            )
-          );
-        }
-      } finally {
-        if (jsSessionCreated) {
-          disposeJsSession();
-        }
+      // Execute tools and collect results (JS session managed by agentic loop)
+      for (const toolUse of unresolvedToolCalls) {
+        console.debug('[useChat] Executing tool:', toolUse.name, 'id:', toolUse.id);
+        const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: toolResult.content,
+          is_error: toolResult.isError,
+        });
+        toolResultRenderBlocks.push(
+          createToolResultRenderBlock(
+            toolUse.id,
+            toolUse.name,
+            toolResult.content,
+            toolResult.isError
+          )
+        );
       }
     }
 
-    // Build tool result message in API-specific format
+    // Build tool result message
     const toolResultMessage: Message<unknown> = {
       id: generateUniqueId('msg_user'),
       role: MessageRole.USER,
       content: {
         type: 'text',
         content: '',
-        modelFamily: currentApiDef.apiType,
+        modelFamily: apiDefinition.apiType,
         fullContent: toolResults,
         renderingContent: [{ category: 'backstage' as const, blocks: toolResultRenderBlocks }],
       },
       timestamp: new Date(),
     };
 
-    // Save tool result message
-    await storage.saveMessage(chat.id, toolResultMessage);
-    setMessages(prev => [...prev, toolResultMessage]);
-    callbacks.onMessageAppended(chat.id, toolResultMessage);
+    pending.push({ type: 'tool_result', message: toolResultMessage });
 
-    // If there's a user message, send it along with the tool results to API
+    // Optional user message after tool results
     if (userMessage?.trim() || attachments?.length) {
-      // Send message to API with existing messages including tool result
-      sendMessageToAPI(
-        userMessage?.trim() || '',
-        [...messages, toolResultMessage],
-        chat,
+      const messageText = userMessage?.trim() || '';
+      const firstMessageTimestamp = messages.length > 0 ? messages[0].timestamp : undefined;
+      const messageWithMetadata = generateMessageWithMetadata(
+        messageText,
         project,
-        currentApiDef,
-        attachments
+        chat,
+        effectiveModelId,
+        firstMessageTimestamp
       );
-    }
-    // If no user message and mode is 'continue', send continuation to API
-    else if (mode === 'continue') {
-      // Build messages including the tool result for API continuation
-      const messagesForContinuation = [...messages, toolResultMessage];
 
-      setIsLoading(true);
-      setHasReceivedFirstChunk(false);
-      callbacks.onStreamingStart(chat.id, 'Continuing...');
+      const attachmentIds = attachments?.map(att => att.id) || [];
 
-      try {
-        // Load attachments for user messages
-        const messagesWithAttachments = await Promise.all(
-          messagesForContinuation.map(async msg => {
-            if (msg.role === MessageRole.USER && msg.content.attachmentIds?.length) {
-              const loadedAttachments = await storage.getAttachments(msg.id);
-              return { ...msg, attachments: loadedAttachments };
-            }
-            return msg;
-          })
-        );
+      const userMsg: Message<string> = {
+        id: generateUniqueId('msg_user'),
+        role: MessageRole.USER,
+        content: {
+          type: 'text',
+          content: messageWithMetadata,
+          renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: messageText }] }],
+          ...(attachmentIds.length > 0 && {
+            attachmentIds,
+            originalAttachmentCount: attachmentIds.length,
+          }),
+        },
+        timestamp: new Date(),
+      };
 
-        // Build enabled tools list
-        const enabledTools: string[] = [];
-        if (project.memoryEnabled) enabledTools.push('memory');
-        if (project.jsExecutionEnabled) enabledTools.push('javascript');
-        if (project.fsToolEnabled) enabledTools.push('filesystem');
-
-        // Build system prompt
-        const toolSystemPrompts = toolRegistry.getSystemPrompts(
-          currentApiDef.apiType,
-          enabledTools
-        );
-        const combinedSystemPrompt = [project.systemPrompt, ...toolSystemPrompts]
-          .filter(Boolean)
-          .join('\n\n');
-
-        // Send continuation
-        const stream = apiService.sendMessageStream(
-          messagesWithAttachments,
-          effectiveModelId,
-          currentApiDef,
-          {
-            temperature: project.temperature ?? undefined,
-            maxTokens: project.maxOutputTokens,
-            enableReasoning: project.enableReasoning,
-            reasoningBudgetTokens: project.reasoningBudgetTokens,
-            thinkingKeepTurns: project.thinkingKeepTurns,
-            reasoningEffort: project.reasoningEffort,
-            reasoningSummary: project.reasoningSummary,
-            systemPrompt: combinedSystemPrompt || undefined,
-            preFillResponse: undefined,
-            webSearchEnabled: project.webSearchEnabled,
-            enabledTools,
-          }
-        );
-
-        // Create assembler for streaming
-        assemblerRef.current = new StreamingContentAssembler();
-        setStreamingGroups([]);
-        setStreamingLastEvent('');
-
-        // Stream the response
-        let streamNext = await stream.next();
-        while (!streamNext.done) {
-          const chunk = streamNext.value;
-          if (assemblerRef.current) {
-            assemblerRef.current.pushChunk(chunk);
-            setStreamingGroups(assemblerRef.current.getGroups());
-            setStreamingLastEvent(assemblerRef.current.getLastEvent());
-          }
-          if (!hasReceivedFirstChunk) {
-            setHasReceivedFirstChunk(true);
-          }
-          streamNext = await stream.next();
+      // Save attachments if any
+      if (attachments && attachments.length > 0) {
+        for (const attachment of attachments) {
+          await storage.saveAttachment(userMsg.id, attachment);
         }
-
-        const result = streamNext.done ? streamNext.value : null;
-
-        if (result) {
-          // Finalize and save assistant message
-          const renderingContent = result.error
-            ? assemblerRef.current!.finalizeWithError(result.error)
-            : assemblerRef.current!.finalize();
-
-          const assistantResponseMessage: Message<unknown> = {
-            id: generateUniqueId('msg_assistant'),
-            role: MessageRole.ASSISTANT,
-            content: {
-              type: 'text',
-              content: result.textContent,
-              modelFamily: currentApiDef.apiType,
-              fullContent: result.fullContent,
-              renderingContent,
-              stopReason: result.error
-                ? 'error'
-                : apiService.mapStopReason(currentApiDef.apiType, result.stopReason ?? null),
-            },
-            timestamp: new Date(),
-            metadata: {
-              model: effectiveModelId,
-              inputTokens: result.inputTokens ?? 0,
-              outputTokens: result.outputTokens ?? 0,
-              reasoningTokens: result.reasoningTokens,
-              cacheCreationTokens: result.cacheCreationTokens ?? 0,
-              cacheReadTokens: result.cacheReadTokens ?? 0,
-            },
-          };
-
-          await storage.saveMessage(chat.id, assistantResponseMessage);
-          setMessages(prev => [...prev, assistantResponseMessage]);
-          callbacks.onMessageAppended(chat.id, assistantResponseMessage);
-        }
-      } catch (error: unknown) {
-        const errorInfo =
-          error instanceof Error
-            ? { message: error.message, stack: error.stack }
-            : { message: String(error) || 'Unknown error' };
-
-        console.error('[useChat] Continuation failed:', errorInfo.message);
-
-        const errorRenderingContent = assemblerRef.current
-          ? assemblerRef.current.finalizeWithError(errorInfo)
-          : [
-              {
-                category: 'error' as const,
-                blocks: [{ type: 'error' as const, message: errorInfo.message }],
-              },
-            ];
-
-        const errorMessage: Message<unknown> = {
-          id: generateUniqueId('msg_assistant'),
-          role: MessageRole.ASSISTANT,
-          content: {
-            type: 'text',
-            content: '',
-            modelFamily: currentApiDef.apiType,
-            renderingContent: errorRenderingContent,
-            stopReason: 'error',
-          },
-          timestamp: new Date(),
-        };
-
-        await storage.saveMessage(chat.id, errorMessage);
-        setMessages(prev => [...prev, errorMessage]);
-        callbacks.onMessageAppended(chat.id, errorMessage);
-      } finally {
-        setIsLoading(false);
-        setStreamingGroups([]);
-        setStreamingLastEvent('');
-        assemblerRef.current = null;
-        callbacks.onStreamingEnd(chat.id);
       }
+
+      pending.push({ type: 'user', message: userMsg });
     }
-    // If mode is 'stop' and no user message, just save tool results (already done above)
+
+    // Build context for agentic loop
+    const context: AgenticLoopContext = {
+      chatId: chat.id,
+      chat,
+      project,
+      apiDef: apiDefinition,
+      modelId: effectiveModelId,
+      currentMessages: messages,
+    };
+
+    // Run the agentic loop - handles both 'stop' and 'continue' modes
+    await runAgenticLoop(context, pending, buildLoopCallbacks());
   };
 
   return {

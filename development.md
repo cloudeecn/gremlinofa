@@ -331,7 +331,7 @@ public/             # Static assets and PWA icons
   3. Build `tool_result` messages with `renderingContent`
   4. Save intermediate messages to storage + update UI state
   5. Send continuation request
-  6. Loop until `stop_reason !== 'tool_use'` or max iterations (10)
+  6. Loop until `stop_reason !== 'tool_use'` or max iterations (50)
 - **Unresolved tool call recovery**: When a response ends with unresolved `tool_use` blocks (e.g., token limit reached mid-agentic-loop):
   1. `unresolvedToolCalls` detected via `getUnresolvedToolCalls()` in `useChat.ts`
   2. `PendingToolCallsBanner` shows in MessageList with Stop/Continue toggle (default: Stop)
@@ -887,6 +887,72 @@ Call 2: `data.push(4); data` → `[1, 2, 3, 4]` (data persists!)
 
 - `initJsTool()` - Create singleton instance, register with toolRegistry
 - `disposeJsTool()` - Unregister from toolRegistry, dispose any active session, clear instance
+
+### Agentic Loop
+
+**Architecture:**
+
+The agentic loop logic is extracted into a separate module (`src/hooks/agenticLoop.ts`) as a pure async function for cleaner separation and easier testing.
+
+**Key Components:**
+
+- `runAgenticLoop(context, initialMessages, callbacks)` - Main loop function
+- `AgenticLoopContext` - Chat context (chatId, chat, project, apiDef, modelId, currentMessages)
+- `AgenticLoopCallbacks` - React state update callbacks (pure setters)
+- `PendingMessage` - Message buffer item (type: 'user' | 'tool_result')
+
+**Callback Interface:**
+
+```typescript
+interface AgenticLoopCallbacks {
+  onMessageSaved: (message: Message<unknown>) => void;
+  onStreamingStart: (loadingText: string) => void;
+  onStreamingUpdate: (groups: RenderingBlockGroup[], lastEvent: string) => void;
+  onStreamingEnd: () => void;
+  onFirstChunk: () => void;
+  onChatUpdated: (chat: Chat) => void; // Receives FINAL object after storage save
+  onProjectUpdated: (project: Project) => void; // Receives FINAL object after storage save
+  onError: (error: Error) => void;
+}
+```
+
+**Message Buffer Pattern:**
+
+```
+while (messageBuffer.length > 0 && iteration < MAX_ITERATIONS) {  // MAX_ITERATIONS = 50
+  1. Take messages from buffer, save to storage, notify UI
+  2. Send to API, stream response
+  3. Process result (save assistant message, update costs)
+  4. If tool_use, execute tools and push results back to buffer
+  5. Loop continues automatically
+}
+// After loop: build final Chat/Project objects, save to storage, call callbacks
+```
+
+**Features:**
+
+- Unified loop handles all cases (normal send, continue, stop)
+- Automatic tool execution and continuation
+- JS session lifecycle (create on first JS tool, dispose on loop end)
+- Cost/token accumulation across iterations
+- Storage saves handled in loop (callbacks are pure state setters)
+- Error handling with cleanup
+
+**Helper Functions:**
+
+- `buildStreamOptions(project, enabledTools)` - Build API stream options from project settings
+- `getEnabledTools(project)` - Extract enabled tool names from project
+- `populateToolRenderFields(groups)` - Add rendered display fields to tool blocks
+- `createToolResultRenderBlock(...)` - Create tool result render block with display fields
+- `loadAttachmentsForMessages(messages)` - Load attachments and handle missing attachment notes
+
+**Integration with useChat.ts:**
+
+- `buildLoopCallbacks()` - Builds pure setter callbacks from React state
+- `sendMessage` - Thin wrapper: reads state → builds context → calls `runAgenticLoop`
+- `resolvePendingToolCalls` - Thin wrapper: builds tool results → optional user message → calls `runAgenticLoop`
+- Both 'stop' and 'continue' modes use the agentic loop (stop sends error responses to API)
+- Loop handles storage.saveChat and storage.saveProject internally
 
 **Project Setting:**
 

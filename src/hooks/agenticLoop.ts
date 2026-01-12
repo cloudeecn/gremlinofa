@@ -1,0 +1,654 @@
+/**
+ * Agentic Loop - Core message processing and tool execution loop.
+ *
+ * This module extracts the agentic loop logic from useChat.ts into a pure async function.
+ * It handles:
+ * - Message buffer pattern for tool execution loops
+ * - Streaming responses and assembling content
+ * - Tool execution and result collection
+ * - Cost/token tracking across iterations
+ * - JS session lifecycle management
+ */
+
+import { apiService } from '../services/api/apiService';
+import { storage } from '../services/storage';
+import { StreamingContentAssembler } from '../services/streaming/StreamingContentAssembler';
+import { executeClientSideTool, toolRegistry } from '../services/tools/clientSideTools';
+import { createJsSession, disposeJsSession } from '../services/tools/jsTool';
+import type {
+  APIDefinition,
+  Chat,
+  Message,
+  MessageAttachment,
+  Project,
+  RenderingBlockGroup,
+  ToolResultBlock,
+} from '../types';
+import type { ToolResultRenderBlock, ToolUseRenderBlock } from '../types/content';
+import { APIType, MessageRole } from '../types';
+import { generateUniqueId } from '../utils/idGenerator';
+
+// Maximum agentic loop iterations to prevent infinite loops
+const MAX_TOOL_ITERATIONS = 50;
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export interface PendingMessage {
+  type: 'user' | 'tool_result';
+  message: Message<unknown>;
+}
+
+export interface AgenticLoopContext {
+  chatId: string;
+  chat: Chat;
+  project: Project;
+  apiDef: APIDefinition;
+  modelId: string;
+  currentMessages: Message<unknown>[]; // History snapshot at loop start
+}
+
+export interface AgenticLoopCallbacks {
+  onMessageSaved: (message: Message<unknown>) => void;
+  onStreamingStart: (loadingText: string) => void;
+  onStreamingUpdate: (groups: RenderingBlockGroup[], lastEvent: string) => void;
+  onStreamingEnd: () => void;
+  onFirstChunk: () => void;
+  /** Receives the fully-built Chat object after storage save */
+  onChatUpdated: (chat: Chat) => void;
+  /** Receives the fully-built Project object after storage save */
+  onProjectUpdated: (project: Project) => void;
+  onError: (error: Error) => void;
+}
+
+export interface AgenticLoopResult {
+  success: boolean;
+  savedMessages: Message<unknown>[];
+  totalTokens: TokenTotals;
+}
+
+interface TokenTotals {
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  cost: number;
+}
+
+interface PricingSnapshot {
+  messageCost: number;
+  contextWindow: number;
+  contextWindowUsage: number;
+}
+
+// ============================================================================
+// Helper Functions (extracted from useChat.ts)
+// ============================================================================
+
+/**
+ * Post-process rendering content to populate rendered fields on tool blocks.
+ * Ensures rendered content is persisted with the message for display even if tool is later disabled.
+ */
+function populateToolRenderFields(groups: RenderingBlockGroup[]): void {
+  for (const group of groups) {
+    for (const block of group.blocks) {
+      if (block.type === 'tool_use') {
+        const toolUseBlock = block as ToolUseRenderBlock;
+        const tool = toolRegistry.get(toolUseBlock.name);
+        if (tool) {
+          const hasInput = Object.keys(toolUseBlock.input).length > 0;
+          toolUseBlock.icon = tool.iconInput ?? '🔧';
+          toolUseBlock.renderedInput = hasInput
+            ? (tool.renderInput?.(toolUseBlock.input) ??
+              JSON.stringify(toolUseBlock.input, null, 2))
+            : '';
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Create a tool_result render block with pre-rendered display fields.
+ */
+function createToolResultRenderBlock(
+  toolUseId: string,
+  toolName: string,
+  content: string,
+  isError?: boolean
+): ToolResultRenderBlock {
+  const tool = toolRegistry.get(toolName);
+  const defaultIcon = isError ? '❌' : '✅';
+
+  return {
+    type: 'tool_result',
+    tool_use_id: toolUseId,
+    content,
+    is_error: isError,
+    name: toolName,
+    icon: tool?.iconOutput ?? defaultIcon,
+    renderedContent: tool?.renderOutput?.(content, isError) ?? content,
+  };
+}
+
+/**
+ * Get pricing snapshot for a message.
+ */
+async function getPricingSnapshot(
+  apiDef: APIDefinition,
+  modelId: string,
+  inputTokens: number,
+  outputTokens: number,
+  reasoningTokens: number,
+  cacheCreationTokens: number,
+  cacheReadTokens: number
+): Promise<PricingSnapshot> {
+  const totalCost = apiService.calculateCost(
+    apiDef.apiType,
+    modelId,
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    cacheCreationTokens,
+    cacheReadTokens
+  );
+
+  const models = await storage.getModels(apiDef.id);
+  const model = models.find(m => m.id === modelId);
+  const contextWindowUsage =
+    inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens - (reasoningTokens || 0);
+  const contextWindow = model?.contextWindow || 0;
+
+  return {
+    messageCost: totalCost,
+    contextWindow,
+    contextWindowUsage,
+  };
+}
+
+interface StreamOptions {
+  temperature: number | undefined;
+  maxTokens: number;
+  enableReasoning: boolean;
+  reasoningBudgetTokens: number;
+  thinkingKeepTurns: number | undefined;
+  reasoningEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined;
+  reasoningSummary: 'auto' | 'concise' | 'detailed' | undefined;
+  systemPrompt: string | undefined;
+  preFillResponse: string | undefined;
+  webSearchEnabled: boolean;
+  enabledTools: string[];
+}
+
+/**
+ * Build stream options from project settings.
+ */
+function buildStreamOptions(project: Project, enabledTools: string[]): StreamOptions {
+  // Build combined system prompt: project prompt + tool prompts
+  const toolSystemPrompts = toolRegistry.getSystemPrompts(
+    project.apiDefinitionId ? APIType.ANTHROPIC : APIType.RESPONSES_API, // Will be overridden
+    enabledTools
+  );
+  const combinedSystemPrompt = [project.systemPrompt, ...toolSystemPrompts]
+    .filter(Boolean)
+    .join('\n\n');
+
+  return {
+    temperature: project.temperature ?? undefined,
+    maxTokens: project.maxOutputTokens,
+    enableReasoning: project.enableReasoning,
+    reasoningBudgetTokens: project.reasoningBudgetTokens,
+    thinkingKeepTurns: project.thinkingKeepTurns,
+    reasoningEffort: project.reasoningEffort,
+    reasoningSummary: project.reasoningSummary,
+    systemPrompt: combinedSystemPrompt || undefined,
+    preFillResponse: project.preFillResponse,
+    webSearchEnabled: project.webSearchEnabled,
+    enabledTools,
+  };
+}
+
+/**
+ * Build enabled tools list from project settings.
+ */
+function getEnabledTools(project: Project): string[] {
+  const enabledTools: string[] = [];
+  if (project.memoryEnabled) enabledTools.push('memory');
+  if (project.jsExecutionEnabled) enabledTools.push('javascript');
+  if (project.fsToolEnabled) enabledTools.push('filesystem');
+  return enabledTools;
+}
+
+// ============================================================================
+// Main Agentic Loop
+// ============================================================================
+
+/**
+ * Run the agentic loop with a message buffer pattern.
+ *
+ * The loop processes messages from the buffer, sends them to the API,
+ * handles tool execution, and continues until no more tool calls or max iterations.
+ *
+ * @param context - Chat context (chatId, chat, project, apiDef, modelId, currentMessages)
+ * @param initialMessages - Initial messages to process (user message or tool results)
+ * @param callbacks - React state update callbacks
+ * @returns Result with success status, saved messages, and token totals
+ */
+export async function runAgenticLoop(
+  context: AgenticLoopContext,
+  initialMessages: PendingMessage[],
+  callbacks: AgenticLoopCallbacks
+): Promise<AgenticLoopResult> {
+  const messageBuffer = [...initialMessages];
+  const savedMessages: Message<unknown>[] = [];
+  let jsSessionCreated = false;
+  let iteration = 0;
+
+  // Accumulate totals across all iterations
+  const totals: TokenTotals = {
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    cost: 0,
+  };
+
+  // Build enabled tools and options
+  const enabledTools = getEnabledTools(context.project);
+
+  // Track the last context window usage for chat update
+  let lastContextWindowUsage = 0;
+
+  callbacks.onStreamingStart('Thinking...');
+
+  // Create assembler for streaming
+  let assembler: StreamingContentAssembler | null = null;
+
+  try {
+    while (messageBuffer.length > 0 && iteration < MAX_TOOL_ITERATIONS) {
+      iteration++;
+      console.debug('[agenticLoop] Iteration:', iteration);
+
+      // 1. Take all pending messages from buffer
+      const toSend = messageBuffer.splice(0, messageBuffer.length);
+
+      // 2. Save pending messages to storage and notify UI
+      for (const pending of toSend) {
+        await storage.saveMessage(context.chatId, pending.message);
+        savedMessages.push(pending.message);
+        callbacks.onMessageSaved(pending.message);
+      }
+
+      // 3. Build messages for API (history + new messages)
+      // Load attachments for user messages
+      const allMessages = [...context.currentMessages, ...savedMessages];
+      const messagesWithAttachments = await loadAttachmentsForMessages(allMessages);
+
+      // Apply metadataNewContext: if enabled, only send current user message
+      const messagesToSend =
+        context.project.sendMessageMetadata === 'template' && context.project.metadataNewContext
+          ? [messagesWithAttachments[messagesWithAttachments.length - 1]]
+          : messagesWithAttachments;
+
+      // 4. Build options (no prefill for continuation iterations)
+      const options = buildStreamOptions(context.project, enabledTools);
+      if (iteration > 1) {
+        options.preFillResponse = undefined; // No prefill for continuation
+      }
+
+      // 5. Stream API response
+      assembler = new StreamingContentAssembler();
+      callbacks.onStreamingUpdate([], '');
+
+      // Yield to allow React to process the streaming reset before new content arrives
+      await Promise.resolve();
+
+      console.debug('[agenticLoop] Starting API stream');
+      const stream = apiService.sendMessageStream(
+        messagesToSend,
+        context.modelId,
+        context.apiDef,
+        options
+      );
+
+      let hasFirstChunk = false;
+      let isFirstContentChunk = true;
+
+      // Process stream chunks
+      let streamNext = await stream.next();
+      while (!streamNext.done) {
+        const chunk = streamNext.value;
+
+        if (!hasFirstChunk) {
+          hasFirstChunk = true;
+          callbacks.onFirstChunk();
+        }
+
+        // Handle prefill prepending for first content chunk
+        if (
+          chunk.type === 'content' &&
+          isFirstContentChunk &&
+          iteration === 1 &&
+          context.project.preFillResponse &&
+          apiService.shouldPrependPrefill(context.apiDef)
+        ) {
+          assembler.pushChunk({
+            type: 'content',
+            content: context.project.preFillResponse + chunk.content,
+          });
+          isFirstContentChunk = false;
+        } else {
+          assembler.pushChunk(chunk);
+        }
+
+        if (chunk.type === 'content') {
+          isFirstContentChunk = false;
+        }
+
+        callbacks.onStreamingUpdate(assembler.getGroups(), assembler.getLastEvent());
+        streamNext = await stream.next();
+      }
+
+      // 6. Get final result
+      const result = streamNext.done ? streamNext.value : null;
+
+      if (!result) {
+        // Stream returned no result - create error message
+        const errorRenderingContent = assembler.finalizeWithError({
+          message: 'Stream returned no result',
+        });
+
+        const errorMessage: Message<unknown> = {
+          id: generateUniqueId('msg_assistant'),
+          role: MessageRole.ASSISTANT,
+          content: {
+            type: 'text',
+            content: '',
+            modelFamily: context.apiDef.apiType,
+            renderingContent: errorRenderingContent,
+            stopReason: 'error',
+          },
+          timestamp: new Date(),
+        };
+
+        await storage.saveMessage(context.chatId, errorMessage);
+        savedMessages.push(errorMessage);
+        callbacks.onMessageSaved(errorMessage);
+        break;
+      }
+
+      // 7. Process result - extract tokens and calculate pricing
+      const inputTokens = result.inputTokens ?? 0;
+      const outputTokens = result.outputTokens ?? 0;
+      const reasoningTokens = result.reasoningTokens ?? 0;
+      const cacheCreationTokens = result.cacheCreationTokens ?? 0;
+      const cacheReadTokens = result.cacheReadTokens ?? 0;
+
+      const pricingSnapshot = await getPricingSnapshot(
+        context.apiDef,
+        context.modelId,
+        inputTokens,
+        outputTokens,
+        reasoningTokens,
+        cacheCreationTokens,
+        cacheReadTokens
+      );
+
+      lastContextWindowUsage = pricingSnapshot.contextWindowUsage;
+
+      // Finalize rendering content
+      const { renderingContent, stopReason } = result.error
+        ? {
+            renderingContent: assembler.finalizeWithError(result.error),
+            stopReason: 'error' as const,
+          }
+        : {
+            renderingContent: assembler.finalize(),
+            stopReason: apiService.mapStopReason(context.apiDef.apiType, result.stopReason ?? null),
+          };
+
+      // Populate tool render fields
+      populateToolRenderFields(renderingContent);
+
+      // Create assistant message
+      const assistantMessage: Message<unknown> = {
+        id: generateUniqueId('msg_assistant'),
+        role: MessageRole.ASSISTANT,
+        content: {
+          type: 'text',
+          content: result.textContent,
+          modelFamily: context.apiDef.apiType,
+          fullContent: result.fullContent,
+          renderingContent,
+          stopReason,
+        },
+        timestamp: new Date(),
+        metadata: {
+          model: context.modelId,
+          inputTokens,
+          outputTokens,
+          reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
+          cacheCreationTokens,
+          cacheReadTokens,
+          ...pricingSnapshot,
+        },
+      };
+
+      await storage.saveMessage(context.chatId, assistantMessage);
+      savedMessages.push(assistantMessage);
+      callbacks.onMessageSaved(assistantMessage);
+
+      // Accumulate totals
+      totals.inputTokens += inputTokens;
+      totals.outputTokens += outputTokens;
+      totals.reasoningTokens += reasoningTokens;
+      totals.cacheCreationTokens += cacheCreationTokens;
+      totals.cacheReadTokens += cacheReadTokens;
+      totals.cost += pricingSnapshot.messageCost;
+
+      // 8. Check for tool_use and execute tools
+      if (result.stopReason === 'tool_use') {
+        const toolUseBlocks = apiService.extractToolUseBlocks(
+          context.apiDef.apiType,
+          result.fullContent
+        );
+
+        if (toolUseBlocks.length === 0) {
+          console.debug('[agenticLoop] No tool_use blocks found, ending loop');
+          break;
+        }
+
+        console.debug('[agenticLoop] Executing', toolUseBlocks.length, 'tool(s)');
+
+        // Create JS session on first JS tool call
+        const hasJsTool = toolUseBlocks.some(t => t.name === 'javascript');
+        if (hasJsTool && !jsSessionCreated && context.project.jsExecutionEnabled) {
+          console.debug('[agenticLoop] Creating JS session');
+          await createJsSession(context.project.id, context.project.jsLibEnabled ?? true);
+          jsSessionCreated = true;
+        }
+
+        // Execute tools and collect results
+        const toolResults: ToolResultBlock[] = [];
+        const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+
+        for (const toolUse of toolUseBlocks) {
+          console.debug('[agenticLoop] Executing tool:', toolUse.name, 'id:', toolUse.id);
+          const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
+
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: toolResult.content,
+            is_error: toolResult.isError,
+          });
+
+          toolResultRenderBlocks.push(
+            createToolResultRenderBlock(
+              toolUse.id,
+              toolUse.name,
+              toolResult.content,
+              toolResult.isError
+            )
+          );
+        }
+
+        // Build tool result message using API-specific format
+        const [_assistantToolMessage, toolResultMessage] = apiService.buildToolResultMessages(
+          context.apiDef.apiType,
+          result.fullContent,
+          toolResults,
+          result.textContent
+        );
+
+        // Add rendering content to tool result message
+        toolResultMessage.content.renderingContent = [
+          { category: 'backstage' as const, blocks: toolResultRenderBlocks },
+        ];
+
+        // Push tool result to buffer for next iteration
+        messageBuffer.push({ type: 'tool_result', message: toolResultMessage });
+      }
+    }
+
+    // Build and save final Chat object with accumulated totals
+    const updatedChat: Chat = {
+      ...context.chat,
+      totalInputTokens: (context.chat.totalInputTokens ?? 0) + totals.inputTokens,
+      totalOutputTokens: (context.chat.totalOutputTokens ?? 0) + totals.outputTokens,
+      totalReasoningTokens: (context.chat.totalReasoningTokens ?? 0) + totals.reasoningTokens,
+      totalCacheCreationTokens:
+        (context.chat.totalCacheCreationTokens ?? 0) + totals.cacheCreationTokens,
+      totalCacheReadTokens: (context.chat.totalCacheReadTokens ?? 0) + totals.cacheReadTokens,
+      totalCost: (context.chat.totalCost ?? 0) + totals.cost,
+      contextWindowUsage: lastContextWindowUsage,
+      messageCount: (context.chat.messageCount ?? 0) + savedMessages.length,
+      lastModifiedAt: new Date(),
+    };
+    await storage.saveChat(updatedChat);
+    callbacks.onChatUpdated(updatedChat);
+
+    // Build and save final Project object with lastUsedAt
+    const updatedProject: Project = {
+      ...context.project,
+      lastUsedAt: new Date(),
+    };
+    await storage.saveProject(updatedProject);
+    callbacks.onProjectUpdated(updatedProject);
+
+    return { success: true, savedMessages, totalTokens: totals };
+  } catch (error) {
+    // Ensure JS session is cleaned up on error
+    if (jsSessionCreated) {
+      disposeJsSession();
+      jsSessionCreated = false;
+    }
+
+    const errorInfo =
+      error instanceof Error
+        ? { message: error.message, stack: error.stack }
+        : { message: String(error) || 'Unknown error' };
+
+    console.error('[agenticLoop] Error:', errorInfo.message);
+
+    // Create error message if we have an assembler
+    const errorRenderingContent = assembler
+      ? assembler.finalizeWithError(errorInfo)
+      : [
+          {
+            category: 'error' as const,
+            blocks: [
+              errorInfo.stack
+                ? { type: 'error' as const, message: errorInfo.message, stack: errorInfo.stack }
+                : { type: 'error' as const, message: errorInfo.message },
+            ],
+          },
+        ];
+
+    const errorMessage: Message<unknown> = {
+      id: generateUniqueId('msg_assistant'),
+      role: MessageRole.ASSISTANT,
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: context.apiDef.apiType,
+        renderingContent: errorRenderingContent,
+        stopReason: 'error',
+      },
+      timestamp: new Date(),
+    };
+
+    await storage.saveMessage(context.chatId, errorMessage);
+    savedMessages.push(errorMessage);
+    callbacks.onMessageSaved(errorMessage);
+
+    callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+    return { success: false, savedMessages, totalTokens: totals };
+  } finally {
+    // Cleanup
+    if (jsSessionCreated) {
+      console.debug('[agenticLoop] Disposing JS session');
+      disposeJsSession();
+    }
+    callbacks.onStreamingEnd();
+  }
+}
+
+// ============================================================================
+// Helper: Load attachments for messages
+// ============================================================================
+
+/**
+ * Load attachments for all user messages and handle missing attachment notes.
+ */
+async function loadAttachmentsForMessages(
+  messages: Message<unknown>[]
+): Promise<(Message<unknown> & { attachments?: MessageAttachment[] })[]> {
+  return Promise.all(
+    messages.map(async msg => {
+      if (
+        msg.role === MessageRole.USER &&
+        (msg.content.attachmentIds?.length || msg.content.originalAttachmentCount)
+      ) {
+        const attachments = await storage.getAttachments(msg.id);
+        const loadedIds = new Set(attachments.map(att => att.id));
+
+        const originalCount =
+          msg.content.originalAttachmentCount ?? msg.content.attachmentIds?.length ?? 0;
+        const currentCount = attachments.length;
+        const missingCount = originalCount - currentCount;
+
+        if (missingCount > 0) {
+          const systemNote = `<system-note>${missingCount} attachment(s) removed to save space.</system-note>\n\n`;
+          return {
+            ...msg,
+            content: {
+              ...msg.content,
+              content: systemNote + msg.content.content,
+              attachmentIds: (msg.content.attachmentIds ?? []).filter(id => loadedIds.has(id)),
+            },
+            attachments,
+          };
+        }
+
+        return { ...msg, attachments };
+      }
+      return msg;
+    })
+  );
+}
+
+// ============================================================================
+// Exports for useChat.ts integration
+// ============================================================================
+
+export {
+  populateToolRenderFields,
+  createToolResultRenderBlock,
+  getEnabledTools,
+  buildStreamOptions,
+  loadAttachmentsForMessages,
+};

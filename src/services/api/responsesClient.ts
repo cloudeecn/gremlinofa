@@ -247,14 +247,12 @@ export class ResponsesClient implements APIClient {
             msg.content.fullContent &&
             Array.isArray(msg.content.fullContent)
           ) {
-            // Include message and function_call items (not just messages)
-            // Clean items to strip output-only fields (handles old stored messages)
+            // Include ALL stored items (message, function_call, reasoning, etc.)
+            // Don't filter - API needs full context including encrypted reasoning
             // Cast through unknown since stored data loses SDK type info
             const storedItems = msg.content.fullContent as OpenAI.Responses.ResponseOutputItem[];
-            for (const m of storedItems.filter(
-              m => m.type === 'message' || m.type === 'function_call'
-            )) {
-              input.push(m);
+            for (const item of storedItems) {
+              input.push(item);
             }
           } else {
             input.push({

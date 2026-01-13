@@ -737,7 +737,19 @@ describe('useChat', () => {
       });
     });
 
-    it('stop mode + empty message: saves tool results, no API call', async () => {
+    it('stop mode + empty message: saves tool results and sends error to API', async () => {
+      // Mock stream for stop mode API call
+      const mockStreamGenerator = async function* () {
+        yield { type: 'content' as const, content: 'Understood' };
+        return {
+          textContent: 'Understood',
+          fullContent: {},
+          inputTokens: 10,
+          outputTokens: 5,
+        };
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStreamGenerator());
+
       const { result } = renderHook(() =>
         useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
       );
@@ -748,25 +760,29 @@ describe('useChat', () => {
 
       await result.current.resolvePendingToolCalls('stop');
 
-      // Should save tool result message
-      expect(storage.saveMessage).toHaveBeenCalledWith(
-        'chat_123',
-        expect.objectContaining({
-          role: MessageRole.USER,
-          content: expect.objectContaining({
-            fullContent: expect.arrayContaining([
-              expect.objectContaining({
-                type: 'tool_result',
-                is_error: true,
-                content: expect.stringContaining('Token limit reached'),
-              }),
-            ]),
-          }),
-        })
-      );
+      // Should save tool result message with error
+      await waitFor(() => {
+        expect(storage.saveMessage).toHaveBeenCalledWith(
+          'chat_123',
+          expect.objectContaining({
+            role: MessageRole.USER,
+            content: expect.objectContaining({
+              fullContent: expect.arrayContaining([
+                expect.objectContaining({
+                  type: 'tool_result',
+                  is_error: true,
+                  content: expect.stringContaining('Token limit reached'),
+                }),
+              ]),
+            }),
+          })
+        );
+      });
 
-      // Should NOT call API
-      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+      // Stop mode now correctly sends error to API (Bug #2 fix)
+      await waitFor(() => {
+        expect(apiService.sendMessageStream).toHaveBeenCalled();
+      });
     });
 
     it('continue mode + empty message: saves tool results, calls API', async () => {

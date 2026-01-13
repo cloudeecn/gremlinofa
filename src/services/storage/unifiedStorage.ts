@@ -205,26 +205,40 @@ export class UnifiedStorage {
   // ===== Models Cache =====
 
   async getModels(apiDefinitionId: string): Promise<Model[]> {
+    const result = await this.getModelsWithCache(apiDefinitionId);
+    return result.models;
+  }
+
+  async getModelsWithCache(apiDefinitionId: string): Promise<{
+    models: Model[];
+    cachedAt: Date | null;
+  }> {
     const record = await this.adapter.get(Tables.MODELS_CACHE, apiDefinitionId);
-    if (!record) return [];
+    if (!record) return { models: [], cachedAt: null };
 
     try {
-      const data = await this.decrypt<{ models: Model[] }>(record.encryptedData);
-      return data.models || [];
+      // Automatically detects and decompresses if "GZ" prefix present
+      const json = await encryptionService.decryptWithDecompression(record.encryptedData);
+      const data = JSON.parse(json);
+      // Get timestamp from metadata (ISO string)
+      const cachedAt = record.timestamp ? new Date(record.timestamp) : null;
+      return { models: data.models || [], cachedAt };
     } catch (error) {
       console.error('Failed to decrypt models:', error);
-      return [];
+      return { models: [], cachedAt: null };
     }
   }
 
   async saveModels(apiDefinitionId: string, models: Model[]): Promise<void> {
     const data = { models };
-    const encrypted = await this.encrypt(data);
+    // Use compression for all new model caches (same as messages)
+    const encrypted = await encryptionService.encryptWithCompression(JSON.stringify(data), true);
     const cachedAt = new Date().toISOString();
 
     await this.adapter.save(Tables.MODELS_CACHE, apiDefinitionId, encrypted, {
       timestamp: cachedAt,
     });
+    console.debug(`[Storage] Saved ${models.length} models for ${apiDefinitionId} at ${cachedAt}`);
   }
 
   async deleteModels(apiDefinitionId: string): Promise<void> {
@@ -1017,10 +1031,10 @@ export class UnifiedStorage {
   async initializeDefaults(): Promise<void> {
     console.debug('[Storage] initializeDefaults: Getting existing definitions...');
     const apiTypes = [
-      { apiType: 'responses_api', name: 'OpenAI Responses', baseUrl: '' },
+      { apiType: 'responses_api', name: 'OpenAI Official', baseUrl: '' },
       {
         apiType: 'responses_api',
-        name: 'xAI Responses',
+        name: 'xAI Official',
         baseUrl: 'https://api.x.ai/v1',
       },
       { apiType: 'anthropic', name: 'Anthropic Official', baseUrl: '' },
@@ -1031,7 +1045,8 @@ export class UnifiedStorage {
     console.debug(`[Storage] initializeDefaults: Found ${existing.length} existing definitions`);
 
     for (const { apiType, name, baseUrl } of apiTypes) {
-      const exists = existing.find(def => def.name === name && def.isDefault);
+      // Only spawn if no definition of this apiType exists yet
+      const exists = existing.find(def => def.apiType === apiType);
 
       if (!exists) {
         console.debug(`[Storage] initializeDefaults: Creating default definition: ${name}`);

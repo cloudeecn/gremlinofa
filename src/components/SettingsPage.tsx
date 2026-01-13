@@ -52,9 +52,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   };
 
   const apiTypes = [
-    { id: 'responses_api', name: 'OpenAI Responses', icon: '🔮' },
-    { id: 'chatgpt', name: 'ChatGPT', icon: '🤖' },
-    { id: 'anthropic', name: 'Anthropic', icon: '🧠' },
+    { id: 'responses_api', name: 'OpenAI - Responses (new)', icon: '⚡' },
+    { id: 'chatgpt', name: 'OpenAI - Chat Completions', icon: '💬' },
+    { id: 'anthropic', name: 'Anthropic', icon: '✨' },
     { id: 'webllm', name: 'WebLLM (Local)', icon: '🏠' },
   ] as const;
 
@@ -102,12 +102,6 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
 
     setIsSaving(true);
     try {
-      const existingDef = editingId ? apiDefinitions.find(d => d.id === editingId) : null;
-      const hadNoApiKey = existingDef
-        ? !existingDef.apiKey || existingDef.apiKey.trim() === ''
-        : true;
-      const nowHasApiKey = formApiKey.trim() !== '';
-
       const def: APIDefinition = {
         id: editingId || generateUniqueId(`api_${formApiType}`),
         apiType: formApiType,
@@ -124,10 +118,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
 
       await saveAPIDefinition(def);
 
-      // Auto-refresh models if API key was just added
-      if (hadNoApiKey && nowHasApiKey) {
-        await refreshModels(def.id);
-      }
+      // Always force refresh models when saving (forceRefresh=true)
+      // This ensures users get updated model lists immediately
+      await refreshModels(def.id, true);
 
       handleCancel();
     } finally {
@@ -147,14 +140,6 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   ]);
 
   const handleDelete = async (def: APIDefinition) => {
-    if (def.isDefault) {
-      await showAlert(
-        'Cannot Delete',
-        'Default API definitions cannot be deleted. You can edit them instead.'
-      );
-      return;
-    }
-
     const confirmed = await showDestructiveConfirm(
       'Delete API Definition',
       `Delete "${def.name}"?`,
@@ -259,14 +244,12 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           >
                             Edit
                           </button>
-                          {!def.isDefault && (
-                            <button
-                              onClick={() => handleDelete(def)}
-                              className="rounded border border-red-600 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
-                            >
-                              Delete
-                            </button>
-                          )}
+                          <button
+                            onClick={() => handleDelete(def)}
+                            className="rounded border border-red-600 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
+                          >
+                            Delete
+                          </button>
                         </div>
                       </>
                     ) : (

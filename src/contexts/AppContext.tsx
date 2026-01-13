@@ -38,16 +38,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await refreshAPIDefinitions();
       console.debug('[AppContext] API definitions refreshed, refreshing projects...');
       refreshProjects();
-      // Load models for all default API definitions
+      // Load models for all API definitions with credentials
       const defs = await storage.getAPIDefinitions();
-      console.debug(
-        `[AppContext] Loading models for ${
-          defs.filter(d => d.isDefault).length
-        } default definitions...`
+      const defsWithCredentials = defs.filter(
+        d => d.apiType === 'webllm' || d.isLocal || (d.apiKey && d.apiKey.trim() !== '')
       );
-      for (const def of defs.filter(d => d.isDefault)) {
-        await refreshModels(def.id, true);
-      }
+      console.debug(
+        `[AppContext] Loading models for ${defsWithCredentials.length} configured providers...`
+      );
+      // Load models in parallel with skipWaitingModelRefresh for faster init
+      await Promise.allSettled(defsWithCredentials.map(def => refreshModels(def.id, false, true)));
       console.debug('[AppContext] App initialization complete!');
     } finally {
       setIsInitializing(false);
@@ -117,7 +117,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await refreshProjects();
   };
 
-  const refreshModels = async (apiDefinitionId: string, skipWaitingModelRefresh?: boolean) => {
+  const refreshModels = async (
+    apiDefinitionId: string,
+    forceRefresh = false,
+    skipWaitingModelRefresh = false
+  ) => {
     setIsLoadingModels(true);
     try {
       const apiDef = await storage.getAPIDefinition(apiDefinitionId);
@@ -127,11 +131,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
 
       // Skip refresh if API key is not configured (except for WebLLM which doesn't need one)
-      if (apiDef.apiType !== 'webllm' && (!apiDef.apiKey || apiDef.apiKey.trim() === '')) {
+      // Also skip if provider is marked as local (doesn't need API key)
+      const needsApiKey = apiDef.apiType !== 'webllm' && !apiDef.isLocal;
+      if (needsApiKey && (!apiDef.apiKey || apiDef.apiKey.trim() === '')) {
         console.debug('Skipping model refresh for', apiDefinitionId, '- no API key configured');
         return;
       }
 
+      // Check cache age if not forcing refresh
+      if (!forceRefresh) {
+        const cached = await storage.getModelsWithCache(apiDefinitionId);
+        if (cached.models.length > 0 && cached.cachedAt) {
+          const ageMs = Date.now() - cached.cachedAt.getTime();
+          const maxAgeMs = 24 * 60 * 60 * 1000; // 1 day
+
+          if (ageMs < maxAgeMs) {
+            console.debug(
+              `[AppContext] Using cached models for ${apiDefinitionId} (age: ${Math.round(ageMs / 1000 / 60)} minutes)`
+            );
+            // Load from cache into state
+            setModels(prev => new Map(prev).set(apiDefinitionId, cached.models));
+            setIsLoadingModels(false);
+            return;
+          } else {
+            console.debug(
+              `[AppContext] Cache expired for ${apiDefinitionId} (age: ${Math.round(ageMs / 1000 / 60 / 60)} hours), fetching...`
+            );
+          }
+        }
+      }
+
+      // Fetch from API
+      console.debug(`[AppContext] Fetching models from API for ${apiDefinitionId}...`);
       const discoverModelsPromise = apiService
         .discoverModels(apiDef)
         .then(async discoveredModels => {

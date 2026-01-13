@@ -91,12 +91,12 @@ export interface StorageAdapter {
    * Get a single record by ID
    * @param table - Table name
    * @param id - Record ID
-   * @returns Object with encryptedData and unencryptedData, or null if not found
+   * @returns Object with encryptedData, timestamp, and unencryptedData, or null if not found
    */
   get(
     table: string,
     id: string
-  ): Promise<{ encryptedData: string; unencryptedData?: string } | null>;
+  ): Promise<{ encryptedData: string; timestamp?: string; unencryptedData?: string } | null>;
 
   /**
    * Query records with filters

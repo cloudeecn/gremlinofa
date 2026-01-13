@@ -3,8 +3,7 @@ import Spinner from './ui/Spinner';
 import { useApp } from '../hooks/useApp';
 import { useAlert } from '../hooks/useAlert';
 import { useIsMobile } from '../hooks/useIsMobile';
-import type { APIDefinition } from '../types';
-import { APIType } from '../types';
+import type { APIDefinition, APIType } from '../types';
 import { generateUniqueId } from '../utils/idGenerator';
 import {
   isWebGPUAvailable,
@@ -24,7 +23,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
-  const [formApiType, setFormApiType] = useState<APIType>(APIType.CHATGPT);
+  const [formApiType, setFormApiType] = useState<APIType>('chatgpt');
   const [formName, setFormName] = useState('');
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [formApiKey, setFormApiKey] = useState('');
@@ -45,7 +44,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const handleCancel = () => {
     setEditingId(null);
     setIsAddingNew(false);
-    setFormApiType(APIType.CHATGPT);
+    setFormApiType('chatgpt');
     setFormName('');
     setFormBaseUrl('');
     setFormApiKey('');
@@ -53,15 +52,15 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   };
 
   const apiTypes = [
-    { id: APIType.RESPONSES_API, name: 'OpenAI Responses', icon: '🔮' },
-    { id: APIType.CHATGPT, name: 'ChatGPT', icon: '🤖' },
-    { id: APIType.ANTHROPIC, name: 'Anthropic', icon: '🧠' },
-    { id: APIType.WEBLLM, name: 'WebLLM (Local)', icon: '🏠' },
-  ];
+    { id: 'responses_api', name: 'OpenAI Responses', icon: '🔮' },
+    { id: 'chatgpt', name: 'ChatGPT', icon: '🤖' },
+    { id: 'anthropic', name: 'Anthropic', icon: '🧠' },
+    { id: 'webllm', name: 'WebLLM (Local)', icon: '🏠' },
+  ] as const;
 
   // Check if API type requires an API key
   const requiresApiKey = (apiType: APIType): boolean => {
-    return apiType !== APIType.WEBLLM;
+    return apiType !== 'webllm';
   };
 
   const getApiTypeInfo = (apiType: APIType) => {
@@ -81,7 +80,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const handleStartAdd = () => {
     setIsAddingNew(true);
     setEditingId(null);
-    setFormApiType(APIType.CHATGPT);
+    setFormApiType('chatgpt');
     setFormName('');
     setFormBaseUrl('');
     setFormApiKey('');
@@ -210,7 +209,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                 let statusText = '';
                 if (!needsApiKey) {
                   // WebLLM or isLocal - show Local badge
-                  if (def.apiType === APIType.WEBLLM && !hasWebGPU) {
+                  if (def.apiType === 'webllm' && !hasWebGPU) {
                     statusBadgeClass = 'bg-yellow-100 text-yellow-800';
                     statusText = 'No WebGPU';
                   } else {
@@ -383,18 +382,18 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
 
                   <label className="mb-1.5 block text-sm font-medium text-gray-700">API Type</label>
                   <div className="mb-3 grid grid-cols-2 gap-2">
-                    {apiTypes.map(apiType => (
+                    {apiTypes.map(type => (
                       <button
-                        key={apiType.id}
-                        onClick={() => setFormApiType(apiType.id)}
+                        key={type.id}
+                        onClick={() => setFormApiType(type.id)}
                         className={`flex items-center justify-center rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                          formApiType === apiType.id
+                          formApiType === type.id
                             ? 'border-blue-600 bg-blue-50 text-blue-900'
                             : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
                         }`}
                       >
-                        <span className="mr-2">{apiType.icon}</span>
-                        {apiType.name}
+                        <span className="mr-2">{type.icon}</span>
+                        {type.name}
                       </button>
                     ))}
                   </div>

@@ -125,7 +125,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 ### API Definitions
 
-- Multiple API definitions per provider type (APIType: RESPONSES_API, CHATGPT, ANTHROPIC, WEBLLM)
+- Multiple API definitions per provider type (APIType: `responses_api`, `chatgpt`, `anthropic`, `webllm`)
 - Each definition: name, baseUrl (optional), apiKey (not required for WEBLLM or when `isLocal` is true)
 - `isLocal` flag marks non-WebLLM providers that don't need API keys (e.g., local LLM servers)
 - Default definitions auto-created; model lists cached per definition
@@ -1035,6 +1035,7 @@ location /dev {
 6. **Performance**: Lazy load, React.memo, virtual scrolling, debounced input
 7. **Accessibility**: Semantic HTML, ARIA labels, keyboard navigation
 8. **Testing**: Critical paths and complex logic
+9. **String Unions over Const Objects**: Prefer `type X = 'a' | 'b' | 'c'` over `const X = { A: 'a', ... } as const`. Use const objects only when runtime iteration is needed (e.g., `Tables` for `Object.values(Tables)`).
 
 **Scrolling Pattern:**
 
@@ -1116,8 +1117,8 @@ When using web search + memory tool together, citations in assistant messages ma
 
 ## Future Considerations
 
-1. **OpenAI/xAI Thinking** - Implement `migrateMessageRendering` thinking support when providers expose thinking
-2. **Code Execution** - Add `CodeExecutionRenderBlock` for agentic features
-3. **Custom Tools** - Extend block types beyond web search/fetch
+1. [x] **OpenAI/xAI Thinking** - Implement `migrateMessageRendering` thinking support when providers expose thinking
+2. [x] **Code Execution** - Add `CodeExecutionRenderBlock` for agentic features
+3. [x] **Custom Tools** - Extend block types beyond web search/fetch
 4. **Citation Tooltips** - Hover tooltips for `data-cited` content
 5. **Streaming Abort** - Handle abort signal mid-stream

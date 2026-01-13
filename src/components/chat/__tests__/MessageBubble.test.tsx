@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import MessageBubble from '../MessageBubble';
-import { MessageRole } from '../../../types';
 import type { Message } from '../../../types';
 import type { MessageBubbleProps } from '../types';
 
@@ -53,7 +52,7 @@ global.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 function createMessage(overrides: Partial<Message<unknown>> = {}): Message<unknown> {
   return {
     id: 'msg_test_123',
-    role: MessageRole.USER,
+    role: 'user',
     content: {
       type: 'text',
       content: 'Test message content',
@@ -86,7 +85,7 @@ describe('MessageBubble', () => {
   describe('Component Delegation', () => {
     it('renders UserMessageBubble for user messages', () => {
       const props = createProps({
-        message: createMessage({ role: MessageRole.USER }),
+        message: createMessage({ role: 'user' }),
       });
       const { container } = render(<MessageBubble {...props} />);
 
@@ -100,7 +99,7 @@ describe('MessageBubble', () => {
     it('renders AssistantMessageBubble for assistant messages with renderingContent', () => {
       const props = createProps({
         message: createMessage({
-          role: MessageRole.ASSISTANT,
+          role: 'assistant',
           content: {
             type: 'text',
             content: 'Test response',
@@ -120,7 +119,7 @@ describe('MessageBubble', () => {
     it('renders LegacyAssistantBubble for assistant messages without renderingContent', () => {
       const props = createProps({
         message: createMessage({
-          role: MessageRole.ASSISTANT,
+          role: 'assistant',
           content: {
             type: 'text',
             content: 'Legacy response',
@@ -137,7 +136,7 @@ describe('MessageBubble', () => {
     it('passes onAction to UserMessageBubble', () => {
       const onAction = vi.fn();
       const props = createProps({
-        message: createMessage({ role: MessageRole.USER }),
+        message: createMessage({ role: 'user' }),
         onAction,
       });
       render(<MessageBubble {...props} />);

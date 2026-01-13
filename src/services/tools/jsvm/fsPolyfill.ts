@@ -13,7 +13,7 @@
 
 import type { QuickJSContext, QuickJSHandle } from 'quickjs-emscripten-core';
 import * as vfs from '../../vfs/vfsService';
-import { VfsError, VfsErrorCode, normalizePath } from '../../vfs/vfsService';
+import { VfsError, normalizePath } from '../../vfs/vfsService';
 
 /** Readonly paths - any write/delete to these paths throws EROFS */
 const READONLY_PATHS = ['/memories'];
@@ -43,27 +43,27 @@ function isReadonly(path: string): boolean {
  */
 function vfsErrorToErrno(error: VfsError, path: string): string {
   switch (error.code) {
-    case VfsErrorCode.PATH_NOT_FOUND:
-    case VfsErrorCode.IS_DELETED:
+    case 'PATH_NOT_FOUND':
+    case 'IS_DELETED':
       return `ENOENT: no such file or directory, '${path}'`;
-    case VfsErrorCode.FILE_EXISTS:
-    case VfsErrorCode.DIR_EXISTS:
-    case VfsErrorCode.DESTINATION_EXISTS:
+    case 'FILE_EXISTS':
+    case 'DIR_EXISTS':
+    case 'DESTINATION_EXISTS':
       return `EEXIST: file already exists, '${path}'`;
-    case VfsErrorCode.NOT_A_FILE:
+    case 'NOT_A_FILE':
       return `EISDIR: illegal operation on a directory, '${path}'`;
-    case VfsErrorCode.NOT_A_DIRECTORY:
+    case 'NOT_A_DIRECTORY':
       return `ENOTDIR: not a directory, '${path}'`;
-    case VfsErrorCode.DIR_NOT_EMPTY:
+    case 'DIR_NOT_EMPTY':
       return `ENOTEMPTY: directory not empty, '${path}'`;
-    case VfsErrorCode.INVALID_PATH:
-    case VfsErrorCode.INVALID_LINE:
+    case 'INVALID_PATH':
+    case 'INVALID_LINE':
       return `EINVAL: invalid argument, '${path}'`;
-    case VfsErrorCode.STRING_NOT_FOUND:
-    case VfsErrorCode.STRING_NOT_UNIQUE:
+    case 'STRING_NOT_FOUND':
+    case 'STRING_NOT_UNIQUE':
       // These are for str_replace, not used in fs operations
       return `EIO: ${error.message}`;
-    case VfsErrorCode.BINARY_FILE:
+    case 'BINARY_FILE':
       return `EINVAL: binary file, '${path}'`;
     default:
       return `EIO: ${error.message}`;
@@ -262,7 +262,7 @@ export class FsBridge {
         } catch (error) {
           if (error instanceof VfsError) {
             // FILE_EXISTS on marker means dir exists
-            if (error.code === VfsErrorCode.FILE_EXISTS) {
+            if (error.code === 'FILE_EXISTS') {
               return { ok: false, error: `EEXIST: file already exists, '${path}'` };
             }
             return { ok: false, error: vfsErrorToErrno(error, path) };

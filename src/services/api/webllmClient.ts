@@ -17,7 +17,7 @@ import type {
   ToolResultBlock,
   ToolUseBlock,
 } from '../../types';
-import { APIType, groupAndConsolidateBlocks, MessageRole } from '../../types';
+import { groupAndConsolidateBlocks } from '../../types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import type { ModelInfo } from './modelInfo';
 import {
@@ -239,7 +239,7 @@ export class WebLLMClient implements APIClient {
       return {
         id: mlcModel.model_id,
         name: info.displayName,
-        apiType: APIType.WEBLLM,
+        apiType: 'webllm',
         contextWindow: info.contextWindow,
       };
     });
@@ -288,7 +288,7 @@ export class WebLLMClient implements APIClient {
 
       // Add conversation messages
       for (const msg of messages) {
-        if (msg.role === MessageRole.USER) {
+        if (msg.role === 'user') {
           // WebLLM doesn't support vision - just use text content
           // If message has attachments, note it in the message
           let content = msg.content.content;
@@ -299,7 +299,7 @@ export class WebLLMClient implements APIClient {
             role: 'user',
             content,
           });
-        } else if (msg.role === MessageRole.ASSISTANT) {
+        } else if (msg.role === 'assistant') {
           webllmMessages.push({
             role: 'assistant',
             content: msg.content.content,

@@ -1,5 +1,6 @@
 import type {
   APIDefinition,
+  APIType,
   Message,
   MessageStopReason,
   Model,
@@ -7,7 +8,7 @@ import type {
   ToolResultBlock,
   ToolUseBlock,
 } from '../../types';
-import { APIType, groupAndConsolidateBlocks } from '../../types';
+import { groupAndConsolidateBlocks } from '../../types';
 import { AnthropicClient } from './anthropicClient';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import { OpenAIClient } from './openaiClient';
@@ -23,10 +24,10 @@ class APIService {
 
   constructor() {
     // Initialize clients
-    this.clients.set(APIType.RESPONSES_API, new ResponsesClient());
-    this.clients.set(APIType.ANTHROPIC, new AnthropicClient());
-    this.clients.set(APIType.CHATGPT, new OpenAIClient());
-    this.clients.set(APIType.WEBLLM, new WebLLMClient());
+    this.clients.set('responses_api', new ResponsesClient());
+    this.clients.set('anthropic', new AnthropicClient());
+    this.clients.set('chatgpt', new OpenAIClient());
+    this.clients.set('webllm', new WebLLMClient());
   }
 
   // Get the appropriate client for an API type
@@ -159,7 +160,7 @@ class APIService {
     if (!stopReason) return 'end_turn';
 
     // Provider-specific mappings
-    if (apiType === APIType.ANTHROPIC) {
+    if (apiType === 'anthropic') {
       // Anthropic uses: end_turn, max_tokens, stop_sequence, tool_use
       switch (stopReason) {
         case 'end_turn':

@@ -6,8 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { APIDefinition, Message, MessageRole } from '../../../types';
-import { APIType } from '../../../types';
+import type { APIDefinition, Message } from '../../../types';
 import type { WebLLMModelInfo } from '../webllmModelInfo';
 
 // Mock the @mlc-ai/web-llm module
@@ -63,7 +62,7 @@ describe('WebLLMClient', () => {
     client = new WebLLMClient();
     mockApiDefinition = {
       id: 'webllm-def',
-      apiType: APIType.WEBLLM,
+      apiType: 'webllm',
       name: 'WebLLM Local',
       baseUrl: '',
       apiKey: '', // Not needed for WebLLM
@@ -101,7 +100,7 @@ describe('WebLLMClient', () => {
       const models = await client.discoverModels(mockApiDefinition);
 
       for (const model of models) {
-        expect(model.apiType).toBe(APIType.WEBLLM);
+        expect(model.apiType).toBe('webllm');
       }
     });
 
@@ -223,7 +222,7 @@ describe('WebLLMClient', () => {
       const messages: Message<unknown>[] = [
         {
           id: 'msg1',
-          role: 'user' as MessageRole,
+          role: 'user',
           content: { type: 'text', content: 'Hello' },
           timestamp: new Date(),
         },
@@ -260,7 +259,7 @@ describe('WebLLMClient', () => {
       const messages: Message<unknown>[] = [
         {
           id: 'msg1',
-          role: 'user' as MessageRole,
+          role: 'user',
           content: { type: 'text', content: 'Hello' },
           timestamp: new Date(),
         },
@@ -287,7 +286,7 @@ describe('WebLLMClient', () => {
       const messages: Message<unknown>[] = [
         {
           id: 'msg1',
-          role: 'user' as MessageRole,
+          role: 'user',
           content: { type: 'text', content: 'Hello' },
           timestamp: new Date(),
         },
@@ -329,7 +328,7 @@ describe('WebLLMClient', () => {
       const messages: Message<unknown>[] = [
         {
           id: 'msg1',
-          role: 'user' as MessageRole,
+          role: 'user',
           content: { type: 'text', content: 'Hi' },
           timestamp: new Date(),
         },
@@ -372,7 +371,7 @@ describe('WebLLMClient', () => {
       const messages: Message<unknown>[] = [
         {
           id: 'msg1',
-          role: 'user' as MessageRole,
+          role: 'user',
           content: { type: 'text', content: 'Hi' },
           timestamp: new Date(),
         },
@@ -419,7 +418,7 @@ describe('WebLLMClient', () => {
       const messages: Message<unknown>[] = [
         {
           id: 'msg1',
-          role: 'user' as MessageRole,
+          role: 'user',
           content: { type: 'text', content: 'What is this?' },
           timestamp: new Date(),
           attachments: [{ id: 'att1', type: 'image', mimeType: 'image/png', data: 'base64data' }],

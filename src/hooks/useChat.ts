@@ -26,7 +26,6 @@ import type {
 } from '../types';
 import type { ToolResultRenderBlock, ToolUseRenderBlock } from '../types/content';
 
-import { MessageRole } from '../types';
 import { generateUniqueId } from '../utils/idGenerator';
 import { showAlert } from '../utils/alerts';
 
@@ -252,7 +251,7 @@ function getUnresolvedToolCalls(messages: Message<unknown>[]): ToolUseBlock[] | 
   // Find last assistant message
   let lastAssistantIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === MessageRole.ASSISTANT) {
+    if (messages[i].role === 'assistant') {
       lastAssistantIdx = i;
       break;
     }
@@ -272,7 +271,7 @@ function getUnresolvedToolCalls(messages: Message<unknown>[]): ToolUseBlock[] | 
   // Look for tool_result in any message after the assistant message
   for (let i = lastAssistantIdx + 1; i < messages.length; i++) {
     const msg = messages[i];
-    if (msg.role === MessageRole.USER) {
+    if (msg.role === 'user') {
       const resultIds = extractToolResultIdsFromMessage(msg);
       for (const id of resultIds) {
         toolUseIds.delete(id);
@@ -406,7 +405,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
             totalCost += msg.metadata.messageCost || 0;
 
             // Migrate contextWindowUsage and get latest value from assistant messages
-            if (msg.role === MessageRole.ASSISTANT) {
+            if (msg.role === 'assistant') {
               if (msg.metadata.contextWindowUsage === undefined) {
                 msg.metadata.contextWindowUsage = getContextWindowUsage(msg.metadata);
                 await storage.saveMessage(chatId, msg);
@@ -461,7 +460,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         console.debug('[useChat] Running contextWindowUsage migration');
 
         for (const msg of loadedMessages) {
-          if (msg.role === MessageRole.ASSISTANT && msg.metadata) {
+          if (msg.role === 'assistant' && msg.metadata) {
             if (msg.metadata.contextWindowUsage === undefined) {
               msg.metadata.contextWindowUsage = getContextWindowUsage(msg.metadata);
               await storage.saveMessage(chatId, msg);
@@ -476,7 +475,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
       // 3b. Lightweight migration: renderingContent for messages without it
       for (const msg of loadedMessages) {
-        if (msg.role === MessageRole.ASSISTANT && !msg.content.renderingContent) {
+        if (msg.role === 'assistant' && !msg.content.renderingContent) {
           // Only migrate messages that have fullContent or content to render
           if (msg.content.fullContent || msg.content.content) {
             console.debug('[useChat] Migrating renderingContent for message:', msg.id);
@@ -575,7 +574,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
               // Create user message
               const userMessage: Message<string> = {
                 id: generateUniqueId('msg_user'),
-                role: MessageRole.USER,
+                role: 'user',
                 content: {
                   type: 'text',
                   content: messageWithMetadata,
@@ -798,7 +797,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     // Create user message
     const userMessage: Message<string> = {
       id: generateUniqueId('msg_user'),
-      role: MessageRole.USER,
+      role: 'user',
       content: {
         type: 'text',
         content: messageWithMetadata,
@@ -850,7 +849,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     // Find last assistant message's context window usage
     for (let i = remainingMessages.length - 1; i >= 0; i--) {
       const msg = remainingMessages[i];
-      if (msg.role === MessageRole.ASSISTANT && msg.metadata?.contextWindowUsage !== undefined) {
+      if (msg.role === 'assistant' && msg.metadata?.contextWindowUsage !== undefined) {
         contextWindowUsage = msg.metadata.contextWindowUsage;
         break;
       }
@@ -1007,7 +1006,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     // Build tool result message
     const toolResultMessage: Message<unknown> = {
       id: generateUniqueId('msg_user'),
-      role: MessageRole.USER,
+      role: 'user',
       content: {
         type: 'text',
         content: '',
@@ -1036,7 +1035,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
       const userMsg: Message<string> = {
         id: generateUniqueId('msg_user'),
-        role: MessageRole.USER,
+        role: 'user',
         content: {
           type: 'text',
           content: messageWithMetadata,

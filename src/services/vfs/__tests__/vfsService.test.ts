@@ -90,7 +90,6 @@ import {
   hasVfs,
   getFileMeta,
   VfsError,
-  VfsErrorCode,
 } from '../vfsService';
 
 describe('Path Utilities', () => {
@@ -201,13 +200,13 @@ describe('VFS File Operations', () => {
 
       await expect(createFile(projectId, '/test.txt', 'second')).rejects.toThrow(VfsError);
       await expect(createFile(projectId, '/test.txt', 'second')).rejects.toMatchObject({
-        code: VfsErrorCode.FILE_EXISTS,
+        code: 'FILE_EXISTS',
       });
     });
 
     it('throws for root path', async () => {
       await expect(createFile(projectId, '/', 'content')).rejects.toMatchObject({
-        code: VfsErrorCode.INVALID_PATH,
+        code: 'INVALID_PATH',
       });
     });
   });
@@ -220,14 +219,14 @@ describe('VFS File Operations', () => {
 
     it('throws for non-existent file', async () => {
       await expect(readFile(projectId, '/nonexistent.txt')).rejects.toMatchObject({
-        code: VfsErrorCode.PATH_NOT_FOUND,
+        code: 'PATH_NOT_FOUND',
       });
     });
 
     it('throws for directory', async () => {
       await mkdir(projectId, '/mydir');
       await expect(readFile(projectId, '/mydir')).rejects.toMatchObject({
-        code: VfsErrorCode.NOT_A_FILE,
+        code: 'NOT_A_FILE',
       });
     });
 
@@ -236,7 +235,7 @@ describe('VFS File Operations', () => {
       await deleteFile(projectId, '/test.txt');
 
       await expect(readFile(projectId, '/test.txt')).rejects.toMatchObject({
-        code: VfsErrorCode.IS_DELETED,
+        code: 'IS_DELETED',
       });
     });
   });
@@ -257,7 +256,7 @@ describe('VFS File Operations', () => {
 
     it('throws for non-existent file', async () => {
       await expect(updateFile(projectId, '/nonexistent.txt', 'content')).rejects.toMatchObject({
-        code: VfsErrorCode.PATH_NOT_FOUND,
+        code: 'PATH_NOT_FOUND',
       });
     });
 
@@ -266,7 +265,7 @@ describe('VFS File Operations', () => {
       await deleteFile(projectId, '/test.txt');
 
       await expect(updateFile(projectId, '/test.txt', 'new content')).rejects.toMatchObject({
-        code: VfsErrorCode.IS_DELETED,
+        code: 'IS_DELETED',
       });
     });
   });
@@ -288,7 +287,7 @@ describe('VFS File Operations', () => {
 
     it('throws for non-existent file', async () => {
       await expect(deleteFile(projectId, '/nonexistent.txt')).rejects.toMatchObject({
-        code: VfsErrorCode.PATH_NOT_FOUND,
+        code: 'PATH_NOT_FOUND',
       });
     });
   });
@@ -319,7 +318,7 @@ describe('VFS Directory Operations', () => {
       await mkdir(projectId, '/mydir');
 
       await expect(mkdir(projectId, '/mydir')).rejects.toMatchObject({
-        code: VfsErrorCode.DIR_EXISTS,
+        code: 'DIR_EXISTS',
       });
     });
 
@@ -327,7 +326,7 @@ describe('VFS Directory Operations', () => {
       await createFile(projectId, '/conflict', 'content');
 
       await expect(mkdir(projectId, '/conflict')).rejects.toMatchObject({
-        code: VfsErrorCode.FILE_EXISTS,
+        code: 'FILE_EXISTS',
       });
     });
   });
@@ -344,7 +343,7 @@ describe('VFS Directory Operations', () => {
       await createFile(projectId, '/mydir/file.txt', 'content');
 
       await expect(rmdir(projectId, '/mydir')).rejects.toMatchObject({
-        code: VfsErrorCode.DIR_NOT_EMPTY,
+        code: 'DIR_NOT_EMPTY',
       });
     });
 
@@ -361,7 +360,7 @@ describe('VFS Directory Operations', () => {
 
     it('throws for root', async () => {
       await expect(rmdir(projectId, '/')).rejects.toMatchObject({
-        code: VfsErrorCode.INVALID_PATH,
+        code: 'INVALID_PATH',
       });
     });
   });
@@ -459,7 +458,7 @@ describe('VFS Rename Operations', () => {
     await createFile(projectId, '/dest.txt', 'dest');
 
     await expect(rename(projectId, '/src.txt', '/dest.txt')).rejects.toMatchObject({
-      code: VfsErrorCode.DESTINATION_EXISTS,
+      code: 'DESTINATION_EXISTS',
     });
   });
 
@@ -484,7 +483,7 @@ describe('VFS Rename Operations', () => {
 
   it('throws when source not found', async () => {
     await expect(rename(projectId, '/nonexistent', '/dest')).rejects.toMatchObject({
-      code: VfsErrorCode.PATH_NOT_FOUND,
+      code: 'PATH_NOT_FOUND',
     });
   });
 });
@@ -607,7 +606,7 @@ describe('VFS Restore and Purge', () => {
 
       // Now it should truly not exist (can't even restore)
       await expect(restore(projectId, '/test.txt')).rejects.toMatchObject({
-        code: VfsErrorCode.PATH_NOT_FOUND,
+        code: 'PATH_NOT_FOUND',
       });
     });
 
@@ -615,7 +614,7 @@ describe('VFS Restore and Purge', () => {
       await createFile(projectId, '/test.txt', 'content');
 
       await expect(purge(projectId, '/test.txt')).rejects.toMatchObject({
-        code: VfsErrorCode.INVALID_PATH,
+        code: 'INVALID_PATH',
       });
     });
   });

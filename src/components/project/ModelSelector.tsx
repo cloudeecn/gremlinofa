@@ -11,7 +11,6 @@ import {
   type WebGPUCapabilities,
 } from '../../utils/webgpuCapabilities';
 import type { Model, APIDefinition } from '../../types';
-import { APIType } from '../../types';
 
 interface ModelSelectorProps {
   isOpen: boolean;
@@ -31,10 +30,10 @@ function getStatusBadge(
   hasWebGPU: boolean
 ): { className: string; text: string } {
   const hasApiKey = apiDef.apiKey && apiDef.apiKey.trim() !== '';
-  const isLocal = apiDef.apiType === APIType.WEBLLM || apiDef.isLocal;
+  const isLocal = apiDef.apiType === 'webllm' || apiDef.isLocal;
 
   if (isLocal) {
-    if (apiDef.apiType === APIType.WEBLLM && !hasWebGPU) {
+    if (apiDef.apiType === 'webllm' && !hasWebGPU) {
       return { className: 'bg-yellow-100 text-yellow-800', text: 'No WebGPU' };
     }
     return { className: 'bg-blue-100 text-blue-800', text: 'Local' };
@@ -127,8 +126,7 @@ function ModelSelectorContent({
     ? apiDefinitions.find(def => def.id === selectedApiDefId)
     : null;
   const hasApiKey = selectedApiDef?.apiKey && selectedApiDef.apiKey.trim() !== '';
-  const isLocalProvider =
-    selectedApiDef?.apiType === APIType.WEBLLM || selectedApiDef?.isLocal === true;
+  const isLocalProvider = selectedApiDef?.apiType === 'webllm' || selectedApiDef?.isLocal === true;
 
   return (
     <div className="flex max-h-[75vh] flex-col rounded-t-2xl bg-white md:max-h-[90vh] md:rounded-2xl">
@@ -250,7 +248,7 @@ function ModelSelectorContent({
           ) : (
             <div className="space-y-2">
               {/* WebGPU not available warning for WebLLM providers */}
-              {selectedApiDef?.apiType === APIType.WEBLLM && !hasWebGPU && (
+              {selectedApiDef?.apiType === 'webllm' && !hasWebGPU && (
                 <div className="mb-3 rounded-lg border border-yellow-300 bg-yellow-50 p-3 text-sm text-yellow-800">
                   <div className="mb-1 font-medium">⚠️ WebGPU Not Available</div>
                   <p className="mb-2 text-xs">
@@ -267,7 +265,7 @@ function ModelSelectorContent({
                 );
 
                 // For WebLLM models, get additional size info and compatibility
-                const isWebLLM = model.apiType === APIType.WEBLLM;
+                const isWebLLM = model.apiType === 'webllm';
                 const webllmInfo = isWebLLM ? getModelInfo(model.id) : null;
                 const compatibility =
                   isWebLLM && webllmInfo

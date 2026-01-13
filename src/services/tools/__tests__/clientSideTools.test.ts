@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { toolRegistry, executeClientSideTool } from '../clientSideTools';
-import { APIType, type ClientSideTool, type ToolResult } from '../../../types';
+import { type ClientSideTool, type ToolResult } from '../../../types';
 
 describe('clientSideTools', () => {
   describe('toolRegistry', () => {
@@ -140,25 +140,25 @@ describe('clientSideTools', () => {
     });
 
     it('should always include alwaysEnabled tools (ping)', () => {
-      const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, []);
+      const defs = toolRegistry.getToolDefinitionsForAPI('anthropic', []);
       const pingDef = defs.find(d => (d as { name?: string }).name === 'ping');
       expect(pingDef).toBeDefined();
     });
 
     it('should include explicitly enabled tools', () => {
-      const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, ['test_api_tool']);
+      const defs = toolRegistry.getToolDefinitionsForAPI('anthropic', ['test_api_tool']);
       const testDef = defs.find(d => (d as { name?: string }).name === 'test_api_tool');
       expect(testDef).toBeDefined();
     });
 
     it('should NOT include non-enabled, non-alwaysEnabled tools', () => {
-      const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, []);
+      const defs = toolRegistry.getToolDefinitionsForAPI('anthropic', []);
       const testDef = defs.find(d => (d as { name?: string }).name === 'test_api_tool');
       expect(testDef).toBeUndefined();
     });
 
     it('should generate Anthropic format correctly', () => {
-      const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, ['test_api_tool']);
+      const defs = toolRegistry.getToolDefinitionsForAPI('anthropic', ['test_api_tool']);
       const testDef = defs.find(d => (d as { name?: string }).name === 'test_api_tool');
 
       expect(testDef).toEqual({
@@ -173,7 +173,7 @@ describe('clientSideTools', () => {
     });
 
     it('should generate OpenAI ChatGPT format correctly', () => {
-      const defs = toolRegistry.getToolDefinitionsForAPI(APIType.CHATGPT, ['test_api_tool']);
+      const defs = toolRegistry.getToolDefinitionsForAPI('chatgpt', ['test_api_tool']);
       const testDef = defs.find(
         d => (d as { function?: { name: string } }).function?.name === 'test_api_tool'
       );
@@ -193,7 +193,7 @@ describe('clientSideTools', () => {
     });
 
     it('should generate OpenAI Responses API format correctly', () => {
-      const defs = toolRegistry.getToolDefinitionsForAPI(APIType.RESPONSES_API, ['test_api_tool']);
+      const defs = toolRegistry.getToolDefinitionsForAPI('responses_api', ['test_api_tool']);
       // Responses API uses flat format (name at top level, not nested in "function")
       const testDef = defs.find(d => (d as { name?: string }).name === 'test_api_tool');
 
@@ -217,7 +217,7 @@ describe('clientSideTools', () => {
         inputSchema: { type: 'object', properties: {}, required: [] },
         execute: async (): Promise<ToolResult> => ({ content: 'ok' }),
         apiOverrides: {
-          [APIType.ANTHROPIC]: {
+          ['anthropic']: {
             name: 'tool_with_override',
             description: 'Custom override description',
             input_schema: { type: 'object' as const, properties: {}, required: [] as string[] },
@@ -226,7 +226,7 @@ describe('clientSideTools', () => {
       };
       toolRegistry.register(toolWithOverride);
 
-      const defs = toolRegistry.getToolDefinitionsForAPI(APIType.ANTHROPIC, ['tool_with_override']);
+      const defs = toolRegistry.getToolDefinitionsForAPI('anthropic', ['tool_with_override']);
       const overrideDef = defs.find(d => (d as { name?: string }).name === 'tool_with_override');
 
       expect(overrideDef).toEqual({
@@ -243,7 +243,7 @@ describe('clientSideTools', () => {
         inputSchema: { type: 'object', properties: {}, required: [] },
         execute: async (): Promise<ToolResult> => ({ content: 'ok' }),
         apiOverrides: {
-          [APIType.ANTHROPIC]: {
+          ['anthropic']: {
             name: 'tool_with_override',
             description: 'Anthropic-specific description',
             input_schema: { type: 'object' as const, properties: {}, required: [] as string[] },
@@ -253,7 +253,7 @@ describe('clientSideTools', () => {
       toolRegistry.register(toolWithPartialOverride);
 
       // Request OpenAI format - should use standard generation (no ChatGPT override defined)
-      const defs = toolRegistry.getToolDefinitionsForAPI(APIType.CHATGPT, ['tool_with_override']);
+      const defs = toolRegistry.getToolDefinitionsForAPI('chatgpt', ['tool_with_override']);
       const toolDef = defs.find(
         d => (d as { function?: { name: string } }).function?.name === 'tool_with_override'
       );
@@ -285,7 +285,7 @@ describe('clientSideTools', () => {
       execute: async (): Promise<ToolResult> => ({ content: 'ok' }),
       systemPrompt: 'This prompt should be skipped for Anthropic.',
       apiOverrides: {
-        [APIType.ANTHROPIC]: {
+        ['anthropic']: {
           name: 'tool_with_prompt_override',
           description: 'Custom Anthropic definition',
           input_schema: { type: 'object' as const, properties: {}, required: [] as string[] },
@@ -313,31 +313,29 @@ describe('clientSideTools', () => {
     });
 
     it('should return system prompts for enabled tools without apiOverrides', () => {
-      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, ['tool_with_prompt']);
+      const prompts = toolRegistry.getSystemPrompts('chatgpt', ['tool_with_prompt']);
       expect(prompts).toEqual(['You have access to tool_with_prompt for testing.']);
     });
 
     it('should skip tools without systemPrompt defined', () => {
-      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, ['tool_no_prompt']);
+      const prompts = toolRegistry.getSystemPrompts('chatgpt', ['tool_no_prompt']);
       expect(prompts).toEqual([]);
     });
 
     it('should skip tools that use apiOverrides for the current API type', () => {
       // For Anthropic, tool_with_prompt_override has an override - should skip its prompt
-      const prompts = toolRegistry.getSystemPrompts(APIType.ANTHROPIC, [
-        'tool_with_prompt_override',
-      ]);
+      const prompts = toolRegistry.getSystemPrompts('anthropic', ['tool_with_prompt_override']);
       expect(prompts).toEqual([]);
     });
 
     it('should include prompt when apiOverrides does not apply to current API type', () => {
       // For ChatGPT, tool_with_prompt_override has no override - should include its prompt
-      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, ['tool_with_prompt_override']);
+      const prompts = toolRegistry.getSystemPrompts('chatgpt', ['tool_with_prompt_override']);
       expect(prompts).toEqual(['This prompt should be skipped for Anthropic.']);
     });
 
     it('should return multiple prompts for multiple enabled tools', () => {
-      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, [
+      const prompts = toolRegistry.getSystemPrompts('chatgpt', [
         'tool_with_prompt',
         'tool_with_prompt_override',
       ]);
@@ -347,14 +345,14 @@ describe('clientSideTools', () => {
     });
 
     it('should return empty array when no tools are enabled', () => {
-      const prompts = toolRegistry.getSystemPrompts(APIType.CHATGPT, []);
+      const prompts = toolRegistry.getSystemPrompts('chatgpt', []);
       // ping is alwaysEnabled but has no systemPrompt, so still empty
       expect(prompts).toEqual([]);
     });
 
     it('should include alwaysEnabled tools if they have systemPrompt', () => {
       // ping is alwaysEnabled but has no systemPrompt
-      const prompts = toolRegistry.getSystemPrompts(APIType.ANTHROPIC, []);
+      const prompts = toolRegistry.getSystemPrompts('anthropic', []);
       expect(prompts).toEqual([]);
     });
   });

@@ -10,7 +10,7 @@ import type {
   ToolUseBlock,
 } from '../../types';
 
-import { APIType, groupAndConsolidateBlocks, MessageRole } from '../../types';
+import { groupAndConsolidateBlocks } from '../../types';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { mapReasoningEffort } from '../../utils/reasoningEffort';
 import { toolRegistry } from '../tools/clientSideTools';
@@ -70,7 +70,7 @@ export class OpenAIClient implements APIClient {
       const models: Model[] = chatModels.map(openaiModel => ({
         id: openaiModel.id,
         name: openaiModel.id, // OpenAI doesn't provide display names
-        apiType: APIType.CHATGPT,
+        apiType: 'chatgpt',
         contextWindow: getModelInfo(openaiModel.id).contextWindow,
       }));
 
@@ -123,7 +123,7 @@ export class OpenAIClient implements APIClient {
 
       // Add conversation messages
       messages.forEach(msg => {
-        if (msg.role === MessageRole.USER) {
+        if (msg.role === 'user') {
           // Check if message contains tool_result blocks in fullContent (for agentic loop continuation)
           if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
             const fullContent = msg.content.fullContent as Array<Record<string, unknown>>;
@@ -172,7 +172,7 @@ export class OpenAIClient implements APIClient {
               content: msg.content.content,
             });
           }
-        } else if (msg.role === MessageRole.ASSISTANT) {
+        } else if (msg.role === 'assistant') {
           // Check if assistant message has tool_calls in fullContent
           if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
             const fullContent = msg.content.fullContent as Array<Record<string, unknown>>;
@@ -678,11 +678,11 @@ export class OpenAIClient implements APIClient {
     // Assistant message with the original fullContent
     const assistantMessage: Message<unknown> = {
       id: generateUniqueId('msg_assistant'),
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: textContent,
-        modelFamily: APIType.CHATGPT,
+        modelFamily: 'chatgpt',
         fullContent: assistantContent,
       },
       timestamp: new Date(),
@@ -692,11 +692,11 @@ export class OpenAIClient implements APIClient {
     // We store them as a single user message with tool_results for our internal format
     const toolResultMessage: Message<unknown> = {
       id: generateUniqueId('msg_user'),
-      role: MessageRole.USER,
+      role: 'user',
       content: {
         type: 'text',
         content: '',
-        modelFamily: APIType.CHATGPT,
+        modelFamily: 'chatgpt',
         fullContent: toolResults.map(tr => ({
           type: 'tool_result',
           tool_call_id: tr.tool_use_id,
@@ -714,6 +714,6 @@ export class OpenAIClient implements APIClient {
    * Get client-side tool definitions for OpenAI format.
    */
   protected getClientSideTools(enabledTools: string[]): ChatCompletionTool[] {
-    return toolRegistry.getToolDefinitionsForAPI(APIType.CHATGPT, enabledTools);
+    return toolRegistry.getToolDefinitionsForAPI('chatgpt', enabledTools);
   }
 }

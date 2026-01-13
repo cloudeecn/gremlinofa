@@ -129,12 +129,12 @@ describe('useVirtualScroll', () => {
       });
     });
 
-    it('should create IntersectionObserver with default bufferScreens=2 when not specified', () => {
+    it('should create IntersectionObserver with default bufferScreens=5 when not specified', () => {
       renderHook(() => useVirtualScroll());
 
       expect(observerOptions).toEqual({
         root: null,
-        rootMargin: '200% 0px',
+        rootMargin: '500% 0px',
         threshold: 0,
       });
     });

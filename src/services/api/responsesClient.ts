@@ -10,7 +10,7 @@ import type {
   ToolUseBlock,
 } from '../../types';
 
-import { APIType, groupAndConsolidateBlocks, MessageRole } from '../../types';
+import { groupAndConsolidateBlocks } from '../../types';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { mapReasoningEffort } from '../../utils/reasoningEffort';
 import { toolRegistry } from '../tools/clientSideTools';
@@ -77,7 +77,7 @@ export class ResponsesClient implements APIClient {
       const models: Model[] = chatModels.map(openaiModel => ({
         id: openaiModel.id,
         name: openaiModel.id, // OpenAI doesn't provide display names
-        apiType: APIType.RESPONSES_API,
+        apiType: 'responses_api',
         contextWindow: getModelInfo(openaiModel.id).contextWindow,
       }));
 
@@ -90,55 +90,55 @@ export class ResponsesClient implements APIClient {
         {
           id: 'gpt-5',
           name: 'GPT-5',
-          apiType: APIType.RESPONSES_API,
+          apiType: 'responses_api',
           contextWindow: 128000,
         },
         {
           id: 'gpt-5-chat-latest',
           name: 'GPT-5 Chat',
-          apiType: APIType.RESPONSES_API,
+          apiType: 'responses_api',
           contextWindow: 128000,
         },
         {
           id: 'gpt-4o',
           name: 'GPT-4o',
-          apiType: APIType.RESPONSES_API,
+          apiType: 'responses_api',
           contextWindow: 128000,
         },
         {
           id: 'gpt-4.1-mini',
           name: 'GPT-4.1 Mini',
-          apiType: APIType.RESPONSES_API,
+          apiType: 'responses_api',
           contextWindow: 8192,
         },
         {
           id: 'gpt-4.1',
           name: 'GPT-4.1',
-          apiType: APIType.RESPONSES_API,
+          apiType: 'responses_api',
           contextWindow: 8192,
         },
         {
           id: 'o3',
           name: 'o3',
-          apiType: APIType.RESPONSES_API,
+          apiType: 'responses_api',
           contextWindow: 128000,
         },
         {
           id: 'o3-mini',
           name: 'o3-mini',
-          apiType: APIType.RESPONSES_API,
+          apiType: 'responses_api',
           contextWindow: 128000,
         },
         {
           id: 'o1',
           name: 'o1',
-          apiType: APIType.RESPONSES_API,
+          apiType: 'responses_api',
           contextWindow: 200000,
         },
         {
           id: 'o1-mini',
           name: 'o1-mini',
-          apiType: APIType.RESPONSES_API,
+          apiType: 'responses_api',
           contextWindow: 128000,
         },
       ];
@@ -193,10 +193,10 @@ export class ResponsesClient implements APIClient {
 
       // Add conversation messages
       messages.forEach(msg => {
-        if (msg.role === MessageRole.USER) {
+        if (msg.role === 'user') {
           // Check if this is a tool result message (fullContent has function_call_output items)
           if (
-            msg.content.modelFamily === APIType.RESPONSES_API &&
+            msg.content.modelFamily === 'responses_api' &&
             msg.content.fullContent &&
             Array.isArray(msg.content.fullContent)
           ) {
@@ -241,9 +241,9 @@ export class ResponsesClient implements APIClient {
             role: 'user',
             content: contentItems,
           });
-        } else if (msg.role === MessageRole.ASSISTANT) {
+        } else if (msg.role === 'assistant') {
           if (
-            msg.content.modelFamily === APIType.RESPONSES_API &&
+            msg.content.modelFamily === 'responses_api' &&
             msg.content.fullContent &&
             Array.isArray(msg.content.fullContent)
           ) {
@@ -793,11 +793,11 @@ export class ResponsesClient implements APIClient {
     // Assistant message with the original fullContent (ResponseOutputItem[] which is subset of ResponseInputItem[])
     const assistantMessage: Message<OpenAI.Responses.ResponseInputItem[]> = {
       id: generateUniqueId('msg_assistant'),
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: textContent,
-        modelFamily: APIType.RESPONSES_API,
+        modelFamily: 'responses_api',
         fullContent: assistantContent as OpenAI.Responses.ResponseInputItem[],
       },
       timestamp: new Date(),
@@ -813,11 +813,11 @@ export class ResponsesClient implements APIClient {
 
     const toolResultMessage: Message<OpenAI.Responses.ResponseInputItem[]> = {
       id: generateUniqueId('msg_user'),
-      role: MessageRole.USER,
+      role: 'user',
       content: {
         type: 'text',
         content: '',
-        modelFamily: APIType.RESPONSES_API,
+        modelFamily: 'responses_api',
         fullContent: functionCallOutputs,
       },
       timestamp: new Date(),
@@ -830,6 +830,6 @@ export class ResponsesClient implements APIClient {
    * Get client-side tool definitions for Responses API format.
    */
   protected getClientSideTools(enabledTools: string[]): OpenAI.Responses.Tool[] {
-    return toolRegistry.getToolDefinitionsForAPI(APIType.RESPONSES_API, enabledTools);
+    return toolRegistry.getToolDefinitionsForAPI('responses_api', enabledTools);
   }
 }

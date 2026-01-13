@@ -7,9 +7,9 @@
  * Internally uses VfsService for tree-structured storage with versioning.
  */
 
-import { APIType, type ClientSideTool, type ToolResult } from '../../types';
+import { type ClientSideTool, type ToolResult } from '../../types';
 import * as vfs from '../vfs/vfsService';
-import { VfsError, VfsErrorCode } from '../vfs/vfsService';
+import { VfsError } from '../vfs/vfsService';
 import { toolRegistry } from './clientSideTools';
 
 const MEMORIES_ROOT = '/memories';
@@ -230,7 +230,7 @@ export class MemoryToolInstance {
           content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n${listing}`,
         };
       } catch (error) {
-        if (error instanceof VfsError && error.code === VfsErrorCode.PATH_NOT_FOUND) {
+        if (error instanceof VfsError && error.code === 'PATH_NOT_FOUND') {
           return {
             content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
           };
@@ -264,19 +264,19 @@ export class MemoryToolInstance {
       };
     } catch (error) {
       if (error instanceof VfsError) {
-        if (error.code === VfsErrorCode.PATH_NOT_FOUND) {
+        if (error.code === 'PATH_NOT_FOUND') {
           return {
             content: `The path ${vfsPath} does not exist. Please provide a valid path.`,
             isError: true,
           };
         }
-        if (error.code === VfsErrorCode.IS_DELETED) {
+        if (error.code === 'IS_DELETED') {
           return {
             content: `The path ${vfsPath} does not exist. Please provide a valid path.`,
             isError: true,
           };
         }
-        if (error.code === VfsErrorCode.NOT_A_FILE) {
+        if (error.code === 'NOT_A_FILE') {
           // It's a directory, list its contents (2 levels deep)
           const entries = await listTwoLevels(this.projectId, vfsPath);
           const listing = entries
@@ -319,7 +319,7 @@ export class MemoryToolInstance {
         content: `File created successfully at: ${vfsPath}`,
       };
     } catch (error) {
-      if (error instanceof VfsError && error.code === VfsErrorCode.FILE_EXISTS) {
+      if (error instanceof VfsError && error.code === 'FILE_EXISTS') {
         return {
           content: `Error: File ${vfsPath} already exists`,
           isError: true,
@@ -376,9 +376,9 @@ export class MemoryToolInstance {
     } catch (error) {
       if (error instanceof VfsError) {
         if (
-          error.code === VfsErrorCode.PATH_NOT_FOUND ||
-          error.code === VfsErrorCode.IS_DELETED ||
-          error.code === VfsErrorCode.NOT_A_FILE
+          error.code === 'PATH_NOT_FOUND' ||
+          error.code === 'IS_DELETED' ||
+          error.code === 'NOT_A_FILE'
         ) {
           return {
             content: `Error: The path ${vfsPath} does not exist. Please provide a valid path.`,
@@ -427,9 +427,9 @@ export class MemoryToolInstance {
     } catch (error) {
       if (error instanceof VfsError) {
         if (
-          error.code === VfsErrorCode.PATH_NOT_FOUND ||
-          error.code === VfsErrorCode.IS_DELETED ||
-          error.code === VfsErrorCode.NOT_A_FILE
+          error.code === 'PATH_NOT_FOUND' ||
+          error.code === 'IS_DELETED' ||
+          error.code === 'NOT_A_FILE'
         ) {
           return {
             content: `Error: The path ${vfsPath} does not exist`,
@@ -460,13 +460,13 @@ export class MemoryToolInstance {
       };
     } catch (error) {
       if (error instanceof VfsError) {
-        if (error.code === VfsErrorCode.PATH_NOT_FOUND || error.code === VfsErrorCode.IS_DELETED) {
+        if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
           return {
             content: `Error: The path ${vfsPath} does not exist`,
             isError: true,
           };
         }
-        if (error.code === VfsErrorCode.NOT_A_FILE) {
+        if (error.code === 'NOT_A_FILE') {
           // Try deleting as a directory
           try {
             await vfs.rmdir(this.projectId, vfsPath, true);
@@ -512,19 +512,19 @@ export class MemoryToolInstance {
       };
     } catch (error) {
       if (error instanceof VfsError) {
-        if (error.code === VfsErrorCode.PATH_NOT_FOUND) {
+        if (error.code === 'PATH_NOT_FOUND') {
           return {
             content: `Error: The path ${oldVfsPath} does not exist`,
             isError: true,
           };
         }
-        if (error.code === VfsErrorCode.IS_DELETED) {
+        if (error.code === 'IS_DELETED') {
           return {
             content: `Error: The path ${oldVfsPath} does not exist`,
             isError: true,
           };
         }
-        if (error.code === VfsErrorCode.DESTINATION_EXISTS) {
+        if (error.code === 'DESTINATION_EXISTS') {
           return {
             content: `Error: The destination ${newVfsPath} already exists`,
             isError: true,
@@ -697,7 +697,7 @@ export function createMemoryClientSideTool(projectId: string): ClientSideTool {
     },
     // Anthropic uses shorthand type; other APIs get the full schema generated
     apiOverrides: {
-      [APIType.ANTHROPIC]: {
+      ['anthropic']: {
         type: 'memory_20250818',
         name: 'memory',
       },

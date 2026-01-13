@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { storage } from '../../services/storage';
 import { getModelInfo } from '../../services/api/anthropicModelInfo';
 import type { Message, APIDefinition } from '../../types';
-import { APIType } from '../../types';
 
 interface CacheWarningProps {
   messages: Message<unknown>[];
@@ -31,7 +30,7 @@ export default function CacheWarning({
 
       // Load API definition to check if it's Anthropic
       const apiDef: APIDefinition | null = await storage.getAPIDefinition(currentApiDefId);
-      if (!apiDef || apiDef.apiType !== APIType.ANTHROPIC) {
+      if (!apiDef || apiDef.apiType !== 'anthropic') {
         return;
       }
 
@@ -46,7 +45,7 @@ export default function CacheWarning({
       const lastMessageTime = lastMessage.timestamp.getTime();
       const fiveMinutesInMs = 5 * 60 * 1000;
       const isOlderThan5Minutes = now - lastMessageTime > fiveMinutesInMs;
-      const isNotFromAnthropic = lastMessage.content.modelFamily !== APIType.ANTHROPIC;
+      const isNotFromAnthropic = lastMessage.content.modelFamily !== 'anthropic';
 
       // Show warning if either condition is met
       if (isOlderThan5Minutes || isNotFromAnthropic) {

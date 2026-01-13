@@ -15,7 +15,7 @@ import type { StorageAdapter } from '../storage/StorageAdapter';
 import { Tables } from '../storage/StorageAdapter';
 import { encryptionService } from '../encryption/encryptionService';
 import * as vfs from './vfsService';
-import { VfsError, VfsErrorCode } from './vfsService';
+import { VfsError } from './vfsService';
 
 const MEMORIES_ROOT = '/memories';
 
@@ -174,7 +174,7 @@ async function replayJournalEntry(
         try {
           await vfs.createFile(projectId, vfsPath, entry.file_text);
         } catch (error) {
-          if (error instanceof VfsError && error.code === VfsErrorCode.FILE_EXISTS) {
+          if (error instanceof VfsError && error.code === 'FILE_EXISTS') {
             // File already exists, update instead
             await vfs.updateFile(projectId, vfsPath, entry.file_text);
           } else {
@@ -227,7 +227,7 @@ async function replayJournalEntry(
         try {
           await vfs.deleteFile(projectId, vfsPath);
         } catch (error) {
-          if (error instanceof VfsError && error.code === VfsErrorCode.PATH_NOT_FOUND) {
+          if (error instanceof VfsError && error.code === 'PATH_NOT_FOUND') {
             // Already deleted or never existed
             console.debug('[migration] delete skipped: path not found');
           } else {

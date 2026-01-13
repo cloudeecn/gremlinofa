@@ -16,7 +16,6 @@ import { executeClientSideTool, toolRegistry } from '../../services/tools/client
 import * as jsTool from '../../services/tools/jsTool';
 import type { Chat, Project, Message, APIDefinition, RenderingBlockGroup } from '../../types';
 import type { ToolUseRenderBlock } from '../../types/content';
-import { MessageRole } from '../../types';
 
 // Mock dependencies
 vi.mock('../../services/storage');
@@ -80,7 +79,7 @@ describe('agenticLoop', () => {
 
   const mockUserMessage: Message<string> = {
     id: 'msg_user_1',
-    role: MessageRole.USER,
+    role: 'user',
     content: { type: 'text', content: 'Hello' },
     timestamp: new Date('2024-01-01'),
   };
@@ -224,13 +223,13 @@ describe('agenticLoop', () => {
       vi.mocked(apiService.buildToolResultMessages).mockReturnValue([
         {
           id: 'msg_1',
-          role: MessageRole.ASSISTANT,
+          role: 'assistant',
           content: { type: 'text', content: '' },
           timestamp: new Date(),
         },
         {
           id: 'msg_2',
-          role: MessageRole.USER,
+          role: 'user',
           content: {
             type: 'text',
             content: '',
@@ -299,13 +298,13 @@ describe('agenticLoop', () => {
       vi.mocked(apiService.buildToolResultMessages).mockReturnValue([
         {
           id: 'msg_1',
-          role: MessageRole.ASSISTANT,
+          role: 'assistant',
           content: { type: 'text', content: '' },
           timestamp: new Date(),
         },
         {
           id: 'msg_2',
-          role: MessageRole.USER,
+          role: 'user',
           content: {
             type: 'text',
             content: '',
@@ -355,13 +354,13 @@ describe('agenticLoop', () => {
       vi.mocked(apiService.buildToolResultMessages).mockReturnValue([
         {
           id: 'msg_1',
-          role: MessageRole.ASSISTANT,
+          role: 'assistant',
           content: { type: 'text', content: '' },
           timestamp: new Date(),
         },
         {
           id: 'msg_2',
-          role: MessageRole.USER,
+          role: 'user',
           content: {
             type: 'text',
             content: '',
@@ -425,13 +424,13 @@ describe('agenticLoop', () => {
       vi.mocked(apiService.buildToolResultMessages).mockReturnValue([
         {
           id: 'msg_1',
-          role: MessageRole.ASSISTANT,
+          role: 'assistant',
           content: { type: 'text', content: '' },
           timestamp: new Date(),
         },
         {
           id: 'msg_2',
-          role: MessageRole.USER,
+          role: 'user',
           content: {
             type: 'text',
             content: '',
@@ -509,7 +508,7 @@ describe('agenticLoop', () => {
 
       const toolResultMessage: Message<unknown> = {
         id: 'msg_tool_result',
-        role: MessageRole.USER,
+        role: 'user',
         content: {
           type: 'text',
           content: '',

@@ -11,7 +11,6 @@ import type {
   MessageContent,
   Project,
 } from '../../../types';
-import { APIType, MessageRole } from '../../../types';
 
 /**
  * Factory functions for creating test data
@@ -21,7 +20,7 @@ export function createTestAPIDefinition(overrides: Partial<APIDefinition> = {}):
   return {
     id: 'test-api-def-1',
     name: 'Test API',
-    apiType: APIType.ANTHROPIC,
+    apiType: 'anthropic',
     baseUrl: '',
     apiKey: 'test-api-key',
     createdAt: new Date('2024-01-01T00:00:00Z'),
@@ -86,7 +85,7 @@ export function createTestMessage(overrides: Partial<Message<any>> = {}): Messag
 
   return {
     id: 'test-message-1',
-    role: MessageRole.USER,
+    role: 'user',
     content,
     timestamp: new Date('2024-01-01T00:00:00Z'),
     metadata: {

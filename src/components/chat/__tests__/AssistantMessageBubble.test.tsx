@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import AssistantMessageBubble from '../AssistantMessageBubble';
-import { MessageRole } from '../../../types';
 import type { Message, MessageMetadata } from '../../../types';
 import type { AssistantMessageBubbleProps } from '../types';
 
@@ -61,7 +60,7 @@ Object.assign(navigator, { clipboard: mockClipboard });
 function createMessage(overrides: Partial<Message<unknown>> = {}): Message<unknown> {
   return {
     id: 'msg_assistant_123',
-    role: MessageRole.ASSISTANT,
+    role: 'assistant',
     content: {
       type: 'text',
       content: 'Test assistant response',

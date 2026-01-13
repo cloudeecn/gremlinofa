@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ChatCompletionTool } from 'openai/resources/index.mjs';
 import type OpenAI from 'openai';
-import { APIType, type ClientSideTool, type ToolResult } from '../../types';
+import type { APIType, ClientSideTool, ToolResult } from '../../types';
 
 /**
  * Registry for client-side tools that run locally instead of on the API server.
@@ -82,19 +82,16 @@ class ClientSideToolRegistry {
    * Returns API-specific format (uses apiOverrides when available).
    */
   getToolDefinitionsForAPI(
-    apiType: typeof APIType.ANTHROPIC,
+    apiType: 'anthropic',
     enabledToolNames: string[]
   ): Anthropic.Beta.BetaToolUnion[];
+  getToolDefinitionsForAPI(apiType: 'chatgpt', enabledToolNames: string[]): ChatCompletionTool[];
   getToolDefinitionsForAPI(
-    apiType: typeof APIType.CHATGPT,
-    enabledToolNames: string[]
-  ): ChatCompletionTool[];
-  getToolDefinitionsForAPI(
-    apiType: typeof APIType.RESPONSES_API,
+    apiType: 'responses_api',
     enabledToolNames: string[]
   ): OpenAI.Responses.Tool[];
   getToolDefinitionsForAPI(
-    apiType: typeof APIType.WEBLLM,
+    apiType: 'webllm',
     enabledToolNames: string[]
   ): Anthropic.Beta.BetaToolUnion[];
   getToolDefinitionsForAPI(
@@ -104,9 +101,9 @@ class ClientSideToolRegistry {
     const tools = this.getEnabledTools(enabledToolNames);
 
     switch (apiType) {
-      case APIType.ANTHROPIC: {
+      case 'anthropic': {
         const mapper = (tool: ClientSideTool): Anthropic.Beta.BetaToolUnion => {
-          const override = tool.apiOverrides?.[APIType.ANTHROPIC];
+          const override = tool.apiOverrides?.['anthropic'];
           if (override) return override;
           return {
             name: tool.name,
@@ -117,9 +114,9 @@ class ClientSideToolRegistry {
         return tools.map(mapper);
       }
 
-      case APIType.CHATGPT: {
+      case 'chatgpt': {
         const mapper = (tool: ClientSideTool): ChatCompletionTool => {
-          const override = tool.apiOverrides?.[APIType.CHATGPT];
+          const override = tool.apiOverrides?.['chatgpt'];
           if (override) return override;
           return {
             type: 'function',
@@ -133,9 +130,9 @@ class ClientSideToolRegistry {
         return tools.map(mapper);
       }
 
-      case APIType.RESPONSES_API: {
+      case 'responses_api': {
         const mapper = (tool: ClientSideTool): OpenAI.Responses.Tool => {
-          const override = tool.apiOverrides?.[APIType.RESPONSES_API];
+          const override = tool.apiOverrides?.['responses_api'];
           if (override) return override;
           // Responses API uses flat structure (no nested "function" object)
           return {
@@ -149,7 +146,7 @@ class ClientSideToolRegistry {
         return tools.map(mapper);
       }
 
-      case APIType.WEBLLM: {
+      case 'webllm': {
         // WebLLM doesn't support tools yet - use Anthropic format as fallback
         return tools.map(tool => ({
           name: tool.name,

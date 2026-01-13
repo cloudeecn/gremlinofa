@@ -3,7 +3,6 @@ import { render, screen, waitFor } from '@testing-library/react';
 import CacheWarning from '../CacheWarning';
 import { storage } from '../../../services/storage';
 import type { Message, APIDefinition } from '../../../types';
-import { APIType, MessageRole } from '../../../types';
 
 // Mock storage
 vi.mock('../../../services/storage', () => ({
@@ -15,7 +14,7 @@ vi.mock('../../../services/storage', () => ({
 describe('CacheWarning', () => {
   const mockAnthropicApiDef: APIDefinition = {
     id: 'api-1',
-    apiType: APIType.ANTHROPIC,
+    apiType: 'anthropic',
     name: 'Anthropic',
     baseUrl: '',
     apiKey: 'test-key',
@@ -25,7 +24,7 @@ describe('CacheWarning', () => {
 
   const mockOpenAIApiDef: APIDefinition = {
     id: 'api-2',
-    apiType: APIType.CHATGPT,
+    apiType: 'chatgpt',
     name: 'OpenAI',
     baseUrl: '',
     apiKey: 'test-key',
@@ -54,11 +53,11 @@ describe('CacheWarning', () => {
 
     const recentMessage: Message<unknown> = {
       id: 'msg-1',
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: 'Hello',
-        modelFamily: APIType.CHATGPT,
+        modelFamily: 'chatgpt',
       },
       timestamp: new Date(),
       metadata: {
@@ -80,11 +79,11 @@ describe('CacheWarning', () => {
 
     const recentMessage: Message<unknown> = {
       id: 'msg-1',
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: 'Hello',
-        modelFamily: APIType.ANTHROPIC,
+        modelFamily: 'anthropic',
       },
       timestamp: new Date(), // Just now
       metadata: {
@@ -113,11 +112,11 @@ describe('CacheWarning', () => {
 
     const oldMessage: Message<unknown> = {
       id: 'msg-1',
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: 'Hello',
-        modelFamily: APIType.ANTHROPIC,
+        modelFamily: 'anthropic',
       },
       timestamp: oldTimestamp,
       metadata: {
@@ -144,11 +143,11 @@ describe('CacheWarning', () => {
 
     const recentMessage: Message<unknown> = {
       id: 'msg-1',
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: 'Hello',
-        modelFamily: APIType.CHATGPT, // Different provider
+        modelFamily: 'chatgpt', // Different provider
       },
       timestamp: new Date(),
       metadata: {
@@ -177,11 +176,11 @@ describe('CacheWarning', () => {
 
     const oldMessage: Message<unknown> = {
       id: 'msg-1',
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: 'Hello',
-        modelFamily: APIType.ANTHROPIC,
+        modelFamily: 'anthropic',
       },
       timestamp: oldTimestamp,
       metadata: {
@@ -211,11 +210,11 @@ describe('CacheWarning', () => {
 
     const oldMessage: Message<unknown> = {
       id: 'msg-1',
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: 'Hello',
-        modelFamily: APIType.ANTHROPIC,
+        modelFamily: 'anthropic',
       },
       timestamp: oldTimestamp,
       metadata: {
@@ -239,11 +238,11 @@ describe('CacheWarning', () => {
   it('should not render when currentApiDefId is null', async () => {
     const recentMessage: Message<unknown> = {
       id: 'msg-1',
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: 'Hello',
-        modelFamily: APIType.ANTHROPIC,
+        modelFamily: 'anthropic',
       },
       timestamp: new Date(),
       metadata: {
@@ -267,11 +266,11 @@ describe('CacheWarning', () => {
   it('should not render when currentModelId is null', async () => {
     const recentMessage: Message<unknown> = {
       id: 'msg-1',
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: 'Hello',
-        modelFamily: APIType.ANTHROPIC,
+        modelFamily: 'anthropic',
       },
       timestamp: new Date(),
       metadata: {

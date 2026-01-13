@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { MessageRole, type MessageAttachment } from '../../types';
+import { type MessageAttachment } from '../../types';
 import type { RenderingBlockGroup } from '../../types/content';
 import { storage } from '../../services/storage';
 import type { MessageBubbleProps } from './types';
@@ -20,7 +20,7 @@ export default function MessageBubble({
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
-  const isUser = message.role === MessageRole.USER;
+  const isUser = message.role === 'user';
 
   // Load attachments from storage when visible
   useEffect(() => {

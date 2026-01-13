@@ -1,8 +1,7 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import MessageList from '../MessageList';
-import { MessageRole } from '../../../types';
-import type { Message } from '../../../types';
+import type { Message, MessageRole } from '../../../types';
 import type { RenderingBlockGroup } from '../../../types/content';
 
 // Mock IntersectionObserver
@@ -108,7 +107,7 @@ vi.mock('../../../hooks/useVirtualScroll', () => ({
 describe('MessageList', () => {
   const mockOnAction = vi.fn();
 
-  const createMessage = (id: string, role: MessageRole = MessageRole.USER): Message<unknown> => ({
+  const createMessage = (id: string, role: MessageRole = 'user'): Message<unknown> => ({
     id,
     role,
     content: { type: 'text' as const, content: `Test message ${id}` },

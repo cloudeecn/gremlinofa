@@ -12,7 +12,7 @@ import type {
   WebSearchRenderBlock,
 } from '../../types';
 
-import { APIType, groupAndConsolidateBlocks, MessageRole } from '../../types';
+import { groupAndConsolidateBlocks } from '../../types';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { formatModelInfoForDisplay, getModelInfo } from './anthropicModelInfo';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
@@ -41,7 +41,7 @@ export class AnthropicClient implements APIClient {
       const models: Model[] = modelsResponse.data.map(anthropicModel => ({
         id: anthropicModel.id,
         name: anthropicModel.display_name || anthropicModel.id,
-        apiType: APIType.ANTHROPIC,
+        apiType: 'anthropic',
         contextWindow: 200000, // Use default as API doesn't expose this field
       }));
 
@@ -54,19 +54,19 @@ export class AnthropicClient implements APIClient {
         {
           id: 'claude-sonnet-4-5',
           name: 'Claude Sonnet 4.5',
-          apiType: APIType.ANTHROPIC,
+          apiType: 'anthropic',
           contextWindow: 200000,
         },
         {
           id: 'claude-haiku-4-5',
           name: 'Claude Haiku 4.5',
-          apiType: APIType.ANTHROPIC,
+          apiType: 'anthropic',
           contextWindow: 200000,
         },
         {
           id: 'claude-opus-4-5',
           name: 'Claude Opus 4.5',
-          apiType: APIType.ANTHROPIC,
+          apiType: 'anthropic',
           contextWindow: 200000,
         },
       ];
@@ -113,12 +113,12 @@ export class AnthropicClient implements APIClient {
         // Citations in text blocks may have invalid document_index references after tool breaks
         const prevMsg = idx > 0 ? arr[idx - 1] : null;
         const prevHasToolResult =
-          prevMsg?.content.modelFamily === APIType.ANTHROPIC &&
+          prevMsg?.content.modelFamily === 'anthropic' &&
           Array.isArray(prevMsg?.content.fullContent) &&
           prevMsg.content.fullContent.some((b: { type?: string }) => b.type === 'tool_result');
 
         // Use fullContent if available and from Anthropic (better caching)
-        if (msg.content.modelFamily === APIType.ANTHROPIC && msg.content.fullContent) {
+        if (msg.content.modelFamily === 'anthropic' && msg.content.fullContent) {
           // Use the stored fullContent blocks, but add cache_control dynamically
           // Filter out empty text blocks (Anthropic doesn't support them)
           const content = Array.isArray(msg.content.fullContent)
@@ -175,7 +175,7 @@ export class AnthropicClient implements APIClient {
               ];
 
           return {
-            role: msg.role === MessageRole.USER ? 'user' : 'assistant',
+            role: msg.role === 'user' ? 'user' : 'assistant',
             content,
           };
         } else {
@@ -185,7 +185,7 @@ export class AnthropicClient implements APIClient {
           > = [];
 
           // Add image blocks if attachments present (for user messages)
-          if (msg.role === MessageRole.USER && msg.attachments && msg.attachments.length > 0) {
+          if (msg.role === 'user' && msg.attachments && msg.attachments.length > 0) {
             for (const attachment of msg.attachments) {
               contentBlocks.push({
                 type: 'image',
@@ -211,7 +211,7 @@ export class AnthropicClient implements APIClient {
           }
 
           return {
-            role: msg.role === MessageRole.USER ? 'user' : 'assistant',
+            role: msg.role === 'user' ? 'user' : 'assistant',
             content: contentBlocks,
           };
         }
@@ -248,7 +248,7 @@ export class AnthropicClient implements APIClient {
       // Get client-side tool definitions for Anthropic format
       // Uses apiOverrides for special tools (e.g., memory_20250818 shorthand)
       const clientToolDefs = toolRegistry.getToolDefinitionsForAPI(
-        APIType.ANTHROPIC,
+        'anthropic',
         options.enabledTools || []
       );
       tools.push(...clientToolDefs);
@@ -732,11 +732,11 @@ export class AnthropicClient implements APIClient {
     // Assistant message with the original fullContent (contains tool_use blocks)
     const assistantMessage: Message<unknown> = {
       id: generateUniqueId('msg_assistant'),
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: textContent,
-        modelFamily: APIType.ANTHROPIC,
+        modelFamily: 'anthropic',
         fullContent: assistantContent,
         // renderingContent will be set by caller after finalize()
       },
@@ -746,11 +746,11 @@ export class AnthropicClient implements APIClient {
     // User message with tool_result blocks (Anthropic expects tool_result in user role)
     const toolResultMessage: Message<unknown> = {
       id: generateUniqueId('msg_user'),
-      role: MessageRole.USER,
+      role: 'user',
       content: {
         type: 'text',
         content: '',
-        modelFamily: APIType.ANTHROPIC,
+        modelFamily: 'anthropic',
         fullContent: toolResults,
         // renderingContent will be set by caller
       },

@@ -9,7 +9,7 @@
 
 import type { ClientSideTool, ToolResult } from '../../types';
 import * as vfs from '../vfs/vfsService';
-import { VfsError, VfsErrorCode, normalizePath, base64ToBuffer } from '../vfs/vfsService';
+import { VfsError, normalizePath, base64ToBuffer } from '../vfs/vfsService';
 import { toolRegistry } from './clientSideTools';
 
 const MAX_LINE_COUNT = 999999;
@@ -240,7 +240,7 @@ export class FsToolInstance {
       };
     } catch (error) {
       if (error instanceof VfsError) {
-        if (error.code === VfsErrorCode.PATH_NOT_FOUND || error.code === VfsErrorCode.IS_DELETED) {
+        if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
           return {
             content: `The path ${vfsPath} does not exist. Please provide a valid path.`,
             isError: true,
@@ -290,7 +290,7 @@ export class FsToolInstance {
         content: `File created successfully at: ${vfsPath}`,
       };
     } catch (error) {
-      if (error instanceof VfsError && error.code === VfsErrorCode.FILE_EXISTS) {
+      if (error instanceof VfsError && error.code === 'FILE_EXISTS') {
         return {
           content: `Error: File ${vfsPath} already exists`,
           isError: true,
@@ -364,9 +364,9 @@ export class FsToolInstance {
     } catch (error) {
       if (error instanceof VfsError) {
         if (
-          error.code === VfsErrorCode.PATH_NOT_FOUND ||
-          error.code === VfsErrorCode.IS_DELETED ||
-          error.code === VfsErrorCode.NOT_A_FILE
+          error.code === 'PATH_NOT_FOUND' ||
+          error.code === 'IS_DELETED' ||
+          error.code === 'NOT_A_FILE'
         ) {
           return {
             content: `Error: The path ${vfsPath} does not exist or is not a file.`,
@@ -432,9 +432,9 @@ export class FsToolInstance {
     } catch (error) {
       if (error instanceof VfsError) {
         if (
-          error.code === VfsErrorCode.PATH_NOT_FOUND ||
-          error.code === VfsErrorCode.IS_DELETED ||
-          error.code === VfsErrorCode.NOT_A_FILE
+          error.code === 'PATH_NOT_FOUND' ||
+          error.code === 'IS_DELETED' ||
+          error.code === 'NOT_A_FILE'
         ) {
           return {
             content: `Error: The path ${vfsPath} does not exist or is not a file.`,
@@ -473,13 +473,13 @@ export class FsToolInstance {
       };
     } catch (error) {
       if (error instanceof VfsError) {
-        if (error.code === VfsErrorCode.PATH_NOT_FOUND || error.code === VfsErrorCode.IS_DELETED) {
+        if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
           return {
             content: `Error: The path ${vfsPath} does not exist`,
             isError: true,
           };
         }
-        if (error.code === VfsErrorCode.NOT_A_FILE) {
+        if (error.code === 'NOT_A_FILE') {
           // Try deleting as a directory
           try {
             await vfs.rmdir(this.projectId, vfsPath, true);
@@ -532,13 +532,13 @@ export class FsToolInstance {
       };
     } catch (error) {
       if (error instanceof VfsError) {
-        if (error.code === VfsErrorCode.PATH_NOT_FOUND || error.code === VfsErrorCode.IS_DELETED) {
+        if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
           return {
             content: `Error: The path ${oldVfsPath} does not exist`,
             isError: true,
           };
         }
-        if (error.code === VfsErrorCode.DESTINATION_EXISTS) {
+        if (error.code === 'DESTINATION_EXISTS') {
           return {
             content: `Error: The destination ${newVfsPath} already exists`,
             isError: true,

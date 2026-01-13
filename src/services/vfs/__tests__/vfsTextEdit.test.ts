@@ -71,7 +71,6 @@ import {
   insert,
   getFileMeta,
   formatSnippet,
-  VfsErrorCode,
 } from '../vfsService';
 
 describe('VFS Text Editing', () => {
@@ -133,7 +132,7 @@ describe('VFS Text Editing', () => {
       await createFile(projectId, '/test.txt', 'hello world');
 
       await expect(strReplace(projectId, '/test.txt', 'nonexistent', 'x')).rejects.toMatchObject({
-        code: VfsErrorCode.STRING_NOT_FOUND,
+        code: 'STRING_NOT_FOUND',
       });
     });
 
@@ -141,7 +140,7 @@ describe('VFS Text Editing', () => {
       await createFile(projectId, '/test.txt', 'foo bar foo baz foo');
 
       await expect(strReplace(projectId, '/test.txt', 'foo', 'FOO')).rejects.toMatchObject({
-        code: VfsErrorCode.STRING_NOT_UNIQUE,
+        code: 'STRING_NOT_UNIQUE',
       });
     });
 
@@ -176,7 +175,7 @@ describe('VFS Text Editing', () => {
 
     it('throws for non-existent file', async () => {
       await expect(strReplace(projectId, '/nonexistent.txt', 'a', 'b')).rejects.toMatchObject({
-        code: VfsErrorCode.PATH_NOT_FOUND,
+        code: 'PATH_NOT_FOUND',
       });
     });
   });
@@ -225,7 +224,7 @@ describe('VFS Text Editing', () => {
       await createFile(projectId, '/test.txt', 'content');
 
       await expect(insert(projectId, '/test.txt', -1, 'x')).rejects.toMatchObject({
-        code: VfsErrorCode.INVALID_LINE,
+        code: 'INVALID_LINE',
       });
     });
 
@@ -233,7 +232,7 @@ describe('VFS Text Editing', () => {
       await createFile(projectId, '/test.txt', 'line1\nline2'); // 2 lines
 
       await expect(insert(projectId, '/test.txt', 5, 'x')).rejects.toMatchObject({
-        code: VfsErrorCode.INVALID_LINE,
+        code: 'INVALID_LINE',
       });
     });
 
@@ -256,7 +255,7 @@ describe('VFS Text Editing', () => {
 
     it('throws for non-existent file', async () => {
       await expect(insert(projectId, '/nonexistent.txt', 0, 'x')).rejects.toMatchObject({
-        code: VfsErrorCode.PATH_NOT_FOUND,
+        code: 'PATH_NOT_FOUND',
       });
     });
   });

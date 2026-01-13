@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { MemoryToolInstance, disposeMemoryTool } from '../memoryTool';
 import * as vfs from '../../vfs/vfsService';
-import { VfsError, VfsErrorCode } from '../../vfs/vfsService';
+import { VfsError } from '../../vfs/vfsService';
 
 // Mock vfsService
 vi.mock('../../vfs/vfsService', async importOriginal => {
@@ -98,9 +98,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error for non-existent file', async () => {
-      (vfs.readFile as Mock).mockRejectedValue(
-        new VfsError('Path not found', VfsErrorCode.PATH_NOT_FOUND)
-      );
+      (vfs.readFile as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
       const result = await instance.execute({
         command: 'view',
@@ -176,9 +174,7 @@ describe('MemoryToolInstance', () => {
 
     it('returns error when file exists', async () => {
       (vfs.exists as Mock).mockResolvedValue(true);
-      (vfs.createFile as Mock).mockRejectedValue(
-        new VfsError('File exists', VfsErrorCode.FILE_EXISTS)
-      );
+      (vfs.createFile as Mock).mockRejectedValue(new VfsError('File exists', 'FILE_EXISTS'));
 
       const result = await instance.execute({
         command: 'create',
@@ -273,9 +269,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error for non-existent file', async () => {
-      (vfs.readFile as Mock).mockRejectedValue(
-        new VfsError('Path not found', VfsErrorCode.PATH_NOT_FOUND)
-      );
+      (vfs.readFile as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
       const result = await instance.execute({
         command: 'str_replace',
@@ -414,9 +408,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error for non-existent file', async () => {
-      (vfs.readFile as Mock).mockRejectedValue(
-        new VfsError('Path not found', VfsErrorCode.PATH_NOT_FOUND)
-      );
+      (vfs.readFile as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
       const result = await instance.execute({
         command: 'insert',
@@ -457,9 +449,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error for non-existent file', async () => {
-      (vfs.deleteFile as Mock).mockRejectedValue(
-        new VfsError('Path not found', VfsErrorCode.PATH_NOT_FOUND)
-      );
+      (vfs.deleteFile as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
       const result = await instance.execute({
         command: 'delete',
@@ -481,9 +471,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('deletes directory when target is not a file', async () => {
-      (vfs.deleteFile as Mock).mockRejectedValue(
-        new VfsError('Not a file', VfsErrorCode.NOT_A_FILE)
-      );
+      (vfs.deleteFile as Mock).mockRejectedValue(new VfsError('Not a file', 'NOT_A_FILE'));
       (vfs.rmdir as Mock).mockResolvedValue(undefined);
 
       const result = await instance.execute({
@@ -513,9 +501,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error when source does not exist', async () => {
-      (vfs.rename as Mock).mockRejectedValue(
-        new VfsError('Path not found', VfsErrorCode.PATH_NOT_FOUND)
-      );
+      (vfs.rename as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
       const result = await instance.execute({
         command: 'rename',
@@ -529,7 +515,7 @@ describe('MemoryToolInstance', () => {
 
     it('returns error when destination already exists', async () => {
       (vfs.rename as Mock).mockRejectedValue(
-        new VfsError('Destination exists', VfsErrorCode.DESTINATION_EXISTS)
+        new VfsError('Destination exists', 'DESTINATION_EXISTS')
       );
 
       const result = await instance.execute({

@@ -5,7 +5,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { APIType } from '../../../types';
 
 // Mock the @mlc-ai/web-llm module before importing apiService
 vi.mock('@mlc-ai/web-llm', () => ({
@@ -28,7 +27,7 @@ describe('apiService WebLLM integration', () => {
   beforeEach(() => {
     webllmApiDefinition = {
       id: 'webllm-test-def',
-      apiType: APIType.WEBLLM,
+      apiType: 'webllm',
       name: 'WebLLM Test',
       baseUrl: '',
       apiKey: '', // No API key needed for WebLLM
@@ -48,7 +47,7 @@ describe('apiService WebLLM integration', () => {
 
     it('should calculate cost as 0 for WebLLM', () => {
       const cost = apiService.calculateCost(
-        APIType.WEBLLM,
+        'webllm',
         'Phi-3.5-mini-instruct-q4f16_1-MLC',
         10000, // input tokens
         5000, // output tokens
@@ -61,7 +60,7 @@ describe('apiService WebLLM integration', () => {
     });
 
     it('should return model info for WebLLM models', () => {
-      const info = apiService.getModelInfo(APIType.WEBLLM, 'Phi-3.5-mini-instruct-q4f16_1-MLC');
+      const info = apiService.getModelInfo('webllm', 'Phi-3.5-mini-instruct-q4f16_1-MLC');
 
       expect(info).toBeDefined();
       expect(info.inputPrice).toBe(0);
@@ -70,7 +69,7 @@ describe('apiService WebLLM integration', () => {
 
     it('should format model info for WebLLM', () => {
       const formatted = apiService.formatModelInfoForDisplay(
-        APIType.WEBLLM,
+        'webllm',
         'Phi-3.5-mini-instruct-q4f16_1-MLC'
       );
 
@@ -81,7 +80,7 @@ describe('apiService WebLLM integration', () => {
 
     it('should report WebLLM models as non-reasoning', () => {
       const isReasoning = apiService.isReasoningModel(
-        APIType.WEBLLM,
+        'webllm',
         'Phi-3.5-mini-instruct-q4f16_1-MLC'
       );
 
@@ -97,23 +96,23 @@ describe('apiService WebLLM integration', () => {
   describe('stop reason mapping', () => {
     it('should map WebLLM stop reasons correctly', () => {
       // WebLLM uses 'stop' and 'length' like OpenAI
-      expect(apiService.mapStopReason(APIType.WEBLLM, 'stop')).toBe('end_turn');
-      expect(apiService.mapStopReason(APIType.WEBLLM, 'length')).toBe('max_tokens');
-      expect(apiService.mapStopReason(APIType.WEBLLM, null)).toBe('end_turn');
+      expect(apiService.mapStopReason('webllm', 'stop')).toBe('end_turn');
+      expect(apiService.mapStopReason('webllm', 'length')).toBe('max_tokens');
+      expect(apiService.mapStopReason('webllm', null)).toBe('end_turn');
     });
   });
 
   describe('message rendering migration', () => {
     it('should migrate WebLLM message rendering', () => {
       const fullContent = [{ type: 'text', text: 'Hello from local model!' }];
-      const result = apiService.migrateMessageRendering(APIType.WEBLLM, fullContent, 'stop');
+      const result = apiService.migrateMessageRendering('webllm', fullContent, 'stop');
 
       expect(result.renderingContent.length).toBeGreaterThan(0);
       expect(result.stopReason).toBe('end_turn');
     });
 
     it('should handle empty WebLLM content', () => {
-      const result = apiService.migrateMessageRendering(APIType.WEBLLM, [], null);
+      const result = apiService.migrateMessageRendering('webllm', [], null);
 
       expect(result.renderingContent.length).toBe(0);
       expect(result.stopReason).toBe('end_turn');
@@ -133,7 +132,7 @@ describe('apiService WebLLM integration', () => {
       expect(models.length).toBeGreaterThan(0);
       // All models should have WEBLLM type
       models.forEach(model => {
-        expect(model.apiType).toBe(APIType.WEBLLM);
+        expect(model.apiType).toBe('webllm');
       });
     });
 

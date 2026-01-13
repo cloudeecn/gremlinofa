@@ -13,7 +13,6 @@ import type {
   Model,
   Project,
 } from '../../types';
-import { APIType, MessageRole } from '../../types';
 import { clearAllDrafts } from '../../hooks/useDraftPersistence';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { encryptionService } from '../encryption/encryptionService';
@@ -437,7 +436,7 @@ export class UnifiedStorage {
     let contextWindowUsage = 0;
     for (let i = messagesToCopy.length - 1; i >= 0; i--) {
       const msg = messagesToCopy[i];
-      if (msg.role === MessageRole.ASSISTANT && msg.metadata?.contextWindowUsage !== undefined) {
+      if (msg.role === 'assistant' && msg.metadata?.contextWindowUsage !== undefined) {
         contextWindowUsage = msg.metadata.contextWindowUsage;
         break;
       }
@@ -1018,15 +1017,15 @@ export class UnifiedStorage {
   async initializeDefaults(): Promise<void> {
     console.debug('[Storage] initializeDefaults: Getting existing definitions...');
     const apiTypes = [
-      { apiType: APIType.RESPONSES_API, name: 'OpenAI Responses', baseUrl: '' },
+      { apiType: 'responses_api', name: 'OpenAI Responses', baseUrl: '' },
       {
-        apiType: APIType.RESPONSES_API,
+        apiType: 'responses_api',
         name: 'xAI Responses',
         baseUrl: 'https://api.x.ai/v1',
       },
-      { apiType: APIType.ANTHROPIC, name: 'Anthropic Official', baseUrl: '' },
-      { apiType: APIType.WEBLLM, name: 'WebLLM (Local)', baseUrl: '' },
-    ];
+      { apiType: 'anthropic', name: 'Anthropic Official', baseUrl: '' },
+      { apiType: 'webllm', name: 'WebLLM (Local)', baseUrl: '' },
+    ] as const;
 
     const existing = await this.getAPIDefinitions();
     console.debug(`[Storage] initializeDefaults: Found ${existing.length} existing definitions`);

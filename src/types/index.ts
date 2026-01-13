@@ -18,27 +18,15 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { ChatCompletionTool } from 'openai/resources/index.mjs';
 import type OpenAI from 'openai';
 
-// API Type - represents the protocol/client template (ChatGPT, Anthropic, Responses API, WebLLM)
-export const APIType = {
-  CHATGPT: 'chatgpt',
-  ANTHROPIC: 'anthropic',
-  RESPONSES_API: 'responses_api',
-  WEBLLM: 'webllm',
-} as const;
-
-export type APIType = (typeof APIType)[keyof typeof APIType];
+export type APIType = 'anthropic' | 'chatgpt' | 'responses_api' | 'webllm';
 
 /** Type-safe tool definition overrides for each API type */
 export interface APIToolOverrides {
-  [APIType.ANTHROPIC]?: Anthropic.Beta.BetaToolUnion;
-  [APIType.CHATGPT]?: ChatCompletionTool;
-  [APIType.RESPONSES_API]?: OpenAI.Responses.Tool;
-  [APIType.WEBLLM]?: void;
+  anthropic?: Anthropic.Beta.BetaToolUnion;
+  chatgpt?: ChatCompletionTool;
+  responses_api?: OpenAI.Responses.Tool;
+  webllm?: void;
 }
-
-// For backward compatibility during transition
-export const APIProvider = APIType;
-export type APIProvider = APIType;
 
 export interface APIDefinition {
   id: string;
@@ -146,14 +134,7 @@ export interface Chat {
   pendingState?: ChatPendingState;
 }
 
-// Message types
-export const MessageRole = {
-  USER: 'user',
-  ASSISTANT: 'assistant',
-  SYSTEM: 'system',
-} as const;
-
-export type MessageRole = (typeof MessageRole)[keyof typeof MessageRole];
+export type MessageRole = 'user' | 'assistant' | 'system';
 
 export interface MessageContent<T> {
   type: 'text';

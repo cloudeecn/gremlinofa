@@ -78,7 +78,6 @@ import {
   listOrphans,
   restoreOrphan,
   purgeOrphan,
-  VfsErrorCode,
 } from '../vfsService';
 
 describe('VFS Orphan Management', () => {
@@ -218,7 +217,7 @@ describe('VFS Orphan Management', () => {
 
     it('throws when orphan not found', async () => {
       await expect(restoreOrphan(projectId, 'nonexistent', '/target.txt')).rejects.toMatchObject({
-        code: VfsErrorCode.PATH_NOT_FOUND,
+        code: 'PATH_NOT_FOUND',
       });
     });
 
@@ -234,7 +233,7 @@ describe('VFS Orphan Management', () => {
       await createFile(projectId, '/conflict.txt', 'conflict');
 
       await expect(restoreOrphan(projectId, fileId!, '/conflict.txt')).rejects.toMatchObject({
-        code: VfsErrorCode.DESTINATION_EXISTS,
+        code: 'DESTINATION_EXISTS',
       });
     });
 
@@ -266,7 +265,7 @@ describe('VFS Orphan Management', () => {
       await rename(projectId, '/new.txt', '/file.txt');
 
       await expect(restoreOrphan(projectId, fileId!, '/')).rejects.toMatchObject({
-        code: VfsErrorCode.INVALID_PATH,
+        code: 'INVALID_PATH',
       });
     });
   });
@@ -301,7 +300,7 @@ describe('VFS Orphan Management', () => {
 
     it('throws when orphan not found', async () => {
       await expect(purgeOrphan(projectId, 'nonexistent')).rejects.toMatchObject({
-        code: VfsErrorCode.PATH_NOT_FOUND,
+        code: 'PATH_NOT_FOUND',
       });
     });
 

@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { MockedClass } from 'vitest';
 import { ResponsesClient } from '../responsesClient';
-import { APIType, MessageRole } from '../../../types';
 import type { APIDefinition, Message } from '../../../types';
 import OpenAI from 'openai';
 
@@ -16,7 +15,7 @@ describe('ResponsesClient', () => {
     client = new ResponsesClient();
     mockApiDefinition = {
       id: 'test-api-def',
-      apiType: APIType.RESPONSES_API,
+      apiType: 'responses_api',
       name: 'Test OpenAI',
       baseUrl: '',
       apiKey: 'test-key',
@@ -54,7 +53,7 @@ describe('ResponsesClient', () => {
 
       expect(models).toHaveLength(3);
       expect(models.map(m => m.id)).toEqual(['gpt-5', 'gpt-4o', 'o3-mini']);
-      expect(models[0].apiType).toBe(APIType.RESPONSES_API);
+      expect(models[0].apiType).toBe('responses_api');
     });
 
     it('should keep all models for custom baseUrl', async () => {
@@ -110,7 +109,7 @@ describe('ResponsesClient', () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
-          role: MessageRole.USER,
+          role: 'user',
           content: { type: 'text', content: 'Hello' },
           timestamp: new Date(),
         },
@@ -206,7 +205,7 @@ describe('ResponsesClient', () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
-          role: MessageRole.USER,
+          role: 'user',
           content: { type: 'text', content: 'Solve this' },
           timestamp: new Date(),
         },
@@ -282,7 +281,7 @@ describe('ResponsesClient', () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
-          role: MessageRole.USER,
+          role: 'user',
           content: { type: 'text', content: 'Hello' },
           timestamp: new Date(),
         },
@@ -688,7 +687,7 @@ describe('ResponsesClient', () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
-          role: MessageRole.USER,
+          role: 'user',
           content: { type: 'text', content: 'Hello' },
           timestamp: new Date(),
         },
@@ -757,7 +756,7 @@ describe('ResponsesClient', () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
-          role: MessageRole.USER,
+          role: 'user',
           content: { type: 'text', content: 'Test' },
           timestamp: new Date(),
         },
@@ -826,7 +825,7 @@ describe('ResponsesClient', () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
-          role: MessageRole.USER,
+          role: 'user',
           content: { type: 'text', content: 'Test' },
           timestamp: new Date(),
         },

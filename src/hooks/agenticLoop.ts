@@ -25,7 +25,6 @@ import type {
   ToolResultBlock,
 } from '../types';
 import type { ToolResultRenderBlock, ToolUseRenderBlock } from '../types/content';
-import { APIType, MessageRole } from '../types';
 import { generateUniqueId } from '../utils/idGenerator';
 
 // Maximum agentic loop iterations to prevent infinite loops
@@ -188,7 +187,7 @@ interface StreamOptions {
 function buildStreamOptions(project: Project, enabledTools: string[]): StreamOptions {
   // Build combined system prompt: project prompt + tool prompts
   const toolSystemPrompts = toolRegistry.getSystemPrompts(
-    project.apiDefinitionId ? APIType.ANTHROPIC : APIType.RESPONSES_API, // Will be overridden
+    project.apiDefinitionId ? 'anthropic' : 'responses_api', // Will be overridden
     enabledTools
   );
   const combinedSystemPrompt = [project.systemPrompt, ...toolSystemPrompts]
@@ -363,7 +362,7 @@ export async function runAgenticLoop(
 
         const errorMessage: Message<unknown> = {
           id: generateUniqueId('msg_assistant'),
-          role: MessageRole.ASSISTANT,
+          role: 'assistant',
           content: {
             type: 'text',
             content: '',
@@ -416,7 +415,7 @@ export async function runAgenticLoop(
       // Create assistant message
       const assistantMessage: Message<unknown> = {
         id: generateUniqueId('msg_assistant'),
-        role: MessageRole.ASSISTANT,
+        role: 'assistant',
         content: {
           type: 'text',
           content: result.textContent,
@@ -570,7 +569,7 @@ export async function runAgenticLoop(
 
     const errorMessage: Message<unknown> = {
       id: generateUniqueId('msg_assistant'),
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: '',
@@ -610,7 +609,7 @@ async function loadAttachmentsForMessages(
   return Promise.all(
     messages.map(async msg => {
       if (
-        msg.role === MessageRole.USER &&
+        msg.role === 'user' &&
         (msg.content.attachmentIds?.length || msg.content.originalAttachmentCount)
       ) {
         const attachments = await storage.getAttachments(msg.id);

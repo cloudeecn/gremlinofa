@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import UserMessageBubble from '../UserMessageBubble';
-import { MessageRole } from '../../../types';
 import type { Message, MessageAttachment } from '../../../types';
 import type { UserMessageBubbleProps } from '../types';
 
@@ -32,7 +31,7 @@ Object.assign(navigator, { clipboard: mockClipboard });
 function createMessage(overrides: Partial<Message<unknown>> = {}): Message<unknown> {
   return {
     id: 'msg_user_123',
-    role: MessageRole.USER,
+    role: 'user',
     content: {
       type: 'text',
       content: 'Test message content',

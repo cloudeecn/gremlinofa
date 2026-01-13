@@ -6,7 +6,6 @@ import { apiService } from '../../services/api/apiService';
 import { generateUniqueId } from '../../utils/idGenerator';
 import * as alerts from '../../utils/alerts';
 import type { Chat, Project, Message, APIDefinition } from '../../types';
-import { MessageRole } from '../../types';
 
 // Mock dependencies
 vi.mock('../../services/storage');
@@ -58,14 +57,14 @@ describe('useChat', () => {
 
   const mockUserMessage: Message<string> = {
     id: 'msg_user_1',
-    role: MessageRole.USER,
+    role: 'user',
     content: { type: 'text', content: 'Hello' },
     timestamp: new Date('2024-01-01'),
   };
 
   const mockAssistantMessage: Message<unknown> = {
     id: 'msg_assistant_1',
-    role: MessageRole.ASSISTANT,
+    role: 'assistant',
     content: { type: 'text', content: 'Hi there!' },
     timestamp: new Date('2024-01-01'),
     metadata: {
@@ -697,7 +696,7 @@ describe('useChat', () => {
   describe('resolvePendingToolCalls', () => {
     const mockAssistantWithToolUse: Message<unknown> = {
       id: 'msg_assistant_tooluse',
-      role: MessageRole.ASSISTANT,
+      role: 'assistant',
       content: {
         type: 'text',
         content: '',
@@ -765,7 +764,7 @@ describe('useChat', () => {
         expect(storage.saveMessage).toHaveBeenCalledWith(
           'chat_123',
           expect.objectContaining({
-            role: MessageRole.USER,
+            role: 'user',
             content: expect.objectContaining({
               fullContent: expect.arrayContaining([
                 expect.objectContaining({
@@ -813,7 +812,7 @@ describe('useChat', () => {
         expect(storage.saveMessage).toHaveBeenCalledWith(
           'chat_123',
           expect.objectContaining({
-            role: MessageRole.USER,
+            role: 'user',
             content: expect.objectContaining({
               fullContent: expect.arrayContaining([
                 expect.objectContaining({
@@ -859,7 +858,7 @@ describe('useChat', () => {
         expect(storage.saveMessage).toHaveBeenCalledWith(
           'chat_123',
           expect.objectContaining({
-            role: MessageRole.USER,
+            role: 'user',
             content: expect.objectContaining({
               fullContent: expect.arrayContaining([
                 expect.objectContaining({
@@ -882,8 +881,7 @@ describe('useChat', () => {
       const lastCall = streamCalls[streamCalls.length - 1];
       const messagesArg = lastCall[0];
       const userFollowUp = messagesArg.find(
-        (m: Message<unknown>) =>
-          m.role === MessageRole.USER && m.content.content === 'User follow-up message'
+        (m: Message<unknown>) => m.role === 'user' && m.content.content === 'User follow-up message'
       );
       expect(userFollowUp).toBeDefined();
     });
@@ -915,7 +913,7 @@ describe('useChat', () => {
         expect(storage.saveMessage).toHaveBeenCalledWith(
           'chat_123',
           expect.objectContaining({
-            role: MessageRole.USER,
+            role: 'user',
             content: expect.objectContaining({
               fullContent: expect.arrayContaining([
                 expect.objectContaining({
@@ -937,8 +935,7 @@ describe('useChat', () => {
       const lastCall = streamCalls[streamCalls.length - 1];
       const messagesArg = lastCall[0];
       const userFollowUp = messagesArg.find(
-        (m: Message<unknown>) =>
-          m.role === MessageRole.USER && m.content.content === 'User follow-up message'
+        (m: Message<unknown>) => m.role === 'user' && m.content.content === 'User follow-up message'
       );
       expect(userFollowUp).toBeDefined();
     });
@@ -947,7 +944,7 @@ describe('useChat', () => {
       // Add a tool result message after the assistant tool use
       const toolResultMessage: Message<unknown> = {
         id: 'msg_toolresult',
-        role: MessageRole.USER,
+        role: 'user',
         content: {
           type: 'text',
           content: '',
@@ -1101,8 +1098,7 @@ describe('useChat', () => {
 
       // Find the history message (not the new user message)
       const historyMessage = messagesArg.find(
-        (m: Message<unknown>) =>
-          m.role === MessageRole.USER && m.content.content.includes('system-note')
+        (m: Message<unknown>) => m.role === 'user' && m.content.content.includes('system-note')
       );
 
       expect(historyMessage).toBeDefined();
@@ -1164,8 +1160,7 @@ describe('useChat', () => {
       const messagesArg = streamCall[0];
 
       const historyMessage = messagesArg.find(
-        (m: Message<unknown>) =>
-          m.role === MessageRole.USER && m.content.content === 'Check this image'
+        (m: Message<unknown>) => m.role === 'user' && m.content.content === 'Check this image'
       );
 
       expect(historyMessage).toBeDefined();

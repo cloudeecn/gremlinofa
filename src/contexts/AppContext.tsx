@@ -2,7 +2,6 @@ import { type ReactNode, useEffect, useState } from 'react';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
 import type { APIDefinition, Model, Project } from '../types';
-import { APIType } from '../types';
 import { AppContext, type AppContextType } from './createAppContext';
 import { createExportBlob, type ExportProgressCallback } from '../utils/dataExport';
 import {
@@ -128,7 +127,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
 
       // Skip refresh if API key is not configured (except for WebLLM which doesn't need one)
-      if (apiDef.apiType !== APIType.WEBLLM && (!apiDef.apiKey || apiDef.apiKey.trim() === '')) {
+      if (apiDef.apiType !== 'webllm' && (!apiDef.apiKey || apiDef.apiKey.trim() === '')) {
         console.debug('Skipping model refresh for', apiDefinitionId, '- no API key configured');
         return;
       }
@@ -204,7 +203,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const defs = await storage.getAPIDefinitions();
       for (const def of defs) {
         // Refresh if has API key OR is WebLLM (which doesn't need one)
-        if ((def.apiKey && def.apiKey.trim() !== '') || def.apiType === APIType.WEBLLM) {
+        if ((def.apiKey && def.apiKey.trim() !== '') || def.apiType === 'webllm') {
           await refreshModels(def.id);
         }
       }
@@ -249,7 +248,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const defs = await storage.getAPIDefinitions();
       for (const def of defs) {
         // Refresh if has API key OR is WebLLM (which doesn't need one)
-        if ((def.apiKey && def.apiKey.trim() !== '') || def.apiType === APIType.WEBLLM) {
+        if ((def.apiKey && def.apiKey.trim() !== '') || def.apiType === 'webllm') {
           await refreshModels(def.id);
         }
       }

@@ -4,8 +4,9 @@
  * Client-side tool that executes JavaScript code in a sandboxed QuickJS environment.
  * Uses JsVMContext for VM management, event loop, and polyfills.
  *
- * VM state persists across multiple tool calls within an agentic loop, enabling
- * the AI to build up state across calls (e.g., define variables, then use them later).
+ * Each tool call creates a fresh execution context. Library scripts from /lib are
+ * loaded for each call, but their output is only shown on the first call in an
+ * agentic loop (to avoid repetitive output).
  */
 
 import type { ClientSideTool, ToolResult } from '../../types';
@@ -14,11 +15,12 @@ import { JsVMContext, type ConsoleEntry } from './jsvm/JsVMContext';
 
 /**
  * JavaScript execution tool instance.
- * VM state persists across multiple tool calls within a session.
+ * Each execute() call creates a fresh context that loads polyfills and /lib scripts.
  */
 class JsToolInstance {
-  private session: JsVMContext | null = null;
   private projectId: string | null = null;
+  private loadLib = true;
+  private hasShownLibraryLogs = false;
 
   /**
    * Set the project ID for fs operations.
@@ -28,42 +30,23 @@ class JsToolInstance {
   }
 
   /**
-   * Create a persistent session for the agentic loop.
-   * Variables and state persist across multiple execute calls.
-   * @param loadLib - Whether to load /lib scripts on session start (default: true)
+   * Set whether to load /lib scripts.
    */
-  async createSession(loadLib = true): Promise<void> {
-    if (this.session) {
-      console.debug('[JsTool] Session already exists, disposing old one');
-      this.disposeSession();
-    }
-
-    // Pass projectId to enable fs operations and loadLib option
-    this.session = await JsVMContext.create(this.projectId ?? undefined, loadLib);
-    console.debug('[JsTool] Session created', this.projectId ? 'with fs' : 'without fs');
+  setLoadLib(loadLib: boolean): void {
+    this.loadLib = loadLib;
   }
 
   /**
-   * Check if a session is active.
+   * Reset library log state. Call at start of each agentic loop.
+   * This allows library output to be shown on the first JS call in each loop.
    */
-  hasSession(): boolean {
-    return this.session !== null;
+  resetLibraryLogState(): void {
+    this.hasShownLibraryLogs = false;
   }
 
   /**
-   * Dispose the current session.
-   */
-  disposeSession(): void {
-    if (this.session) {
-      this.session.dispose();
-      this.session = null;
-      console.debug('[JsTool] Session disposed');
-    }
-  }
-
-  /**
-   * Execute JavaScript code.
-   * @param input.ephemeral - If true, execute in isolated context without affecting session
+   * Execute JavaScript code in a fresh context.
+   * Each call creates a new VM with polyfills and /lib scripts loaded.
    */
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const code = input.code;
@@ -74,25 +57,19 @@ class JsToolInstance {
       };
     }
 
-    const ephemeral = !!input.ephemeral;
-
-    // Get or create context
-    let vm: JsVMContext;
-    let shouldDispose = false;
-
-    if (ephemeral) {
-      vm = await JsVMContext.create();
-      shouldDispose = true;
-    } else {
-      if (!this.session) {
-        await this.createSession();
-      }
-      vm = this.session!;
-    }
+    // Create fresh context for this execution
+    const vm = await JsVMContext.create(this.projectId ?? undefined, this.loadLib);
 
     try {
-      const result = await vm.evaluate(code);
-      const libraryOutput = ephemeral ? [] : vm.getLibraryLogs();
+      // Wrap code in async IIFE so await works at top level and return value is captured
+      const wrappedCode = `(async () => {"use strict"; ${code} })()`;
+      const result = await vm.evaluate(wrappedCode);
+
+      // Get library logs only if we haven't shown them yet in this agentic loop
+      const libraryOutput = this.hasShownLibraryLogs ? [] : vm.getLibraryLogs();
+      if (libraryOutput.length > 0) {
+        this.hasShownLibraryLogs = true;
+      }
 
       if (result.isError) {
         return {
@@ -109,12 +86,7 @@ class JsToolInstance {
         ),
       };
     } finally {
-      if (!ephemeral) {
-        vm.clearLibraryLogs();
-      }
-      if (shouldDispose) {
-        vm.dispose();
-      }
+      vm.dispose();
     }
   }
 
@@ -141,11 +113,15 @@ class JsToolInstance {
     const parts: string[] = [];
     let hasConsoleOutput = false;
 
+    // Format a single console entry - omit level prefix if level is undefined
+    const formatEntry = (entry: ConsoleEntry): string => {
+      return entry.level ? `[${entry.level}] ${entry.message}` : entry.message;
+    };
+
     if (libraryOutput.length) {
       hasConsoleOutput = true;
-      parts.push('=== Library output ===');
       for (const entry of libraryOutput) {
-        parts.push(`[${entry.level}] ${entry.message}`);
+        parts.push(formatEntry(entry));
       }
     }
 
@@ -153,7 +129,7 @@ class JsToolInstance {
       hasConsoleOutput = true;
       parts.push('=== Console output ===');
       for (const entry of consoleOutput) {
-        parts.push(`[${entry.level}] ${entry.message}`);
+        parts.push(formatEntry(entry));
       }
     }
 
@@ -188,7 +164,6 @@ export function initJsTool(): void {
 export function disposeJsTool(): void {
   if (!instance) return;
 
-  instance.disposeSession();
   toolRegistry.unregister('javascript');
   instance = null;
 }
@@ -201,49 +176,27 @@ export function isJsToolInitialized(): boolean {
 }
 
 /**
- * Create a persistent JS session for the agentic loop.
- * State persists across multiple tool calls until disposeJsSession is called.
- * @param projectId - Project ID to enable fs operations (optional)
- * @param loadLib - Whether to load /lib scripts on session start (default: true)
+ * Configure the JS tool for the current agentic loop.
+ * Call this at the start of each agentic loop before any tool calls.
+ * @param projectId - Project ID to enable fs operations
+ * @param loadLib - Whether to load /lib scripts (default: true)
  */
-export async function createJsSession(projectId?: string, loadLib = true): Promise<void> {
+export function configureJsTool(projectId: string, loadLib = true): void {
   if (!instance) {
     throw new Error('JavaScript tool not initialized');
   }
-  if (projectId) {
-    instance.setProjectId(projectId);
-  }
-  await instance.createSession(loadLib);
-}
-
-/**
- * Check if a JS session is active.
- */
-export function hasJsSession(): boolean {
-  return instance?.hasSession() ?? false;
-}
-
-/**
- * Dispose the current JS session.
- * Call this when the agentic loop completes.
- */
-export function disposeJsSession(): void {
-  instance?.disposeSession();
+  instance.setProjectId(projectId);
+  instance.setLoadLib(loadLib);
+  instance.resetLibraryLogState();
 }
 
 /** Render JS tool input - show code directly */
 function renderJsInput(input: Record<string, unknown>): string {
   const code = input.code;
-  const ephemeral = input.ephemeral;
-
-  const lines: string[] = [];
   if (typeof code === 'string') {
-    lines.push(code);
+    return code;
   }
-  if (ephemeral) {
-    lines.push('\n[ephemeral]');
-  }
-  return lines.join('');
+  return '';
 }
 
 /**
@@ -253,20 +206,19 @@ function createJsClientSideTool(): ClientSideTool {
   return {
     name: 'javascript',
     description: `
-Execute JavaScript in a QuickJS sandbox (ES2023). Returns console output and the final expression value. 
+Execute JavaScript in a QuickJS sandbox (ES2023). Code runs inside an async function body, so use \`return\` to output values and \`await\` is supported at top level.
   - Usage: calculations, data transformation, string/JSON processing, algorithm implementation, file operations.
   - Available APIs: ES2023 core, setTimeout, TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await.
-  - fs API (async only, use with await. works like NodeJS' fs module but no need to import): fs.readFile, fs.writeFile, fs.exists, fs.mkdir, fs.readdir, fs.unlink, fs.rmdir, fs.rename, fs.stat.
+  - fs API (async only, use with await): fs.readFile, fs.writeFile, fs.exists, fs.mkdir, fs.readdir, fs.unlink, fs.rmdir, fs.rename, fs.stat.
     - readFile(path) returns ArrayBuffer (binary), readFile(path, 'utf-8') returns string.
     - writeFile(path, data) accepts string or ArrayBuffer for binary files.
     - stat() returns {isFile, isDirectory, size, readonly, mtime, isBinary, mime}.
-    - Example: \`await fs.writeFile('/data/result.txt', JSON.stringify(data))\`
+    - Example: \`const data = await fs.readFile('/data.json', 'utf-8'); return JSON.parse(data);\`
     - Note: /memories is read-only.
   - Limitations: No fetch or DOM. setInterval runs once only. No ES modules.
-  - JS context persists across tool calls within same turn (unless 'ephemeral' is true).
-    - Beware const name conflicts and variable pollution; use ephemeral mode if needed.
-  - The sandbox is running in global mode, root level await is not supported. you can use the \`async function fun(){/*await here*/}; fun();\` pattern. The return value will get resolved automatically.
-  - Output example: \`1 + 1\` → 2`,
+  - Each call runs in a fresh context. Variables do NOT persist between calls. To persist data, use the fs API to write to files.
+  - If /lib directory exists and contains .js files, they are pre-loaded as utilities (e.g., lodash UMD builds).
+  - Output example: \`return 1 + 1\` → 2`,
     iconInput: '📜',
     renderInput: renderJsInput,
     inputSchema: {
@@ -275,21 +227,14 @@ Execute JavaScript in a QuickJS sandbox (ES2023). Returns console output and the
         code: {
           type: 'string',
           description: `
-JavaScript code to execute. Console output and the value of the last expression will be returned.
+JavaScript code to execute. Use \`return\` to output values. Console output is also captured. Each call runs in isolated context - use fs API to persist data between calls.
 Examples: 
-  - \`Math.sqrt(144) + 2 ** 10\` → 1036
-  - \`JSON.parse('{"a":1}').a\` → 1
-  - \`[1,2,3].map(x => x * 2)\` → [2,4,6]
-  - \`btoa('hello')\` → "aGVsbG8="
-  - \`new TextEncoder().encode('hi')\` → Uint8Array [104, 105]
-Note: object literals must be wrapped in parentheses:
-  - \`{score: 5}\` → SyntaxError
-  - \`({score: 5})\` → {score: 5}`,
-        },
-        ephemeral: {
-          type: 'boolean',
-          description:
-            'Execute in an isolated context without affecting the persistent session. Useful for one-off calculations that should not pollute session state.',
+  - \`return Math.sqrt(144) + 2 ** 10\` → 1036
+  - \`return JSON.parse('{"a":1}').a\` → 1
+  - \`return [1,2,3].map(x => x * 2)\` → [2,4,6]
+  - \`return btoa('hello')\` → "aGVsbG8="
+  - \`return {score: 5}\` → {score: 5}
+  - \`await fs.writeFile('/cache.json', JSON.stringify({x: 1})); return 'saved';\``,
         },
       },
       required: ['code'],

@@ -728,7 +728,7 @@ Client-side tool that provides LLM access to the project's virtual filesystem. S
 
 **Overview:**
 
-Client-side tool that executes JavaScript code in a secure QuickJS-ng sandbox. Enables the AI to perform calculations, data transformations, and algorithm demonstrations. Supports persistent sessions within an agentic loop, with browser-like event loop semantics.
+Client-side tool that executes JavaScript code in a secure QuickJS-ng sandbox. Enables the AI to perform calculations, data transformations, and algorithm demonstrations. Each tool call runs in a fresh context with browser-like event loop semantics.
 
 **Files:**
 
@@ -744,23 +744,33 @@ Client-side tool that executes JavaScript code in a secure QuickJS-ng sandbox. E
 
 **Input Parameters:**
 
-| Parameter   | Type    | Required | Description                                                          |
-| ----------- | ------- | -------- | -------------------------------------------------------------------- |
-| `code`      | string  | Yes      | JavaScript code to execute                                           |
-| `ephemeral` | boolean | No       | Execute in isolated context without affecting the persistent session |
+| Parameter | Type   | Required | Description                |
+| --------- | ------ | -------- | -------------------------- |
+| `code`    | string | Yes      | JavaScript code to execute |
+
+**Code Execution Model:**
+
+- Each tool call creates a fresh QuickJS context (no state persistence between calls)
+- User code wrapped in async IIFE: `(async () => { ${code} })()`
+- Use `return` to output a value (e.g., `return 1 + 1` → `2`)
+- Top-level `await` is supported (e.g., `const data = await fs.readFile('/data.json', 'utf-8'); return JSON.parse(data);`)
+- To persist data between calls, use the `fs` API to write/read files
 
 **Output Format:**
 
-Console output with level prefixes, followed by result:
+Library output (only shown on first JS call in agentic loop, omitted for libraries with no output):
 
 ```
+=== Output of library lodash.js ===
+[LOG] lodash loaded
+=== Console output ===
 [LOG] hello world
 [WARN] careful there
 === Result ===
 42
 ```
 
-If no console output and result is undefined: `(no output)`
+If no console output and result is undefined: `undefined`
 
 **Security:**
 
@@ -863,46 +873,29 @@ Filesystem operations are async and resolved during the QuickJS event loop. Each
 - Promise handle creation and resolution
 - Result marshalling between JS host and QuickJS context
 
-**Execution Modes:**
-
-1. **Ephemeral**: Each tool call creates fresh context, disposed after execution
-2. **Session**: VM state persists across multiple tool calls within agentic loop
-
-**Session Lifecycle:**
-
-Sessions enable the AI to build up state across multiple tool calls:
-
-- `createJsSession()` - Create persistent JsVMContext
-- `hasJsSession()` - Check if session is active
-- `disposeJsSession()` - Release context and free memory
-
-**Agentic Loop Integration (`useChat.ts`):**
-
-1. When first `tool_use` response detected and JS tool enabled → `createJsSession()`
-2. All JS tool executions within the loop share the same context (variables persist)
-3. When loop completes (stop_reason changes or max iterations) → `disposeJsSession()`
-4. On error → `disposeJsSession()` in catch block
-
 **Library Preloading (`/lib`):**
 
-When a JS session is created with a projectId, the VM automatically loads and executes all `.js` files in the `/lib` directory:
+Each tool call loads and executes all `.js` files in the `/lib` directory (if it exists and project.jsLibEnabled is true):
 
-- Checks if `/lib` exists in VFS
 - Lists all `.js` files, sorts alphabetically for deterministic order
 - Executes each script with the filename parameter for proper stack traces
-- Scripts run during session creation (before any tool calls)
+- Library output (console logs) only shown on first JS call in each agentic loop
+- Headers like `=== Output of library X.js ===` are omitted for libraries with no output
 - Use for: loading utility libraries (lodash, date-fns UMD builds), custom helpers, polyfills
-- Errors logged to console but don't prevent session creation
+- Errors logged to console but don't prevent tool execution
 
-**Use Case Example:**
+**Agentic Loop Integration:**
 
-Call 1: `const data = [1, 2, 3]; data.length` → `3`
-Call 2: `data.push(4); data` → `[1, 2, 3, 4]` (data persists!)
+At the start of each agentic loop, `configureJsTool(projectId, loadLib)` is called to:
+
+- Set the project context for VFS file access
+- Reset library log tracking (so first JS call shows library output)
 
 **Instance Management:**
 
 - `initJsTool()` - Create singleton instance, register with toolRegistry
-- `disposeJsTool()` - Unregister from toolRegistry, dispose any active session, clear instance
+- `disposeJsTool()` - Unregister from toolRegistry, clear instance
+- `configureJsTool(projectId, loadLib)` - Set project context and reset library log state
 
 ### Agentic Loop
 
@@ -949,7 +942,7 @@ while (messageBuffer.length > 0 && iteration < MAX_ITERATIONS) {  // MAX_ITERATI
 
 - Unified loop handles all cases (normal send, continue, stop)
 - Automatic tool execution and continuation
-- JS session lifecycle (create on first JS tool, dispose on loop end)
+- JS tool configuration at loop start (project context, library log reset)
 - Cost/token accumulation across iterations
 - Storage saves handled in loop (callbacks are pure state setters)
 - Error handling with cleanup

@@ -7,14 +7,14 @@
  * - Streaming responses and assembling content
  * - Tool execution and result collection
  * - Cost/token tracking across iterations
- * - JS session lifecycle management
+ * - JS tool configuration (project context, library loading)
  */
 
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
 import { StreamingContentAssembler } from '../services/streaming/StreamingContentAssembler';
 import { executeClientSideTool, toolRegistry } from '../services/tools/clientSideTools';
-import { createJsSession, disposeJsSession } from '../services/tools/jsTool';
+import { configureJsTool } from '../services/tools/jsTool';
 import type {
   APIDefinition,
   Chat,
@@ -242,8 +242,12 @@ export async function runAgenticLoop(
 ): Promise<AgenticLoopResult> {
   const messageBuffer = [...initialMessages];
   const savedMessages: Message<unknown>[] = [];
-  let jsSessionCreated = false;
   let iteration = 0;
+
+  // Configure JS tool at loop start if enabled
+  if (context.project.jsExecutionEnabled) {
+    configureJsTool(context.project.id, context.project.jsLibEnabled ?? true);
+  }
 
   // Accumulate totals across all iterations
   const totals: TokenTotals = {
@@ -449,7 +453,7 @@ export async function runAgenticLoop(
       totals.cost += pricingSnapshot.messageCost;
 
       // 8. Check for tool_use and execute tools
-      if (result.stopReason === 'tool_use') {
+      if (result.stopReason === 'tool_use' && iteration < MAX_TOOL_ITERATIONS) {
         const toolUseBlocks = apiService.extractToolUseBlocks(
           context.apiDef.apiType,
           result.fullContent
@@ -461,14 +465,6 @@ export async function runAgenticLoop(
         }
 
         console.debug('[agenticLoop] Executing', toolUseBlocks.length, 'tool(s)');
-
-        // Create JS session on first JS tool call
-        const hasJsTool = toolUseBlocks.some(t => t.name === 'javascript');
-        if (hasJsTool && !jsSessionCreated && context.project.jsExecutionEnabled) {
-          console.debug('[agenticLoop] Creating JS session');
-          await createJsSession(context.project.id, context.project.jsLibEnabled ?? true);
-          jsSessionCreated = true;
-        }
 
         // Execute tools and collect results
         const toolResults: ToolResultBlock[] = [];
@@ -540,12 +536,6 @@ export async function runAgenticLoop(
 
     return { success: true, savedMessages, totalTokens: totals };
   } catch (error) {
-    // Ensure JS session is cleaned up on error
-    if (jsSessionCreated) {
-      disposeJsSession();
-      jsSessionCreated = false;
-    }
-
     const errorInfo =
       error instanceof Error
         ? { message: error.message, stack: error.stack }
@@ -587,11 +577,6 @@ export async function runAgenticLoop(
     callbacks.onError(error instanceof Error ? error : new Error(String(error)));
     return { success: false, savedMessages, totalTokens: totals };
   } finally {
-    // Cleanup
-    if (jsSessionCreated) {
-      console.debug('[agenticLoop] Disposing JS session');
-      disposeJsSession();
-    }
     callbacks.onStreamingEnd();
   }
 }

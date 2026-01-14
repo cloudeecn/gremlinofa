@@ -23,7 +23,7 @@ import * as vfs from '../../vfs/vfsService';
 export type ConsoleLevel = 'LOG' | 'WARN' | 'ERROR' | 'INFO' | 'DEBUG';
 
 export interface ConsoleEntry {
-  level: ConsoleLevel;
+  level?: ConsoleLevel;
   message: string;
 }
 
@@ -128,12 +128,16 @@ export class JsVMContext {
 
       // Temporarily swap consoleOutput to capture library logs separately
       const originalConsoleOutput = this.consoleOutput;
-      this.consoleOutput = this.libraryConsoleOutput;
 
       try {
         // Execute each script with filename for stack traces
         for (const file of jsFiles) {
           const filePath = `${libPath}/${file.name}`;
+
+          // Capture output for this specific library
+          const libraryOutput: ConsoleEntry[] = [];
+          this.consoleOutput = libraryOutput;
+
           try {
             const content = await vfs.readFile(projectId, filePath);
 
@@ -180,6 +184,14 @@ export class JsVMContext {
               if (!this.fsBridge || !this.fsBridge.hasPendingOps()) {
                 break;
               }
+            }
+
+            // Only add header + output if this library produced console output
+            if (libraryOutput.length > 0) {
+              this.libraryConsoleOutput.push({
+                message: `=== Output of library ${file.name} ===`,
+              });
+              this.libraryConsoleOutput.push(...libraryOutput);
             }
           } catch (error) {
             console.error('[JsVMContext] Failed to load', filePath, ':', error);

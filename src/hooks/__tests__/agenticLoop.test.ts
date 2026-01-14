@@ -13,7 +13,7 @@ import {
 import { storage } from '../../services/storage';
 import { apiService } from '../../services/api/apiService';
 import { executeClientSideTool, toolRegistry } from '../../services/tools/clientSideTools';
-import * as jsTool from '../../services/tools/jsTool';
+import { configureJsTool } from '../../services/tools/jsTool';
 import type { Chat, Project, Message, APIDefinition, RenderingBlockGroup } from '../../types';
 import type { ToolUseRenderBlock } from '../../types/content';
 
@@ -111,8 +111,6 @@ describe('agenticLoop', () => {
     vi.mocked(apiService.shouldPrependPrefill).mockReturnValue(false);
     vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
     vi.mocked(executeClientSideTool).mockResolvedValue({ content: 'pong', isError: false });
-    vi.mocked(jsTool.createJsSession).mockResolvedValue(undefined);
-    vi.mocked(jsTool.disposeJsSession).mockReturnValue(undefined);
   });
 
   afterEach(() => {
@@ -260,61 +258,20 @@ describe('agenticLoop', () => {
       expect(executeClientSideTool).toHaveBeenCalledWith('ping', {});
     });
 
-    it('should create JS session on first JS tool call', async () => {
+    it('should configure JS tool at loop start when JS enabled', async () => {
       const projectWithJs: Project = { ...mockProject, jsExecutionEnabled: true };
 
-      const toolUseResponse = async function* () {
-        yield { type: 'content' as const, content: 'Running JS' };
+      const mockStreamGenerator = async function* () {
+        yield { type: 'content' as const, content: 'Hello' };
         return {
-          textContent: 'Running JS',
-          fullContent: [
-            { type: 'tool_use', id: 'tool_1', name: 'javascript', input: { code: '1+1' } },
-          ],
+          textContent: 'Hello',
+          fullContent: {},
           inputTokens: 10,
           outputTokens: 5,
-          stopReason: 'tool_use',
-        };
-      };
-
-      const finalResponse = async function* () {
-        yield { type: 'content' as const, content: 'Result: 2' };
-        return {
-          textContent: 'Result: 2',
-          fullContent: {},
-          inputTokens: 15,
-          outputTokens: 10,
           stopReason: 'end_turn',
         };
       };
-
-      vi.mocked(apiService.sendMessageStream)
-        .mockReturnValueOnce(toolUseResponse())
-        .mockReturnValueOnce(finalResponse());
-
-      vi.mocked(apiService.extractToolUseBlocks).mockReturnValueOnce([
-        { type: 'tool_use', id: 'tool_1', name: 'javascript', input: { code: '1+1' } },
-      ]);
-
-      vi.mocked(apiService.buildToolResultMessages).mockReturnValue([
-        {
-          id: 'msg_1',
-          role: 'assistant',
-          content: { type: 'text', content: '' },
-          timestamp: new Date(),
-        },
-        {
-          id: 'msg_2',
-          role: 'user',
-          content: {
-            type: 'text',
-            content: '',
-            fullContent: [{ type: 'tool_result', tool_use_id: 'tool_1', content: '2' }],
-          },
-          timestamp: new Date(),
-        },
-      ]);
-
-      vi.mocked(executeClientSideTool).mockResolvedValue({ content: '2', isError: false });
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStreamGenerator());
 
       const context: AgenticLoopContext = {
         chatId: 'chat_123',
@@ -327,8 +284,7 @@ describe('agenticLoop', () => {
 
       await runAgenticLoop(context, [{ type: 'user', message: mockUserMessage }], mockCallbacks);
 
-      expect(jsTool.createJsSession).toHaveBeenCalledWith('proj_123', true);
-      expect(jsTool.disposeJsSession).toHaveBeenCalled();
+      expect(configureJsTool).toHaveBeenCalledWith('proj_123', true);
     });
 
     it('should respect max iterations limit', async () => {
@@ -536,9 +492,7 @@ describe('agenticLoop', () => {
       expect(storage.saveMessage).toHaveBeenCalledWith('chat_123', toolResultMessage);
     });
 
-    it('should cleanup JS session on error', async () => {
-      const projectWithJs: Project = { ...mockProject, jsExecutionEnabled: true };
-
+    it('should handle errors gracefully and call callbacks', async () => {
       vi.mocked(apiService.sendMessageStream).mockImplementation(() => {
         throw new Error('Network error');
       });
@@ -546,7 +500,7 @@ describe('agenticLoop', () => {
       const context: AgenticLoopContext = {
         chatId: 'chat_123',
         chat: mockChat,
-        project: projectWithJs,
+        project: mockProject,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
         currentMessages: [],

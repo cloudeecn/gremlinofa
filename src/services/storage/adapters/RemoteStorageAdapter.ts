@@ -135,7 +135,7 @@ export class RemoteStorageAdapter implements StorageAdapter {
   async get(
     table: string,
     id: string
-  ): Promise<{ encryptedData: string; unencryptedData?: string } | null> {
+  ): Promise<{ encryptedData: string; timestamp?: string; unencryptedData?: string } | null> {
     const response = await this.fetchWithAuth(`/api/${table}/${id}`, {
       method: 'GET',
     });
@@ -149,6 +149,7 @@ export class RemoteStorageAdapter implements StorageAdapter {
     const data = await response.json();
     return {
       encryptedData: data.encryptedData,
+      timestamp: data.timestamp,
       unencryptedData: data.unencryptedData,
     };
   }

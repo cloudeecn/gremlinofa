@@ -128,7 +128,11 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - Multiple API definitions per provider type (APIType: `responses_api`, `chatgpt`, `anthropic`, `webllm`)
 - Each definition: name, baseUrl (optional), apiKey (not required for WEBLLM or when `isLocal` is true)
 - `isLocal` flag marks non-WebLLM providers that don't need API keys (e.g., local LLM servers)
-- Default definitions auto-created; model lists cached per definition
+- `isDefault` flag marks system-provided definitions (can be deleted by users)
+- **Default creation**: On first run, one default definition created per API type for discoverability
+- **Deletion**: Users can delete any definition including defaults; won't respawn unless entire API type is missing
+- **Spawning logic**: Checks by `apiType` (not name), preventing duplicates when renaming definitions
+- Model lists cached per definition
 
 ### Projects
 
@@ -221,13 +225,13 @@ public/             # Static assets and PWA icons
 - Backward compatibility: base64-encoded CEKs supported for import
 - Format conversion: Data Manager offers one-click base64→base32 conversion for legacy CEKs
 
-**Message Compression:**
+**Data Compression:**
 
-- Messages compressed with gzip before encryption (60-80% space savings)
+- Messages and model caches compressed with gzip before encryption (60-80% space savings)
 - Uses browser's Compression Streams API (native, no dependencies)
 - Binary-direct approach: compress → prepend "GZ" bytes → encrypt
 - "GZ" indicator bytes `[71, 90]` prepended to detect compressed data on read
-- Automatic detection on read (backward compatible with uncompressed messages)
+- Automatic detection on read (backward compatible with uncompressed data)
 - Bulk compression tool in Data Manager for migrating old uncompressed messages
 
 **Data Import/Export:**

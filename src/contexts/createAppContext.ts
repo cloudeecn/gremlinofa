@@ -23,7 +23,11 @@ export interface AppContextType {
 
   // Models - now keyed by API definition ID
   models: Map<string, Model[]>;
-  refreshModels: (apiDefinitionId: string) => Promise<void>;
+  refreshModels: (
+    apiDefinitionId: string,
+    forceRefresh?: boolean,
+    skipWaitingModelRefresh?: boolean
+  ) => Promise<void>;
 
   // Data Management
   purgeAllData: () => Promise<void>;

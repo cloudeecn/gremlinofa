@@ -127,7 +127,7 @@ export class IndexedDBAdapter implements StorageAdapter {
   async get(
     table: string,
     id: string
-  ): Promise<{ encryptedData: string; unencryptedData?: string } | null> {
+  ): Promise<{ encryptedData: string; timestamp?: string; unencryptedData?: string } | null> {
     if (!this.db) {
       throw new Error('IndexedDB not initialized');
     }
@@ -144,6 +144,7 @@ export class IndexedDBAdapter implements StorageAdapter {
         } else {
           resolve({
             encryptedData: record.encryptedData,
+            timestamp: record.timestamp,
             unencryptedData: record.unencryptedData,
           });
         }

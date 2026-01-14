@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
 import type { APIDefinition, Model, Project } from '../types';
@@ -20,13 +20,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isInitializing, setIsInitializing] = useState(true);
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [storageQuota, setStorageQuota] = useState<{ usage: number; quota: number } | null>(null);
 
-  // Initialize app
-  useEffect(() => {
-    initializeApp();
-  }, []);
+  // Refresh storage quota
+  const refreshStorageQuota = async () => {
+    try {
+      const quota = await storage.getStorageQuota();
+      setStorageQuota(quota);
+    } catch (error) {
+      console.error('[AppContext] Failed to get storage quota:', error);
+      setStorageQuota(null);
+    }
+  };
 
-  const initializeApp = async () => {
+  const initializeApp = useCallback(async () => {
     try {
       console.debug('[AppContext] Starting app initialization...');
 
@@ -49,10 +56,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Load models in parallel with skipWaitingModelRefresh for faster init
       await Promise.allSettled(defsWithCredentials.map(def => refreshModels(def.id, false, true)));
       console.debug('[AppContext] App initialization complete!');
+
+      // Refresh storage quota after initialization
+      await refreshStorageQuota();
     } finally {
       setIsInitializing(false);
     }
-  };
+  }, []);
+
+  // Initialize app
+  useEffect(() => {
+    initializeApp();
+  }, [initializeApp]);
 
   const purgeAllData = async () => {
     console.debug('[AppContext] Purging all data...');
@@ -239,6 +254,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
 
+      // Refresh storage quota after import
+      await refreshStorageQuota();
+
       return result;
     } catch (error) {
       console.error('[AppContext] Import failed:', error);
@@ -325,6 +343,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         `[AppContext] Compression complete: ${result.compressed} compressed, ${result.skipped} skipped, ${result.errors} errors`
       );
 
+      // Refresh storage quota after compression
+      await refreshStorageQuota();
+
       return result;
     } catch (error) {
       console.error('[AppContext] Compression failed:', error);
@@ -351,6 +372,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     isCEKBase32,
     convertCEKToBase32,
     handleCompressMessages,
+    storageQuota,
+    refreshStorageQuota,
     isInitializing,
     isLoadingProjects,
     isLoadingModels,

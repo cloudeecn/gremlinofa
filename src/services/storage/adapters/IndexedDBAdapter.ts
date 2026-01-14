@@ -43,6 +43,21 @@ function filterColumns(row: ExportRow, columns?: ColumnName[]): PartialExportRow
   return result;
 }
 
+function persistStorage() {
+  navigator.storage?.persisted().then(persisted => {
+    if (!persisted) {
+      navigator.storage
+        .persist()
+        ?.then(isSuccess => {
+          if (!isSuccess) console.warn('Unable to mark storage as persistant.');
+        })
+        .catch(e => {
+          console.warn('Unable to mark storage as persistant.', e);
+        });
+    }
+  });
+}
+
 export class IndexedDBAdapter implements StorageAdapter {
   private db: IDBDatabase | null = null;
   private readonly DB_NAME = 'chatbot';
@@ -105,6 +120,8 @@ export class IndexedDBAdapter implements StorageAdapter {
     if (!this.db) {
       throw new Error('IndexedDB not initialized');
     }
+
+    persistStorage();
 
     const record: StoredRecord = {
       id,
@@ -426,6 +443,8 @@ export class IndexedDBAdapter implements StorageAdapter {
       throw new Error('IndexedDB not initialized');
     }
 
+    persistStorage();
+
     if (rows.length === 0) {
       return { saved: 0, skipped: 0 };
     }
@@ -556,5 +575,18 @@ export class IndexedDBAdapter implements StorageAdapter {
 
       transaction.onerror = () => reject(new Error(`Failed to batch get from ${table}`));
     });
+  }
+
+  /**
+   * Get storage quota information using the Storage API
+   * Returns usage and quota in bytes, or null if the API is unavailable
+   */
+  async getStorageQuota(): Promise<{ usage: number; quota: number } | null> {
+    const estimate = (await navigator?.storage?.estimate()) ?? null;
+
+    return {
+      usage: estimate.usage ?? NaN,
+      quota: estimate.quota ?? NaN,
+    };
   }
 }

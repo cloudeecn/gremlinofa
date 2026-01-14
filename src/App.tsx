@@ -16,6 +16,7 @@ import { AttachmentManagerView } from './components/AttachmentManagerView';
 import { OOBEScreen } from './components/OOBEScreen';
 import { OOBEComplete } from './components/OOBEComplete';
 import { encryptionService } from './services/encryption/encryptionService';
+import { formatStorageDisplay, shouldShowStorageWarning } from './utils/formatBytes';
 
 // OOBE result type
 interface OOBEResult {
@@ -118,6 +119,20 @@ function AppContent() {
 
 // Welcome screen component
 function WelcomeScreen({ onMenuPress }: { onMenuPress?: () => void }) {
+  const { storageQuota, refreshStorageQuota } = useApp();
+
+  useEffect(() => {
+    refreshStorageQuota();
+  }, [refreshStorageQuota]);
+
+  // Calculate storage display info
+  const storageInfo = storageQuota
+    ? formatStorageDisplay(storageQuota.usage, storageQuota.quota)
+    : null;
+  const showWarning = storageQuota
+    ? shouldShowStorageWarning(storageQuota.usage, storageQuota.quota)
+    : false;
+
   return (
     <div className="flex flex-1 items-center justify-center bg-white">
       <div className="p-10 text-center">
@@ -127,6 +142,33 @@ function WelcomeScreen({ onMenuPress }: { onMenuPress?: () => void }) {
         <p className="hidden text-lg text-gray-600 md:block">
           Create or select a project to get started
         </p>
+
+        {/* Storage quota display */}
+        {storageInfo && (
+          <div className="mt-4">
+            <p className={`text-sm ${storageInfo.colorClass}`}>💾 Storage: {storageInfo.text}</p>
+          </div>
+        )}
+
+        {/* Storage warning */}
+        {showWarning && (
+          <div className="mx-auto mt-4 max-w-md rounded-lg border border-yellow-300 bg-yellow-50 p-3 text-left">
+            <p className="text-sm text-yellow-800">
+              <span className="mr-1">⚠️</span>
+              If you are seriously using this, please consider migrating to{' '}
+              <a
+                className="text-blue-600"
+                href="https://github.com/cloudeecn/gremlinofa/blob/main/storage-backend/README.md"
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                self hosted remote storage
+              </a>{' '}
+              for data persistance
+            </p>
+          </div>
+        )}
+
         {onMenuPress && (
           <p>
             <button

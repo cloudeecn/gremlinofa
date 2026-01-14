@@ -307,6 +307,8 @@ export function createMockAdapter() {
       return Promise.resolve({ rows });
     }),
 
+    getStorageQuota: vi.fn().mockResolvedValue(null),
+
     // Expose internal storage for testing
     _getStorage: () => storage,
   };

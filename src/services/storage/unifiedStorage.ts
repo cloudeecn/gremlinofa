@@ -36,6 +36,15 @@ export class UnifiedStorage {
   }
 
   /**
+   * Get storage quota information
+   * Returns usage and quota in bytes, or null if unavailable
+   * Only works for local IndexedDB storage (returns null for remote)
+   */
+  async getStorageQuota(): Promise<{ usage: number; quota: number } | null> {
+    return this.adapter.getStorageQuota();
+  }
+
+  /**
    * Check if storage is empty (no projects, chats, or messages)
    * Used to determine if migration mode should be offered
    */

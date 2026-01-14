@@ -164,6 +164,12 @@ export interface StorageAdapter {
    * @returns Array of found records (missing IDs silently omitted)
    */
   batchGet(table: string, ids: string[], columns?: ColumnName[]): Promise<BatchGetResult>;
+
+  /**
+   * Get storage quota information
+   * @returns Object with usage and quota in bytes, or null if unavailable
+   */
+  getStorageQuota(): Promise<{ usage: number; quota: number } | null>;
 }
 
 /**
@@ -196,3 +202,11 @@ export const Tables = {
 } as const;
 
 export type TableName = (typeof Tables)[keyof typeof Tables];
+
+/**
+ * Storage quota information
+ */
+export interface StorageQuota {
+  usage: number; // Bytes used
+  quota: number; // Total bytes available
+}

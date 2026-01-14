@@ -148,8 +148,9 @@ describe('StreamingMessage', () => {
 
       render(<StreamingMessage groups={groups} />);
 
-      // BackstageView renders with icon and label combined
-      expect(screen.getByText('💭 Think')).toBeInTheDocument();
+      // With iconOnRight: true, label on left, icon on right
+      expect(screen.getByText('Think')).toBeInTheDocument();
+      expect(screen.getByText('💭')).toBeInTheDocument();
     });
 
     it('renders backstage collapsed by default (during streaming)', () => {
@@ -339,8 +340,9 @@ describe('StreamingMessage', () => {
       expect(screen.getByText('First thinking preview')).toBeInTheDocument(); // Preview
       expect(screen.getByText('First text')).toBeInTheDocument();
       expect(screen.getByText('Second thinking preview')).toBeInTheDocument(); // Preview
-      // Both backstage headers should be rendered (combined icon+label format)
-      expect(screen.getAllByText('💭 Think')).toHaveLength(2);
+      // Both backstage headers should be rendered (with iconOnRight: true, label and icon separate)
+      expect(screen.getAllByText('Think')).toHaveLength(2);
+      expect(screen.getAllByText('💭')).toHaveLength(2);
     });
 
     it('shows bouncing dots for multiple groups', () => {
@@ -398,8 +400,9 @@ describe('StreamingMessage', () => {
       expect(screen.getByText('Processing results')).toBeInTheDocument();
       expect(screen.getByText('Final answer')).toBeInTheDocument();
 
-      // Two backstage headers (collapsed) - combined icon+label format
-      expect(screen.getAllByText('💭 Think')).toHaveLength(2);
+      // Two backstage headers (collapsed) - with iconOnRight: true, label and icon separate
+      expect(screen.getAllByText('Think')).toHaveLength(2);
+      expect(screen.getAllByText('💭')).toHaveLength(2);
 
       // Should show bouncing dots (not status text)
       const dots = container.querySelectorAll('.bouncing-dot');

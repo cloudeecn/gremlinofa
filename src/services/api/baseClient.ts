@@ -77,19 +77,12 @@ export interface APIClient {
   extractToolUseBlocks(fullContent: unknown): ToolUseBlock[];
 
   /**
-   * Build tool result messages in provider's expected format.
-   * Returns [assistantMessage, toolResultMessage] ready for continuation.
+   * Build tool result message in provider's expected format.
    *
-   * @param assistantContent - Original fullContent from assistant response with tool_use
    * @param toolResults - Results from executing client-side tools
-   * @param textContent - Text content from assistant response
-   * @returns Array of messages: [assistant message with tool_use, user/tool message with results]
+   * @returns Message containing tool results for continuation
    */
-  buildToolResultMessages(
-    assistantContent: unknown,
-    toolResults: ToolResultBlock[],
-    textContent: string
-  ): Message<unknown>[];
+  buildToolResultMessage(toolResults: ToolResultBlock[]): Message<unknown>;
 }
 
 // Stream chunk types

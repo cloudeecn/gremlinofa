@@ -110,7 +110,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 ### Testing Status
 
 - [x] Core services tested (encryption, compression, storage, CSV helper, data export/import, markdownRenderer)
-- [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager)
+- [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager, usePreferences)
 - [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, LegacyAssistantBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView)
 - [x] Error components tested (ErrorView, ErrorFloatingButton)
 - [x] OOBE components tested (OOBEScreen, OOBEComplete)
@@ -1102,6 +1102,17 @@ Headers use `h-14` (56px) for content, but adding `safe-area-inset-top` as paddi
 **Responsive Pattern:** Use `useIsMobile()` hook internally, not as prop.
 
 **Input Font Size:** All `<input>` elements must use `text-base` (16px) or larger. iOS Safari auto-zooms the viewport when focusing inputs with font-size < 16px.
+
+### User Preferences
+
+`usePreferences()` hook provides UI preferences with hardcoded defaults (extensible for future preferences page/storage):
+
+- `iconOnRight: boolean` - Move tool icons to right side in `BackstageView` and `ToolResultBubble` collapsed headers (default: `true`)
+
+When `iconOnRight` is `true`:
+
+- Status text appears on left without icon prefix
+- All icons displayed on right side (previous icons faded, last icon full opacity)
 
 ## Known Issues 🐛
 

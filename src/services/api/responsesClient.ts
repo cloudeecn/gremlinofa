@@ -783,27 +783,12 @@ export class ResponsesClient implements APIClient {
   }
 
   /**
-   * Build tool result messages in OpenAI Responses API expected format.
+   * Build tool result message in OpenAI Responses API expected format.
+   * Tool results are stored as FunctionCallOutput items.
    */
-  buildToolResultMessages(
-    assistantContent: unknown,
-    toolResults: ToolResultBlock[],
-    textContent: string
-  ): Message<OpenAI.Responses.ResponseInputItem[]>[] {
-    // Assistant message with the original fullContent (ResponseOutputItem[] which is subset of ResponseInputItem[])
-    const assistantMessage: Message<OpenAI.Responses.ResponseInputItem[]> = {
-      id: generateUniqueId('msg_assistant'),
-      role: 'assistant',
-      content: {
-        type: 'text',
-        content: textContent,
-        modelFamily: 'responses_api',
-        fullContent: assistantContent as OpenAI.Responses.ResponseInputItem[],
-      },
-      timestamp: new Date(),
-    };
-
-    // Store tool results as FunctionCallOutput items
+  buildToolResultMessage(
+    toolResults: ToolResultBlock[]
+  ): Message<OpenAI.Responses.ResponseInputItem[]> {
     const functionCallOutputs: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] =
       toolResults.map(tr => ({
         type: 'function_call_output' as const,
@@ -811,7 +796,7 @@ export class ResponsesClient implements APIClient {
         output: tr.content,
       }));
 
-    const toolResultMessage: Message<OpenAI.Responses.ResponseInputItem[]> = {
+    return {
       id: generateUniqueId('msg_user'),
       role: 'user',
       content: {
@@ -822,8 +807,6 @@ export class ResponsesClient implements APIClient {
       },
       timestamp: new Date(),
     };
-
-    return [assistantMessage, toolResultMessage];
   }
 
   /**

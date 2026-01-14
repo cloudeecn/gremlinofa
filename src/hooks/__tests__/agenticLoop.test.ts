@@ -218,24 +218,16 @@ describe('agenticLoop', () => {
         { type: 'tool_use', id: 'tool_1', name: 'ping', input: {} },
       ]);
 
-      vi.mocked(apiService.buildToolResultMessages).mockReturnValue([
-        {
-          id: 'msg_1',
-          role: 'assistant',
-          content: { type: 'text', content: '' },
-          timestamp: new Date(),
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_2',
+        role: 'user',
+        content: {
+          type: 'text',
+          content: '',
+          fullContent: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'pong' }],
         },
-        {
-          id: 'msg_2',
-          role: 'user',
-          content: {
-            type: 'text',
-            content: '',
-            fullContent: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'pong' }],
-          },
-          timestamp: new Date(),
-        },
-      ]);
+        timestamp: new Date(),
+      });
 
       const context: AgenticLoopContext = {
         chatId: 'chat_123',
@@ -307,24 +299,16 @@ describe('agenticLoop', () => {
         { type: 'tool_use', id: 'tool_1', name: 'ping', input: {} },
       ]);
 
-      vi.mocked(apiService.buildToolResultMessages).mockReturnValue([
-        {
-          id: 'msg_1',
-          role: 'assistant',
-          content: { type: 'text', content: '' },
-          timestamp: new Date(),
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_2',
+        role: 'user',
+        content: {
+          type: 'text',
+          content: '',
+          fullContent: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'pong' }],
         },
-        {
-          id: 'msg_2',
-          role: 'user',
-          content: {
-            type: 'text',
-            content: '',
-            fullContent: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'pong' }],
-          },
-          timestamp: new Date(),
-        },
-      ]);
+        timestamp: new Date(),
+      });
 
       const context: AgenticLoopContext = {
         chatId: 'chat_123',
@@ -377,24 +361,16 @@ describe('agenticLoop', () => {
         { type: 'tool_use', id: 'tool_1', name: 'ping', input: {} },
       ]);
 
-      vi.mocked(apiService.buildToolResultMessages).mockReturnValue([
-        {
-          id: 'msg_1',
-          role: 'assistant',
-          content: { type: 'text', content: '' },
-          timestamp: new Date(),
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_2',
+        role: 'user',
+        content: {
+          type: 'text',
+          content: '',
+          fullContent: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'pong' }],
         },
-        {
-          id: 'msg_2',
-          role: 'user',
-          content: {
-            type: 'text',
-            content: '',
-            fullContent: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'pong' }],
-          },
-          timestamp: new Date(),
-        },
-      ]);
+        timestamp: new Date(),
+      });
 
       vi.mocked(apiService.calculateCost)
         .mockReturnValueOnce(0.001) // First call

@@ -15,6 +15,7 @@ import {
 import { encryptionService } from '../services/encryption/encryptionService';
 import { clearAllDrafts } from '../hooks/useDraftPersistence';
 import { ImportDataModal } from './ImportDataModal';
+import { formatStorageDisplay } from '../utils/formatBytes';
 
 interface DataManagerPageProps {
   onMenuPress?: () => void;
@@ -32,6 +33,8 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
     isCEKBase32,
     convertCEKToBase32,
     handleCompressMessages,
+    storageQuota,
+    refreshStorageQuota,
   } = useApp();
 
   const [isExporting, setIsExporting] = useState(false);
@@ -53,6 +56,10 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
   useEffect(() => {
     setStorageConfigState(getStorageConfig());
   }, []);
+
+  useEffect(() => {
+    refreshStorageQuota();
+  }, [refreshStorageQuota]);
 
   // Keep localCEK in sync with prop unless we've converted it
   const displayCEK = localCEK ?? cek;
@@ -197,6 +204,20 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
                   : 'IndexedDB (Local)'}
               </span>
             </div>
+
+            {/* Storage quota display */}
+            {storageQuota && (
+              <div className="mt-2 flex items-center gap-2 text-xs">
+                <span>📊</span>
+                <span
+                  className={
+                    formatStorageDisplay(storageQuota.usage, storageQuota.quota).colorClass
+                  }
+                >
+                  Storage Used: {formatStorageDisplay(storageQuota.usage, storageQuota.quota).text}
+                </span>
+              </div>
+            )}
           </section>
 
           {/* Export Section */}

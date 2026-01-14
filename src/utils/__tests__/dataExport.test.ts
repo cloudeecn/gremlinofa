@@ -24,6 +24,7 @@ describe('dataExport', () => {
       exportPaginated: vi.fn(),
       batchSave: vi.fn(),
       batchGet: vi.fn(),
+      getStorageQuota: vi.fn().mockResolvedValue(null),
     };
   });
 
@@ -245,6 +246,7 @@ describe('dataExport', () => {
         exportPaginated: vi.fn().mockResolvedValue({ rows: [], hasMore: false }),
         batchSave: vi.fn(),
         batchGet: vi.fn(),
+        getStorageQuota: vi.fn().mockResolvedValue(null),
       };
 
       const csv = await exportDataToCSV(genericAdapter);

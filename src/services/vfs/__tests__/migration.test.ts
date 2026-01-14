@@ -119,6 +119,7 @@ function createMockAdapter(data: Record<string, Record<string, unknown>> = {}): 
     }),
     batchSave: vi.fn(async (): Promise<BatchSaveResult> => ({ saved: 0, skipped: 0 })),
     batchGet: vi.fn(async () => ({ rows: [] })),
+    getStorageQuota: vi.fn().mockResolvedValue(null),
   };
 }
 

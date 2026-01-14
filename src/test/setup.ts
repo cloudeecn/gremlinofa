@@ -38,6 +38,23 @@ Object.defineProperty(global, 'localStorage', {
   writable: true,
 });
 
+// Mock navigator.storage for IndexedDB tests
+const storageMock = {
+  persisted: () => Promise.resolve(true),
+  persist: () => Promise.resolve(true),
+  estimate: () => Promise.resolve({ usage: 0, quota: 1024 * 1024 * 1024 }),
+};
+
+// Create navigator mock if it doesn't exist (Node.js < 21)
+if (typeof navigator === 'undefined') {
+  (global as unknown as Record<string, unknown>).navigator = {};
+}
+
+Object.defineProperty(navigator, 'storage', {
+  value: storageMock,
+  writable: true,
+});
+
 // Reset mocks before each test
 beforeEach(() => {
   vi.clearAllMocks();

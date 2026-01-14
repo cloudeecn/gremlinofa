@@ -353,6 +353,10 @@ export class RemoteStorageAdapter implements StorageAdapter {
       rows: results.flatMap(r => r.rows),
     };
   }
+
+  async getStorageQuota(): Promise<{ usage: number; quota: number } | null> {
+    return null;
+  }
 }
 
 /**

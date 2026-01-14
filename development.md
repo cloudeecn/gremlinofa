@@ -57,6 +57,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Lightweight deployable remote storage (`storage-backend/` - SQLite + Express)
 - [x] OOBE wizard (start fresh / import backup / use existing remote data)
 - [x] Attachment manager (view, select, delete, delete older than X days, missing attachment handling)
+- [x] Storage quota display (local IndexedDB only, shows usage/quota with warning at >100MB or >50%)
 - [ ] Data migration between localStorage and remote storage
 - [x] Remote storage bulk operations (for faster export/import):
   - [x] Add `exportPaginated()` and `batchSave()` to `StorageAdapter` interface
@@ -224,6 +225,17 @@ public/             # Static assets and PWA icons
 - Data encryption: AES-256-GCM with random IV per operation
 - Backward compatibility: base64-encoded CEKs supported for import
 - Format conversion: Data Manager offers one-click base64→base32 conversion for legacy CEKs
+
+**Storage Quota Display:**
+
+- `StorageAdapter.getStorageQuota()` returns `{ usage: number; quota: number } | null`
+- `IndexedDBAdapter` uses `navigator.storage.estimate()` (browser Storage API)
+- `RemoteStorageAdapter` returns `null` (quota tracking requires backend support)
+- Displayed on Welcome screen and Data Manager page (local storage only)
+- Color coding: gray (≤50%), yellow (>50%), red (>80%)
+- Warning banner shown when usage >100MB OR usage >50% of quota
+- Format: `💾 Storage: 150 MB / 2 GB (8%)`
+- Utility functions in `src/utils/formatBytes.ts`: `formatBytes()`, `formatStorageDisplay()`, `shouldShowStorageWarning()`
 
 **Data Compression:**
 

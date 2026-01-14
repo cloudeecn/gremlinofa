@@ -79,6 +79,7 @@ describe('dataImport', () => {
       clearAll: vi.fn(),
       exportPaginated: vi.fn(),
       batchGet: vi.fn(),
+      getStorageQuota: vi.fn().mockResolvedValue(null),
       batchSave: vi
         .fn()
         .mockImplementation(

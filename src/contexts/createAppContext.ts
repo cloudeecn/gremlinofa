@@ -52,6 +52,10 @@ export interface AppContextType {
   isCEKBase32: boolean | null;
   convertCEKToBase32: () => string | null;
 
+  // Storage Quota
+  storageQuota: { usage: number; quota: number } | null;
+  refreshStorageQuota: () => Promise<void>;
+
   // Loading states
   isInitializing: boolean;
   isLoadingProjects: boolean;

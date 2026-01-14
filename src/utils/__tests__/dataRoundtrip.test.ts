@@ -173,6 +173,7 @@ describe('Data Export/Import Roundtrip', () => {
       }),
       batchSave: vi.fn(),
       batchGet: vi.fn(),
+      getStorageQuota: vi.fn().mockResolvedValue(null),
     };
 
     // Create mock import adapter with batchSave
@@ -190,6 +191,7 @@ describe('Data Export/Import Roundtrip', () => {
       clearAll: vi.fn(),
       exportPaginated: vi.fn(),
       batchGet: vi.fn(),
+      getStorageQuota: vi.fn().mockResolvedValue(null),
       batchSave: vi
         .fn()
         .mockImplementation(
@@ -526,6 +528,7 @@ describe('Cross-Adapter Export/Import', () => {
           }
         ),
       batchGet: vi.fn().mockResolvedValue({ rows: [] }),
+      getStorageQuota: vi.fn().mockResolvedValue(null),
       // Expose internal storage for test verification
       _getStorage: () => storage,
       _getRecordCount: () => {

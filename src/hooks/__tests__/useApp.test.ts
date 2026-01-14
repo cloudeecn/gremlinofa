@@ -40,6 +40,8 @@ describe('useApp', () => {
       cek: null,
       isCEKBase32: null,
       convertCEKToBase32: vi.fn().mockReturnValue(null),
+      storageQuota: null,
+      refreshStorageQuota: vi.fn().mockResolvedValue(undefined),
       isInitializing: false,
       isLoadingProjects: false,
       isLoadingModels: false,

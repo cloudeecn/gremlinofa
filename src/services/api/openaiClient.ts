@@ -47,9 +47,9 @@ export class OpenAIClient implements APIClient {
 
       // Priority groups
       const getGroup = (id: string): number => {
-        if (id.startsWith('gpt-5.')) return 0;
-        if (id.startsWith('gpt-5')) return 1;
-        if (id.startsWith('gpt-4')) return 2;
+        if (id.startsWith('gpt-5.')) return id.includes('-pro') ? 0.5 : 0;
+        if (id.startsWith('gpt-5')) return id.includes('-pro') ? 1.5 : 1;
+        if (id.startsWith('gpt-4')) return id.includes('-pro') ? 2.5 : 2;
         if (id.match(/^o\d/)) return 3;
         return 4; // Legacy models (gpt-3.5, etc.)
       };

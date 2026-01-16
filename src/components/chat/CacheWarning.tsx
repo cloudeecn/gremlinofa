@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { storage } from '../../services/storage';
-import { getModelInfo } from '../../services/api/anthropicModelInfo';
 import type { Message, APIDefinition } from '../../types';
 
 interface CacheWarningProps {
@@ -54,10 +53,11 @@ export default function CacheWarning({
 
         if (contextWindowUsage > 0) {
           // Get model pricing info
-          const modelInfo = getModelInfo(currentModelId);
+          const model = await storage.getModel(currentApiDefId, currentModelId);
 
           // Cost = (tokens / 1M) * cacheWritePrice
-          const cost = (contextWindowUsage / 1_000_000) * (modelInfo.cacheWritePrice || 0);
+          const cost =
+            (contextWindowUsage / 1_000_000) * (model?.cacheWritePrice ?? model?.inputPrice ?? 0);
 
           setShouldShowWarning(true);
           setEstimatedCost(cost);

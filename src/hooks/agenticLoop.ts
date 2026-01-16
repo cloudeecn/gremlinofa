@@ -11,6 +11,7 @@
  */
 
 import { apiService } from '../services/api/apiService';
+import { calculateCost, isCostUnreliable } from '../services/api/modelMetadata';
 import { storage } from '../services/storage';
 import { StreamingContentAssembler } from '../services/streaming/StreamingContentAssembler';
 import { executeClientSideTool, toolRegistry } from '../services/tools/clientSideTools';
@@ -20,6 +21,7 @@ import type {
   Chat,
   Message,
   MessageAttachment,
+  Model,
   Project,
   RenderingBlockGroup,
   ToolResultBlock,
@@ -45,6 +47,7 @@ export interface AgenticLoopContext {
   project: Project;
   apiDef: APIDefinition;
   modelId: string;
+  model?: Model;
   currentMessages: Message<unknown>[]; // History snapshot at loop start
 }
 
@@ -73,6 +76,7 @@ interface TokenTotals {
   reasoningTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
+  webSearchCount: number;
   cost: number;
 }
 
@@ -136,28 +140,25 @@ function createToolResultRenderBlock(
  * Get pricing snapshot for a message.
  */
 async function getPricingSnapshot(
-  apiDef: APIDefinition,
-  modelId: string,
+  model: Model,
   inputTokens: number,
   outputTokens: number,
   reasoningTokens: number,
   cacheCreationTokens: number,
-  cacheReadTokens: number
+  cacheReadTokens: number,
+  webSearchCount: number
 ): Promise<PricingSnapshot> {
-  const totalCost = apiService.calculateCost(
-    apiDef.apiType,
-    modelId,
+  const totalCost = calculateCost(
+    model,
     inputTokens,
     outputTokens,
     reasoningTokens,
     cacheCreationTokens,
-    cacheReadTokens
+    cacheReadTokens,
+    webSearchCount
   );
 
-  const models = await storage.getModels(apiDef.id);
-  const model = models.find(m => m.id === modelId);
-  const contextWindowUsage =
-    inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens - (reasoningTokens || 0);
+  const contextWindowUsage = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens;
   const contextWindow = model?.contextWindow || 0;
 
   return {
@@ -240,6 +241,12 @@ export async function runAgenticLoop(
   initialMessages: PendingMessage[],
   callbacks: AgenticLoopCallbacks
 ): Promise<AgenticLoopResult> {
+  if (context.model == undefined) {
+    throw new Error(
+      `Unable to start agentic loop, model ${context.modelId} not found in ${context.apiDef.name}`
+    );
+  }
+
   const messageBuffer = [...initialMessages];
   const savedMessages: Message<unknown>[] = [];
   let iteration = 0;
@@ -256,6 +263,7 @@ export async function runAgenticLoop(
     reasoningTokens: 0,
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
+    webSearchCount: 0,
     cost: 0,
   };
 
@@ -264,6 +272,9 @@ export async function runAgenticLoop(
 
   // Track the last context window usage for chat update
   let lastContextWindowUsage = 0;
+
+  // Track if any message has unreliable cost
+  let hasUnreliableCost = false;
 
   callbacks.onStreamingStart('Thinking...');
 
@@ -391,15 +402,16 @@ export async function runAgenticLoop(
       const reasoningTokens = result.reasoningTokens ?? 0;
       const cacheCreationTokens = result.cacheCreationTokens ?? 0;
       const cacheReadTokens = result.cacheReadTokens ?? 0;
+      const webSearchCount = result.webSearchCount ?? 0;
 
       const pricingSnapshot = await getPricingSnapshot(
-        context.apiDef,
-        context.modelId,
+        context.model,
         inputTokens,
         outputTokens,
         reasoningTokens,
         cacheCreationTokens,
-        cacheReadTokens
+        cacheReadTokens,
+        webSearchCount
       );
 
       lastContextWindowUsage = pricingSnapshot.contextWindowUsage;
@@ -417,6 +429,20 @@ export async function runAgenticLoop(
 
       // Populate tool render fields
       populateToolRenderFields(renderingContent);
+
+      // Check if cost calculation is unreliable for this message
+      const costUnreliable = isCostUnreliable(
+        context.model,
+        inputTokens,
+        outputTokens,
+        reasoningTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        webSearchCount
+      );
+      if (costUnreliable) {
+        hasUnreliableCost = true;
+      }
 
       // Create assistant message
       const assistantMessage: Message<unknown> = {
@@ -438,7 +464,9 @@ export async function runAgenticLoop(
           reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
           cacheCreationTokens,
           cacheReadTokens,
+          webSearchCount: webSearchCount > 0 ? webSearchCount : undefined,
           ...pricingSnapshot,
+          costUnreliable: costUnreliable || undefined, // Only set if true
         },
       };
 
@@ -452,6 +480,7 @@ export async function runAgenticLoop(
       totals.reasoningTokens += reasoningTokens;
       totals.cacheCreationTokens += cacheCreationTokens;
       totals.cacheReadTokens += cacheReadTokens;
+      totals.webSearchCount += webSearchCount;
       totals.cost += pricingSnapshot.messageCost;
 
       // 8. Check for tool_use and execute tools
@@ -525,6 +554,8 @@ export async function runAgenticLoop(
       contextWindowUsage: lastContextWindowUsage,
       messageCount: (context.chat.messageCount ?? 0) + savedMessages.length,
       lastModifiedAt: new Date(),
+      // Set costUnreliable if any message in this run or previous runs had unreliable cost
+      costUnreliable: hasUnreliableCost || context.chat.costUnreliable || undefined,
     };
     await storage.saveChat(updatedChat);
     callbacks.onChatUpdated(updatedChat);

@@ -12,6 +12,7 @@ import {
 } from '../agenticLoop';
 import { storage } from '../../services/storage';
 import { apiService } from '../../services/api/apiService';
+import * as modelMetadata from '../../services/api/modelMetadata';
 import { executeClientSideTool, toolRegistry } from '../../services/tools/clientSideTools';
 import { configureJsTool } from '../../services/tools/jsTool';
 import type { Chat, Project, Message, APIDefinition, RenderingBlockGroup } from '../../types';
@@ -20,6 +21,7 @@ import type { ToolUseRenderBlock } from '../../types/content';
 // Mock dependencies
 vi.mock('../../services/storage');
 vi.mock('../../services/api/apiService');
+vi.mock('../../services/api/modelMetadata');
 vi.mock('../../services/tools/clientSideTools', async () => {
   const actual = await vi.importActual('../../services/tools/clientSideTools');
   return {
@@ -102,20 +104,36 @@ describe('agenticLoop', () => {
     vi.mocked(storage.saveMessage).mockResolvedValue();
     vi.mocked(storage.saveChat).mockResolvedValue();
     vi.mocked(storage.saveProject).mockResolvedValue();
-    vi.mocked(storage.getModels).mockResolvedValue([
-      { id: 'gpt-4', name: 'GPT-4', apiType: 'chatgpt' as const, contextWindow: 8192 },
-    ]);
     vi.mocked(storage.getAttachments).mockResolvedValue([]);
-    vi.mocked(apiService.calculateCost).mockReturnValue(0.0001);
     vi.mocked(apiService.mapStopReason).mockReturnValue('end_turn');
     vi.mocked(apiService.shouldPrependPrefill).mockReturnValue(false);
     vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
     vi.mocked(executeClientSideTool).mockResolvedValue({ content: 'pong', isError: false });
+    vi.mocked(modelMetadata.getModelMetadataFor).mockReturnValue({
+      id: 'gpt-4',
+      name: 'GPT-4',
+      apiType: 'anthropic',
+      matchedMode: 'exact',
+      inputPrice: 3.0,
+      outputPrice: 15.0,
+      contextWindow: 200000,
+    });
+    vi.mocked(modelMetadata.calculateCost).mockReturnValue(0.001);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  const mockModel = {
+    id: 'gpt-4',
+    name: 'GPT-4',
+    apiType: 'anthropic' as const,
+    matchedMode: 'exact' as const,
+    inputPrice: 3.0,
+    outputPrice: 15.0,
+    contextWindow: 200000,
+  };
 
   describe('runAgenticLoop', () => {
     it('should process a simple message and return success', async () => {
@@ -138,6 +156,7 @@ describe('agenticLoop', () => {
         project: mockProject,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
+        model: mockModel,
         currentMessages: [],
       };
 
@@ -171,6 +190,7 @@ describe('agenticLoop', () => {
         project: mockProject,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
+        model: mockModel,
         currentMessages: [],
       };
 
@@ -235,6 +255,7 @@ describe('agenticLoop', () => {
         project: mockProject,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
+        model: mockModel,
         currentMessages: [],
       };
 
@@ -271,6 +292,7 @@ describe('agenticLoop', () => {
         project: projectWithJs,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
+        model: mockModel,
         currentMessages: [],
       };
 
@@ -316,6 +338,7 @@ describe('agenticLoop', () => {
         project: mockProject,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
+        model: mockModel,
         currentMessages: [],
       };
 
@@ -372,7 +395,7 @@ describe('agenticLoop', () => {
         timestamp: new Date(),
       });
 
-      vi.mocked(apiService.calculateCost)
+      vi.mocked(modelMetadata.calculateCost)
         .mockReturnValueOnce(0.001) // First call
         .mockReturnValueOnce(0.002); // Second call
 
@@ -382,6 +405,7 @@ describe('agenticLoop', () => {
         project: mockProject,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
+        model: mockModel,
         currentMessages: [],
       };
 
@@ -417,6 +441,7 @@ describe('agenticLoop', () => {
         project: mockProject,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
+        model: mockModel,
         currentMessages: [],
       };
 
@@ -455,6 +480,7 @@ describe('agenticLoop', () => {
         project: mockProject,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
+        model: mockModel,
         currentMessages: [mockUserMessage],
       };
 
@@ -479,6 +505,7 @@ describe('agenticLoop', () => {
         project: mockProject,
         apiDef: mockApiDefinition,
         modelId: 'gpt-4',
+        model: mockModel,
         currentMessages: [],
       };
 

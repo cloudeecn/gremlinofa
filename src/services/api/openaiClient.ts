@@ -15,70 +15,62 @@ import { generateUniqueId } from '../../utils/idGenerator';
 import { mapReasoningEffort } from '../../utils/reasoningEffort';
 import { toolRegistry } from '../tools/clientSideTools';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
-import type { ModelInfo } from './modelInfo';
-import { formatModelInfoForDisplay, getModelInfo, isReasoningModel } from './openaiModelInfo';
+import { getModelMetadataFor } from './modelMetadata';
 
 export class OpenAIClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
-    try {
-      // Create OpenAI client with API key and custom baseUrl if provided
-      const client = new OpenAI({
-        dangerouslyAllowBrowser: true,
-        apiKey: apiDefinition.apiKey,
-        baseURL: apiDefinition.baseUrl || undefined,
-      });
+    // Create OpenAI client with API key and custom baseUrl if provided
+    const client = new OpenAI({
+      dangerouslyAllowBrowser: true,
+      apiKey: apiDefinition.apiKey,
+      baseURL: apiDefinition.baseUrl || undefined,
+    });
 
-      // Get all models from the API
-      const modelsResponse = await client.models.list();
+    // Get all models from the API
+    const modelsResponse = await client.models.list();
 
-      // Filter for chat completion models
-      // Only filter for OpenAI (no custom baseUrl) to show gpt-* and o* models
-      // For custom providers (xAI, etc.), show all models
-      const chatModels = apiDefinition.baseUrl
-        ? modelsResponse.data // Custom provider: keep all models
-        : modelsResponse.data.filter(model => {
-            // OpenAI: filter for gpt-* and o* models only
-            const id = model.id.toLowerCase();
-            return id.startsWith('gpt-') || id.match(/^o\d/);
-          });
+    // Filter for chat completion models
+    // Only filter for OpenAI (no custom baseUrl) to show gpt-* and o* models
+    // For custom providers (xAI, etc.), show all models
+    const chatModels = apiDefinition.baseUrl
+      ? modelsResponse.data // Custom provider: keep all models
+      : modelsResponse.data.filter(model => {
+          // OpenAI: filter for gpt-* and o* models only
+          const id = model.id.toLowerCase();
+          return id.startsWith('gpt-') || id.match(/^o\d/);
+        });
 
-      // Sort models: gpt-5, gpt-4, o-series, then legacy
-      chatModels.sort((a, b) => {
-        const idA = a.id.toLowerCase();
-        const idB = b.id.toLowerCase();
+    // Sort models: gpt-5, gpt-4, o-series, then legacy
+    chatModels.sort((a, b) => {
+      const idA = a.id.toLowerCase();
+      const idB = b.id.toLowerCase();
 
-        // Priority groups
-        const getGroup = (id: string): number => {
-          if (id.startsWith('gpt-5')) return 1;
-          if (id.startsWith('gpt-4')) return 2;
-          if (id.match(/^o\d/)) return 3;
-          return 4; // Legacy models (gpt-3.5, etc.)
-        };
+      // Priority groups
+      const getGroup = (id: string): number => {
+        if (id.startsWith('gpt-5.')) return 0;
+        if (id.startsWith('gpt-5')) return 1;
+        if (id.startsWith('gpt-4')) return 2;
+        if (id.match(/^o\d/)) return 3;
+        return 4; // Legacy models (gpt-3.5, etc.)
+      };
 
-        const groupA = getGroup(idA);
-        const groupB = getGroup(idB);
+      const groupA = getGroup(idA);
+      const groupB = getGroup(idB);
 
-        if (groupA !== groupB) {
-          return groupA - groupB;
-        }
+      if (groupA !== groupB) {
+        return groupA - groupB;
+      }
 
-        // Within same group, sort alphabetically
-        return idA.localeCompare(idB);
-      });
+      // Within same group, sort alphabetically
+      return idB.localeCompare(idA);
+    });
 
-      // Convert OpenAI models to our Model format
-      const models: Model[] = chatModels.map(openaiModel => ({
-        id: openaiModel.id,
-        name: openaiModel.id, // OpenAI doesn't provide display names
-        apiType: 'chatgpt',
-        contextWindow: getModelInfo(openaiModel.id).contextWindow,
-      }));
+    // Convert OpenAI models to our Model format
+    const models: Model[] = chatModels.map(openaiModel =>
+      getModelMetadataFor(apiDefinition, openaiModel.id)
+    );
 
-      return models;
-    } catch (error: unknown) {
-      console.error('Failed to discover OpenAI models:', error);
-      return [];
-    }
+    return models;
   }
 
   shouldPrependPrefill(_apiDefinition: APIDefinition): boolean {
@@ -557,35 +549,6 @@ export class OpenAIClient implements APIClient {
 
   protected systemPromptRole(_modelId: string): 'developer' | 'system' {
     return 'system';
-  }
-
-  calculateCost(
-    modelId: string,
-    inputTokens: number,
-    outputTokens: number,
-    cacheReadTokens: number,
-    _reasoningTokens?: number
-  ): number {
-    // Get model info with pricing data
-    const modelInfo = getModelInfo(modelId);
-
-    return (
-      (inputTokens / 1_000_000) * modelInfo.inputPrice +
-      (outputTokens / 1_000_000) * modelInfo.outputPrice +
-      (cacheReadTokens / 1_000_000) * modelInfo.cacheReadPrice
-    );
-  }
-
-  getModelInfo(modelId: string): ModelInfo {
-    return getModelInfo(modelId);
-  }
-
-  formatModelInfoForDisplay(info: ModelInfo): string {
-    return formatModelInfoForDisplay(info);
-  }
-
-  isReasoningModel(modelId: string): boolean {
-    return isReasoningModel(modelId);
   }
 
   migrateMessageRendering(

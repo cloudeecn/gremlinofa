@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useChat } from '../useChat';
 import { storage } from '../../services/storage';
 import { apiService } from '../../services/api/apiService';
+import * as modelMetadata from '../../services/api/modelMetadata';
 import { generateUniqueId } from '../../utils/idGenerator';
 import * as alerts from '../../utils/alerts';
 import type { Chat, Project, Message, APIDefinition } from '../../types';
@@ -10,6 +11,7 @@ import type { Chat, Project, Message, APIDefinition } from '../../types';
 // Mock dependencies
 vi.mock('../../services/storage');
 vi.mock('../../services/api/apiService');
+vi.mock('../../services/api/modelMetadata');
 vi.mock('../../utils/idGenerator');
 vi.mock('../../utils/alerts');
 
@@ -102,12 +104,27 @@ describe('useChat', () => {
     vi.mocked(storage.getAttachments).mockResolvedValue([]);
     vi.mocked(storage.deleteMessageAndAfter).mockResolvedValue();
     vi.mocked(storage.cloneChat).mockResolvedValue({ ...mockChat, id: 'chat_forked' });
-    vi.mocked(storage.getModels).mockResolvedValue([
-      { id: 'gpt-4', name: 'GPT-4', apiType: 'chatgpt' as const, contextWindow: 8192 },
-    ]);
+    vi.mocked(storage.getModel).mockResolvedValue({
+      id: 'gpt-4',
+      name: 'gpt-4',
+      apiType: 'chatgpt',
+      matchedMode: 'exact',
+      inputPrice: 2.5,
+      outputPrice: 10,
+      contextWindow: 128000,
+    });
     vi.mocked(generateUniqueId).mockReturnValue('msg_new_123');
     vi.mocked(alerts.showAlert).mockResolvedValue();
-    vi.mocked(apiService.calculateCost).mockReturnValue(0.0001);
+    vi.mocked(modelMetadata.calculateCost).mockReturnValue(0.0001);
+    vi.mocked(modelMetadata.getModelMetadataFor).mockReturnValue({
+      id: 'gpt-4',
+      name: 'gpt-4',
+      apiType: 'chatgpt',
+      matchedMode: 'exact',
+      inputPrice: 2.5,
+      outputPrice: 10,
+      contextWindow: 128000,
+    });
     vi.mocked(apiService.migrateMessageRendering).mockReturnValue({
       renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: 'test' }] }],
       stopReason: 'end_turn',

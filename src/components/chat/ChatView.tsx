@@ -368,6 +368,11 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           {formatTokens(' R:', tokenUsage.reasoning)}
           {formatTokens(' C↑', tokenUsage.cacheCreation)}
           {formatTokens(' C↓', tokenUsage.cacheRead)} ${tokenUsage.cost?.toFixed(3) || '0.000'}
+          {chat.costUnreliable && (
+            <span className="ml-1 text-yellow-600" title="Cost calculation may be inaccurate">
+              (unreliable)
+            </span>
+          )}
         </div>
       </div>
 

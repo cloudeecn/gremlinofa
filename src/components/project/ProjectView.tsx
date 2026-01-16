@@ -481,6 +481,14 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
                     {' • '}
                     ctx: {chat.contextWindowUsage || 0}
                     {' • '}${(chat.totalCost || 0).toFixed(4)}
+                    {chat.costUnreliable && (
+                      <span
+                        className="ml-1 text-yellow-600"
+                        title="Cost calculation may be inaccurate"
+                      >
+                        (unreliable)
+                      </span>
+                    )}
                   </p>
                 </div>
                 <button

@@ -1,8 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import Modal from '../ui/Modal';
 import { useApp } from '../../hooks/useApp';
-import { apiService } from '../../services/api/apiService';
-import { getModelInfo, formatSize } from '../../services/api/webllmModelInfo';
 import {
   isWebGPUAvailable,
   checkWebGPUCapabilities,
@@ -11,6 +9,7 @@ import {
   type WebGPUCapabilities,
 } from '../../utils/webgpuCapabilities';
 import type { Model, APIDefinition } from '../../types';
+import { formatSize } from '../../services/api/modelMetadata';
 
 interface ModelSelectorProps {
   isOpen: boolean;
@@ -259,19 +258,37 @@ function ModelSelectorContent({
               )}
               {availableModels.map(model => {
                 // Get pricing info using apiService
-                const pricingDisplay = apiService.formatModelInfoForDisplay(
-                  model.apiType,
-                  model.id
-                );
+                const priceDisplaySegments = [];
+                if (model.inputPrice) {
+                  priceDisplaySegments.push(`In: $${model.inputPrice}`);
+                }
+                if (model.outputPrice) {
+                  priceDisplaySegments.push(`Out: $${model.outputPrice}`);
+                }
+                if (model.cacheReadPrice) {
+                  priceDisplaySegments.push(`CacheR: $${model.cacheReadPrice}`);
+                }
+                if (model.cacheWritePrice) {
+                  priceDisplaySegments.push(`CacheW: $${model.cacheWritePrice}`);
+                }
+                const priceDisplay = priceDisplaySegments.join('/');
+
+                // Format context window compactly (e.g., "128k")
+                const contextK = model.contextWindow
+                  ? Math.round(model.contextWindow / 1000)
+                  : null;
+                const contextDisplay = contextK ? `ctx: ${contextK}k` : null;
+
+                // Check if model has unreliable pricing data
+                const isUnreliable =
+                  model.matchedMode === 'unreliable' || model.matchedMode === 'default';
 
                 // For WebLLM models, get additional size info and compatibility
                 const isWebLLM = model.apiType === 'webllm';
-                const webllmInfo = isWebLLM ? getModelInfo(model.id) : null;
-                const compatibility =
-                  isWebLLM && webllmInfo
-                    ? checkModelCompatibility(webllmInfo.vramRequired, webgpuCapabilities)
-                    : null;
 
+                const compatibility = isWebLLM
+                  ? checkModelCompatibility(model.vramRequired || 0, webgpuCapabilities)
+                  : null;
                 // Determine if model should be disabled (WebGPU not available or incompatible)
                 const isDisabled = isWebLLM && (!hasWebGPU || compatibility?.compatible === false);
 
@@ -294,20 +311,28 @@ function ModelSelectorContent({
                       >
                         {model.name}
                       </div>
-                      {isWebLLM && webllmInfo && (
-                        <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
-                          {formatSize(webllmInfo.vramRequired)} VRAM
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 text-xs text-gray-600">
-                      Context: {model.contextWindow.toLocaleString()} tokens
+                      <div className="ml-2 flex items-center gap-2">
+                        {contextDisplay && (
+                          <span className="text-xs text-gray-500">{contextDisplay}</span>
+                        )}
+                        {isWebLLM && (
+                          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
+                            {formatSize(model.vramRequired || 0)} VRAM
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div
                       className={`mt-1 text-xs font-medium ${isDisabled ? 'text-gray-500' : 'text-green-700'}`}
                     >
-                      {isWebLLM ? '🏠' : '💰'} {pricingDisplay}
+                      {isWebLLM ? '🏠 Free' : `💰 ${priceDisplay}`}
                     </div>
+                    {/* Unreliable pricing warning */}
+                    {isUnreliable && (
+                      <div className="mt-1 text-xs text-yellow-600">
+                        ⚠️ Cost calculation may be inaccurate for this model
+                      </div>
+                    )}
                     {/* VRAM compatibility warning */}
                     {compatibility?.warning && (
                       <div

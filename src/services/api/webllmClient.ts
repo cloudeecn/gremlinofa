@@ -6,7 +6,7 @@
  */
 
 import type { MLCEngine, InitProgressReport, ChatCompletionMessageParam } from '@mlc-ai/web-llm';
-import { CreateMLCEngine, prebuiltAppConfig } from '@mlc-ai/web-llm';
+import { CreateMLCEngine, ModelType, prebuiltAppConfig } from '@mlc-ai/web-llm';
 
 import type {
   APIDefinition,
@@ -19,13 +19,6 @@ import type {
 } from '../../types';
 import { groupAndConsolidateBlocks } from '../../types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
-import type { ModelInfo } from './modelInfo';
-import {
-  formatModelInfoForDisplay as formatInfo,
-  getModelInfo,
-  isReasoningModel as checkReasoningModel,
-  type WebLLMModelInfo,
-} from './webllmModelInfo';
 
 /**
  * Progress callback for model loading.
@@ -210,39 +203,38 @@ export class WebLLMClient implements APIClient {
    * Discover available models from WebLLM's prebuilt model list.
    * Returns models that can be downloaded and run locally.
    */
-  async discoverModels(_apiDefinition: APIDefinition): Promise<Model[]> {
+  async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
     // Get available models from prebuiltAppConfig
     const availableModels = prebuiltAppConfig.model_list;
 
     // Filter for instruction-tuned models (most useful for chat)
-    const chatModels = availableModels.filter(
-      (model: { model_id: string }) =>
-        model.model_id.toLowerCase().includes('instruct') ||
-        model.model_id.toLowerCase().includes('chat')
-    );
+    const chatModels = availableModels.filter(model => model.model_type === ModelType.LLM);
 
     // Sort by resource usage: low_resource_required first, then by VRAM
-    chatModels.sort((a: { model_id: string }, b: { model_id: string }) => {
-      const infoA = getModelInfo(a.model_id);
-      const infoB = getModelInfo(b.model_id);
+    chatModels.sort((a, b) => {
       // Primary: low_resource_required true comes first
-      if (infoA.lowResourceRequired !== infoB.lowResourceRequired) {
-        return infoA.lowResourceRequired ? -1 : 1;
+      if (a.low_resource_required !== b.low_resource_required) {
+        return a.low_resource_required ? -1 : 1;
       }
       // Secondary: sort by VRAM required (smaller first)
-      return infoA.vramRequired - infoB.vramRequired;
+      return (a.vram_required_MB ?? 0) - (b.vram_required_MB ?? 0);
     });
 
     // Convert to our Model format
-    const models: Model[] = chatModels.map((mlcModel: { model_id: string }) => {
-      const info = getModelInfo(mlcModel.model_id);
-      return {
-        id: mlcModel.model_id,
-        name: info.displayName,
-        apiType: 'webllm',
-        contextWindow: info.contextWindow,
-      };
-    });
+    const models: Model[] = chatModels.map(model => ({
+      id: model.model_id,
+      name: model.model,
+      apiType: apiDefinition.apiType,
+      matchedMode: 'exact',
+      vramRequired: model.vram_required_MB,
+      lowResourceRequired: model.low_resource_required,
+      inputPrice: 0,
+      outputPrice: 0,
+      cacheReadPrice: 0,
+      cacheWritePrice: 0,
+      webSearchPrice: 0,
+      reasoningPrice: 0,
+    }));
 
     return models;
   }
@@ -413,43 +405,6 @@ export class WebLLMClient implements APIClient {
     const regex = new RegExp(`${type}:\\s*(\\d+)\\s*tok`, 'i');
     const match = statsText.match(regex);
     return match ? parseInt(match[1], 10) : null;
-  }
-
-  /**
-   * Calculate cost - always 0 for local models.
-   */
-  calculateCost(
-    _modelId: string,
-    _inputTokens: number,
-    _outputTokens: number,
-    _reasoningTokens?: number,
-    _cacheCreationTokens?: number,
-    _cacheReadTokens?: number
-  ): number {
-    // Local models are free!
-    return 0;
-  }
-
-  /**
-   * Get model information including context window and size.
-   */
-  getModelInfo(modelId: string): ModelInfo {
-    return getModelInfo(modelId);
-  }
-
-  /**
-   * Format model info for display in UI.
-   */
-  formatModelInfoForDisplay(info: ModelInfo): string {
-    // Cast to WebLLMModelInfo to access extended properties
-    return formatInfo(info as WebLLMModelInfo);
-  }
-
-  /**
-   * Check if model supports reasoning (none currently do).
-   */
-  isReasoningModel(modelId: string): boolean {
-    return checkReasoningModel(modelId);
   }
 
   /**

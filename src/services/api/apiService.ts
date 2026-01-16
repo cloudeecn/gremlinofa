@@ -15,9 +15,6 @@ import { OpenAIClient } from './openaiClient';
 import { ResponsesClient } from './responsesClient';
 import { WebLLMClient } from './webllmClient';
 
-// Re-export ModelInfo for external use
-export type { ModelInfo } from './modelInfo';
-
 // Main API service that routes to the correct client
 class APIService {
   private clients: Map<APIType, APIClient> = new Map();
@@ -86,66 +83,6 @@ class APIService {
 
     // Use the real client
     return yield* client.sendMessageStream(messages, modelId, apiDefinition, options);
-  }
-
-  // Calculate cost for a message
-  calculateCost(
-    apiType: APIType,
-    modelId: string,
-    inputTokens: number,
-    outputTokens: number,
-    reasoningTokens?: number,
-    cacheCreationTokens?: number,
-    cacheReadTokens?: number
-  ): number {
-    const client = this.getClient(apiType);
-
-    if (!client) {
-      throw new Error(`Cannot get client for ${apiType}`);
-    }
-
-    return client.calculateCost(
-      modelId,
-      inputTokens,
-      outputTokens,
-      reasoningTokens,
-      cacheCreationTokens,
-      cacheReadTokens
-    );
-  }
-
-  // Get model information (pricing + capabilities)
-  getModelInfo(apiType: APIType, modelId: string) {
-    const client = this.getClient(apiType);
-
-    if (!client) {
-      throw new Error(`Cannot get client for ${apiType}`);
-    }
-
-    return client.getModelInfo(modelId);
-  }
-
-  // Format model info for UI display
-  formatModelInfoForDisplay(apiType: APIType, modelId: string): string {
-    const client = this.getClient(apiType);
-
-    if (!client) {
-      throw new Error(`Cannot get client for ${apiType}`);
-    }
-
-    const info = client.getModelInfo(modelId);
-    return client.formatModelInfoForDisplay(info);
-  }
-
-  // Check if model supports reasoning
-  isReasoningModel(apiType: APIType, modelId: string): boolean {
-    const client = this.getClient(apiType);
-
-    if (!client) {
-      return false;
-    }
-
-    return client.isReasoningModel(modelId);
   }
 
   /**

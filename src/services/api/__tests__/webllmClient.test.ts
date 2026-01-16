@@ -7,45 +7,67 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { APIDefinition, Message } from '../../../types';
-import type { WebLLMModelInfo } from '../webllmModelInfo';
 
 // Mock the @mlc-ai/web-llm module
 vi.mock('@mlc-ai/web-llm', () => ({
   CreateMLCEngine: vi.fn(),
+  ModelType: { LLM: 'LLM', embedding: 'embedding', vlm: 'vlm' },
   prebuiltAppConfig: {
     model_list: [
       // Include buffer_size_required_bytes and vram_required_MB for realistic model info
       {
         model_id: 'Phi-3.5-mini-instruct-q4f16_1-MLC',
+        model: 'Phi-3.5-mini-instruct',
+        model_type: 'LLM',
         buffer_size_required_bytes: 2.3 * 1024 * 1024 * 1024,
         vram_required_MB: 3000,
+        low_resource_required: false,
       },
       {
         model_id: 'Llama-3.1-8B-Instruct-q4f16_1-MLC',
+        model: 'Llama-3.1-8B-Instruct',
+        model_type: 'LLM',
         buffer_size_required_bytes: 4.3 * 1024 * 1024 * 1024,
         vram_required_MB: 5000,
+        low_resource_required: false,
       },
       {
         model_id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
+        model: 'Qwen2.5-1.5B-Instruct',
+        model_type: 'LLM',
         buffer_size_required_bytes: 1.0 * 1024 * 1024 * 1024,
         vram_required_MB: 1500,
+        low_resource_required: true,
       },
       {
         model_id: 'SmolLM2-360M-Instruct-q4f16_1-MLC',
+        model: 'SmolLM2-360M-Instruct',
+        model_type: 'LLM',
         buffer_size_required_bytes: 0.4 * 1024 * 1024 * 1024,
         vram_required_MB: 500,
+        low_resource_required: true,
       },
       {
         model_id: 'gemma-2-2b-it-q4f16_1-MLC',
+        model: 'gemma-2-2b-it',
+        model_type: 'LLM',
         buffer_size_required_bytes: 1.5 * 1024 * 1024 * 1024,
         vram_required_MB: 2000,
+        low_resource_required: false,
       },
       {
         model_id: 'TinyLlama-1.1B-Chat-v1.0-q4f16_1-MLC',
+        model: 'TinyLlama-1.1B-Chat',
+        model_type: 'LLM',
         buffer_size_required_bytes: 0.6 * 1024 * 1024 * 1024,
         vram_required_MB: 800,
+        low_resource_required: true,
       },
-      { model_id: 'some-base-model-v1' }, // Should be filtered out (no instruct/chat)
+      {
+        model_id: 'some-base-model-v1',
+        model: 'some-base-model',
+        model_type: 'embedding', // Not LLM, should be filtered out
+      },
     ],
   },
 }));
@@ -80,20 +102,17 @@ describe('WebLLMClient', () => {
   });
 
   describe('discoverModels', () => {
-    it('should return filtered list of chat/instruct models', async () => {
+    it('should return filtered list of LLM models', async () => {
       const models = await client.discoverModels(mockApiDefinition);
 
-      // Should filter for instruct/chat models only
+      // Should filter for LLM models only (based on model_type)
       expect(models.length).toBeGreaterThan(0);
 
-      // All returned models should have instruct or chat in their ID
-      for (const model of models) {
-        const idLower = model.id.toLowerCase();
-        expect(idLower.includes('instruct') || idLower.includes('chat')).toBe(true);
-      }
-
-      // Should not include base models without instruct/chat
+      // Should not include non-LLM models (embedding, vlm)
       expect(models.find(m => m.id === 'some-base-model-v1')).toBeUndefined();
+
+      // All returned models should be from our mock LLM model list
+      expect(models.every(m => m.apiType === 'webllm')).toBe(true);
     });
 
     it('should return models with correct apiType', async () => {
@@ -104,15 +123,7 @@ describe('WebLLMClient', () => {
       }
     });
 
-    it('should return models with context windows', async () => {
-      const models = await client.discoverModels(mockApiDefinition);
-
-      for (const model of models) {
-        expect(model.contextWindow).toBeGreaterThan(0);
-      }
-    });
-
-    it('should sort models by size (smaller first)', async () => {
+    it('should sort models by resource requirements (low resource first, then by VRAM)', async () => {
       const models = await client.discoverModels(mockApiDefinition);
 
       // SmolLM should come before Llama 8B
@@ -128,45 +139,6 @@ describe('WebLLMClient', () => {
   describe('shouldPrependPrefill', () => {
     it('should return false', () => {
       expect(client.shouldPrependPrefill(mockApiDefinition)).toBe(false);
-    });
-  });
-
-  describe('calculateCost', () => {
-    it('should always return 0 (free)', () => {
-      expect(client.calculateCost('any-model', 1000, 500)).toBe(0);
-      expect(client.calculateCost('any-model', 0, 0)).toBe(0);
-      expect(client.calculateCost('any-model', 1000000, 1000000, 500, 100, 200)).toBe(0);
-    });
-  });
-
-  describe('getModelInfo', () => {
-    it('should return model info with zero pricing', () => {
-      const info = client.getModelInfo('Phi-3.5-mini-instruct-q4f16_1-MLC');
-      expect(info.inputPrice).toBe(0);
-      expect(info.outputPrice).toBe(0);
-      expect(info.cacheReadPrice).toBe(0);
-    });
-
-    it('should return context window', () => {
-      const info = client.getModelInfo('Phi-3.5-mini-instruct-q4f16_1-MLC');
-      expect(info.contextWindow).toBeGreaterThan(0);
-    });
-  });
-
-  describe('formatModelInfoForDisplay', () => {
-    it('should show free and size info', () => {
-      const info = client.getModelInfo('Phi-3.5-mini-instruct-q4f16_1-MLC') as WebLLMModelInfo;
-      const formatted = client.formatModelInfoForDisplay(info);
-      expect(formatted).toContain('Free');
-      // Shows download size when available, VRAM otherwise
-      expect(formatted.includes('download') || formatted.includes('VRAM')).toBe(true);
-    });
-  });
-
-  describe('isReasoningModel', () => {
-    it('should return false for all models', () => {
-      expect(client.isReasoningModel('Phi-3.5-mini-instruct-q4f16_1-MLC')).toBe(false);
-      expect(client.isReasoningModel('Llama-3.1-8B-Instruct-q4f16_1-MLC')).toBe(false);
     });
   });
 

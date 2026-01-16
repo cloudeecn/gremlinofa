@@ -61,7 +61,7 @@ function persistStorage() {
 export class IndexedDBAdapter implements StorageAdapter {
   private db: IDBDatabase | null = null;
   private readonly DB_NAME = 'chatbot';
-  private readonly DB_VERSION = 4;
+  private readonly DB_VERSION = 5;
 
   async initialize(): Promise<void> {
     // Open IndexedDB
@@ -91,6 +91,9 @@ export class IndexedDBAdapter implements StorageAdapter {
           Tables.METADATA,
           Tables.MEMORIES,
           Tables.MEMORY_JOURNALS,
+          Tables.VFS_META,
+          Tables.VFS_FILES,
+          Tables.VFS_VERSIONS,
         ];
 
         for (const table of tables) {

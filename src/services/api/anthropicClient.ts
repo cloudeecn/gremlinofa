@@ -721,30 +721,11 @@ export class AnthropicClient implements APIClient {
   }
 
   /**
-   * Build tool result messages in Anthropic's expected format.
-   * Returns [assistantMessage with tool_use, userMessage with tool_result blocks].
+   * Build tool result message in Anthropic's expected format.
+   * Anthropic expects tool_result blocks in user role.
    */
-  buildToolResultMessages(
-    assistantContent: unknown,
-    toolResults: ToolResultBlock[],
-    textContent: string
-  ): Message<unknown>[] {
-    // Assistant message with the original fullContent (contains tool_use blocks)
-    const assistantMessage: Message<unknown> = {
-      id: generateUniqueId('msg_assistant'),
-      role: 'assistant',
-      content: {
-        type: 'text',
-        content: textContent,
-        modelFamily: 'anthropic',
-        fullContent: assistantContent,
-        // renderingContent will be set by caller after finalize()
-      },
-      timestamp: new Date(),
-    };
-
-    // User message with tool_result blocks (Anthropic expects tool_result in user role)
-    const toolResultMessage: Message<unknown> = {
+  buildToolResultMessage(toolResults: ToolResultBlock[]): Message<unknown> {
+    return {
       id: generateUniqueId('msg_user'),
       role: 'user',
       content: {
@@ -756,7 +737,5 @@ export class AnthropicClient implements APIClient {
       },
       timestamp: new Date(),
     };
-
-    return [assistantMessage, toolResultMessage];
   }
 }

@@ -667,30 +667,12 @@ export class OpenAIClient implements APIClient {
   }
 
   /**
-   * Build tool result messages in OpenAI Chat Completions expected format.
+   * Build tool result message in OpenAI Chat Completions expected format.
    * OpenAI uses separate tool messages (role: 'tool') for each result.
+   * We store them as a single user message with tool_results for our internal format.
    */
-  buildToolResultMessages(
-    assistantContent: unknown,
-    toolResults: ToolResultBlock[],
-    textContent: string
-  ): Message<unknown>[] {
-    // Assistant message with the original fullContent
-    const assistantMessage: Message<unknown> = {
-      id: generateUniqueId('msg_assistant'),
-      role: 'assistant',
-      content: {
-        type: 'text',
-        content: textContent,
-        modelFamily: 'chatgpt',
-        fullContent: assistantContent,
-      },
-      timestamp: new Date(),
-    };
-
-    // OpenAI expects individual tool messages with role: 'tool'
-    // We store them as a single user message with tool_results for our internal format
-    const toolResultMessage: Message<unknown> = {
+  buildToolResultMessage(toolResults: ToolResultBlock[]): Message<unknown> {
+    return {
       id: generateUniqueId('msg_user'),
       role: 'user',
       content: {
@@ -706,8 +688,6 @@ export class OpenAIClient implements APIClient {
       },
       timestamp: new Date(),
     };
-
-    return [assistantMessage, toolResultMessage];
   }
 
   /**

@@ -256,20 +256,15 @@ class APIService {
   }
 
   /**
-   * Build tool result messages in provider's expected format.
+   * Build tool result message in provider's expected format.
    * Routes to the appropriate client based on API type.
    */
-  buildToolResultMessages(
-    apiType: APIType,
-    assistantContent: unknown,
-    toolResults: ToolResultBlock[],
-    textContent: string
-  ): Message<unknown>[] {
+  buildToolResultMessage(apiType: APIType, toolResults: ToolResultBlock[]): Message<unknown> {
     const client = this.getClient(apiType);
     if (!client) {
-      return [];
+      throw new Error(`Cannot get client for ${apiType}`);
     }
-    return client.buildToolResultMessages(assistantContent, toolResults, textContent);
+    return client.buildToolResultMessage(toolResults);
   }
 }
 

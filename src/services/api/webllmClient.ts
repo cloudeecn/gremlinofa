@@ -513,14 +513,15 @@ export class WebLLMClient implements APIClient {
   }
 
   /**
-   * Build tool result messages - WebLLM doesn't support tools.
+   * Build tool result message - WebLLM doesn't support tools.
    */
-  buildToolResultMessages(
-    _assistantContent: unknown,
-    _toolResults: ToolResultBlock[],
-    _textContent: string
-  ): Message<unknown>[] {
-    // WebLLM doesn't support tool calling
-    return [];
+  buildToolResultMessage(_toolResults: ToolResultBlock[]): Message<unknown> {
+    // WebLLM doesn't support tool calling - return empty message
+    return {
+      id: '',
+      role: 'user',
+      content: { type: 'text', content: '', modelFamily: 'webllm' },
+      timestamp: new Date(),
+    };
   }
 }

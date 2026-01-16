@@ -21,8 +21,14 @@ import type {
 } from '../../types/content';
 import { categorizeBlock } from '../../types/content';
 
+export interface StreamingAssemblerOptions {
+  /** Optional callback to get tool icon by name (for streaming display) */
+  getToolIcon?: (toolName: string) => string | undefined;
+}
+
 export class StreamingContentAssembler {
   private groups: RenderingBlockGroup[] = [];
+  private options: StreamingAssemblerOptions;
   private currentBlock: RenderingContentBlock | null = null;
   private webSearchMap: Map<string, WebSearchRenderBlock> = new Map();
   private webFetchMap: Map<string, WebFetchRenderBlock> = new Map();
@@ -30,6 +36,10 @@ export class StreamingContentAssembler {
   private lastEvent: string = '';
   // Track pending citations for current text block (received before text)
   private pendingCitations: Array<{ url: string; title?: string; citedText?: string }> = [];
+
+  constructor(options: StreamingAssemblerOptions = {}) {
+    this.options = options;
+  }
 
   /**
    * Process a streaming chunk and update internal state
@@ -342,6 +352,8 @@ export class StreamingContentAssembler {
       id,
       name,
       input,
+      // Populate icon during streaming if callback provided
+      icon: this.options.getToolIcon?.(name),
     };
     this.addBlockToGroups(toolUseBlock);
     this.lastEndedBlockType = null;

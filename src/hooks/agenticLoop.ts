@@ -303,7 +303,9 @@ export async function runAgenticLoop(
       }
 
       // 5. Stream API response
-      assembler = new StreamingContentAssembler();
+      assembler = new StreamingContentAssembler({
+        getToolIcon: (toolName: string) => toolRegistry.get(toolName)?.iconInput,
+      });
       callbacks.onStreamingUpdate([], '');
 
       // Yield to allow React to process the streaming reset before new content arrives
@@ -453,6 +455,9 @@ export async function runAgenticLoop(
       totals.cost += pricingSnapshot.messageCost;
 
       // 8. Check for tool_use and execute tools
+      // Skip this if MAX_TOOL_ITERATIONS reached, since the tool result will not be send to LLM anyways
+      // (Skip will just send a fail message, while Run will rerun the tool calls)
+      // TODO: When implementing stop message stream / agentic loop function, stop here too.
       if (result.stopReason === 'tool_use' && iteration < MAX_TOOL_ITERATIONS) {
         const toolUseBlocks = apiService.extractToolUseBlocks(
           context.apiDef.apiType,
@@ -492,11 +497,9 @@ export async function runAgenticLoop(
         }
 
         // Build tool result message using API-specific format
-        const [_assistantToolMessage, toolResultMessage] = apiService.buildToolResultMessages(
+        const toolResultMessage = apiService.buildToolResultMessage(
           context.apiDef.apiType,
-          result.fullContent,
-          toolResults,
-          result.textContent
+          toolResults
         );
 
         // Add rendering content to tool result message

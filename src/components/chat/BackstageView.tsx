@@ -7,6 +7,7 @@ import type {
   ToolUseRenderBlock,
   ToolResultRenderBlock,
 } from '../../types/content';
+import { usePreferences } from '../../hooks/usePreferences';
 
 export interface BackstageViewProps {
   blocks: RenderingContentBlock[];
@@ -19,6 +20,7 @@ export interface BackstageViewProps {
  */
 export default function BackstageView({ blocks, defaultExpanded = false }: BackstageViewProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const { iconOnRight } = usePreferences();
 
   if (blocks.length === 0) return null;
 
@@ -113,7 +115,7 @@ export default function BackstageView({ blocks, defaultExpanded = false }: Backs
       >
         <span className="flex shrink-0 items-center gap-1">
           <span>
-            {getLastBlockIcon()} {getStatusText()}
+            {!iconOnRight && getLastBlockIcon()} {getStatusText()}
           </span>
           <span className="text-purple-600">{isExpanded ? '▼' : '▶'}</span>
         </span>
@@ -136,9 +138,20 @@ export default function BackstageView({ blocks, defaultExpanded = false }: Backs
               </span>
             )}
             <span className="flex shrink-0 items-center gap-1">
-              <span className="text-shadow-[0 0] mr-2 tracking-[-0.5em] opacity-50 text-shadow-white">
-                {getPreviousBlockIcons()}
-              </span>
+              {iconOnRight ? (
+                // All icons on right: previous icons faded, last icon full opacity
+                <>
+                  <span className="text-shadow-[0 0] tracking-[-0.5em] opacity-50 text-shadow-white">
+                    {getPreviousBlockIcons()}
+                  </span>
+                  <span className="mr-2">{getLastBlockIcon()}</span>
+                </>
+              ) : (
+                // Default: previous icons on right (faded)
+                <span className="text-shadow-[0 0] mr-2 tracking-[-0.5em] opacity-50 text-shadow-white">
+                  {getPreviousBlockIcons()}
+                </span>
+              )}
             </span>
           </>
         )}

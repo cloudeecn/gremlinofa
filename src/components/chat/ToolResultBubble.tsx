@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { RenderingBlockGroup, ToolResultRenderBlock } from '../../types/content';
 import type { Message } from '../../types';
 import { formatTimestamp } from '../../utils/messageFormatters';
+import { usePreferences } from '../../hooks/usePreferences';
 
 export interface ToolResultBubbleProps {
   message: Message<unknown>;
@@ -14,6 +15,7 @@ export interface ToolResultBubbleProps {
  */
 export default function ToolResultBubble({ message, onAction }: ToolResultBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const { iconOnRight } = usePreferences();
 
   // Extract tool_result blocks from renderingContent (normalized format for all APIs)
   const renderingContent = message.content.renderingContent as RenderingBlockGroup[] | undefined;
@@ -41,7 +43,7 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
         >
           <span className="flex shrink-0 items-center gap-1">
             <span>
-              {icon} {statusText}
+              {!iconOnRight && icon} {statusText}
             </span>
             <span className="text-purple-600">{isExpanded ? '▼' : '▶'}</span>
           </span>
@@ -54,13 +56,28 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
                 </span>
               </span>
               <span className="min-w-0 flex-1 overflow-hidden"></span>
-              {/* Show previous result icons if multiple */}
+              {/* Show result icons on right */}
               {toolResults.length > 1 && (
                 <span className="flex shrink-0 items-center gap-1">
-                  <span className="text-shadow-[0 0] mr-2 tracking-[-0.5em] opacity-50 text-shadow-white">
-                    {toolResults.slice(0, -1).map(r => r.icon ?? (r.is_error ? '❌' : '✅'))}
-                  </span>
+                  {iconOnRight ? (
+                    // All icons on right: previous icons faded, last icon full opacity
+                    <>
+                      <span className="text-shadow-[0 0] tracking-[-0.5em] opacity-50 text-shadow-white">
+                        {toolResults.slice(0, -1).map(r => r.icon ?? (r.is_error ? '❌' : '✅'))}
+                      </span>
+                      <span className="mr-2">{icon}</span>
+                    </>
+                  ) : (
+                    // Default: previous icons on right (faded)
+                    <span className="text-shadow-[0 0] mr-2 tracking-[-0.5em] opacity-50 text-shadow-white">
+                      {toolResults.slice(0, -1).map(r => r.icon ?? (r.is_error ? '❌' : '✅'))}
+                    </span>
+                  )}
                 </span>
+              )}
+              {/* Single result with iconOnRight: show the icon */}
+              {toolResults.length === 1 && iconOnRight && (
+                <span className="mr-2 shrink-0">{icon}</span>
               )}
             </>
           )}

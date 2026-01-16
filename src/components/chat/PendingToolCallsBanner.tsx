@@ -30,7 +30,7 @@ export default function PendingToolCallsBanner({
             onChange={() => onModeChange('stop')}
             className="h-4 w-4 text-amber-600 focus:ring-amber-500"
           />
-          <span className="text-sm text-gray-700">Stop (skip tools)</span>
+          <span className="text-sm text-gray-700">Skip (skip tools)</span>
         </label>
         <label className="flex cursor-pointer items-center gap-2">
           <input
@@ -40,7 +40,7 @@ export default function PendingToolCallsBanner({
             onChange={() => onModeChange('continue')}
             className="h-4 w-4 text-amber-600 focus:ring-amber-500"
           />
-          <span className="text-sm text-gray-700">Continue (run tools)</span>
+          <span className="text-sm text-gray-700">Run (run tools)</span>
         </label>
       </div>
     </div>

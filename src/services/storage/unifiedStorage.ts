@@ -212,10 +212,11 @@ export class UnifiedStorage {
   }
 
   // ===== Models Cache =====
-
-  async getModels(apiDefinitionId: string): Promise<Model[]> {
-    const result = await this.getModelsWithCache(apiDefinitionId);
-    return result.models;
+  async getModel(apiDefinitionId: string, modelId: string): Promise<Model | undefined> {
+    // TODO add in-memory cache
+    return (await this.getModelsWithCache(apiDefinitionId)).models
+      .filter(model => model.id === modelId)
+      .at(0);
   }
 
   async getModelsWithCache(apiDefinitionId: string): Promise<{

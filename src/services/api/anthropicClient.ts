@@ -14,63 +14,34 @@ import type {
 
 import { groupAndConsolidateBlocks } from '../../types';
 import { generateUniqueId } from '../../utils/idGenerator';
-import { formatModelInfoForDisplay, getModelInfo } from './anthropicModelInfo';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import {
   createMapperState,
   mapAnthropicEventToStreamChunks,
   type SSEEvent,
 } from './anthropicStreamMapper';
-import type { ModelInfo } from './modelInfo';
 import { toolRegistry } from '../tools/clientSideTools';
+import { getModelMetadataFor } from './modelMetadata';
 
 export class AnthropicClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
-    try {
-      // Create Anthropic client with API key and custom baseUrl if provided
-      const client = new Anthropic({
-        dangerouslyAllowBrowser: true,
-        apiKey: apiDefinition.apiKey,
-        baseURL: apiDefinition.baseUrl || undefined,
-      });
+    // Create Anthropic client with API key and custom baseUrl if provided
+    const client = new Anthropic({
+      dangerouslyAllowBrowser: true,
+      apiKey: apiDefinition.apiKey,
+      baseURL: apiDefinition.baseUrl || undefined,
+    });
 
-      // Use Anthropic's models API to get the latest available models
-      const modelsResponse = await client.models.list();
+    // Use Anthropic's models API to get the latest available models
+    const modelsResponse = await client.models.list();
 
-      // Convert Anthropic models to our Model format
-      const models: Model[] = modelsResponse.data.map(anthropicModel => ({
-        id: anthropicModel.id,
-        name: anthropicModel.display_name || anthropicModel.id,
-        apiType: 'anthropic',
-        contextWindow: 200000, // Use default as API doesn't expose this field
-      }));
+    // Convert Anthropic models to our Model format
+    const models: Model[] = modelsResponse.data.map(anthropicModel => ({
+      ...getModelMetadataFor(apiDefinition, anthropicModel.id),
+      name: anthropicModel.display_name || anthropicModel.id,
+    }));
 
-      return models;
-    } catch (error: unknown) {
-      console.error('Failed to discover Anthropic models:', error);
-
-      // Fall back to hardcoded list if API call fails
-      return [
-        {
-          id: 'claude-sonnet-4-5',
-          name: 'Claude Sonnet 4.5',
-          apiType: 'anthropic',
-          contextWindow: 200000,
-        },
-        {
-          id: 'claude-haiku-4-5',
-          name: 'Claude Haiku 4.5',
-          apiType: 'anthropic',
-          contextWindow: 200000,
-        },
-        {
-          id: 'claude-opus-4-5',
-          name: 'Claude Opus 4.5',
-          apiType: 'anthropic',
-          contextWindow: 200000,
-        },
-      ];
-    }
+    return models;
   }
 
   shouldPrependPrefill(_apiDefinition: APIDefinition): boolean {
@@ -377,15 +348,18 @@ export class AnthropicClient implements APIClient {
         ];
       }
 
+      // Use finalMessage.usage from SDK (more authoritative than mapper state)
+      const usage = finalMessage.usage;
       return {
         thinkingContent,
         textContent,
         fullContent,
         stopReason: finalMessage.stop_reason ?? undefined,
-        inputTokens: mapperState.inputTokens,
-        outputTokens: mapperState.outputTokens,
-        cacheCreationTokens: mapperState.cacheCreationTokens,
-        cacheReadTokens: mapperState.cacheReadTokens,
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cacheCreationTokens: usage.cache_creation_input_tokens ?? undefined,
+        cacheReadTokens: usage.cache_read_input_tokens ?? undefined,
+        webSearchCount: usage.server_tool_use?.web_search_requests ?? undefined,
       };
     } catch (error: unknown) {
       // Handle errors and yield error chunk
@@ -428,44 +402,6 @@ export class AnthropicClient implements APIClient {
         outputTokens: 0,
       };
     }
-  }
-
-  calculateCost(
-    modelId: string,
-    inputTokens: number,
-    outputTokens: number,
-    _reasoningTokens?: number,
-    cacheCreationTokens?: number,
-    cacheReadTokens?: number
-  ): number {
-    // Get model info with pricing data
-    const modelInfo = getModelInfo(modelId);
-
-    let cost = (inputTokens / 1_000_000) * modelInfo.inputPrice;
-    cost += (outputTokens / 1_000_000) * modelInfo.outputPrice;
-
-    // Add cache token costs
-    if (cacheCreationTokens && modelInfo.cacheWritePrice) {
-      cost += (cacheCreationTokens / 1_000_000) * modelInfo.cacheWritePrice;
-    }
-    if (cacheReadTokens) {
-      cost += (cacheReadTokens / 1_000_000) * modelInfo.cacheReadPrice;
-    }
-
-    return cost;
-  }
-
-  getModelInfo(modelId: string): ModelInfo {
-    return getModelInfo(modelId);
-  }
-
-  formatModelInfoForDisplay(info: ModelInfo): string {
-    return formatModelInfoForDisplay(info);
-  }
-
-  isReasoningModel(_modelId: string): boolean {
-    // Anthropic doesn't have dedicated reasoning models like OpenAI o-series
-    return false;
   }
 
   migrateMessageRendering(

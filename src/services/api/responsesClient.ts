@@ -15,8 +15,6 @@ import { generateUniqueId } from '../../utils/idGenerator';
 import { mapReasoningEffort } from '../../utils/reasoningEffort';
 import { toolRegistry } from '../tools/clientSideTools';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
-import type { ModelInfo } from './modelInfo';
-import { formatModelInfoForDisplay, getModelInfo, isReasoningModel } from './openaiModelInfo';
 import {
   convertOutputToStreamChunks,
   createMapperState,
@@ -24,125 +22,62 @@ import {
   mapResponsesEventToStreamChunks,
   parseResponsesStreamEvent,
 } from './responsesStreamMapper';
+import { getModelMetadataFor } from './modelMetadata';
 
 export class ResponsesClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
-    try {
-      // Create OpenAI client with API key and custom baseUrl if provided
-      const client = new OpenAI({
-        dangerouslyAllowBrowser: true,
-        apiKey: apiDefinition.apiKey,
-        baseURL: apiDefinition.baseUrl || undefined,
-      });
+    // Create OpenAI client with API key and custom baseUrl if provided
+    const client = new OpenAI({
+      dangerouslyAllowBrowser: true,
+      apiKey: apiDefinition.apiKey,
+      baseURL: apiDefinition.baseUrl || undefined,
+    });
 
-      // Get all models from the API
-      const modelsResponse = await client.models.list();
+    // Get all models from the API
+    const modelsResponse = await client.models.list();
 
-      // Filter for chat completion models
-      // Only filter for OpenAI (no custom baseUrl) to show gpt-* and o* models
-      // For custom providers (xAI, etc.), show all models
-      const chatModels = apiDefinition.baseUrl
-        ? modelsResponse.data // Custom provider: keep all models
-        : modelsResponse.data.filter(model => {
-            // OpenAI: filter for gpt-* and o* models only
-            const id = model.id.toLowerCase();
-            return id.startsWith('gpt-') || id.match(/^o\d/);
-          });
+    // Filter for chat completion models
+    // Only filter for OpenAI (no custom baseUrl) to show gpt-* and o* models
+    // For custom providers (xAI, etc.), show all models
+    const chatModels = apiDefinition.baseUrl
+      ? modelsResponse.data // Custom provider: keep all models
+      : modelsResponse.data.filter(model => {
+          // OpenAI: filter for gpt-* and o* models only
+          const id = model.id.toLowerCase();
+          return id.startsWith('gpt-') || id.match(/^o\d/);
+        });
 
-      // Sort models: gpt-5, gpt-4, o-series, then legacy
-      chatModels.sort((a, b) => {
-        const idA = a.id.toLowerCase();
-        const idB = b.id.toLowerCase();
+    // Sort models: gpt-5, gpt-4, o-series, then legacy
+    chatModels.sort((a, b) => {
+      const idA = a.id.toLowerCase();
+      const idB = b.id.toLowerCase();
 
-        // Priority groups
-        const getGroup = (id: string): number => {
-          if (id.startsWith('gpt-5')) return 1;
-          if (id.startsWith('gpt-4')) return 2;
-          if (id.match(/^o\d/)) return 3;
-          return 4; // Legacy models (gpt-3.5, etc.)
-        };
+      // Priority groups
+      const getGroup = (id: string): number => {
+        if (id.startsWith('gpt-5.')) return 0;
+        if (id.startsWith('gpt-5')) return 1;
+        if (id.startsWith('gpt-4')) return 2;
+        if (id.match(/^o\d/)) return 3;
+        return 4; // Legacy models (gpt-3.5, etc.)
+      };
 
-        const groupA = getGroup(idA);
-        const groupB = getGroup(idB);
+      const groupA = getGroup(idA);
+      const groupB = getGroup(idB);
 
-        if (groupA !== groupB) {
-          return groupA - groupB;
-        }
+      if (groupA !== groupB) {
+        return groupA - groupB;
+      }
 
-        // Within same group, sort alphabetically
-        return idA.localeCompare(idB);
-      });
+      // Within same group, sort alphabetically
+      return idB.localeCompare(idA);
+    });
 
-      // Convert OpenAI models to our Model format
-      const models: Model[] = chatModels.map(openaiModel => ({
-        id: openaiModel.id,
-        name: openaiModel.id, // OpenAI doesn't provide display names
-        apiType: 'responses_api',
-        contextWindow: getModelInfo(openaiModel.id).contextWindow,
-      }));
+    // Convert OpenAI models to our Model format
+    const models: Model[] = chatModels.map(openaiModel =>
+      getModelMetadataFor(apiDefinition, openaiModel.id)
+    );
 
-      return models;
-    } catch (error: unknown) {
-      console.error('Failed to discover OpenAI models:', error);
-
-      // Fall back to hardcoded list if API call fails
-      return [
-        {
-          id: 'gpt-5',
-          name: 'GPT-5',
-          apiType: 'responses_api',
-          contextWindow: 128000,
-        },
-        {
-          id: 'gpt-5-chat-latest',
-          name: 'GPT-5 Chat',
-          apiType: 'responses_api',
-          contextWindow: 128000,
-        },
-        {
-          id: 'gpt-4o',
-          name: 'GPT-4o',
-          apiType: 'responses_api',
-          contextWindow: 128000,
-        },
-        {
-          id: 'gpt-4.1-mini',
-          name: 'GPT-4.1 Mini',
-          apiType: 'responses_api',
-          contextWindow: 8192,
-        },
-        {
-          id: 'gpt-4.1',
-          name: 'GPT-4.1',
-          apiType: 'responses_api',
-          contextWindow: 8192,
-        },
-        {
-          id: 'o3',
-          name: 'o3',
-          apiType: 'responses_api',
-          contextWindow: 128000,
-        },
-        {
-          id: 'o3-mini',
-          name: 'o3-mini',
-          apiType: 'responses_api',
-          contextWindow: 128000,
-        },
-        {
-          id: 'o1',
-          name: 'o1',
-          apiType: 'responses_api',
-          contextWindow: 200000,
-        },
-        {
-          id: 'o1-mini',
-          name: 'o1-mini',
-          apiType: 'responses_api',
-          contextWindow: 128000,
-        },
-      ];
-    }
+    return models;
   }
 
   shouldPrependPrefill(_apiDefinition: APIDefinition): boolean {
@@ -428,6 +363,7 @@ export class ResponsesClient implements APIClient {
     let thinkingContent = '';
     let thinkingSummary = '';
     let hasFunctionCall = false;
+    let webSearchCount = 0;
 
     if (!textContent) {
       textContent = '';
@@ -444,13 +380,18 @@ export class ResponsesClient implements APIClient {
         if (item.type === 'function_call') {
           hasFunctionCall = true;
         }
+        if (item.type === 'web_search_call') {
+          webSearchCount++;
+        }
       }
     } else {
-      // Check for function_call even when there's text content
+      // Check for function_call and web_search_call even when there's text content
       for (const item of response.output) {
         if (item.type === 'function_call') {
           hasFunctionCall = true;
-          break;
+        }
+        if (item.type === 'web_search_call') {
+          webSearchCount++;
         }
       }
     }
@@ -488,6 +429,7 @@ export class ResponsesClient implements APIClient {
       outputTokens,
       cacheReadTokens: cachedTokens,
       reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
+      webSearchCount: webSearchCount > 0 ? webSearchCount : undefined,
     };
   }
 
@@ -506,7 +448,7 @@ export class ResponsesClient implements APIClient {
     if (options.temperature) requestParams.temperature = options.temperature;
 
     // No reasoning models - early return
-    if (modelId.includes('gpt-5') && modelId.includes('-chat')) {
+    if (modelId.includes('gpt-5') && modelId.includes('-chat') && !modelId.includes('gpt-5.')) {
       return;
     }
     if (modelId.startsWith('grok-4') && modelId.includes('non-reasoning')) {
@@ -578,35 +520,6 @@ export class ResponsesClient implements APIClient {
       requestParams.reasoning = { summary };
       requestParams.include = ['reasoning.encrypted_content'];
     }
-  }
-
-  calculateCost(
-    modelId: string,
-    inputTokens: number,
-    outputTokens: number,
-    cacheReadTokens: number,
-    _reasoningTokens?: number
-  ): number {
-    // Get model info with pricing data
-    const modelInfo = getModelInfo(modelId);
-
-    return (
-      (inputTokens / 1_000_000) * modelInfo.inputPrice +
-      (outputTokens / 1_000_000) * modelInfo.outputPrice +
-      (cacheReadTokens / 1_000_000) * modelInfo.cacheReadPrice
-    );
-  }
-
-  getModelInfo(modelId: string): ModelInfo {
-    return getModelInfo(modelId);
-  }
-
-  formatModelInfoForDisplay(info: ModelInfo): string {
-    return formatModelInfoForDisplay(info);
-  }
-
-  isReasoningModel(modelId: string): boolean {
-    return isReasoningModel(modelId);
   }
 
   migrateMessageRendering(

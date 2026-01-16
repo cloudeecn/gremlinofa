@@ -8,7 +8,6 @@ import WebLLMLoadingView from './WebLLMLoadingView';
 import PendingToolCallsBanner from './PendingToolCallsBanner';
 import { useVirtualScroll } from '../../hooks/useVirtualScroll';
 import { subscribeToLoadingState, type WebLLMLoadingState } from '../../services/api/webllmClient';
-import { getModelInfo } from '../../services/api/webllmModelInfo';
 
 /** Interval for throttling scroll button visibility updates */
 const SCROLL_BUTTON_THROTTLE_MS = 200;
@@ -190,11 +189,6 @@ export default function MessageList({
           {webllmLoadingState && webllmLoadingState.modelId && (
             <WebLLMLoadingView
               modelName={webllmLoadingState.modelId}
-              downloadSize={
-                webllmLoadingState.modelId
-                  ? getModelInfo(webllmLoadingState.modelId).downloadSize
-                  : undefined
-              }
               progress={{
                 text: webllmLoadingState.statusText,
                 progress: webllmLoadingState.progress,

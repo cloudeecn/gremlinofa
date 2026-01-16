@@ -1,5 +1,4 @@
-type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined;
-type ReasoningSummary = 'auto' | 'concise' | 'detailed' | undefined;
+import type { ReasoningEffort, ReasoningSummary } from '../../types';
 
 interface OpenAIReasoningConfigProps {
   reasoningEffort: ReasoningEffort;

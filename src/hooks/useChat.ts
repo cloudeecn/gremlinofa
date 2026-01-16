@@ -596,6 +596,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
                 }
               }
 
+              const model = await storage.getModel(loadedApiDef.id, effectiveModelId);
+
               // Build context for agentic loop using loaded variables (not React state)
               const context: AgenticLoopContext = {
                 chatId,
@@ -603,6 +605,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
                 project: loadedProject,
                 apiDef: loadedApiDef,
                 modelId: effectiveModelId,
+                model,
                 currentMessages: loadedMessages,
               };
 
@@ -820,6 +823,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       }
     }
 
+    const model = await storage.getModel(apiDefinition.id, effectiveModelId);
+
     // Build context for agentic loop
     const context: AgenticLoopContext = {
       chatId,
@@ -827,6 +832,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       project,
       apiDef: apiDefinition,
       modelId: effectiveModelId,
+      model,
       currentMessages: messages,
     };
 
@@ -1058,6 +1064,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       pending.push({ type: 'user', message: userMsg });
     }
 
+    const model = await storage.getModel(apiDefinition.id, effectiveModelId);
+
     // Build context for agentic loop
     const context: AgenticLoopContext = {
       chatId: chat.id,
@@ -1065,6 +1073,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       project,
       apiDef: apiDefinition,
       modelId: effectiveModelId,
+      model,
       currentMessages: messages,
     };
 

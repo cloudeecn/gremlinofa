@@ -40,12 +40,124 @@ export interface APIDefinition {
   updatedAt: Date;
 }
 
-// Model types
-export interface Model {
+/**
+ * Reasoning mode classification for models
+ */
+export type ModelReasoningMode =
+  | 'always' // o-series, grok-4: reasoning can't be disabled
+  | 'optional' // gpt-5, grok-3-mini: user can toggle via params
+  | 'none'; // Most models, gpt-5-chat, grok-4-non-reasoning
+
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined;
+export type ReasoningSummary = 'auto' | 'concise' | 'detailed' | undefined;
+
+/**
+ * Anthropic-specific reasoning configuration
+ */
+export type AnthropicReasoningMode =
+  | 'budget-based' // Uses budget_tokens parameter
+  | 'none'; // No reasoning support
+
+/**
+ * Comprehensive model metadata including pricing, capabilities, and provider-specific quirks
+ */
+export interface ModelMetadata {
+  // === Context & Limits ===
+  /** Max input context window in tokens */
+  contextWindow?: number;
+
+  /** Max output/completion tokens */
+  maxOutputTokens?: number;
+
+  // === Pricing (per 1M tokens in USD, or per-unit for images/requests). 0 means free, undefined means unable to find data ===
+
+  /** Input/prompt token price per 1M tokens */
+  inputPrice?: number;
+
+  /** Output/completion token price per 1M tokens */
+  outputPrice?: number;
+
+  /** Cached input read price per 1M tokens */
+  cacheReadPrice?: number;
+
+  /** Cache write price per 1M tokens */
+  cacheWritePrice?: number;
+
+  /** Internal reasoning token price per 1M tokens */
+  reasoningPrice?: number;
+
+  /** Per web search request price in USD */
+  webSearchPrice?: number;
+
+  /** Per-request base price in USD (e.g., Perplexity charges per request) */
+  requestPrice?: number;
+
+  // === Reasoning Capabilities ===
+  /**
+   * Reasoning mode classification
+   * - 'always': Model always reasons, can't be disabled (o-series, grok-4)
+   * - 'optional': Reasoning can be toggled via parameters (gpt-5, grok-3-mini)
+   * - 'none': No reasoning support (most models)
+   */
+  reasoningMode?: ModelReasoningMode;
+
+  /**
+   * Supported reasoning effort levels for OpenAI/xAI models
+   * Used by mapReasoningEffort() to validate/map user-specified effort
+   * Examples:
+   * - o-series: ['low', 'medium', 'high']
+   * - gpt-5: ['minimal', 'low', 'medium', 'high']
+   * - gpt-5.1/5.2: ['none', 'minimal', 'low', 'medium', 'high']
+   * - grok-3-mini: ['low', 'high']
+   */
+  supportedReasoningEfforts?: ReasoningEffort[];
+
+  // === Feature Support ===
+  /** Supports streaming responses */
+  supportsStreaming?: boolean;
+
+  /** Accepts temperature parameter (some reasoning models ignore it) */
+  supportsTemperature?: boolean;
+
+  /** Supports function/tool calling */
+  supportsTools?: boolean;
+
+  // === WebLLM Specific ===
+  /** VRAM requirement in bytes (WebLLM local models) */
+  vramRequired?: number;
+
+  /** Model download size in bytes (WebLLM local models) */
+  downloadSize?: number;
+
+  /** Can run on limited devices like Android phones (WebLLM) */
+  lowResourceRequired?: boolean;
+}
+
+export interface ModelKnowledge extends ModelMetadata {
+  /* Conditions to match a api / model pair to the metadata. it is interpret like or - and - or condition structure:
+     1. If a model
+     
+     If a model's Id matched any of the conditions in this matches field, it is considered matching this metadata
+     2. 
+  */
+  matches: {
+    apiType: APIType[]; // Any of the apiType (usually for ChatGPT compatible apis, which usually support both chat-completions and responses)
+    endpoint?: Array<RegExp | string>; // Any of the RegExp matches the endpoint,
+    modelIdExact?: string[]; // modelId any of the string. Array is used so modelAlias is supported for example ["opus", "claude-opus-4-5-20251101"]
+    modelIdFuzz?: {
+      modelIdPrefix?: string;
+      modelIdPostfix?: string;
+      unreliable?: boolean;
+    }[];
+  }[];
+}
+
+export interface Model extends ModelMetadata {
   id: string;
   name: string;
   apiType: APIType;
-  contextWindow: number;
+
+  matchedMode?: 'exact' | 'fuzz' | 'unreliable' | 'default';
 }
 
 // Project types
@@ -77,6 +189,7 @@ export interface Project {
   metadataIncludeCost?: boolean;
   metadataTemplate?: string;
   metadataNewContext?: boolean;
+
   // Memory tool
   memoryEnabled?: boolean;
   // JavaScript execution tool
@@ -118,6 +231,8 @@ export interface Chat {
   contextWindowUsage?: number;
   // Flag for one-time contextWindowUsage migration
   contextWindowUsageMigrated?: boolean;
+  // True if any message has unreliable cost calculation
+  costUnreliable?: boolean;
   // DEPRECATED: Sink costs kept for migration only, not used in calculations
   sinkInputTokens?: number;
   sinkOutputTokens?: number;
@@ -162,11 +277,13 @@ export interface MessageMetadata {
   reasoningTokens?: number;
   cacheCreationTokens?: number;
   cacheReadTokens?: number;
+  webSearchCount?: number;
 
   // Feature 1: Pricing - total cost calculated at message creation time
   messageCost?: number; // Total calculated cost at message time
   contextWindow?: number; // Model's max context window in tokens
   contextWindowUsage?: number; // Model's context window usage in tokens
+  costUnreliable?: boolean; // True if cost calculation may be inaccurate
 }
 
 export interface Message<T> {

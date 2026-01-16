@@ -7,7 +7,6 @@ import type {
   ToolResultBlock,
   ToolUseBlock,
 } from '../../types';
-import type { ModelInfo } from './modelInfo';
 
 // Common interface for all API clients
 export interface APIClient {
@@ -37,25 +36,6 @@ export interface APIClient {
       webSearchEnabled?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown>;
-
-  // Calculate cost for a given model and token usage
-  calculateCost(
-    modelId: string,
-    inputTokens: number,
-    outputTokens: number,
-    reasoningTokens?: number,
-    cacheCreationTokens?: number,
-    cacheReadTokens?: number
-  ): number;
-
-  // Get model information (pricing + capabilities)
-  getModelInfo(modelId: string): ModelInfo;
-
-  // Format model info for UI display
-  formatModelInfoForDisplay(info: ModelInfo): string;
-
-  // Check if model supports reasoning
-  isReasoningModel(modelId: string): boolean;
 
   /**
    * Migrate old messages without renderingContent to the new format.
@@ -127,4 +107,5 @@ export interface StreamResult<T> {
   reasoningTokens?: number;
   cacheCreationTokens?: number;
   cacheReadTokens?: number;
+  webSearchCount?: number;
 }

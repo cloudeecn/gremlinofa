@@ -8,6 +8,7 @@ import type { Message, APIDefinition } from '../../../types';
 vi.mock('../../../services/storage', () => ({
   storage: {
     getAPIDefinition: vi.fn(),
+    getModel: vi.fn(),
   },
 }));
 
@@ -34,6 +35,18 @@ describe('CacheWarning', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default mock return for getModel
+    vi.mocked(storage.getModel).mockResolvedValue({
+      id: 'claude-3-5-sonnet',
+      name: 'claude-3-5-sonnet',
+      apiType: 'anthropic',
+      matchedMode: 'exact',
+      inputPrice: 3.0,
+      outputPrice: 15.0,
+      cacheReadPrice: 0.3,
+      cacheWritePrice: 3.75,
+      contextWindow: 200000,
+    });
   });
 
   it('should not render when there are no messages', async () => {

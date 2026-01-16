@@ -364,6 +364,12 @@ public/             # Static assets and PWA icons
 
 - Standalone modules per provider with model matching (exact, prefix, fallback)
 - Per-message pricing snapshots stored with metadata
+- Web search count tracked per message and included in cost calculation
+- Cost unreliability detection:
+  - Model's `matchedMode` is 'unreliable' or 'default' (unknown model)
+  - Any price is undefined when corresponding usage count is non-zero
+  - `costUnreliable` flag propagated from messages to chat
+  - UI shows "(unreliable)" tag in chat status bar and project chat list
 
 ### Rendering System
 

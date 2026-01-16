@@ -9,16 +9,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the @mlc-ai/web-llm module before importing apiService
 vi.mock('@mlc-ai/web-llm', () => ({
   CreateMLCEngine: vi.fn(),
+  ModelType: { LLM: 'LLM', embedding: 'embedding', vlm: 'vlm' },
   prebuiltAppConfig: {
     model_list: [
-      { model_id: 'Phi-3.5-mini-instruct-q4f16_1-MLC' },
-      { model_id: 'SmolLM2-360M-Instruct-q4f16_1-MLC' },
+      { model_id: 'Phi-3.5-mini-instruct-q4f16_1-MLC', model_type: 'LLM' },
+      { model_id: 'SmolLM2-360M-Instruct-q4f16_1-MLC', model_type: 'LLM' },
     ],
   },
 }));
 
 // Import after mocking
 import { apiService } from '../apiService';
+import { getModelMetadataFor, calculateCost } from '../modelMetadata';
 import type { APIDefinition } from '../../../types';
 
 describe('apiService WebLLM integration', () => {
@@ -45,46 +47,29 @@ describe('apiService WebLLM integration', () => {
       expect(Array.isArray(models)).toBe(true);
     });
 
-    it('should calculate cost as 0 for WebLLM', () => {
-      const cost = apiService.calculateCost(
-        'webllm',
-        'Phi-3.5-mini-instruct-q4f16_1-MLC',
-        10000, // input tokens
-        5000, // output tokens
-        0, // reasoning tokens
-        0, // cache creation
-        0 // cache read
-      );
+    it('should calculate cost as 0 for WebLLM via modelMetadata', () => {
+      const model = getModelMetadataFor(webllmApiDefinition, 'Phi-3.5-mini-instruct-q4f16_1-MLC');
 
+      // WebLLM models are free
+      const cost = calculateCost(model, 10000, 5000, 0, 0, 0);
       expect(cost).toBe(0);
     });
 
-    it('should return model info for WebLLM models', () => {
-      const info = apiService.getModelInfo('webllm', 'Phi-3.5-mini-instruct-q4f16_1-MLC');
+    it('should return model metadata for WebLLM models', () => {
+      const model = getModelMetadataFor(webllmApiDefinition, 'Phi-3.5-mini-instruct-q4f16_1-MLC');
 
-      expect(info).toBeDefined();
-      expect(info.inputPrice).toBe(0);
-      expect(info.outputPrice).toBe(0);
+      expect(model).toBeDefined();
+      expect(model.id).toBe('Phi-3.5-mini-instruct-q4f16_1-MLC');
+      expect(model.apiType).toBe('webllm');
+      // WebLLM models have no pricing defined in knowledge base
+      expect(model.matchedMode).toBe('default');
     });
 
-    it('should format model info for WebLLM', () => {
-      const formatted = apiService.formatModelInfoForDisplay(
-        'webllm',
-        'Phi-3.5-mini-instruct-q4f16_1-MLC'
-      );
+    it('should report WebLLM models as non-reasoning via metadata', () => {
+      const model = getModelMetadataFor(webllmApiDefinition, 'Phi-3.5-mini-instruct-q4f16_1-MLC');
 
-      expect(formatted).toContain('Free');
-      // Shows download or VRAM depending on availability
-      expect(formatted.includes('download') || formatted.includes('VRAM')).toBe(true);
-    });
-
-    it('should report WebLLM models as non-reasoning', () => {
-      const isReasoning = apiService.isReasoningModel(
-        'webllm',
-        'Phi-3.5-mini-instruct-q4f16_1-MLC'
-      );
-
-      expect(isReasoning).toBe(false);
+      // No reasoning mode defined means not a reasoning model
+      expect(model.reasoningMode).toBeUndefined();
     });
 
     it('should not require prefill for WebLLM', () => {

@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../../hooks/useApp';
-import { apiService } from '../../services/api/apiService';
 import { useProject } from '../../hooks/useProject';
 import type { Project, APIType } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
@@ -128,9 +127,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
 
   // Detect if current model is an o-series reasoning model
   const isOSeriesModel =
-    selectedModelId && selectedApiDefId && apiDef
-      ? apiService.isReasoningModel(apiDef.apiType, selectedModelId)
-      : false;
+    (selectedApiType === 'chatgpt' || selectedApiType === 'responses_api') &&
+    selectedModelId?.startsWith('o');
 
   // Check if selected API is Anthropic or OpenAI/Responses
   const isAnthropic = selectedApiType === 'anthropic';

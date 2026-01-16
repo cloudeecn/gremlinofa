@@ -1,4 +1,4 @@
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+import type { ReasoningEffort } from '../types';
 
 export const REASONING_EFFORTS: readonly ReasoningEffort[] = [
   'none',

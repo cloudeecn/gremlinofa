@@ -5,7 +5,6 @@
  * Shows download progress, status text, and model size info.
  */
 
-import { formatSize } from '../../services/api/webllmModelInfo';
 import { useIsMobile } from '../../hooks/useIsMobile';
 
 export interface WebLLMLoadingProgress {
@@ -26,11 +25,7 @@ interface WebLLMLoadingViewProps {
   progress: WebLLMLoadingProgress;
 }
 
-export default function WebLLMLoadingView({
-  modelName,
-  downloadSize,
-  progress,
-}: WebLLMLoadingViewProps) {
+export default function WebLLMLoadingView({ modelName, progress }: WebLLMLoadingViewProps) {
   const isMobile = useIsMobile();
 
   // Parse progress text to determine phase
@@ -64,11 +59,6 @@ export default function WebLLMLoadingView({
               <div className="text-sm font-semibold text-gray-900">Loading Local Model</div>
               <div className="text-xs text-gray-600">{modelName}</div>
             </div>
-            {downloadSize && (
-              <div className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
-                {formatSize(downloadSize)}
-              </div>
-            )}
           </div>
 
           {/* Status text */}

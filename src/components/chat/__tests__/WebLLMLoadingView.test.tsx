@@ -64,24 +64,6 @@ describe('WebLLMLoadingView', () => {
     expect(screen.getByText('⚙️')).toBeInTheDocument();
   });
 
-  it('should render download size when provided', () => {
-    const props = {
-      ...defaultProps,
-      downloadSize: 1.8 * 1024 * 1024 * 1024, // 1.8 GB
-    };
-
-    render(<WebLLMLoadingView {...props} />);
-
-    expect(screen.getByText('1.8 GB')).toBeInTheDocument();
-  });
-
-  it('should not render size badge when downloadSize is not provided', () => {
-    render(<WebLLMLoadingView {...defaultProps} />);
-
-    // GB should not appear since no size is provided
-    expect(screen.queryByText(/GB$/)).not.toBeInTheDocument();
-  });
-
   it('should render "Initializing..." when progress is unknown', () => {
     const props = {
       ...defaultProps,

@@ -45,14 +45,24 @@ export class OpenAIClient implements APIClient {
       const idA = a.id.toLowerCase();
       const idB = b.id.toLowerCase();
 
-      // Priority groups
-      const getGroup = (id: string): number => {
-        if (id.startsWith('gpt-5.')) return id.includes('-pro') ? 0.5 : 0;
-        if (id.startsWith('gpt-5')) return id.includes('-pro') ? 1.5 : 1;
-        if (id.startsWith('gpt-4')) return id.includes('-pro') ? 2.5 : 2;
-        if (id.match(/^o\d/)) return 3;
-        return 4; // Legacy models (gpt-3.5, etc.)
-      };
+      const prefixA = a.id.split('-')[0];
+      const prefixB = b.id.split('-')[0];
+      if (prefixA !== prefixB) {
+        return prefixA.localeCompare(prefixB);
+      }
+
+      let getGroup = (_id: string) => 0;
+      // same prefix, so use prefixA
+      if (prefixA === 'gpt') {
+        getGroup = (id: string) => {
+          if (id.startsWith('gpt-5.2')) return 1;
+          if (id.startsWith('gpt-5.1')) return 2;
+          if (id.startsWith('gpt-5.')) return 0;
+          if (id.startsWith('gpt-5')) return 3;
+          if (id.startsWith('gpt-4')) return 4;
+          return 5;
+        };
+      }
 
       const groupA = getGroup(idA);
       const groupB = getGroup(idB);
@@ -61,8 +71,12 @@ export class OpenAIClient implements APIClient {
         return groupA - groupB;
       }
 
+      if (prefixA === 'grok') {
+        return idB.localeCompare(idA);
+      }
+
       // Within same group, sort alphabetically
-      return idB.localeCompare(idA);
+      return idA.localeCompare(idB);
     });
 
     // Convert OpenAI models to our Model format

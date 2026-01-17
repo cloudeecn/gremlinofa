@@ -210,7 +210,7 @@ describe('ResponsesClient', () => {
       );
     });
 
-    it('should handle reasoning models with non-streaming', async () => {
+    it('should use non-streaming when disableStream is true', async () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
@@ -265,6 +265,7 @@ describe('ResponsesClient', () => {
         enableReasoning: true,
         reasoningBudgetTokens: 4096,
         reasoningEffort: 'medium',
+        disableStream: true, // Explicitly request non-streaming
       });
 
       // Consume the generator
@@ -273,7 +274,7 @@ describe('ResponsesClient', () => {
         chunks.push(chunk);
       }
 
-      // Verify that non-streaming was used for o3-mini (o3-mini doesn't support streaming)
+      // Verify that non-streaming was used when disableStream is true
       expect(mockClient.responses.create).toHaveBeenCalledWith(
         expect.objectContaining({
           model: 'o3-mini',
@@ -665,8 +666,8 @@ describe('ResponsesClient', () => {
     });
   });
 
-  describe('non-streaming support', () => {
-    it('should use non-streaming for o3 model and yield chunks', async () => {
+  describe('streaming behavior', () => {
+    it('should use streaming by default for all models', async () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
@@ -676,31 +677,38 @@ describe('ResponsesClient', () => {
         },
       ];
 
-      const mockResponse = {
+      const mockEvents = [
+        { type: 'response.output_text.delta', delta: 'Hello', sequence_number: 1 },
+      ];
+
+      const mockFinalResponse = {
         output: [
           {
             type: 'message',
-            role: 'assistant',
-            content: [
-              {
-                type: 'output_text',
-                text: 'Hello from o3',
-              },
-            ],
+            content: [{ type: 'output_text', text: 'Hello' }],
           },
         ],
         usage: {
-          input_tokens: 10,
-          output_tokens: 5,
+          input_tokens: 5,
+          output_tokens: 3,
           input_tokens_details: { cached_tokens: 0 },
-          output_tokens_details: { reasoning_tokens: 3 },
+          output_tokens_details: { reasoning_tokens: 0 },
         },
+      };
+
+      const mockStream = {
+        [Symbol.asyncIterator]: async function* () {
+          for (const event of mockEvents) {
+            yield event;
+          }
+        },
+        finalResponse: vi.fn().mockResolvedValue(mockFinalResponse),
       };
 
       const mockClient = {
         responses: {
-          create: vi.fn().mockResolvedValue(mockResponse),
-          stream: vi.fn(),
+          stream: vi.fn().mockReturnValue(mockStream),
+          create: vi.fn(),
         },
       };
 
@@ -708,6 +716,7 @@ describe('ResponsesClient', () => {
         return mockClient as any;
       });
 
+      // Test with o3 model - should use streaming by default now
       const generator = client.sendMessageStream(messages, 'o3', mockApiDefinition, {
         maxTokens: 2048,
         enableReasoning: true,
@@ -719,23 +728,12 @@ describe('ResponsesClient', () => {
         chunks.push(chunk);
       }
 
-      // Verify non-streaming was used
-      expect(mockClient.responses.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          model: 'o3',
-          stream: false,
-        })
-      );
-      expect(mockClient.responses.stream).not.toHaveBeenCalled();
-
-      // Non-streaming now yields chunks for StreamingContentAssembler
-      expect(chunks.length).toBeGreaterThan(0);
-      // Should have content chunks and token usage
-      expect(chunks.filter(c => c.type === 'content').length).toBe(1);
-      expect(chunks.filter(c => c.type === 'token_usage').length).toBe(1);
+      // Verify streaming was used by default
+      expect(mockClient.responses.stream).toHaveBeenCalled();
+      expect(mockClient.responses.create).not.toHaveBeenCalled();
     });
 
-    it('should use non-streaming for gpt-5 (non-chat variant) and yield chunks', async () => {
+    it('should use non-streaming when disableStream option is true', async () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',
@@ -781,6 +779,7 @@ describe('ResponsesClient', () => {
         maxTokens: 2048,
         enableReasoning: false,
         reasoningBudgetTokens: 2048,
+        disableStream: true, // Explicitly disable streaming
       });
 
       const chunks: any[] = [];
@@ -788,7 +787,7 @@ describe('ResponsesClient', () => {
         chunks.push(chunk);
       }
 
-      // Verify non-streaming was used
+      // Verify non-streaming was used when disableStream is true
       expect(mockClient.responses.create).toHaveBeenCalledWith(
         expect.objectContaining({
           model: 'gpt-5',
@@ -797,14 +796,13 @@ describe('ResponsesClient', () => {
       );
       expect(mockClient.responses.stream).not.toHaveBeenCalled();
 
-      // Non-streaming now yields chunks for StreamingContentAssembler
+      // Non-streaming still yields chunks for StreamingContentAssembler
       expect(chunks.length).toBeGreaterThan(0);
-      // Should have content chunks and token usage
       expect(chunks.filter(c => c.type === 'content').length).toBe(1);
       expect(chunks.filter(c => c.type === 'token_usage').length).toBe(1);
     });
 
-    it('should use streaming for o1 model', async () => {
+    it('should use streaming for all models unless disableStream is set', async () => {
       const messages: Message<any>[] = [
         {
           id: 'msg1',

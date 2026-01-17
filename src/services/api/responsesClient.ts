@@ -113,6 +113,7 @@ export class ResponsesClient implements APIClient {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
+      disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.Responses.ResponseInputItem[]>, unknown> {
     let requestParams: OpenAI.Responses.ResponseCreateParams = {};
@@ -253,10 +254,8 @@ export class ResponsesClient implements APIClient {
         requestParams.tools = tools;
       }
 
-      // Check if model supports streaming
-      const supportsStreaming = this.supportsStreaming(modelId);
-
-      if (supportsStreaming) {
+      // Use streaming unless explicitly disabled
+      if (!options.disableStream) {
         // STREAMING PATH - use mapper functions
         const stream = client.responses.stream({
           ...requestParams,
@@ -344,25 +343,6 @@ export class ResponsesClient implements APIClient {
         outputTokens: 0,
       };
     }
-  }
-
-  /**
-   * Check if a model supports streaming
-   */
-  private supportsStreaming(modelId: string): boolean {
-    // Models that don't support streaming:
-    // - o3, o3-mini, o4-mini (but o1 does support streaming)
-    // - gpt-5 (except gpt-5-nano and gpt-5-chat)
-    if (modelId.startsWith('o') && !modelId.startsWith('o1')) {
-      return false;
-    }
-    if (
-      modelId.startsWith('gpt-5') &&
-      !(modelId.startsWith('gpt-5-nano') || modelId.startsWith('gpt-5-chat'))
-    ) {
-      return false;
-    }
-    return true;
   }
 
   /**

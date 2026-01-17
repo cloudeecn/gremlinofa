@@ -73,6 +73,7 @@ class APIService {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
+      disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
     const client = this.getClient(apiDefinition.apiType);

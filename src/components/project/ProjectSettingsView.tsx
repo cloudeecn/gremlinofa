@@ -73,6 +73,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [reasoningSummary, setReasoningSummary] = useState<
     'auto' | 'concise' | 'detailed' | undefined
   >(project?.reasoningSummary);
+  const [disableStream, setDisableStream] = useState(project?.disableStream || false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showOtherProviderConfig, setShowOtherProviderConfig] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
@@ -113,6 +114,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setMaxOutputTokens(project.maxOutputTokens.toString() || '1536');
       setSelectedApiDefId(project.apiDefinitionId || null);
       setSelectedModelId(project.modelId || null);
+      setDisableStream(project.disableStream || false);
     }
   }, [project]);
 
@@ -170,6 +172,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         reasoningSummary,
         temperature: temperature === '' ? null : parseFloat(temperature),
         maxOutputTokens: parseInt(maxOutputTokens) || 1536,
+        disableStream: disableStream || undefined,
         lastUsedAt: new Date(),
       };
 
@@ -204,6 +207,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     reasoningSummary,
     temperature,
     maxOutputTokens,
+    disableStream,
     updateProject,
     projectId,
     navigate,
@@ -910,6 +914,33 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       onChange={e => setMaxOutputTokens(e.target.value)}
                       placeholder="1536"
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Disable Streaming */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label
+                        htmlFor="disableStream"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        Disable Streaming
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        Use non-streaming API calls (response appears all at once)
+                      </p>
+                      {isAnthropic && (
+                        <p className="text-xs text-yellow-700 italic">
+                          ⚠️ Non-streaming mode not implemented for Anthropic
+                        </p>
+                      )}
+                    </div>
+                    <input
+                      id="disableStream"
+                      type="checkbox"
+                      checked={disableStream}
+                      onChange={e => setDisableStream(e.target.checked)}
+                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                 </div>

@@ -180,6 +180,7 @@ interface StreamOptions {
   preFillResponse: string | undefined;
   webSearchEnabled: boolean;
   enabledTools: string[];
+  disableStream: boolean;
 }
 
 /**
@@ -207,6 +208,7 @@ function buildStreamOptions(project: Project, enabledTools: string[]): StreamOpt
     preFillResponse: project.preFillResponse,
     webSearchEnabled: project.webSearchEnabled,
     enabledTools,
+    disableStream: project.disableStream ?? false,
   };
 }
 

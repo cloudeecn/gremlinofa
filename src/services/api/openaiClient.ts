@@ -106,6 +106,7 @@ export class OpenAIClient implements APIClient {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
+      disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
     try {
@@ -244,10 +245,8 @@ export class OpenAIClient implements APIClient {
       const accumulatedToolCalls: Map<number, { id: string; name: string; arguments: string }> =
         new Map();
 
-      // Check if model supports streaming
-      const supportsStreaming = this.supportStreaming(modelId);
-
-      if (supportsStreaming) {
+      // Use streaming unless explicitly disabled
+      if (!options.disableStream) {
         // Streaming path
         const stream = await client.chat.completions.create({
           ...requestParams,
@@ -473,19 +472,6 @@ export class OpenAIClient implements APIClient {
         outputTokens: 0,
       };
     }
-  }
-
-  protected supportStreaming(modelId: string): boolean {
-    if (modelId.startsWith('o') && !modelId.startsWith('o1')) {
-      return false;
-    }
-    if (
-      modelId.startsWith('gpt-5') &&
-      !(modelId.startsWith('gpt-5-nano') || modelId.startsWith('gpt-5-chat'))
-    ) {
-      return false;
-    }
-    return true;
   }
 
   protected applyReasoning(

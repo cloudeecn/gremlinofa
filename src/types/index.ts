@@ -113,9 +113,6 @@ export interface ModelMetadata {
   supportedReasoningEfforts?: ReasoningEffort[];
 
   // === Feature Support ===
-  /** Supports streaming responses */
-  supportsStreaming?: boolean;
-
   /** Accepts temperature parameter (some reasoning models ignore it) */
   supportsTemperature?: boolean;
 
@@ -197,6 +194,8 @@ export interface Project {
   jsLibEnabled?: boolean; // Auto-load /lib/*.js scripts when JS session starts
   // Filesystem tool
   fsToolEnabled?: boolean;
+  // Disable streaming (use non-streaming API calls)
+  disableStream?: boolean;
 }
 
 // Chat pending state types

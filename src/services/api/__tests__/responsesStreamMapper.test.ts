@@ -520,7 +520,7 @@ data: {"valid":true}
 
     it('converts full message output from test data', () => {
       const messageJson = fs.readFileSync(
-        path.join(__dirname, 'responses-reason-memory-message.json'),
+        path.join(__dirname, 'responses-reason-memory-fullContent.json'),
         'utf8'
       );
       const output = JSON.parse(messageJson);
@@ -540,7 +540,7 @@ data: {"valid":true}
 
     it('converts search message output from test data', () => {
       const messageJson = fs.readFileSync(
-        path.join(__dirname, 'responses-search-memory-message.json'),
+        path.join(__dirname, 'responses-search-memory-fullContent.json'),
         'utf8'
       );
       const output = JSON.parse(messageJson);
@@ -577,7 +577,7 @@ data: {"valid":true}
 
     it('converts reasoning_text content to thinking chunks (OpenRouter format)', () => {
       const messageJson = fs.readFileSync(
-        path.join(__dirname, 'responses-reasoning-text-message.json'),
+        path.join(__dirname, 'responses-reasoning-text-fullContent.json'),
         'utf8'
       );
       const output = JSON.parse(messageJson);
@@ -683,7 +683,7 @@ data: {"valid":true}
         await import('../../streaming/StreamingContentAssembler');
 
       const output = JSON.parse(
-        fs.readFileSync(path.join(__dirname, 'responses-reason-memory-message.json'), 'utf8')
+        fs.readFileSync(path.join(__dirname, 'responses-reason-memory-fullContent.json'), 'utf8')
       );
       const expectedRendering = JSON.parse(
         fs.readFileSync(
@@ -707,7 +707,7 @@ data: {"valid":true}
         await import('../../streaming/StreamingContentAssembler');
 
       const output = JSON.parse(
-        fs.readFileSync(path.join(__dirname, 'responses-search-memory-message.json'), 'utf8')
+        fs.readFileSync(path.join(__dirname, 'responses-search-memory-fullContent.json'), 'utf8')
       );
       const expectedRendering = JSON.parse(
         fs.readFileSync(
@@ -731,7 +731,7 @@ data: {"valid":true}
         await import('../../streaming/StreamingContentAssembler');
 
       const output = JSON.parse(
-        fs.readFileSync(path.join(__dirname, 'responses-reasoning-text-message.json'), 'utf8')
+        fs.readFileSync(path.join(__dirname, 'responses-reasoning-text-fullContent.json'), 'utf8')
       );
       const expectedRendering = JSON.parse(
         fs.readFileSync(

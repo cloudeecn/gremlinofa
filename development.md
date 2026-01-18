@@ -922,7 +922,7 @@ The agentic loop logic is extracted into a separate module (`src/hooks/agenticLo
 interface AgenticLoopCallbacks {
   onMessageSaved: (message: Message<unknown>) => void;
   onStreamingStart: (loadingText: string) => void;
-  onStreamingUpdate: (groups: RenderingBlockGroup[], lastEvent: string) => void;
+  onStreamingUpdate: (groups: RenderingBlockGroup[]) => void;
   onStreamingEnd: () => void;
   onFirstChunk: () => void;
   onChatUpdated: (chat: Chat) => void; // Receives FINAL object after storage save
@@ -957,6 +957,7 @@ while (messageBuffer.length > 0 && iteration < MAX_ITERATIONS) {  // MAX_ITERATI
 
 - `buildStreamOptions(project, enabledTools)` - Build API stream options from project settings
 - `getEnabledTools(project)` - Extract enabled tool names from project
+- `mergeToolUseInputFromFullContent(groups, fullContent, apiType)` - Merge tool inputs from fullContent into renderingContent (fixes OpenRouter streaming quirk where tool arguments are empty during streaming but present in final response)
 - `populateToolRenderFields(groups)` - Add rendered display fields to tool blocks
 - `createToolResultRenderBlock(...)` - Create tool result render block with display fields
 - `loadAttachmentsForMessages(messages)` - Load attachments and handle missing attachment notes

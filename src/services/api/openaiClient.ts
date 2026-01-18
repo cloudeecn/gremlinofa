@@ -221,8 +221,6 @@ export class OpenAIClient implements APIClient {
         if (modelId.startsWith('grok')) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (requestParams as any)['search_parameters'] = { mode: 'auto' };
-        } else {
-          requestParams.tools = [{ type: 'web_search' } as unknown as ChatCompletionTool];
         }
       }
 

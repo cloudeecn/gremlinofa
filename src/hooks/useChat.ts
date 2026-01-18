@@ -280,8 +280,6 @@ export interface UseChatReturn {
   tokenUsage: TokenUsage;
   /** Streaming content groups for rendering during streaming */
   streamingGroups: RenderingBlockGroup[];
-  /** Last event string from streaming (for status display) */
-  streamingLastEvent: string;
   currentApiDefId: string | null;
   currentModelId: string | null;
   parentApiDefId: string | null;
@@ -316,7 +314,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
   // Streaming state for UI rendering
   const [streamingGroups, setStreamingGroups] = useState<RenderingBlockGroup[]>([]);
-  const [streamingLastEvent, setStreamingLastEvent] = useState<string>('');
 
   // Track if we've resolved pending state to avoid double resolution
   const [pendingStateResolved, setPendingStateResolved] = useState(false);
@@ -591,14 +588,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
                   setHasReceivedFirstChunk(false);
                   callbacks.onStreamingStart(chatId, text);
                 },
-                onStreamingUpdate: (groups: RenderingBlockGroup[], lastEvent: string) => {
+                onStreamingUpdate: (groups: RenderingBlockGroup[]) => {
                   setStreamingGroups(groups);
-                  setStreamingLastEvent(lastEvent);
                 },
                 onStreamingEnd: () => {
                   setIsLoading(false);
                   setStreamingGroups([]);
-                  setStreamingLastEvent('');
                   callbacks.onStreamingEnd(chatId);
                 },
                 onFirstChunk: () => setHasReceivedFirstChunk(true),
@@ -715,14 +710,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         setHasReceivedFirstChunk(false);
         callbacks.onStreamingStart(chatId, text);
       },
-      onStreamingUpdate: (groups: RenderingBlockGroup[], lastEvent: string) => {
+      onStreamingUpdate: (groups: RenderingBlockGroup[]) => {
         setStreamingGroups(groups);
-        setStreamingLastEvent(lastEvent);
       },
       onStreamingEnd: () => {
         setIsLoading(false);
         setStreamingGroups([]);
-        setStreamingLastEvent('');
         callbacks.onStreamingEnd(chatId);
       },
       onFirstChunk: () => setHasReceivedFirstChunk(true),
@@ -980,19 +973,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       }
     }
 
-    // Build tool result message
-    const toolResultMessage: Message<unknown> = {
-      id: generateUniqueId('msg_user'),
-      role: 'user',
-      content: {
-        type: 'text',
-        content: '',
-        modelFamily: apiDefinition.apiType,
-        fullContent: toolResults,
-        renderingContent: [{ category: 'backstage' as const, blocks: toolResultRenderBlocks }],
-      },
-      timestamp: new Date(),
-    };
+    // Build tool result message using API-specific format
+    const toolResultMessage = apiService.buildToolResultMessage(apiDefinition.apiType, toolResults);
+
+    // Add rendering content to tool result message
+    toolResultMessage.content.renderingContent = [
+      { category: 'backstage' as const, blocks: toolResultRenderBlocks },
+    ];
 
     pending.push({ type: 'tool_result', message: toolResultMessage });
 
@@ -1059,7 +1046,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     hasReceivedFirstChunk,
     tokenUsage,
     streamingGroups,
-    streamingLastEvent,
     currentApiDefId: chat?.apiDefinitionId ?? project?.apiDefinitionId ?? null,
     currentModelId: chat?.modelId ?? project?.modelId ?? null,
     parentApiDefId: project?.apiDefinitionId ?? null,

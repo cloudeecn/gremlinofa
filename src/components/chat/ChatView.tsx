@@ -142,7 +142,6 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     parentApiDefId,
     parentModelId,
     streamingGroups,
-    streamingLastEvent,
     hasReceivedFirstChunk,
     unresolvedToolCalls,
     sendMessage,
@@ -382,7 +381,6 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         onAction={handleMessageAction}
         isLoading={isLoading}
         streamingGroups={streamingGroups}
-        streamingLastEvent={streamingLastEvent}
         currentApiDefId={currentApiDefId}
         currentModelId={currentModelId}
         pendingToolCount={unresolvedToolCalls?.length}

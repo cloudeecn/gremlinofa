@@ -202,6 +202,9 @@ export class ResponsesClient implements APIClient {
             // Cast through unknown since stored data loses SDK type info
             const storedItems = msg.content.fullContent as OpenAI.Responses.ResponseOutputItem[];
             for (const item of storedItems) {
+              if ('parsed_arguments' in item) {
+                delete item.parsed_arguments;
+              }
               input.push(item);
             }
           } else {
@@ -230,7 +233,7 @@ export class ResponsesClient implements APIClient {
       const tools: OpenAI.Responses.Tool[] = options.webSearchEnabled
         ? [
             {
-              type: 'web_search',
+              type: 'web_search_preview',
             },
           ]
         : [];

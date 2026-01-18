@@ -41,12 +41,8 @@ vi.mock('../MessageBubble', () => ({
 }));
 
 vi.mock('../StreamingMessage', () => ({
-  default: ({ groups, lastEvent }: any) => (
-    <div
-      data-testid="streaming-message"
-      data-groups-count={groups.length}
-      data-last-event={lastEvent}
-    >
+  default: ({ groups }: any) => (
+    <div data-testid="streaming-message" data-groups-count={groups.length}>
       Streaming: {groups.length} groups
     </div>
   ),
@@ -276,7 +272,6 @@ describe('MessageList', () => {
           onAction={mockOnAction}
           isLoading={true}
           streamingGroups={groups}
-          streamingLastEvent="content_block_delta"
           currentApiDefId={null}
           currentModelId={null}
         />
@@ -284,7 +279,6 @@ describe('MessageList', () => {
 
       const streamingMessage = screen.getByTestId('streaming-message');
       expect(streamingMessage).toHaveAttribute('data-groups-count', '2');
-      expect(streamingMessage).toHaveAttribute('data-last-event', 'content_block_delta');
     });
   });
 

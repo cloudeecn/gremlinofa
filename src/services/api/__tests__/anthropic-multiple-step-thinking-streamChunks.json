@@ -1,936 +1,448 @@
 [
   {
-    "type": "event",
-    "content": "message_start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "thinking.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "The user wants"
   },
   {
-    "type": "event",
-    "content": "ping"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " me to:\n1. Search for"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " capital of Canada -"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " even"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " though this"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " is stable"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " knowledge"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " already"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " have, they"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " specifically ask"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " me to search \"solely, without depending"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " on established knowledge\""
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "\n2. Search"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " for the"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " weather there"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " tomorrow"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "\n3. Comment"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " on the request first"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "\n4. Do the searches"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "\n5. Show the results of each"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " step\n\nThe user wants to"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " test how multiple"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " step tool calls work an"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "d says"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " not"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " to take shortcuts"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": ". So"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " I should:\n1. First"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " comment on the request\n2. Make"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " the first"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " search for"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " Canada"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "'s capital\n3. Show"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " that"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "\n4. Then"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " make"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " the second search for the"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " weather there"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " tomorrow\n5. Show that result"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "\n\nLet me start by"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " commenting on the request."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": ""
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "thinking.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "## Step"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " 1: Comment on the Request"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "\n\nYou're asking me to search for"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " information that"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " typically"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " falls"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " into"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "stable"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " knowledge\" that doesn"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "'t change"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " ("
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "like the capital of Canada),"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " which"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " my"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " training data woul"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "d cover"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": ". However"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": ", you"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "'re"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " explicitly"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " instruct"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "ing me to search"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " online"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " an"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "d not depen"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "d on established knowledge, an"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "d to demonstrate"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " how I handle"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " multi"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "-step tool"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " calls."
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "'ll respect"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " your test"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " scenario"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " and search"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " for both"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " pieces"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " of information separately"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " showing you"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " the results of each step.\n\nThis"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " is a good test because"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": ":"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "\n- The"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " first"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " search is straightforward fact"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "ual lookup"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "\n- The second search depends"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " on the result"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " of"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " the first search"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "\n- I'll"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " nee"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "d to wait"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " for the first result"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " before making the second search\n\n## Step"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " 2: Search"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " for Canada's Capital\n\nLet"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " me search for the capital of Canada:"
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "content.end"
-  },
-  {
-    "type": "event",
-    "content": "content_block_start"
   },
   {
     "type": "web_search.start",
     "id": "srvtoolu_id1"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "web_search",
     "id": "srvtoolu_id1",
     "query": "capital of Canada"
-  },
-  {
-    "type": "event",
-    "content": "content_block_start"
   },
   {
     "type": "web_search.result",
@@ -993,275 +505,131 @@
     "url": "https://www.ola.org/en/visit-learn/teach-learn-play/about-ontario/capital-cities"
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "thinking.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "Great! The"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " search results clearly"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " show that"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " Ottawa is the"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " capital of Canada. Now"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " I nee"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "d to search"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " for the"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " weather"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " in"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " Ottawa tomorrow"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " Today"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "'s"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " date is November"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " 30"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": ", 2025"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": ", so tomorrow would be December 1"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": ", 2025."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": ""
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "thinking.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "## Step"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " "
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "3"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": ": Result"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " of"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " First"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " Search"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "\n\nBased on the search results, "
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "citation",
@@ -1270,218 +638,90 @@
     "citedText": "Ottawa is the capital city of Canada. "
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "Ottawa is the capital city"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " of Canada"
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": ". The search confirme"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "d this"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " through"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " multiple reliable"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " sources."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "\n\n---"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "\n\n## Step 4: Search"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " for Tomorrow"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "'s Weather in Ottawa\n\nNow"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " that"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " I know the"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " capital is"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " Ottawa, let"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " me search for tomorrow's weather there"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": ":"
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "content.end"
-  },
-  {
-    "type": "event",
-    "content": "content_block_start"
   },
   {
     "type": "web_search.start",
     "id": "srvtoolu_id2"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "web_search",
     "id": "srvtoolu_id2",
     "query": "Ottawa weather tomorrow December 1"
-  },
-  {
-    "type": "event",
-    "content": "content_block_start"
   },
   {
     "type": "web_search.result",
@@ -1544,603 +784,295 @@
     "url": "https://www.weather-atlas.com/en/canada/ottawa-weather-december"
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "thinking.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "Perfect! I got"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " weather"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " information"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " for tomorrow"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " in Ottawa. The"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " search results show:"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "\n- From"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " weather"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "25"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": ".com"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": ": The"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " weather"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " tomorrow"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " will"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " be freez"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "ing col"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "d with temperatures of"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " "
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "0°C during"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " the day time"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " dropping"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " to -3"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "°C at night."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " Mostly"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " over"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "cast."
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " 0"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "%"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " chance of rain."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " Winds "
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "22"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "-27"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " "
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "Km/h."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " 6"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "8 hours of sun"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " Sunrise at 07"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": ":05"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " sunset at 16"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": ":30"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": "\n\nSo"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " have the information I need."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " Now let"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " me present"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": " the results"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "thinking",
     "content": " clearly."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "thinking",
     "content": ""
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "thinking.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "## Step"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " "
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "5"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": ": Result"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " of"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " Secon"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "d Search"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "\n\nFor"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " tomorrow"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "'s weather ("
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "December"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " 1"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": ", 2025"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": ")"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " in Ottawa:"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "\n\n"
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "citation",
@@ -2149,132 +1081,64 @@
     "citedText": "The weather tomorrow in Ottawa will be freezing cold with temperatures of 0°C during the day time. During the evening and night time the temperatures ..."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "The weather tomorrow in"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " Ottawa will be freezing cold with temperatures"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " of 0°C during the day"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " time."
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " During"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " the evening"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " an"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "d night time"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " temperatures"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " will drop to -3°C."
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " "
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "citation",
@@ -2283,76 +1147,36 @@
     "citedText": "The wather forecast for tomorrow in Ottawa is mostly overcast. "
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "The weather forecast"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " for"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " tomorrow in Ottawa is mostly"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " overcast."
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " "
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "citation",
@@ -2361,100 +1185,48 @@
     "citedText": "The wind will blow between 22 Km/h to 27 Km/h tomorrow in Ottawa. "
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "The wind will blow"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " between"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " 22 "
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "Km/h to"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " 27 Km/h tomorrow"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " in"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " Ottawa."
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " Additionally, "
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "citation",
@@ -2463,220 +1235,108 @@
     "citedText": "The chance of rain tomorrow in Ottawa is 0%. "
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "the chance of rain tomorrow"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " in"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " Ottawa is 0%."
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "\n\n---\n\n## Summary\n\nThis"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " test"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " demonstrate"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "d the multi"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "-step tool"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " workflow"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": ":"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "\n\n1. **Initial"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " Request"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": ":**"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " Search for Canada"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "'s capital"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " without"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " rel"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "ying on establishe"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "d knowledge"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "\n2. **First"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " Search:** Retrieved that"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " "
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "citation",
@@ -2685,201 +1345,97 @@
     "citedText": "Ottawa is the capital city of Canada. "
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "Ottawa is the capital city of Canada"
-  },
-  {
-    "type": "event",
-    "content": "content_block_stop"
   },
   {
     "type": "content.end"
   },
   {
-    "type": "event",
-    "content": "content_block_start"
-  },
-  {
     "type": "content.start"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "\n3. **Second Search:** Base"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "d on that result"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": ", searched for tomorrow"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "'s weather in Ottawa specifically"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "\n4. **Final"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " Result"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": ":**"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " Provide"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "d detaile"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "d weather information for December"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " 1, 2025 in"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " Ottawa\n\nThe process"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " shows that the secon"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": "d search was dependent"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " on the result"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " of the first search, an"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": "d both"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " searches were performed sequentially rather"
-  },
-  {
-    "type": "event",
-    "content": "content_block_delta"
   },
   {
     "type": "content",
     "content": " than in"
   },
   {
-    "type": "event",
-    "content": "content_block_delta"
-  },
-  {
     "type": "content",
     "content": " parallel."
   },
   {
-    "type": "event",
-    "content": "content_block_stop"
-  },
-  {
     "type": "content.end"
-  },
-  {
-    "type": "event",
-    "content": "message_delta"
-  },
-  {
-    "type": "event",
-    "content": "message_stop"
   },
   {
     "type": "token_usage",

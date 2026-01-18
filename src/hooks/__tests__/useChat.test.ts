@@ -744,6 +744,18 @@ describe('useChat', () => {
       vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([
         { type: 'tool_use', id: 'tool_1', name: 'ping', input: {} },
       ]);
+      // Mock buildToolResultMessage to return API-specific formatted message
+      vi.mocked(apiService.buildToolResultMessage).mockImplementation((apiType, toolResults) => ({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: {
+          type: 'text',
+          content: '',
+          modelFamily: apiType,
+          fullContent: toolResults,
+        },
+        timestamp: new Date(),
+      }));
     });
 
     it('should detect unresolved tool calls', async () => {

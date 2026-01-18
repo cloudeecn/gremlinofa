@@ -27,7 +27,6 @@ export interface LegacyAssistantBubbleProps {
 
 export interface StreamingMessageProps {
   groups: RenderingBlockGroup[];
-  lastEvent?: string;
 }
 
 export interface MessageListProps {
@@ -35,7 +34,6 @@ export interface MessageListProps {
   onAction: (action: 'copy' | 'fork' | 'edit' | 'delete', messageId: string) => void;
   isLoading: boolean;
   streamingGroups: RenderingBlockGroup[];
-  streamingLastEvent?: string;
   currentApiDefId: string | null;
   currentModelId: string | null;
   /** Number of pending tool calls (for banner display) */

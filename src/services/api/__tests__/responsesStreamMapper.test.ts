@@ -82,15 +82,6 @@ data: {"valid":true}
   });
 
   describe('mapResponsesEventToStreamChunks', () => {
-    it('emits event chunk for all events', () => {
-      const state = createMapperState();
-      const { chunks } = mapResponsesEventToStreamChunks(
-        { type: 'response.created', data: {} },
-        state
-      );
-      expect(chunks[0]).toEqual({ type: 'event', content: 'response.created' });
-    });
-
     describe('reasoning events', () => {
       it('emits thinking.start on reasoning output_item.added', () => {
         const state = createMapperState();
@@ -357,10 +348,6 @@ data: {"valid":true}
         'utf8'
       );
       const chunks = parseSSEToStreamChunks(sseText);
-
-      // Should have event chunks
-      const eventChunks = chunks.filter(c => c.type === 'event');
-      expect(eventChunks.length).toBeGreaterThan(0);
 
       // Should have thinking chunks
       const thinkingStart = chunks.find(c => c.type === 'thinking.start');

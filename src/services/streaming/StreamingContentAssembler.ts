@@ -33,7 +33,6 @@ export class StreamingContentAssembler {
   private webSearchMap: Map<string, WebSearchRenderBlock> = new Map();
   private webFetchMap: Map<string, WebFetchRenderBlock> = new Map();
   private lastEndedBlockType: string | null = null;
-  private lastEvent: string = '';
   // Track pending citations for current text block (received before text)
   private pendingCitations: Array<{ url: string; title?: string; citedText?: string }> = [];
 
@@ -98,10 +97,6 @@ export class StreamingContentAssembler {
         this.handleCitation(chunk.url, chunk.title, chunk.citedText);
         break;
 
-      case 'event':
-        this.lastEvent = chunk.content;
-        break;
-
       case 'token_usage':
         // Ignore token_usage - not for rendering
         break;
@@ -121,13 +116,6 @@ export class StreamingContentAssembler {
   }
 
   /**
-   * Get the last event string for status display
-   */
-  getLastEvent(): string {
-    return this.lastEvent;
-  }
-
-  /**
    * Reset the assembler to initial state
    */
   reset(): void {
@@ -136,7 +124,6 @@ export class StreamingContentAssembler {
     this.webSearchMap.clear();
     this.webFetchMap.clear();
     this.lastEndedBlockType = null;
-    this.lastEvent = '';
     this.pendingCitations = [];
   }
 

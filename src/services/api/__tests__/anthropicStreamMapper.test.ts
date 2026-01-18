@@ -190,9 +190,8 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"text","te
       // Should not throw
       const result = mapAnthropicEventToStreamChunks(sseEvent, state);
 
-      // Should only have the event chunk, no web_search.result chunks
-      expect(result.chunks).toHaveLength(1);
-      expect(result.chunks[0]).toEqual({ type: 'event', content: 'content_block_start' });
+      // Shouldnochunk, no web_search.result chunks
+      expect(result.chunks).toHaveLength(0);
     });
 
     it('maps server_tool_use (web_fetch) to web_fetch', () => {
@@ -311,7 +310,6 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"text","te
 
       // Verify we have expected chunk types
       const chunkTypes = new Set(chunks.map(c => c.type));
-      expect(chunkTypes).toContain('event');
       expect(chunkTypes).toContain('thinking.start');
       expect(chunkTypes).toContain('thinking');
       expect(chunkTypes).toContain('thinking.end');
@@ -346,7 +344,6 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"text","te
 
       // Verify we have expected chunk types for web_fetch
       const chunkTypes = new Set(chunks.map(c => c.type));
-      expect(chunkTypes).toContain('event');
       expect(chunkTypes).toContain('thinking.start');
       expect(chunkTypes).toContain('thinking');
       expect(chunkTypes).toContain('thinking.end');

@@ -17,7 +17,6 @@ export default function MessageList({
   onAction,
   isLoading,
   streamingGroups,
-  streamingLastEvent,
   currentApiDefId,
   currentModelId,
   pendingToolCount,
@@ -163,9 +162,7 @@ export default function MessageList({
           ))}
 
           {/* Render streaming message if active */}
-          {isLoading && streamingGroups.length > 0 && (
-            <StreamingMessage groups={streamingGroups} lastEvent={streamingLastEvent} />
-          )}
+          {isLoading && streamingGroups.length > 0 && <StreamingMessage groups={streamingGroups} />}
 
           {/* Loading indicator when no streaming content yet */}
           {isLoading && streamingGroups.length === 0 && (

@@ -48,7 +48,9 @@ export function createMapperState(): ResponsesMapperState {
 
 /**
  * Parse Responses API SSE text block into event objects
- * Format: "event: X\ndata: {json}\n\n"
+ * Supports two formats:
+ * 1. Standard SSE: "event: X\ndata: {json}\n\n"
+ * 2. Data-only: "data: {json}\n\n" (type extracted from data.type)
  */
 export function parseResponsesSSEText(text: string): ResponsesSSEEvent[] {
   const events: ResponsesSSEEvent[] = [];
@@ -62,12 +64,25 @@ export function parseResponsesSSEText(text: string): ResponsesSSEEvent[] {
       currentEvent = line.slice(7).trim();
     } else if (line.startsWith('data: ')) {
       currentData = line.slice(6).trim();
-    } else if (line === '' && currentEvent && currentData) {
-      try {
-        const data = JSON.parse(currentData) as Record<string, unknown>;
-        events.push({ type: currentEvent, data });
-      } catch {
-        console.warn('Failed to parse SSE data:', currentData);
+    } else if (line === '' && currentData) {
+      // Handle data-only format by extracting type from JSON
+      if (!currentEvent && currentData !== '[DONE]') {
+        try {
+          const data = JSON.parse(currentData) as Record<string, unknown>;
+          if (typeof data.type === 'string') {
+            events.push({ type: data.type, data });
+          }
+        } catch {
+          console.warn('Failed to parse SSE data:', currentData);
+        }
+      } else if (currentEvent) {
+        // Standard format with event line
+        try {
+          const data = JSON.parse(currentData) as Record<string, unknown>;
+          events.push({ type: currentEvent, data });
+        } catch {
+          console.warn('Failed to parse SSE data:', currentData);
+        }
       }
       currentEvent = null;
       currentData = null;
@@ -131,7 +146,8 @@ export function mapResponsesEventToStreamChunks(
       break;
     }
 
-    case 'response.reasoning_summary_text.delta': {
+    case 'response.reasoning_summary_text.delta':
+    case 'response.reasoning_text.delta': {
       const delta = data.delta as string | undefined;
       if (delta) {
         // Emit thinking.start if not already in block
@@ -290,6 +306,7 @@ export function mapResponsesEventToStreamChunks(
     case 'response.in_progress':
     case 'response.reasoning_summary_part.added':
     case 'response.reasoning_summary_text.done':
+    case 'response.reasoning_text.done':
     case 'response.web_search_call.in_progress':
       // No chunks needed for these events
       break;
@@ -322,10 +339,22 @@ export function convertOutputToStreamChunks(
       case 'reasoning': {
         chunks.push({ type: 'thinking.start' });
 
-        // Extract text from summary array
+        // Extract text from summary array (summary_text)
         for (const summaryPart of item.summary) {
           if (summaryPart.type === 'summary_text' && summaryPart.text) {
             chunks.push({ type: 'thinking', content: summaryPart.text });
+          }
+        }
+
+        // Also handle content array with reasoning_text (OpenRouter/Anthropic format)
+        const reasoningItem = item as unknown as {
+          content?: Array<{ type: string; text?: string }>;
+        };
+        if (Array.isArray(reasoningItem.content)) {
+          for (const part of reasoningItem.content) {
+            if (part.type === 'reasoning_text' && part.text) {
+              chunks.push({ type: 'thinking', content: part.text });
+            }
           }
         }
 

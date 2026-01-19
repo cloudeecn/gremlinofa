@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AnthropicClient } from '../anthropicClient';
-import testMessageContent from './anthropic-multiple-step-thinking-message.json';
+import testMessageContent from './anthropic-multiple-step-thinking-fullContent.json';
 import expectedRenderingContent from './anthropic-multiple-step-thinking-renderingContent.json';
 
 describe('AnthropicClient.migrateMessageRendering', () => {

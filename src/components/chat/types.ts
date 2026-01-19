@@ -38,10 +38,10 @@ export interface MessageListProps {
   currentModelId: string | null;
   /** Number of pending tool calls (for banner display) */
   pendingToolCount?: number;
-  /** Current mode for resolving pending tool calls */
-  pendingToolMode?: 'stop' | 'continue';
-  /** Callback when tool mode changes */
-  onPendingToolModeChange?: (mode: 'stop' | 'continue') => void;
+  /** Callback when user clicks Reject on pending tool calls */
+  onPendingToolReject?: () => void;
+  /** Callback when user clicks Accept on pending tool calls */
+  onPendingToolAccept?: () => void;
 }
 
 export interface ChatInputProps {

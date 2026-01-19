@@ -20,8 +20,8 @@ export default function MessageList({
   currentApiDefId,
   currentModelId,
   pendingToolCount,
-  pendingToolMode,
-  onPendingToolModeChange,
+  onPendingToolReject,
+  onPendingToolAccept,
 }: MessageListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -197,12 +197,12 @@ export default function MessageList({
           {!isLoading &&
             pendingToolCount !== undefined &&
             pendingToolCount > 0 &&
-            pendingToolMode &&
-            onPendingToolModeChange && (
+            onPendingToolReject &&
+            onPendingToolAccept && (
               <PendingToolCallsBanner
                 toolCount={pendingToolCount}
-                mode={pendingToolMode}
-                onModeChange={onPendingToolModeChange}
+                onReject={onPendingToolReject}
+                onAccept={onPendingToolAccept}
               />
             )}
         </div>

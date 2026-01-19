@@ -27,8 +27,6 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   // This prevents performance issues with large HDR images
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [isProcessingAttachments, setIsProcessingAttachments] = useState(false);
-  // Mode for resolving pending tool calls (stop = error, continue = execute)
-  const [pendingToolMode, setPendingToolMode] = useState<'stop' | 'continue'>('stop');
 
   // Draft persistence for chat input
   useDraftPersistence({
@@ -272,16 +270,9 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     setAttachments([]); // Clear attachments
     clearDraft('chatview', chatId); // Clear draft when message is sent
 
-    // Handle pending tool calls resolution
+    // Handle pending tool calls: user message triggers reject with the message
     if (hasPendingTools) {
-      // Resolve pending tool calls with optional user message
-      await resolvePendingToolCalls(
-        pendingToolMode,
-        messageText || undefined,
-        processedAttachments
-      );
-      // Reset mode after resolution
-      setPendingToolMode('stop');
+      await resolvePendingToolCalls('stop', messageText || undefined, processedAttachments);
     } else {
       await sendMessage(chatId, messageText, processedAttachments);
     }
@@ -394,8 +385,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         currentApiDefId={currentApiDefId}
         currentModelId={currentModelId}
         pendingToolCount={unresolvedToolCalls?.length}
-        pendingToolMode={pendingToolMode}
-        onPendingToolModeChange={setPendingToolMode}
+        onPendingToolReject={() => resolvePendingToolCalls('stop')}
+        onPendingToolAccept={() => resolvePendingToolCalls('continue')}
       />
 
       {/* Chat Input */}

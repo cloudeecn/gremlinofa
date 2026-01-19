@@ -1,35 +1,7 @@
 [
   {
-    "type": "event",
-    "content": "response.created"
-  },
-  {
-    "type": "event",
-    "content": "response.in_progress"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.added"
-  },
-  {
     "type": "web_search.start",
     "id": "ws_1_call_1"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.in_progress"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.searching"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.completed"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.done"
   },
   {
     "type": "web_search",
@@ -37,76 +9,20 @@
     "query": "Vancouver weather tomorrow"
   },
   {
-    "type": "event",
-    "content": "response.output_item.added"
-  },
-  {
     "type": "web_search.start",
     "id": "ws_1_call_2"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.in_progress"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.searching"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.added"
   },
   {
     "type": "web_search.start",
     "id": "ws_1_call_3"
   },
   {
-    "type": "event",
-    "content": "response.web_search_call.in_progress"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.searching"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.added"
-  },
-  {
     "type": "web_search.start",
     "id": "ws_1_call_4"
   },
   {
-    "type": "event",
-    "content": "response.web_search_call.in_progress"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.searching"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.added"
-  },
-  {
     "type": "web_search.start",
     "id": "ws_1_call_5"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.in_progress"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.searching"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.completed"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.done"
   },
   {
     "type": "web_search",
@@ -114,25 +30,9 @@
     "query": "Opening: https://weather.gc.ca/en/location/index.html?coords=49.245%2C-123.115"
   },
   {
-    "type": "event",
-    "content": "response.web_search_call.completed"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.done"
-  },
-  {
     "type": "web_search",
     "id": "ws_1_call_3",
     "query": "Opening: https://www.accuweather.com/en/ca/vancouver/v6c/weather-tomorrow/53286"
-  },
-  {
-    "type": "event",
-    "content": "response.web_search_call.completed"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.done"
   },
   {
     "type": "web_search",
@@ -140,25 +40,9 @@
     "query": "Opening: https://www.theweathernetwork.com/en/city/ca/british-columbia/vancouver/7-days"
   },
   {
-    "type": "event",
-    "content": "response.web_search_call.completed"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.done"
-  },
-  {
     "type": "web_search",
     "id": "ws_1_call_5",
     "query": "Opening: https://weather.com/weather/tenday/l/Shaughnessy+Vancouver+British+Columbia+Canada?canonicalCityId=1a12ea5bc64fdc94330068426e8363de"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.added"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.done"
   },
   {
     "type": "tool_use",
@@ -169,10 +53,6 @@
       "path": "vancouver_weather_tomorrow.txt",
       "file_text": "Vancouver, BC weather for tomorrow (Saturday, January 3, 2026):\n\n- High/Low: Around 8°C / 6-7°C (46-48°F / 44°F)\n- Conditions: Periods of rain throughout the day and night, possibly heavy at times. Morning rain and drizzle likely.\n- Precip: 75-100% chance, 10-25 mm possible.\n- Wind: SE/E/NE 10-20 km/h (5-13 mph), gusts to 40 km/h near water.\n- Other: Coastal flooding statement in effect for Metro Vancouver due to high tides, winds, and waves.\n\nSources: Environment Canada [web:10], AccuWeather [web:11], The Weather Network [web:12], Weather.com [web:13]"
     }
-  },
-  {
-    "type": "event",
-    "content": "response.completed"
   },
   {
     "type": "token_usage",

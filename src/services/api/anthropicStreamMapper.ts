@@ -100,9 +100,6 @@ export function mapAnthropicEventToStreamChunks(
   const chunks: StreamChunk[] = [];
   const newState = { ...state };
 
-  // Always yield event type for tracking
-  chunks.push({ type: 'event', content: sseEvent.event });
-
   const data = sseEvent.data as Record<string, unknown>;
 
   switch (sseEvent.event) {

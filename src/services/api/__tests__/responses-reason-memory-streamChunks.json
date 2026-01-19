@@ -1,5767 +1,2871 @@
 [
   {
-    "type": "event",
-    "content": "response.created"
-  },
-  {
-    "type": "event",
-    "content": "response.in_progress"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.added"
-  },
-  {
     "type": "thinking.start"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_part.added"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "First"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " user"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " wants"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " me"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " to"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " tool"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " Looking"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " at"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " available"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " functions"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " there's"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " one"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " named"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " with"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " this"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " description"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ":"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "Use"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " this"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " tool"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " when"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " user"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " explicitly"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " asks"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " test"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " tool"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " calling"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\"."
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " The"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " user"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " is"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " explicitly"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " asking"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " to"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " it"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " so"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " that"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " matches"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "The"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " function"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " has"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " no"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " required"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " parameters"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " Its"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " parameters"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " are"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " an"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " empty"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " object"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " so"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " can"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " it"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " directly"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "Next"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " user"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " says"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ":"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "and"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " use"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " memory"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " tool"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " to"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " store"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ".\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " So"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " after"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " calling"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "ping"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " need"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " store"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " its"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " using"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "memory"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " tool"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ".\n\n"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "The"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "memory"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " tool"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " is"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " for"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " storing"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " and"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " retrieving"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " information"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " It"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " has"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " commands"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " like"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "view"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "create"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " etc"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " To"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " store"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " something"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " might"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " need"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " use"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "create"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " or"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " another"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " command"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ".\n\n"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "The"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "memory"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " tool"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "'s"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " parameters"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " include"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ":\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "-"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " command"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ":"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " which"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " can"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " be"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "view"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "create"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "str"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "_replace"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " etc"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "For"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " storing"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " probably"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " need"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " to"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "create"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " a"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " file"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " or"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " something"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " similar"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " The"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " description"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " says"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ":"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "Use"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " this"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " tool"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " store"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " and"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " retrieve"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " information"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " across"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " conversations"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " Files"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " persist"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " per"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " project"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ".\"\n\n"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "So"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " likely"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " should"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " use"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "create"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " command"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " create"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " a"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " file"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " with"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "But"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " don't"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " know"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " what"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " of"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "ping"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " is"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " yet"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "."
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " have"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " first"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " get"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " its"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " result"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " and"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " then"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " use"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " that"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " to"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "memory"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\".\n\n"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "In"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " this"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " setup"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " when"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " a"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " function"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " it's"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " probably"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " handled"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " externally"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " and"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " then"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " might"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " get"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " a"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " response"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " But"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " in"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " my"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " response"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " need"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " decide"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " what"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " to"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " do"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " next"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "The"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " instructions"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " say"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ":"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "In"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " multi"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "-turn"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " conversations"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " continue"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " calling"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " relevant"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " functions"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " advance"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " user's"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " request"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " until"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " either"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " user's"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " request"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " is"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " fully"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " fulfilled"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " or"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " you"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " need"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " more"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " information"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ".\"\n\n"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "So"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " should"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " first"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " and"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " then"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " in"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " a"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " subsequent"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " turn"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "memory"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " with"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " result"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "However"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " in"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " my"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " current"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " response"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " need"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " output"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " function"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "."
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " can"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " use"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " multiple"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " <"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "function"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "_call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ">"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " tags"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " if"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " needed"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "The"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " user"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " is"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " asking"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " and"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " then"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " store"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " result"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " so"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " should"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "ping"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " first"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "Once"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I'll"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " get"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " its"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " output"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " and"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " then"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " can"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " decide"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "memory"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "In"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " this"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " single"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " response"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " think"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " should"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " just"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " now"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " and"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " handle"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " next"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " step"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " later"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "The"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " exact"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " user"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " request"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ":"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "Call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " your"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " tool"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " '"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "ping"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "',"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " and"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " use"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " memory"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " tool"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " to"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " store"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ".\"\n\n"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "It's"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " a"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " sequence"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ":"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " first"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " then"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " store"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "Since"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " can't"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " store"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " until"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " have"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " it"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " need"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " to"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "ping"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " first"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "In"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " my"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " response"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " should"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " output"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ":"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " <"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "function"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "_call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ">"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " for"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "Then"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " presumably"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " in"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " next"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " interaction"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I'll"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " have"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " and"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " can"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "memory"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "The"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " instructions"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " allow"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " multiple"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " <"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "function"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "_call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ">"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " tags"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " in"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " one"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " response"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " but"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " that"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " might"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " not"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " make"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " sense"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " here"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " because"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " need"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " output"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " of"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " first"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " should"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " only"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "ping"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " in"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " this"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " response"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "How"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " do"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " store"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "?"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " need"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " specify"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " what"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " store"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " For"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "memory"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " tool"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " if"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " use"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "create"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " need"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "path"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " and"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "file"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "_text"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " don't"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " know"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " result"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " yet"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " so"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " I"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " can't"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "memory"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "\""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " immediately"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ".\n\n"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "Therefore"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": ","
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " logical"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " step"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " is"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " first"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " \""
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "After"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " that"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " in"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " next"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " turn"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " I"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " can"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " use"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " result"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " to"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " call"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "memory"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "So"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " my"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " response"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " should"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " just"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " be"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " function"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " call"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " for"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " \""
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "ping"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "\".\n\n"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": "Finally"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " keep"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " the"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " response"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " clear"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " and"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " not"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " verbose"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " So"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": ","
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " no"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": " extra"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
   },
   {
     "type": "thinking",
     "content": " explanations"
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.delta"
-  },
-  {
     "type": "thinking",
     "content": "."
   },
   {
-    "type": "event",
-    "content": "response.reasoning_summary_text.done"
-  },
-  {
-    "type": "event",
-    "content": "response.reasoning_summary_part.done"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.done"
-  },
-  {
     "type": "thinking.end"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.added"
-  },
-  {
-    "type": "event",
-    "content": "response.output_item.done"
   },
   {
     "type": "tool_use",
     "id": "call_1",
     "name": "ping",
     "input": {}
-  },
-  {
-    "type": "event",
-    "content": "response.completed"
   },
   {
     "type": "token_usage",

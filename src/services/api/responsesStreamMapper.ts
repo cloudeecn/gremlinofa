@@ -104,9 +104,6 @@ export function mapResponsesEventToStreamChunks(
     pendingWebSearches: new Map(state.pendingWebSearches),
   };
 
-  // Always yield event type for tracking
-  chunks.push({ type: 'event', content: event.type });
-
   const data = event.data;
 
   switch (event.type) {

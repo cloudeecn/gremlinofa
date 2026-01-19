@@ -23,7 +23,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
-  const [formApiType, setFormApiType] = useState<APIType>('chatgpt');
+  const [formApiType, setFormApiType] = useState<APIType>('responses_api');
   const [formName, setFormName] = useState('');
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [formApiKey, setFormApiKey] = useState('');
@@ -44,7 +44,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const handleCancel = () => {
     setEditingId(null);
     setIsAddingNew(false);
-    setFormApiType('chatgpt');
+    setFormApiType('responses_api');
     setFormName('');
     setFormBaseUrl('');
     setFormApiKey('');
@@ -80,7 +80,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const handleStartAdd = () => {
     setIsAddingNew(true);
     setEditingId(null);
-    setFormApiType('chatgpt');
+    setFormApiType('responses_api');
     setFormName('');
     setFormBaseUrl('');
     setFormApiKey('');

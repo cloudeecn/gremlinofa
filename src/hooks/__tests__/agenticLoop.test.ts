@@ -234,9 +234,12 @@ describe('agenticLoop', () => {
         .mockReturnValueOnce(toolUseResponse())
         .mockReturnValueOnce(finalResponse());
 
-      vi.mocked(apiService.extractToolUseBlocks).mockReturnValueOnce([
-        { type: 'tool_use', id: 'tool_1', name: 'ping', input: {} },
-      ]);
+      // extractToolUseBlocks is called twice per tool_use iteration:
+      // 1. Inside mergeToolUseInputFromFullContent()
+      // 2. At the tool continuation check
+      vi.mocked(apiService.extractToolUseBlocks)
+        .mockReturnValueOnce([{ type: 'tool_use', id: 'tool_1', name: 'ping', input: {} }])
+        .mockReturnValueOnce([{ type: 'tool_use', id: 'tool_1', name: 'ping', input: {} }]);
 
       vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
         id: 'msg_2',
@@ -380,9 +383,12 @@ describe('agenticLoop', () => {
         .mockReturnValueOnce(firstResponse())
         .mockReturnValueOnce(secondResponse());
 
-      vi.mocked(apiService.extractToolUseBlocks).mockReturnValueOnce([
-        { type: 'tool_use', id: 'tool_1', name: 'ping', input: {} },
-      ]);
+      // extractToolUseBlocks is called twice per tool_use iteration:
+      // 1. Inside mergeToolUseInputFromFullContent()
+      // 2. At the tool continuation check
+      vi.mocked(apiService.extractToolUseBlocks)
+        .mockReturnValueOnce([{ type: 'tool_use', id: 'tool_1', name: 'ping', input: {} }])
+        .mockReturnValueOnce([{ type: 'tool_use', id: 'tool_1', name: 'ping', input: {} }]);
 
       vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
         id: 'msg_2',

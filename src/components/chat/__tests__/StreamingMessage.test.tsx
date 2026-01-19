@@ -24,14 +24,6 @@ describe('StreamingMessage', () => {
       expect(dots.length).toBe(3);
     });
 
-    it('renders bouncing dots even when lastEvent is provided', () => {
-      const { container } = render(<StreamingMessage groups={[]} lastEvent="message_start" />);
-
-      // Check for bouncing dots (lastEvent is now ignored)
-      const dots = container.querySelectorAll('.bouncing-dot');
-      expect(dots.length).toBe(3);
-    });
-
     it('applies mobile styles when isMobile is true', () => {
       vi.mocked(useIsMobile).mockReturnValue(true);
       const { container } = render(<StreamingMessage groups={[]} />);

@@ -67,7 +67,6 @@ export interface APIClient {
 
 // Stream chunk types
 export type StreamChunk =
-  | { type: 'event'; content: string }
   | { type: 'content'; content: string }
   | { type: 'content.start' }
   | { type: 'content.end' }

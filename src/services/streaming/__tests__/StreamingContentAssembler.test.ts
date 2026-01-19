@@ -22,10 +22,6 @@ describe('StreamingContentAssembler', () => {
     it('starts with empty groups', () => {
       expect(assembler.getGroups()).toEqual([]);
     });
-
-    it('starts with empty lastEvent', () => {
-      expect(assembler.getLastEvent()).toBe('');
-    });
   });
 
   describe('reset', () => {
@@ -34,13 +30,11 @@ describe('StreamingContentAssembler', () => {
       assembler.pushChunk({ type: 'thinking.start' });
       assembler.pushChunk({ type: 'thinking', content: 'test' });
       assembler.pushChunk({ type: 'thinking.end' });
-      assembler.pushChunk({ type: 'event', content: 'some event' });
 
       // Reset
       assembler.reset();
 
       expect(assembler.getGroups()).toEqual([]);
-      expect(assembler.getLastEvent()).toBe('');
     });
   });
 
@@ -440,16 +434,6 @@ describe('StreamingContentAssembler', () => {
 
       expect(result).toHaveLength(4);
       expect(result.map(g => g.category)).toEqual(['backstage', 'text', 'backstage', 'error']);
-    });
-  });
-
-  describe('event tracking', () => {
-    it('updates lastEvent on event chunk', () => {
-      assembler.pushChunk({ type: 'event', content: 'message_start' });
-      expect(assembler.getLastEvent()).toBe('message_start');
-
-      assembler.pushChunk({ type: 'event', content: 'content_block_start' });
-      expect(assembler.getLastEvent()).toBe('content_block_start');
     });
   });
 

@@ -54,7 +54,7 @@ export interface AgenticLoopContext {
 export interface AgenticLoopCallbacks {
   onMessageSaved: (message: Message<unknown>) => void;
   onStreamingStart: (loadingText: string) => void;
-  onStreamingUpdate: (groups: RenderingBlockGroup[], lastEvent: string) => void;
+  onStreamingUpdate: (groups: RenderingBlockGroup[]) => void;
   onStreamingEnd: () => void;
   onFirstChunk: () => void;
   /** Receives the fully-built Chat object after storage save */
@@ -89,6 +89,41 @@ interface PricingSnapshot {
 // ============================================================================
 // Helper Functions (extracted from useChat.ts)
 // ============================================================================
+
+/**
+ * Merge tool_use input from fullContent into renderingContent.
+ * This fixes streaming providers (like OpenRouter) that don't stream tool arguments.
+ * During streaming, tool_use blocks may have empty input; the correct input is in fullContent.
+ */
+function mergeToolUseInputFromFullContent(
+  groups: RenderingBlockGroup[],
+  fullContent: unknown,
+  apiType: import('../types').APIType
+): void {
+  // Extract actual tool inputs from fullContent
+  const toolUseBlocks = apiService.extractToolUseBlocks(apiType, fullContent);
+  if (toolUseBlocks.length === 0) return;
+
+  // Build map of tool_id -> input
+  const inputMap = new Map<string, Record<string, unknown>>();
+  for (const toolBlock of toolUseBlocks) {
+    inputMap.set(toolBlock.id, toolBlock.input);
+  }
+
+  // Update tool_use blocks in renderingContent
+  for (const group of groups) {
+    for (const block of group.blocks) {
+      if (block.type === 'tool_use') {
+        const toolUseBlock = block as ToolUseRenderBlock;
+        const correctInput = inputMap.get(toolUseBlock.id);
+        if (correctInput && Object.keys(toolUseBlock.input).length === 0) {
+          // Only update if current input is empty and we have correct input
+          toolUseBlock.input = correctInput;
+        }
+      }
+    }
+  }
+}
 
 /**
  * Post-process rendering content to populate rendered fields on tool blocks.
@@ -319,7 +354,7 @@ export async function runAgenticLoop(
       assembler = new StreamingContentAssembler({
         getToolIcon: (toolName: string) => toolRegistry.get(toolName)?.iconInput,
       });
-      callbacks.onStreamingUpdate([], '');
+      callbacks.onStreamingUpdate([]);
 
       // Yield to allow React to process the streaming reset before new content arrives
       await Promise.resolve();
@@ -366,7 +401,7 @@ export async function runAgenticLoop(
           isFirstContentChunk = false;
         }
 
-        callbacks.onStreamingUpdate(assembler.getGroups(), assembler.getLastEvent());
+        callbacks.onStreamingUpdate(assembler.getGroups());
         streamNext = await stream.next();
       }
 
@@ -429,7 +464,16 @@ export async function runAgenticLoop(
             stopReason: apiService.mapStopReason(context.apiDef.apiType, result.stopReason ?? null),
           };
 
-      // Populate tool render fields
+      // Merge tool_use input from fullContent (streaming may have empty args)
+      if (!result.error) {
+        mergeToolUseInputFromFullContent(
+          renderingContent,
+          result.fullContent,
+          context.apiDef.apiType
+        );
+      }
+
+      // Populate tool render fields (icon, renderedInput)
       populateToolRenderFields(renderingContent);
 
       // Check if cost calculation is unreliable for this message

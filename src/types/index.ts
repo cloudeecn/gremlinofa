@@ -34,6 +34,7 @@ export interface APIDefinition {
   name: string; // User-given display name (e.g., "xAI", "My OpenAI")
   baseUrl: string; // Empty means use apiType default
   apiKey: string;
+  icon?: string; // Custom emoji icon (defaults to apiType icon)
   isDefault?: boolean; // Mark as default (non-deletable) definition
   isLocal?: boolean; // Local provider - API key is optional (e.g., Ollama, LM Studio)
   createdAt: Date;

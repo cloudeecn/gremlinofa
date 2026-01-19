@@ -1,12 +1,14 @@
 import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChat } from '../../hooks/useChat';
+import { useApp } from '../../hooks/useApp';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { showAlert, showDestructiveConfirm } from '../../utils/alerts';
 import { formatTokens, stripMetadata } from '../../utils/messageFormatters';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 import { processImages } from '../../utils/imageProcessor';
 import { storage } from '../../services/storage';
+import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
 import type { MessageAttachment } from '../../types';
 import ModelSelector from '../project/ModelSelector';
 import Spinner from '../ui/Spinner';
@@ -43,6 +45,9 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
   // Detect mobile (same breakpoint as sidebar: 768px) - responsive to window resize
   const isMobile = useIsMobile();
+
+  // Get API definitions for icon display
+  const { apiDefinitions } = useApp();
 
   // Memoize callbacks to prevent unnecessary re-renders
   const handleMessagesLoaded = React.useCallback(
@@ -345,9 +350,14 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
             </button>
             <button
               onClick={() => setShowModelSelector(true)}
-              className="truncate text-xs text-gray-600 transition-colors hover:text-blue-600"
+              className="truncate text-left text-xs text-gray-600 transition-colors hover:text-blue-600"
             >
               {(chat.apiDefinitionId !== null || chat.modelId !== null) && '*'}
+              {currentApiDefId &&
+                (() => {
+                  const apiDef = apiDefinitions.find(d => d.id === currentApiDefId);
+                  return apiDef ? getApiDefinitionIcon(apiDef) + ' ' : '';
+                })()}
               {currentModelId || 'No model'} ▼
             </button>
           </div>

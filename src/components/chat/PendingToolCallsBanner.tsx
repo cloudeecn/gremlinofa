@@ -1,17 +1,17 @@
 interface PendingToolCallsBannerProps {
   toolCount: number;
-  mode: 'stop' | 'continue';
-  onModeChange: (mode: 'stop' | 'continue') => void;
+  onReject: () => void;
+  onAccept: () => void;
 }
 
 /**
  * Banner shown when there are unresolved tool calls (e.g., due to token limit).
- * Allows user to choose between stopping (error response) or continuing (execute tools).
+ * Provides Reject/Accept buttons, or user can send a message to reject with context.
  */
 export default function PendingToolCallsBanner({
   toolCount,
-  mode,
-  onModeChange,
+  onReject,
+  onAccept,
 }: PendingToolCallsBannerProps) {
   return (
     <div className="mx-4 mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
@@ -19,29 +19,21 @@ export default function PendingToolCallsBanner({
         <span className="font-medium">
           ⚠️ {toolCount} pending tool call{toolCount > 1 ? 's' : ''}
         </span>
-        <span className="ml-1 text-amber-600">— send a message to resolve</span>
+        <span className="ml-1 text-amber-600">— choose an action or send a message to reject</span>
       </div>
-      <div className="flex items-center gap-4">
-        <label className="flex cursor-pointer items-center gap-2">
-          <input
-            type="radio"
-            name="toolMode"
-            checked={mode === 'stop'}
-            onChange={() => onModeChange('stop')}
-            className="h-4 w-4 text-amber-600 focus:ring-amber-500"
-          />
-          <span className="text-sm text-gray-700">Skip (skip tools)</span>
-        </label>
-        <label className="flex cursor-pointer items-center gap-2">
-          <input
-            type="radio"
-            name="toolMode"
-            checked={mode === 'continue'}
-            onChange={() => onModeChange('continue')}
-            className="h-4 w-4 text-amber-600 focus:ring-amber-500"
-          />
-          <span className="text-sm text-gray-700">Run (run tools)</span>
-        </label>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onReject}
+          className="rounded-lg border border-gray-300 bg-white px-4 py-1.5 text-sm text-gray-700 transition-colors hover:bg-gray-50"
+        >
+          Reject
+        </button>
+        <button
+          onClick={onAccept}
+          className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm text-white transition-colors hover:bg-amber-700"
+        >
+          Accept
+        </button>
       </div>
     </div>
   );

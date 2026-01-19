@@ -408,12 +408,12 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   6. Loop until `stop_reason !== 'tool_use'` or max iterations (50)
 - **Unresolved tool call recovery**: When a response ends with unresolved `tool_use` blocks (e.g., token limit reached mid-agentic-loop):
   1. `unresolvedToolCalls` detected via `getUnresolvedToolCalls()` in `useChat.ts`
-  2. `PendingToolCallsBanner` shows in MessageList with Stop/Continue toggle (default: Stop)
-  3. User can optionally type a message before sending
-  4. On send: `resolvePendingToolCalls(mode, userMessage?)` creates tool_result blocks
-     - **Stop**: Returns error "Token limit reached, ask user to continue"
-     - **Continue**: Executes tools, optionally sends continuation to API
-  5. ChatInput send button enabled even with empty input when pending tools exist
+  2. `PendingToolCallsBanner` shows in MessageList with Reject/Accept buttons
+  3. User actions:
+     - **Reject button**: Sends error "Token limit reached, ask user to continue"
+     - **Accept button**: Executes tools and sends continuation to API
+     - **User sends message**: Sends reject response along with user's message
+  4. ChatInput send button enabled even with empty input when pending tools exist
 - Intermediate messages persisted with proper `renderingContent`:
   - Assistant messages with `tool_use` render in `BackstageView` as expandable "Calling [tool_name]" blocks
   - User messages with `tool_result` render via `ToolResultBubble` (detected by `fullContent` containing `tool_result` blocks)

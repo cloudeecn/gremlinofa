@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Spinner from '../ui/Spinner';
 import { useApp } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
+import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
 import type { MessageAttachment, Project } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
@@ -250,7 +251,14 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
               </button>
             </div>
             <span className="truncate text-xs text-gray-500">
-              {project.modelId || 'set default model in project settings →'}
+              {project.modelId
+                ? (() => {
+                    const apiDef = project.apiDefinitionId
+                      ? apiDefinitions.find(d => d.id === project.apiDefinitionId)
+                      : null;
+                    return apiDef ? getApiDefinitionIcon(apiDef) + ' ' : '';
+                  })() + project.modelId
+                : 'set default model in project settings →'}
             </span>
           </div>
           {/* Settings Dropdown */}
@@ -328,6 +336,11 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
             onClick={() => setShowNewChatModelSelector(true)}
             className="text-sm font-medium text-blue-600 hover:text-blue-700"
           >
+            {(() => {
+              const apiDefId = newChatApiDefId || project.apiDefinitionId;
+              const apiDef = apiDefId ? apiDefinitions.find(d => d.id === apiDefId) : null;
+              return apiDef ? getApiDefinitionIcon(apiDef) + ' ' : '';
+            })()}
             {newChatModelId || 'default'} ▼
           </button>
         </div>

@@ -8,6 +8,7 @@ import {
   getSupportedBrowsers,
   type WebGPUCapabilities,
 } from '../../utils/webgpuCapabilities';
+import { getApiTypeDisplayName, getApiDefinitionIcon } from '../../utils/apiTypeUtils';
 import type { Model, APIDefinition } from '../../types';
 import { formatSize } from '../../services/api/modelMetadata';
 
@@ -140,87 +141,94 @@ function ModelSelectorContent({
         </button>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto">
-        {/* API Selection - Rich Dropdown */}
-        <div className="border-b border-gray-100 p-4">
-          <h3 className="mb-3 text-base font-semibold text-gray-900">API Provider</h3>
-          <div ref={dropdownRef} className="relative">
-            {/* Dropdown trigger button */}
-            <button
-              onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-              className="flex w-full items-center justify-between rounded-lg border border-gray-300 bg-white p-3 text-left transition-colors hover:border-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-            >
-              {selectedApiDef ? (
-                <div className="flex flex-1 items-center justify-between">
+      {/* API Selection - Static (not scrolling) */}
+      <div className="flex-shrink-0 border-b border-gray-100 p-4">
+        <h3 className="mb-3 text-base font-semibold text-gray-900">API Provider</h3>
+        <div ref={dropdownRef} className="relative">
+          {/* Dropdown trigger button */}
+          <button
+            onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+            className="flex w-full items-center justify-between rounded-lg border border-gray-300 bg-white p-3 text-left transition-colors hover:border-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+          >
+            {selectedApiDef ? (
+              <div className="flex flex-1 items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">{getApiDefinitionIcon(selectedApiDef)}</span>
                   <div>
                     <div className="font-medium text-gray-900">{selectedApiDef.name}</div>
                     <div className="text-xs text-gray-600">
-                      {selectedApiDef.apiType.toUpperCase()}
+                      {getApiTypeDisplayName(selectedApiDef.apiType)}
                     </div>
                   </div>
-                  <span
-                    className={`ml-2 rounded-full px-2 py-0.5 text-xs font-medium ${getStatusBadge(selectedApiDef, hasWebGPU).className}`}
-                  >
-                    {getStatusBadge(selectedApiDef, hasWebGPU).text}
-                  </span>
                 </div>
-              ) : (
-                <span className="text-gray-500">Select an API provider...</span>
-              )}
-              <svg
-                className={`ml-2 h-5 w-5 text-gray-400 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M19 9l-7 7-7-7"
-                />
-              </svg>
-            </button>
+                <span
+                  className={`ml-2 rounded-full px-2 py-0.5 text-xs font-medium ${getStatusBadge(selectedApiDef, hasWebGPU).className}`}
+                >
+                  {getStatusBadge(selectedApiDef, hasWebGPU).text}
+                </span>
+              </div>
+            ) : (
+              <span className="text-gray-500">Select an API provider...</span>
+            )}
+            <svg
+              className={`ml-2 h-5 w-5 text-gray-400 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 9l-7 7-7-7"
+              />
+            </svg>
+          </button>
 
-            {/* Dropdown options */}
-            {isDropdownOpen && (
-              <div className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg">
-                {apiDefinitions.map(apiDef => {
-                  const badge = getStatusBadge(apiDef, hasWebGPU);
-                  const isSelected = selectedApiDefId === apiDef.id;
+          {/* Dropdown options */}
+          {isDropdownOpen && (
+            <div className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+              {apiDefinitions.map(apiDef => {
+                const badge = getStatusBadge(apiDef, hasWebGPU);
+                const isSelected = selectedApiDefId === apiDef.id;
 
-                  return (
-                    <button
-                      key={apiDef.id}
-                      onClick={() => handleSelectApi(apiDef.id)}
-                      className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors ${
-                        isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'
-                      }`}
-                    >
+                return (
+                  <button
+                    key={apiDef.id}
+                    onClick={() => handleSelectApi(apiDef.id)}
+                    className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition-colors ${
+                      isSelected ? 'bg-blue-50' : 'hover:bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">{getApiDefinitionIcon(apiDef)}</span>
                       <div>
                         <div
                           className={`font-medium ${isSelected ? 'text-blue-700' : 'text-gray-900'}`}
                         >
                           {apiDef.name}
                         </div>
-                        <div className="text-xs text-gray-600">{apiDef.apiType.toUpperCase()}</div>
+                        <div className="text-xs text-gray-600">
+                          {getApiTypeDisplayName(apiDef.apiType)}
+                        </div>
                       </div>
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}
-                      >
-                        {badge.text}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                    </div>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.className}`}
+                    >
+                      {badge.text}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
+      </div>
 
-        {/* Model Selection */}
-        <div className="p-4">
+      {/* Model Selection - Scrollable */}
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div>
           <h3 className="mb-3 text-base font-semibold text-gray-900">
             Model {!selectedApiDefId && '(Select API first)'}
           </h3>

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
+import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
 import type { Project, APIType } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
 import { clearDraft } from '../../hooks/useDraftPersistence';
@@ -139,7 +140,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const hasModelSelected = !!selectedModelId;
 
   const modelDisplayText = hasModelSelected
-    ? `${apiDef?.name || 'Unknown'} • ${selectedModelId}`
+    ? `${apiDef ? getApiDefinitionIcon(apiDef) + ' ' : ''}${apiDef?.name || 'Unknown'} • ${selectedModelId}`
     : 'Select a model to get started';
 
   const handleSave = useCallback(async () => {

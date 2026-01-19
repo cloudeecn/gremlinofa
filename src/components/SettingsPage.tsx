@@ -11,6 +11,11 @@ import {
   getSupportedBrowsers,
   type WebGPUCapabilities,
 } from '../utils/webgpuCapabilities';
+import {
+  getApiTypeDisplayName,
+  getApiTypeDefaultIcon,
+  getApiDefinitionIcon,
+} from '../utils/apiTypeUtils';
 
 interface SettingsPageProps {
   onMenuPress?: () => void;
@@ -25,6 +30,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [formApiType, setFormApiType] = useState<APIType>('responses_api');
   const [formName, setFormName] = useState('');
+  const [formIcon, setFormIcon] = useState('');
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [formApiKey, setFormApiKey] = useState('');
   const [formIsLocal, setFormIsLocal] = useState(false);
@@ -46,6 +52,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setIsAddingNew(false);
     setFormApiType('responses_api');
     setFormName('');
+    setFormIcon('');
     setFormBaseUrl('');
     setFormApiKey('');
     setFormIsLocal(false);
@@ -63,15 +70,12 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     return apiType !== 'webllm';
   };
 
-  const getApiTypeInfo = (apiType: APIType) => {
-    return apiTypes.find(t => t.id === apiType) || apiTypes[0];
-  };
-
   const handleStartEdit = (def: APIDefinition) => {
     setEditingId(def.id);
     setIsAddingNew(false);
     setFormApiType(def.apiType);
     setFormName(def.name);
+    setFormIcon(def.icon || '');
     setFormBaseUrl(def.baseUrl);
     setFormApiKey(def.apiKey);
     setFormIsLocal(def.isLocal || false);
@@ -82,6 +86,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setEditingId(null);
     setFormApiType('responses_api');
     setFormName('');
+    setFormIcon('');
     setFormBaseUrl('');
     setFormApiKey('');
     setFormIsLocal(false);
@@ -106,6 +111,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
         id: editingId || generateUniqueId(`api_${formApiType}`),
         apiType: formApiType,
         name: formName.trim(),
+        icon: formIcon.trim() || undefined,
         baseUrl: formBaseUrl.trim(),
         apiKey: formApiKey.trim(),
         isDefault: editingId ? apiDefinitions.find(d => d.id === editingId)?.isDefault : false,
@@ -128,6 +134,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     }
   }, [
     formName,
+    formIcon,
     formApiType,
     formIsLocal,
     formApiKey,
@@ -184,7 +191,6 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
             {/* List of API Definitions */}
             <div className="space-y-3">
               {apiDefinitions.map(def => {
-                const apiTypeInfo = getApiTypeInfo(def.apiType);
                 const hasApiKey = def.apiKey && def.apiKey.trim() !== '';
                 const isEditing = editingId === def.id;
                 const needsApiKey = requiresApiKey(def.apiType) && !def.isLocal;
@@ -216,10 +222,10 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                       <>
                         <div className="mb-3 flex items-start justify-between">
                           <div className="flex flex-1 items-start">
-                            <span className="mr-3 text-2xl">{apiTypeInfo.icon}</span>
+                            <span className="mr-3 text-2xl">{getApiDefinitionIcon(def)}</span>
                             <div className="flex-1">
                               <div className="mb-1 text-xs tracking-wide text-gray-500 uppercase">
-                                {apiTypeInfo.name}
+                                {getApiTypeDisplayName(def.apiType)}
                               </div>
                               <div className="mb-1 text-base font-semibold text-gray-900">
                                 {def.name}
@@ -256,7 +262,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                       // Inline edit mode
                       <div>
                         <div className="mb-4 text-base font-semibold text-gray-900">
-                          Edit: {apiTypeInfo.icon} {apiTypeInfo.name}
+                          Edit: {getApiDefinitionIcon(def)} {getApiTypeDisplayName(def.apiType)}
                         </div>
 
                         <label className="mb-1.5 block text-sm font-medium text-gray-700">
@@ -268,6 +274,18 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           placeholder="e.g., xAI, OpenRouter, My OpenAI"
                           value={formName}
                           onChange={e => setFormName(e.target.value)}
+                        />
+
+                        <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                          Icon (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                          placeholder={getApiTypeDefaultIcon(def.apiType)}
+                          value={formIcon}
+                          onChange={e => setFormIcon(e.target.value)}
+                          maxLength={2}
                         />
 
                         <label className="mb-1.5 block text-sm font-medium text-gray-700">
@@ -388,6 +406,18 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                     placeholder="e.g., xAI, OpenRouter, My OpenAI"
                     value={formName}
                     onChange={e => setFormName(e.target.value)}
+                  />
+
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                    Icon (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                    placeholder={getApiTypeDefaultIcon(formApiType)}
+                    value={formIcon}
+                    onChange={e => setFormIcon(e.target.value)}
+                    maxLength={2}
                   />
 
                   <label className="mb-1.5 block text-sm font-medium text-gray-700">

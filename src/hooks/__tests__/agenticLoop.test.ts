@@ -274,6 +274,83 @@ describe('agenticLoop', () => {
       expect(executeClientSideTool).toHaveBeenCalledWith('ping', {});
     });
 
+    it('should execute tools and continue loop with OpenAI Chat Completions format', async () => {
+      // OpenAI client normalizes 'tool_calls' to 'tool_use' before returning
+      const toolCallsResponse = async function* () {
+        yield { type: 'content' as const, content: 'Let me ping' };
+        return {
+          textContent: 'Let me ping',
+          fullContent: {
+            role: 'assistant',
+            content: 'Let me ping',
+            tool_calls: [
+              { id: 'tc_1', type: 'function', function: { name: 'ping', arguments: '{}' } },
+            ],
+          },
+          inputTokens: 10,
+          outputTokens: 5,
+          stopReason: 'tool_use', // Client normalizes to 'tool_use'
+        };
+      };
+
+      const finalResponse = async function* () {
+        yield { type: 'content' as const, content: 'Got pong!' };
+        return {
+          textContent: 'Got pong!',
+          fullContent: { role: 'assistant', content: 'Got pong!' },
+          inputTokens: 15,
+          outputTokens: 10,
+          stopReason: 'end_turn',
+        };
+      };
+
+      const openaiApiDef: APIDefinition = {
+        ...mockApiDefinition,
+        apiType: 'chatgpt',
+        name: 'OpenAI',
+      };
+
+      vi.mocked(apiService.sendMessageStream)
+        .mockReturnValueOnce(toolCallsResponse())
+        .mockReturnValueOnce(finalResponse());
+
+      vi.mocked(apiService.extractToolUseBlocks)
+        .mockReturnValueOnce([{ type: 'tool_use', id: 'tc_1', name: 'ping', input: {} }])
+        .mockReturnValueOnce([{ type: 'tool_use', id: 'tc_1', name: 'ping', input: {} }]);
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_2',
+        role: 'user',
+        content: {
+          type: 'text',
+          content: '',
+          fullContent: [{ type: 'tool_result', tool_call_id: 'tc_1', content: 'pong' }],
+        },
+        timestamp: new Date(),
+      });
+
+      const context: AgenticLoopContext = {
+        chatId: 'chat_123',
+        chat: mockChat,
+        project: mockProject,
+        apiDef: openaiApiDef,
+        modelId: 'gpt-4',
+        model: mockModel,
+        currentMessages: [],
+      };
+
+      const result = await runAgenticLoop(
+        context,
+        [{ type: 'user', message: mockUserMessage }],
+        mockCallbacks
+      );
+
+      expect(result.success).toBe(true);
+      // user + assistant(tool_calls) + tool_result + assistant(final)
+      expect(result.savedMessages.length).toBeGreaterThanOrEqual(3);
+      expect(executeClientSideTool).toHaveBeenCalledWith('ping', {});
+    });
+
     it('should configure JS tool at loop start when JS enabled', async () => {
       const projectWithJs: Project = { ...mockProject, jsExecutionEnabled: true };
 

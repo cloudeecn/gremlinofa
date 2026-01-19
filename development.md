@@ -313,7 +313,8 @@ public/             # Static assets and PWA icons
 
 - Separates provider-specific event mapping from client logic
 - Event → MapperState → StreamChunk[] (stateful transformation)
-- Currently: `anthropicStreamMapper.ts`, `responsesStreamMapper.ts`; OpenAI Chat Completions uses inline mapping
+- Mappers: `anthropicStreamMapper.ts`, `responsesStreamMapper.ts`, `completionStreamMapper.ts`
+- `completionFullContentAccumulator.ts` - Accumulates streaming chunks to build fullContent for Chat Completions (content + tool_calls, excludes reasoning which can't be sent back to API)
 
 **Client-Side Tools:**
 

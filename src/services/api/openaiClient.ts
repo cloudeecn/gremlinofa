@@ -15,6 +15,16 @@ import { generateUniqueId } from '../../utils/idGenerator';
 import { mapReasoningEffort } from '../../utils/reasoningEffort';
 import { toolRegistry } from '../tools/clientSideTools';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import {
+  CompletionFullContentAccumulator,
+  createFullContentFromMessage,
+} from './completionFullContentAccumulator';
+import type { CompletionChunk, CompletionMessage } from './completionStreamMapper';
+import {
+  convertMessageToStreamChunks,
+  createMapperState,
+  mapCompletionChunkToStreamChunks,
+} from './completionStreamMapper';
 import { getModelMetadataFor } from './modelMetadata';
 
 export class OpenAIClient implements APIClient {
@@ -108,7 +118,7 @@ export class OpenAIClient implements APIClient {
       enabledTools?: string[];
       disableStream?: boolean;
     }
-  ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
+  ): AsyncGenerator<StreamChunk, StreamResult<CompletionMessage>, unknown> {
     try {
       // Create OpenAI client with API key and custom baseUrl if provided
       const client = new OpenAI({
@@ -180,12 +190,31 @@ export class OpenAIClient implements APIClient {
             });
           }
         } else if (msg.role === 'assistant') {
-          // Check if assistant message has tool_calls in fullContent
-          if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
-            const fullContent = msg.content.fullContent as Array<Record<string, unknown>>;
-            const toolCallsBlock = fullContent.find(item => item.type === 'tool_calls');
+          // Handle new CompletionMessage fullContent format
+          const fullContent = msg.content.fullContent as CompletionMessage | undefined;
+          if (fullContent && typeof fullContent === 'object' && !Array.isArray(fullContent)) {
+            // New format: CompletionMessage object
+            if (fullContent.tool_calls && fullContent.tool_calls.length > 0) {
+              openaiMessages.push({
+                role: 'assistant',
+                content: fullContent.content ?? null,
+                tool_calls: fullContent.tool_calls as OpenAI.ChatCompletionMessageToolCall[],
+              });
+              return;
+            }
+            // No tool calls, just use content
+            openaiMessages.push({
+              role: 'assistant',
+              content: fullContent.content ?? msg.content.content,
+            });
+            return;
+          }
+
+          // Legacy format: Array with type blocks (backward compatibility)
+          if (Array.isArray(msg.content.fullContent)) {
+            const legacyContent = msg.content.fullContent as Array<Record<string, unknown>>;
+            const toolCallsBlock = legacyContent.find(item => item.type === 'tool_calls');
             if (toolCallsBlock && Array.isArray(toolCallsBlock.tool_calls)) {
-              // Assistant message with tool calls - include them in the message
               openaiMessages.push({
                 role: 'assistant',
                 content: msg.content.content || null,
@@ -194,6 +223,8 @@ export class OpenAIClient implements APIClient {
               return;
             }
           }
+
+          // Plain text message
           openaiMessages.push({
             role: 'assistant',
             content: msg.content.content,
@@ -232,116 +263,77 @@ export class OpenAIClient implements APIClient {
 
       this.applyReasoning(requestParams, options);
 
-      // Track streamed content and token usage
-      let streamedContent = '';
+      // Track token usage and finish reason
       let inputTokens = 0;
       let outputTokens = 0;
-      let cached_tokens = 0;
+      let cacheReadTokens = 0;
       let reasoningTokens = 0;
       let finishReason: string | null = null;
-      // Track tool calls for client-side tool execution
-      const accumulatedToolCalls: Map<number, { id: string; name: string; arguments: string }> =
-        new Map();
 
       // Use streaming unless explicitly disabled
       if (!options.disableStream) {
-        // Streaming path
+        // Streaming path: use mapper and accumulator
         const stream = await client.chat.completions.create({
           ...requestParams,
           stream: true,
           stream_options: { include_usage: true },
         });
 
-        // Track whether we've started content block
-        let inContentBlock = false;
+        let mapperState = createMapperState();
+        const accumulator = new CompletionFullContentAccumulator();
 
-        // Stream the response
         for await (const chunk of stream) {
+          // Cast SDK chunk to our interface
+          const completionChunk = chunk as unknown as CompletionChunk;
+
+          // Accumulate for fullContent
+          accumulator.pushChunk(completionChunk);
+
+          // Map to StreamChunks for rendering
+          const result = mapCompletionChunkToStreamChunks(completionChunk, mapperState);
+          mapperState = result.state;
+
+          // Yield all StreamChunks
+          for (const streamChunk of result.chunks) {
+            // Extract token usage from token_usage chunks
+            if (streamChunk.type === 'token_usage') {
+              inputTokens = streamChunk.inputTokens ?? 0;
+              outputTokens = streamChunk.outputTokens ?? 0;
+              cacheReadTokens = streamChunk.cacheReadTokens ?? 0;
+              reasoningTokens = streamChunk.reasoningTokens ?? 0;
+            }
+            yield streamChunk;
+          }
+
           // Capture finish_reason
           const chunkFinishReason = chunk.choices[0]?.finish_reason;
           if (chunkFinishReason) {
             finishReason = chunkFinishReason;
           }
-
-          // Handle content delta
-          const contentDelta = chunk.choices[0]?.delta?.content;
-          if (contentDelta) {
-            // Emit content.start on first content
-            if (!inContentBlock) {
-              inContentBlock = true;
-              yield { type: 'content.start' };
-            }
-            streamedContent += contentDelta;
-            yield { type: 'content', content: contentDelta };
-          }
-
-          // Handle tool calls - accumulate across chunks
-          const toolCalls = chunk.choices[0]?.delta?.tool_calls;
-          if (toolCalls) {
-            for (const toolCall of toolCalls) {
-              const index = toolCall.index;
-              const existing = accumulatedToolCalls.get(index);
-
-              if (existing) {
-                // Append to existing tool call's arguments
-                if (toolCall.function?.arguments) {
-                  existing.arguments += toolCall.function.arguments;
-                }
-              } else {
-                // New tool call
-                accumulatedToolCalls.set(index, {
-                  id: toolCall.id || `tc_${Date.now()}_${index}`,
-                  name: toolCall.function?.name || '',
-                  arguments: toolCall.function?.arguments || '',
-                });
-              }
-
-              // Emit web_search event for UI
-              if (toolCall.function?.name === 'web_search') {
-                const args = toolCall.function.arguments;
-                if (args) {
-                  try {
-                    const parsed = JSON.parse(args);
-                    if (parsed.query) {
-                      const toolId = toolCall.id || `ws_${Date.now()}`;
-                      yield { type: 'web_search', id: toolId, query: parsed.query };
-                    }
-                  } catch {
-                    // Arguments may be partial JSON during streaming
-                  }
-                }
-              }
-            }
-          }
-
-          // Handle token usage (comes in the final chunk with stream_options)
-          if (chunk.usage) {
-            // Emit content.end when we have usage (end of stream)
-            if (inContentBlock) {
-              yield { type: 'content.end' };
-              inContentBlock = false;
-            }
-
-            inputTokens = chunk.usage.prompt_tokens || 0;
-            outputTokens = chunk.usage.completion_tokens || 0;
-
-            // Track reasoning tokens for reasoning models
-            const completionTokensDetails = chunk.usage.completion_tokens_details;
-            if (completionTokensDetails?.reasoning_tokens) {
-              reasoningTokens = completionTokensDetails.reasoning_tokens;
-            }
-            const promptTokensDetails = chunk.usage.prompt_tokens_details;
-            if (promptTokensDetails?.cached_tokens) {
-              cached_tokens = promptTokensDetails.cached_tokens;
-              inputTokens -= cached_tokens;
-            }
-          }
         }
 
-        // Emit content.end if stream ended without usage chunk
-        if (inContentBlock) {
-          yield { type: 'content.end' };
+        // Build fullContent from accumulator
+        let fullContent = accumulator.finalize();
+        let textContent = accumulator.getContent();
+
+        // Prepend prefill if provided
+        if (options.preFillResponse) {
+          textContent = options.preFillResponse + textContent;
+          fullContent = {
+            ...fullContent,
+            content: textContent,
+          };
         }
+
+        return {
+          textContent,
+          fullContent,
+          stopReason: this.mapStopReason(finishReason),
+          inputTokens,
+          outputTokens,
+          cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+          reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
+        };
       } else {
         // Non-streaming path
         const response = await client.chat.completions.create({
@@ -349,33 +341,15 @@ export class OpenAIClient implements APIClient {
           stream: false,
         });
 
-        // Capture finish_reason
+        const message = response.choices[0]?.message;
         finishReason = response.choices[0]?.finish_reason || null;
 
-        // Extract and yield content with start/end events
-        streamedContent = response.choices[0]?.message?.content || '';
-        if (streamedContent) {
-          yield { type: 'content.start' };
-          yield { type: 'content', content: streamedContent };
-          yield { type: 'content.end' };
-        }
-
-        // Extract tool calls from non-streaming response
-        const messageToolCalls = response.choices[0]?.message?.tool_calls;
-        if (messageToolCalls) {
-          for (let i = 0; i < messageToolCalls.length; i++) {
-            const tc = messageToolCalls[i] as {
-              id: string;
-              type: string;
-              function?: { name: string; arguments: string };
-            };
-            if (tc.function) {
-              accumulatedToolCalls.set(i, {
-                id: tc.id,
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-              });
-            }
+        // Yield StreamChunks for renderingContent
+        if (message) {
+          for (const chunk of convertMessageToStreamChunks(
+            message as unknown as CompletionMessage
+          )) {
+            yield chunk;
           }
         }
 
@@ -385,53 +359,42 @@ export class OpenAIClient implements APIClient {
           inputTokens = usage.prompt_tokens || 0;
           outputTokens = usage.completion_tokens || 0;
 
-          // Track reasoning tokens for reasoning models
           const completionTokensDetails = usage.completion_tokens_details;
           if (completionTokensDetails?.reasoning_tokens) {
             reasoningTokens = completionTokensDetails.reasoning_tokens;
           }
           const promptTokensDetails = usage.prompt_tokens_details;
           if (promptTokensDetails?.cached_tokens) {
-            cached_tokens = promptTokensDetails.cached_tokens;
-            inputTokens -= cached_tokens;
+            cacheReadTokens = promptTokensDetails.cached_tokens;
+            inputTokens -= cacheReadTokens;
           }
         }
+
+        // Build fullContent from message
+        let fullContent = message
+          ? createFullContentFromMessage(message as unknown as CompletionMessage)
+          : { role: 'assistant', content: null, refusal: null };
+        let textContent = message?.content || '';
+
+        // Prepend prefill if provided
+        if (options.preFillResponse) {
+          textContent = options.preFillResponse + textContent;
+          fullContent = {
+            ...fullContent,
+            content: textContent,
+          };
+        }
+
+        return {
+          textContent,
+          fullContent,
+          stopReason: this.mapStopReason(finishReason),
+          inputTokens,
+          outputTokens,
+          cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+          reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
+        };
       }
-
-      // Prepend prefill if provided
-      let textContent = streamedContent;
-      if (options.preFillResponse) {
-        textContent = options.preFillResponse + streamedContent;
-      }
-
-      // Build fullContent - include tool_calls if present for agentic loop
-      const fullContent: Array<Record<string, unknown>> = [
-        { type: 'text' as const, text: textContent },
-      ];
-
-      // Add tool_calls block if any tools were called
-      if (accumulatedToolCalls.size > 0) {
-        const toolCallsArray = Array.from(accumulatedToolCalls.values()).map(tc => ({
-          id: tc.id,
-          type: 'function',
-          function: {
-            name: tc.name,
-            arguments: tc.arguments,
-          },
-        }));
-        fullContent.push({ type: 'tool_calls', tool_calls: toolCallsArray });
-      }
-
-      // Return final result with stopReason for agentic loop
-      return {
-        textContent,
-        fullContent,
-        stopReason: finishReason ?? undefined,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens: cached_tokens,
-        reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
-      };
     } catch (error: unknown) {
       // Handle errors - extract message, status, and stack
       let errorMessage = 'Unknown error occurred';
@@ -464,7 +427,7 @@ export class OpenAIClient implements APIClient {
       // Return with error object (no yield)
       return {
         textContent: '',
-        fullContent: [],
+        fullContent: { role: 'assistant', content: null, refusal: null },
         error: { message: errorMessage, status: errorStatus, stack: errorStack },
         inputTokens: 0,
         outputTokens: 0,
@@ -556,17 +519,23 @@ export class OpenAIClient implements APIClient {
     renderingContent: RenderingBlockGroup[];
     stopReason: MessageStopReason;
   } {
-    // OpenAI has simple text-only content: [{ type: 'text', text: string }]
-    // Convert to single text group
     let textContent = '';
 
-    if (Array.isArray(fullContent)) {
+    // Handle new CompletionMessage format
+    if (fullContent && typeof fullContent === 'object' && !Array.isArray(fullContent)) {
+      const msg = fullContent as CompletionMessage;
+      textContent = msg.content || '';
+    }
+    // Handle legacy array format
+    else if (Array.isArray(fullContent)) {
       for (const block of fullContent as Array<Record<string, unknown>>) {
         if (block.type === 'text' && typeof block.text === 'string') {
           textContent += block.text;
         }
       }
-    } else if (typeof fullContent === 'string') {
+    }
+    // Handle plain string
+    else if (typeof fullContent === 'string') {
       textContent = fullContent;
     }
 
@@ -604,14 +573,27 @@ export class OpenAIClient implements APIClient {
   }
 
   /**
-   * Extract tool_use blocks from OpenAI Chat Completions fullContent.
-   * OpenAI stores tool calls in a different format than Anthropic.
+   * Extract tool_use blocks from Chat Completions fullContent.
+   * Supports both new CompletionMessage format and legacy array format.
    */
   extractToolUseBlocks(fullContent: unknown): ToolUseBlock[] {
+    // Handle new CompletionMessage format
+    if (fullContent && typeof fullContent === 'object' && !Array.isArray(fullContent)) {
+      const msg = fullContent as CompletionMessage;
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        return msg.tool_calls.map(tc => ({
+          type: 'tool_use' as const,
+          id: tc.id,
+          name: tc.function.name,
+          input: JSON.parse(tc.function.arguments || '{}'),
+        }));
+      }
+      return [];
+    }
+
+    // Handle legacy array format for backward compatibility
     if (!Array.isArray(fullContent)) return [];
 
-    // OpenAI fullContent may contain tool_calls array from the response
-    // Format: [{ type: 'text', text: '...' }, { type: 'tool_calls', tool_calls: [...] }]
     for (const block of fullContent as Array<Record<string, unknown>>) {
       if (block.type === 'tool_calls' && Array.isArray(block.tool_calls)) {
         return (block.tool_calls as Array<Record<string, unknown>>).map(tc => ({

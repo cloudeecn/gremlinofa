@@ -1,0 +1,24 @@
+[
+  {
+    "category": "text",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "I'll generate 2 random numbers, multiply them, and store the result using the filesystem tool."
+      }
+    ]
+  },
+  {
+    "category": "backstage",
+    "blocks": [
+      {
+        "type": "tool_use",
+        "id": "toolu_1",
+        "name": "javascript",
+        "input": {
+          "code": "\n// Generate 2 random numbers\nconst num1 = Math.random() * 100; // Random number between 0 and 100\nconst num2 = Math.random() * 100; // Random number between 0 and 100\n\n// Multiply them\nconst product = num1 * num2;\n\n// Create result object\nconst result = {\n  number1: num1,\n  number2: num2,\n  product: product,\n  timestamp: new Date().toISOString()\n};\n\n// Store to file\nawait fs.writeFile('/random_multiplication.json', JSON.stringify(result, null, 2));\n\nreturn result;\n"
+        }
+      }
+    ]
+  }
+]

@@ -718,4 +718,136 @@ describe('StreamingContentAssembler', () => {
       expect(groups).toMatchSnapshot();
     });
   });
+
+  describe('Chat Completions integration', () => {
+    it('assembles text + tool call stream into correct groups', () => {
+      // Load pre-generated StreamChunks from completionStreamMapper
+      const chunksFilePath = join(
+        __dirname,
+        '../../api/__tests__/completion-text-toolcall-streamChunks.json'
+      );
+      const expectedFilePath = join(
+        __dirname,
+        '../../api/__tests__/completion-text-toolcall-renderingContent.json'
+      );
+
+      const chunks: StreamChunk[] = JSON.parse(readFileSync(chunksFilePath, 'utf-8'));
+      const expected = JSON.parse(readFileSync(expectedFilePath, 'utf-8'));
+
+      // Push all chunks through assembler
+      for (const chunk of chunks) {
+        assembler.pushChunk(chunk);
+      }
+
+      const groups = assembler.finalize();
+
+      // Verify structure matches expected renderingContent
+      expect(groups).toHaveLength(expected.length);
+      expect(groups[0].category).toBe('text');
+      expect(groups[1].category).toBe('backstage');
+
+      // Verify text block content
+      const textBlock = groups[0].blocks[0] as TextRenderBlock;
+      expect(textBlock.type).toBe('text');
+      expect(textBlock.text).toContain("I'll generate 2 random numbers");
+
+      // Verify tool_use block
+      const toolBlock = groups[1].blocks[0];
+      expect(toolBlock.type).toBe('tool_use');
+      expect((toolBlock as { name: string }).name).toBe('javascript');
+    });
+
+    it('assembles reasoning + tool call stream into correct groups', () => {
+      // Load pre-generated StreamChunks from completionStreamMapper
+      const chunksFilePath = join(
+        __dirname,
+        '../../api/__tests__/completion-reason-toolcall-streamChunks.json'
+      );
+      const expectedFilePath = join(
+        __dirname,
+        '../../api/__tests__/completion-reason-toolcall-renderingContent.json'
+      );
+
+      const chunks: StreamChunk[] = JSON.parse(readFileSync(chunksFilePath, 'utf-8'));
+      const expected = JSON.parse(readFileSync(expectedFilePath, 'utf-8'));
+
+      // Push all chunks through assembler
+      for (const chunk of chunks) {
+        assembler.pushChunk(chunk);
+      }
+
+      const groups = assembler.finalize();
+
+      // Verify structure matches expected renderingContent
+      expect(groups).toHaveLength(expected.length);
+
+      // Should have backstage group with thinking and tool_use
+      expect(groups[0].category).toBe('backstage');
+
+      // Count block types in backstage group
+      let thinkingCount = 0;
+      let toolUseCount = 0;
+      for (const block of groups[0].blocks) {
+        if (block.type === 'thinking') thinkingCount++;
+        if (block.type === 'tool_use') toolUseCount++;
+      }
+
+      expect(thinkingCount).toBe(1);
+      expect(toolUseCount).toBe(1);
+
+      // Verify thinking block has content
+      const thinkingBlock = groups[0].blocks.find(
+        b => b.type === 'thinking'
+      ) as ThinkingRenderBlock;
+      expect(thinkingBlock.thinking).toContain("respond to the user's request");
+    });
+
+    it('handles Chat Completions tool_use chunks correctly', () => {
+      // Simulate the chunk sequence from Chat Completions
+      assembler.pushChunk({ type: 'content.start' });
+      assembler.pushChunk({ type: 'content', content: 'Let me call a tool.' });
+      assembler.pushChunk({ type: 'content.end' });
+      assembler.pushChunk({
+        type: 'tool_use',
+        id: 'tc_123',
+        name: 'ping',
+        input: {},
+      });
+
+      const groups = assembler.getGroups();
+
+      expect(groups).toHaveLength(2);
+      expect(groups[0].category).toBe('text');
+      expect(groups[1].category).toBe('backstage');
+
+      // Verify tool_use block
+      const toolBlock = groups[1].blocks[0];
+      expect(toolBlock.type).toBe('tool_use');
+      expect((toolBlock as { id: string }).id).toBe('tc_123');
+      expect((toolBlock as { name: string }).name).toBe('ping');
+    });
+
+    it('handles Chat Completions thinking chunks correctly', () => {
+      // Simulate reasoning model with thinking chunks
+      assembler.pushChunk({ type: 'thinking.start' });
+      assembler.pushChunk({ type: 'thinking', content: 'Let me think about this...' });
+      assembler.pushChunk({ type: 'thinking', content: ' The user wants random numbers.' });
+      assembler.pushChunk({ type: 'thinking.end' });
+      assembler.pushChunk({ type: 'content.start' });
+      assembler.pushChunk({ type: 'content', content: 'Here are your numbers!' });
+      assembler.pushChunk({ type: 'content.end' });
+
+      const groups = assembler.getGroups();
+
+      expect(groups).toHaveLength(2);
+      expect(groups[0].category).toBe('backstage');
+      expect(groups[1].category).toBe('text');
+
+      // Verify thinking block
+      const thinkingBlock = groups[0].blocks[0] as ThinkingRenderBlock;
+      expect(thinkingBlock.thinking).toBe(
+        'Let me think about this... The user wants random numbers.'
+      );
+    });
+  });
 });

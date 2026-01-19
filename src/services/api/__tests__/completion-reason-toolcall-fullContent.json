@@ -1,0 +1,15 @@
+{
+  "role": "assistant",
+  "content": null,
+  "tool_calls": [
+    {
+      "id": "chatcmpl-tool-1",
+      "type": "function",
+      "function": {
+        "name": "javascript",
+        "arguments": "{\n  \"code\": \"return [Math.random(), Math.random()];\"\n}"
+      }
+    }
+  ],
+  "refusal": null
+}

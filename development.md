@@ -316,6 +316,63 @@ public/             # Static assets and PWA icons
 - Mappers: `anthropicStreamMapper.ts`, `responsesStreamMapper.ts`, `completionStreamMapper.ts`
 - `completionFullContentAccumulator.ts` - Accumulates streaming chunks to build fullContent for Chat Completions (content + tool_calls, excludes reasoning which can't be sent back to API)
 
+### Message Content Architecture
+
+Messages store content in multiple fields, each serving a distinct purpose:
+
+| Field              | Scope        | Purpose                                                                                                                                                     |
+| ------------------ | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fullContent`      | API-aware    | Authoritative model output as-is from the API. Used for context assembly when chat's `apiType` matches the message's `modelFamily`. Stored using SDK types. |
+| `content`          | API-agnostic | Plain text fallback. Used when user switches API provider mid-chat (apiType mismatch).                                                                      |
+| `renderingContent` | API-agnostic | Pre-grouped `RenderingBlockGroup[]` for UI display. May transform content for better presentation.                                                          |
+| `metadata`         | API-agnostic | Token usage, cost, context window stats.                                                                                                                    |
+
+**Principle**: `fullContent` is authoritative for API interactions. `renderingContent` is for display only—never use it for context assembly.
+
+**API Boundary Components:**
+
+Only these components are aware of provider SDK types. All other code uses unified types.
+
+| Component                | Per-API?    | Purpose                                                                              |
+| ------------------------ | ----------- | ------------------------------------------------------------------------------------ |
+| `APIClient`              | Yes         | `anthropicClient`, `openaiClient`, `responsesClient`, `webllmClient`                 |
+| `StreamMapper`           | Yes         | Converts SDK stream events to unified `StreamChunk` types                            |
+| `FullContentAccumulator` | When needed | Builds `fullContent` from streaming chunks when SDK doesn't provide `finalMessage()` |
+
+**Streaming Data Flow:**
+
+```
+SDK Stream Events
+    ↓
+StreamMapper → StreamChunk[] (unified events)
+    ↓
+StreamingContentAssembler → renderingContent (for UI)
+
+SDK finalMessage() or FullContentAccumulator → fullContent (for storage/replay/agentic logic)
+```
+
+**Non-Streaming Data Flow:**
+
+Non-streaming responses generate synthetic `StreamChunk` events to reuse the same rendering pipeline:
+
+```
+Response Message → convertMessageToStreamChunks() → StreamChunk[]
+                                                        ↓
+                                        StreamingContentAssembler → renderingContent
+
+Response Message → createFullContentFromMessage() → fullContent
+```
+
+**fullContent Priority:**
+
+1. Use SDK's `finalMessage()` when available (most authoritative)
+2. Otherwise use `FullContentAccumulator` to assemble from stream
+3. Stay true to the stream—don't omit or transform content
+
+**Cross-Provider Compatibility:**
+
+When `chat.apiType !== message.modelFamily`, the message was created by a different provider. In this case, context assembly falls back to `content` (plain text) instead of `fullContent`, since provider-specific types won't be compatible.
+
 **Client-Side Tools:**
 
 - `src/services/tools/clientSideTools.ts` - Tool registry and execution

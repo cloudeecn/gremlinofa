@@ -892,7 +892,7 @@ Node.js-like async filesystem operations backed by the project's VFS. All method
 | `readFile(path, encoding)` | `Promise<string>`      | Read file as string with encoding         |
 | `writeFile(path, data)`    | `Promise<void>`        | Create/overwrite file (string or binary)  |
 | `exists(path)`             | `Promise<boolean>`     | Check if path exists                      |
-| `mkdir(path)`              | `Promise<void>`        | Create directory (via `.newdir` marker)   |
+| `mkdir(path)`              | `Promise<void>`        | Create directory                          |
 | `readdir(path)`            | `Promise<string[]>`    | List directory entries                    |
 | `unlink(path)`             | `Promise<void>`        | Delete file                               |
 | `rmdir(path)`              | `Promise<void>`        | Delete directory (recursive)              |
@@ -912,12 +912,6 @@ Node.js-like async filesystem operations backed by the project's VFS. All method
 - `stat()` returns `isBinary: boolean` and `mime: string` for files
 - Binary files stored as base64 in VFS, text files as UTF-8 strings
 - MIME detection via magic bytes (JPEG, PNG, GIF, WebP, PDF, ZIP)
-
-**fs Directory Creation:**
-
-- `mkdir(path)` creates directories by placing a `.newdir` marker file inside
-- `readdir()` automatically filters out `.newdir` markers from listings
-- This approach leverages VFS's auto-parent-creation behavior
 
 **fs Error Codes (Node.js-style):**
 

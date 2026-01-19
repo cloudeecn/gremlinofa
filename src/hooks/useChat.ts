@@ -24,7 +24,7 @@ import type {
   ToolResultBlock,
   ToolUseBlock,
 } from '../types';
-import type { ToolResultRenderBlock, ToolUseRenderBlock } from '../types/content';
+import type { ToolResultRenderBlock } from '../types/content';
 
 import { generateUniqueId } from '../utils/idGenerator';
 import { showAlert } from '../utils/alerts';
@@ -167,45 +167,16 @@ function getContextWindowUsage(metadata?: {
 }
 
 /**
- * Extract tool_use blocks from renderingContent or fullContent.
+ * Extract tool_use blocks from fullContent using apiService.
+ * Uses the same logic as agenticLoop for consistency across all API types.
  */
 function extractToolUseBlocksFromMessage(message: Message<unknown>): ToolUseBlock[] {
-  // Try renderingContent first (backstage blocks)
-  const renderingContent = message.content.renderingContent;
-  if (renderingContent) {
-    const toolUseBlocks: ToolUseBlock[] = [];
-    for (const group of renderingContent) {
-      if (group.category === 'backstage') {
-        for (const block of group.blocks) {
-          if (block.type === 'tool_use') {
-            const tuBlock = block as ToolUseRenderBlock;
-            toolUseBlocks.push({
-              type: 'tool_use',
-              id: tuBlock.id,
-              name: tuBlock.name,
-              input: tuBlock.input,
-            });
-          }
-        }
-      }
-    }
-    if (toolUseBlocks.length > 0) return toolUseBlocks;
-  }
-
-  // Fall back to fullContent for Anthropic messages
+  const apiType = message.content.modelFamily;
   const fullContent = message.content.fullContent;
-  if (Array.isArray(fullContent)) {
-    return fullContent
-      .filter((block: Record<string, unknown>) => block.type === 'tool_use')
-      .map((block: Record<string, unknown>) => ({
-        type: 'tool_use' as const,
-        id: block.id as string,
-        name: block.name as string,
-        input: (block.input as Record<string, unknown>) || {},
-      }));
-  }
 
-  return [];
+  if (!apiType || !fullContent) return [];
+
+  return apiService.extractToolUseBlocks(apiType, fullContent) ?? [];
 }
 
 /**

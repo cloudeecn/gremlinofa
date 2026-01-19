@@ -131,6 +131,7 @@ describe('useChat', () => {
     });
     vi.mocked(apiService.shouldPrependPrefill).mockReturnValue(false);
     vi.mocked(apiService.mapStopReason).mockReturnValue('end_turn');
+    vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -739,6 +740,10 @@ describe('useChat', () => {
     beforeEach(() => {
       // Setup: return messages with unresolved tool use
       vi.mocked(storage.getMessages).mockResolvedValue([mockUserMessage, mockAssistantWithToolUse]);
+      // Mock extractToolUseBlocks to return the tool_use block from fullContent
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([
+        { type: 'tool_use', id: 'tool_1', name: 'ping', input: {} },
+      ]);
     });
 
     it('should detect unresolved tool calls', async () => {

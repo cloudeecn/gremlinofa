@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
+import treeKill from 'tree-kill';
 import net from 'net';
 import path from 'path';
 import fs from 'fs';
@@ -68,11 +69,11 @@ describe('RemoteStorageAdapter E2E', () => {
   }
 
   /**
-   * Cleanup function for process exit
+   * Cleanup function for process exit - kills entire process tree
    */
   function cleanup() {
-    if (serverProcess) {
-      serverProcess.kill('SIGKILL');
+    if (serverProcess?.pid) {
+      treeKill(serverProcess.pid, 'SIGKILL');
       serverProcess = null;
     }
     // Clean up temp database
@@ -151,13 +152,13 @@ describe('RemoteStorageAdapter E2E', () => {
     process.removeListener('SIGINT', cleanup);
     process.removeListener('SIGTERM', cleanup);
 
-    // Graceful shutdown
-    if (serverProcess) {
-      serverProcess.kill('SIGTERM');
-      // Wait for process to exit
+    // Graceful shutdown - kill entire process tree
+    if (serverProcess?.pid) {
+      const pid = serverProcess.pid;
       await new Promise<void>(resolve => {
         const timeout = setTimeout(() => {
-          serverProcess?.kill('SIGKILL');
+          // Force kill if graceful shutdown times out
+          treeKill(pid, 'SIGKILL');
           resolve();
         }, 2000);
 
@@ -165,6 +166,9 @@ describe('RemoteStorageAdapter E2E', () => {
           clearTimeout(timeout);
           resolve();
         });
+
+        // Try graceful shutdown first
+        treeKill(pid, 'SIGTERM');
       });
       serverProcess = null;
     }

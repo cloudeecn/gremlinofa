@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
+import treeKill from 'tree-kill';
 import net from 'net';
 import path from 'path';
 import fs from 'fs';
@@ -111,11 +112,11 @@ describe('Cross-Adapter E2E Roundtrip', () => {
   }
 
   /**
-   * Cleanup function for process exit
+   * Cleanup function for process exit - kills entire process tree
    */
   function cleanup() {
-    if (serverProcess) {
-      serverProcess.kill('SIGKILL');
+    if (serverProcess?.pid) {
+      treeKill(serverProcess.pid, 'SIGKILL');
       serverProcess = null;
     }
     if (tempDbPath && fs.existsSync(tempDbPath)) {
@@ -193,11 +194,13 @@ describe('Cross-Adapter E2E Roundtrip', () => {
     process.removeListener('SIGINT', cleanup);
     process.removeListener('SIGTERM', cleanup);
 
-    if (serverProcess) {
-      serverProcess.kill('SIGTERM');
+    // Graceful shutdown - kill entire process tree
+    if (serverProcess?.pid) {
+      const pid = serverProcess.pid;
       await new Promise<void>(resolve => {
         const timeout = setTimeout(() => {
-          serverProcess?.kill('SIGKILL');
+          // Force kill if graceful shutdown times out
+          treeKill(pid, 'SIGKILL');
           resolve();
         }, 2000);
 
@@ -205,6 +208,9 @@ describe('Cross-Adapter E2E Roundtrip', () => {
           clearTimeout(timeout);
           resolve();
         });
+
+        // Try graceful shutdown first
+        treeKill(pid, 'SIGTERM');
       });
       serverProcess = null;
     }

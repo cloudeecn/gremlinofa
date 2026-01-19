@@ -1,0 +1,30 @@
+[
+  {
+    "type": "reasoning",
+    "id": "rs_item1",
+    "summary": [],
+    "content": [
+      {
+        "type": "reasoning_text",
+        "text": "The user has just sent a greeting message \"hi\". This is a simple salutation and doesn't contain any explicit request to test tool calling or any other specific tool-related query. None of the available tools (just \"ping\" in this case) are relevant for this simple greeting."
+      }
+    ],
+    "signature": "ErkBCkoICxACGAIiQDUj3a1ZKyYvwK+aKOgbyfVTEXj7Fc3AhrIa/KBzaTTLr5/T26TM4EI1Rl2YL0YQujeBpmJPQebcKVLkAg5bpfcoARIMYxzBrnlY+Cr7fwtnGgy4UnWVrzuUznwU+LQiMDuMJJaO3bC1WGOp9HBrV4puuiYb6SQLsAKYBaPfaqzx0dMQcnLTMe/3RZYjMmMRfyodpDguepMqRXaGGEu4OeegtttMlgjjDQOzMmPKw5kYAg==",
+    "format": "anthropic-claude-v1"
+  },
+  {
+    "type": "message",
+    "status": "completed",
+    "content": [
+      {
+        "type": "output_text",
+        "text": "Hello! How can I help you today? I'm an AI assistant that can answer questions and help with various tasks. Feel free to ask me anything you'd like to know or discuss!",
+        "annotations": [],
+        "logprobs": [],
+        "parsed": null
+      }
+    ],
+    "id": "msg_item1",
+    "role": "assistant"
+  }
+]

@@ -1,0 +1,108 @@
+: OPENROUTER PROCESSING
+
+data: {"type":"response.created","response":{"object":"response","id":"gen-1","created_at":1768762016,"completed_at":null,"status":"in_progress","error":null,"output_text":"","output":[],"model":"anthropic/claude-3.7-sonnet:thinking","incomplete_details":null,"usage":null,"tools":[{"type":"function","name":"ping","description":"Use this tool when the user explicitly asks to test tool calling","strict":false,"parameters":{"type":"object","properties":{},"required":[]}}],"tool_choice":"auto","parallel_tool_calls":true,"max_output_tokens":1536,"temperature":1,"top_p":1,"presence_penalty":0,"frequency_penalty":0,"top_logprobs":0,"max_tool_calls":null,"metadata":{},"background":false,"previous_response_id":null,"service_tier":"auto","truncation":"disabled","store":false,"instructions":null,"text":{"format":{"type":"text"}},"reasoning":{"summary":"detailed"},"safety_identifier":null,"prompt_cache_key":null,"user":null},"sequence_number":0}
+
+data: {"type":"response.in_progress","response":{"object":"response","id":"gen-1","created_at":1768762016,"completed_at":null,"status":"in_progress","error":null,"output_text":"","output":[],"model":"anthropic/claude-3.7-sonnet:thinking","incomplete_details":null,"usage":null,"tools":[{"type":"function","name":"ping","description":"Use this tool when the user explicitly asks to test tool calling","strict":false,"parameters":{"type":"object","properties":{},"required":[]}}],"tool_choice":"auto","parallel_tool_calls":true,"max_output_tokens":1536,"temperature":1,"top_p":1,"presence_penalty":0,"frequency_penalty":0,"top_logprobs":0,"max_tool_calls":null,"metadata":{},"background":false,"previous_response_id":null,"service_tier":"auto","truncation":"disabled","store":false,"instructions":null,"text":{"format":{"type":"text"}},"reasoning":{"summary":"detailed"},"safety_identifier":null,"prompt_cache_key":null,"user":null},"sequence_number":1}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_item1","summary":[]},"sequence_number":2}
+
+data: {"type":"response.content_part.added","item_id":"rs_item1","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":""},"sequence_number":3}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":"The","sequence_number":4}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" user has just","sequence_number":5}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" sent a greeting message \"","sequence_number":6}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":"hi\". This is a","sequence_number":7}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" simple","sequence_number":8}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" sal","sequence_number":9}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":"utation an","sequence_number":10}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":"d doesn't contain","sequence_number":11}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" any explicit","sequence_number":12}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" request","sequence_number":13}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" to","sequence_number":14}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" test","sequence_number":15}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" tool","sequence_number":16}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" calling or","sequence_number":17}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" any other","sequence_number":18}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" specific tool","sequence_number":19}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":"-","sequence_number":20}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":"related query","sequence_number":21}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":". None","sequence_number":22}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" of the available","sequence_number":23}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" tools (just","sequence_number":24}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" \"ping\" in this","sequence_number":25}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" case) are","sequence_number":26}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":" relevant for this simple greeting","sequence_number":27}
+
+data: {"type":"response.reasoning_text.delta","output_index":0,"item_id":"rs_item1","content_index":0,"delta":".","sequence_number":28}
+
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","status":"in_progress","content":[],"id":"msg_item1","role":"assistant"},"sequence_number":29}
+
+data: {"type":"response.content_part.added","item_id":"msg_item1","output_index":1,"content_index":0,"part":{"type":"output_text","annotations":[],"text":"","logprobs":[]},"sequence_number":30}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":"Hello","sequence_number":31}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":"! How","sequence_number":32}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":" can I help you today","sequence_number":33}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":"? I'm an","sequence_number":34}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":" AI assistant that","sequence_number":35}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":" can answer","sequence_number":36}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":" questions an","sequence_number":37}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":"d help with various tasks.","sequence_number":38}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":" Feel","sequence_number":39}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":" free to ask me anything","sequence_number":40}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":" you'd like to know","sequence_number":41}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":" or","sequence_number":42}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":" discuss","sequence_number":43}
+
+data: {"type":"response.output_text.delta","logprobs":[],"output_index":1,"item_id":"msg_item1","content_index":0,"delta":"!","sequence_number":44}
+
+data: {"type":"response.output_text.done","item_id":"msg_item1","output_index":1,"content_index":0,"text":"Hello! How can I help you today? I'm an AI assistant that can answer questions and help with various tasks. Feel free to ask me anything you'd like to know or discuss!","logprobs":[],"sequence_number":45}
+
+data: {"type":"response.content_part.done","item_id":"msg_item1","output_index":1,"content_index":0,"part":{"type":"output_text","annotations":[],"text":"Hello! How can I help you today? I'm an AI assistant that can answer questions and help with various tasks. Feel free to ask me anything you'd like to know or discuss!","logprobs":[]},"sequence_number":46}
+
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","status":"completed","content":[{"type":"output_text","text":"Hello! How can I help you today? I'm an AI assistant that can answer questions and help with various tasks. Feel free to ask me anything you'd like to know or discuss!","annotations":[],"logprobs":[]}],"id":"msg_item1","role":"assistant"},"sequence_number":47}
+
+data: {"type":"response.reasoning_text.done","output_index":0,"item_id":"rs_item1","content_index":0,"text":"The user has just sent a greeting message \"hi\". This is a simple salutation and doesn't contain any explicit request to test tool calling or any other specific tool-related query. None of the available tools (just \"ping\" in this case) are relevant for this simple greeting.","sequence_number":48}
+
+data: {"type":"response.content_part.done","item_id":"rs_item1","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":"The user has just sent a greeting message \"hi\". This is a simple salutation and doesn't contain any explicit request to test tool calling or any other specific tool-related query. None of the available tools (just \"ping\" in this case) are relevant for this simple greeting."},"sequence_number":49}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_item1","summary":[],"content":[{"type":"reasoning_text","text":"The user has just sent a greeting message \"hi\". This is a simple salutation and doesn't contain any explicit request to test tool calling or any other specific tool-related query. None of the available tools (just \"ping\" in this case) are relevant for this simple greeting."}]},"sequence_number":50}
+
+data: {"type":"response.completed","response":{"object":"response","id":"gen-1","created_at":1768762016,"completed_at":1768762018,"model":"anthropic/claude-3.7-sonnet:thinking","status":"completed","output":[{"type":"reasoning","id":"rs_item1","summary":[],"content":[{"type":"reasoning_text","text":"The user has just sent a greeting message \"hi\". This is a simple salutation and doesn't contain any explicit request to test tool calling or any other specific tool-related query. None of the available tools (just \"ping\" in this case) are relevant for this simple greeting."}],"signature":"ErkBCkoICxACGAIiQDUj3a1ZKyYvwK+aKOgbyfVTEXj7Fc3AhrIa/KBzaTTLr5/T26TM4EI1Rl2YL0YQujeBpmJPQebcKVLkAg5bpfcoARIMYxzBrnlY+Cr7fwtnGgy4UnWVrzuUznwU+LQiMDuMJJaO3bC1WGOp9HBrV4puuiYb6SQLsAKYBaPfaqzx0dMQcnLTMe/3RZYjMmMRfyodpDguepMqRXaGGEu4OeegtttMlgjjDQOzMmPKw5kYAg==","format":"anthropic-claude-v1"},{"type":"message","status":"completed","content":[{"type":"output_text","text":"Hello! How can I help you today? I'm an AI assistant that can answer questions and help with various tasks. Feel free to ask me anything you'd like to know or discuss!","annotations":[],"logprobs":[]}],"id":"msg_item2","role":"assistant"}],"output_text":"","error":null,"incomplete_details":null,"usage":{"input_tokens":399,"input_tokens_details":{"cached_tokens":0},"output_tokens":107,"output_tokens_details":{"reasoning_tokens":69},"total_tokens":506,"cost":0.002802,"is_byok":false,"cost_details":{"upstream_inference_cost":null,"upstream_inference_input_cost":0.001197,"upstream_inference_output_cost":0.001605}},"tools":[{"type":"function","name":"ping","description":"Use this tool when the user explicitly asks to test tool calling","strict":false,"parameters":{"type":"object","properties":{},"required":[]}}],"tool_choice":"auto","parallel_tool_calls":true,"max_output_tokens":1536,"temperature":1,"top_p":1,"presence_penalty":0,"frequency_penalty":0,"top_logprobs":0,"max_tool_calls":null,"metadata":{},"background":false,"previous_response_id":null,"service_tier":"auto","truncation":"disabled","store":false,"instructions":null,"text":{"format":{"type":"text"}},"reasoning":{"summary":"detailed"},"safety_identifier":null,"prompt_cache_key":null,"user":null},"sequence_number":51}
+
+data: [DONE]
+

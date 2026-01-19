@@ -110,6 +110,33 @@ data: {"valid":true}
         expect(chunks).toContainEqual({ type: 'thinking', content: 'First,' });
       });
 
+      it('emits thinking content on reasoning_text.delta', () => {
+        const state = createMapperState();
+        state.inReasoningBlock = true;
+        const { chunks } = mapResponsesEventToStreamChunks(
+          {
+            type: 'response.reasoning_text.delta',
+            data: { delta: 'The user has just' },
+          },
+          state
+        );
+        expect(chunks).toContainEqual({ type: 'thinking', content: 'The user has just' });
+      });
+
+      it('emits thinking.start on reasoning_text.delta if not in block', () => {
+        const state = createMapperState();
+        const { chunks, state: newState } = mapResponsesEventToStreamChunks(
+          {
+            type: 'response.reasoning_text.delta',
+            data: { delta: 'Analyzing' },
+          },
+          state
+        );
+        expect(chunks).toContainEqual({ type: 'thinking.start' });
+        expect(chunks).toContainEqual({ type: 'thinking', content: 'Analyzing' });
+        expect(newState.inReasoningBlock).toBe(true);
+      });
+
       it('emits thinking.end on reasoning output_item.done', () => {
         const state = createMapperState();
         state.inReasoningBlock = true;
@@ -396,6 +423,19 @@ data: {"valid":true}
         expect(toolUse.name).toBe('memory');
       }
     });
+
+    it('parses reasoning_text stream (OpenRouter format)', () => {
+      const sseText = fs.readFileSync(
+        path.join(__dirname, 'responses-reasoning-text-stream.txt'),
+        'utf8'
+      );
+      const expectedChunks = JSON.parse(
+        fs.readFileSync(path.join(__dirname, 'responses-reasoning-text-streamChunks.json'), 'utf8')
+      );
+      const chunks = parseSSEToStreamChunks(sseText);
+
+      expect(chunks).toEqual(expectedChunks);
+    });
   });
 
   describe('convertOutputToStreamChunks (Phase 2)', () => {
@@ -534,6 +574,30 @@ data: {"valid":true}
       // Should not have content chunks for user messages
       expect(chunks.filter(c => c.type === 'content')).toHaveLength(0);
     });
+
+    it('converts reasoning_text content to thinking chunks (OpenRouter format)', () => {
+      const messageJson = fs.readFileSync(
+        path.join(__dirname, 'responses-reasoning-text-message.json'),
+        'utf8'
+      );
+      const output = JSON.parse(messageJson);
+      const chunks = convertOutputToStreamChunks(output);
+
+      // Should have thinking chunks from reasoning_text content
+      expect(chunks.filter(c => c.type === 'thinking.start').length).toBe(1);
+      expect(chunks.filter(c => c.type === 'thinking.end').length).toBe(1);
+
+      // Should have the reasoning content
+      const thinkingChunk = chunks.find(c => c.type === 'thinking');
+      expect(thinkingChunk).toBeDefined();
+      if (thinkingChunk && thinkingChunk.type === 'thinking') {
+        expect(thinkingChunk.content).toContain('user has just sent a greeting');
+      }
+
+      // Should have content chunks
+      expect(chunks.filter(c => c.type === 'content.start').length).toBe(1);
+      expect(chunks.filter(c => c.type === 'content.end').length).toBe(1);
+    });
   });
 
   describe('full pipeline: streaming (stream.txt � chunks � rendering)', () => {
@@ -586,6 +650,31 @@ data: {"valid":true}
 
       expect(rendering).toEqual(expectedRendering);
     });
+
+    it('generates correct rendering from reasoning_text stream (OpenRouter format)', async () => {
+      const { StreamingContentAssembler } =
+        await import('../../streaming/StreamingContentAssembler');
+
+      const sseText = fs.readFileSync(
+        path.join(__dirname, 'responses-reasoning-text-stream.txt'),
+        'utf8'
+      );
+      const expectedRendering = JSON.parse(
+        fs.readFileSync(
+          path.join(__dirname, 'responses-reasoning-text-renderingContent.json'),
+          'utf8'
+        )
+      );
+
+      const chunks = parseSSEToStreamChunks(sseText);
+      const assembler = new StreamingContentAssembler();
+      for (const chunk of chunks) {
+        assembler.pushChunk(chunk);
+      }
+      const rendering = assembler.finalize();
+
+      expect(rendering).toEqual(expectedRendering);
+    });
   });
 
   describe('full pipeline: non-streaming (message.json � chunks � rendering)', () => {
@@ -623,6 +712,30 @@ data: {"valid":true}
       const expectedRendering = JSON.parse(
         fs.readFileSync(
           path.join(__dirname, 'responses-search-memory-renderingContent.json'),
+          'utf8'
+        )
+      );
+
+      const chunks = convertOutputToStreamChunks(output);
+      const assembler = new StreamingContentAssembler();
+      for (const chunk of chunks) {
+        assembler.pushChunk(chunk);
+      }
+      const rendering = assembler.finalize();
+
+      expect(rendering).toEqual(expectedRendering);
+    });
+
+    it('generates correct rendering from reasoning_text message (OpenRouter format)', async () => {
+      const { StreamingContentAssembler } =
+        await import('../../streaming/StreamingContentAssembler');
+
+      const output = JSON.parse(
+        fs.readFileSync(path.join(__dirname, 'responses-reasoning-text-message.json'), 'utf8')
+      );
+      const expectedRendering = JSON.parse(
+        fs.readFileSync(
+          path.join(__dirname, 'responses-reasoning-text-renderingContent.json'),
           'utf8'
         )
       );

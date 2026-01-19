@@ -1,0 +1,177 @@
+[
+  {
+    "type": "thinking.start"
+  },
+  {
+    "type": "thinking",
+    "content": "The"
+  },
+  {
+    "type": "thinking",
+    "content": " user has just"
+  },
+  {
+    "type": "thinking",
+    "content": " sent a greeting message \""
+  },
+  {
+    "type": "thinking",
+    "content": "hi\". This is a"
+  },
+  {
+    "type": "thinking",
+    "content": " simple"
+  },
+  {
+    "type": "thinking",
+    "content": " sal"
+  },
+  {
+    "type": "thinking",
+    "content": "utation an"
+  },
+  {
+    "type": "thinking",
+    "content": "d doesn't contain"
+  },
+  {
+    "type": "thinking",
+    "content": " any explicit"
+  },
+  {
+    "type": "thinking",
+    "content": " request"
+  },
+  {
+    "type": "thinking",
+    "content": " to"
+  },
+  {
+    "type": "thinking",
+    "content": " test"
+  },
+  {
+    "type": "thinking",
+    "content": " tool"
+  },
+  {
+    "type": "thinking",
+    "content": " calling or"
+  },
+  {
+    "type": "thinking",
+    "content": " any other"
+  },
+  {
+    "type": "thinking",
+    "content": " specific tool"
+  },
+  {
+    "type": "thinking",
+    "content": "-"
+  },
+  {
+    "type": "thinking",
+    "content": "related query"
+  },
+  {
+    "type": "thinking",
+    "content": ". None"
+  },
+  {
+    "type": "thinking",
+    "content": " of the available"
+  },
+  {
+    "type": "thinking",
+    "content": " tools (just"
+  },
+  {
+    "type": "thinking",
+    "content": " \"ping\" in this"
+  },
+  {
+    "type": "thinking",
+    "content": " case) are"
+  },
+  {
+    "type": "thinking",
+    "content": " relevant for this simple greeting"
+  },
+  {
+    "type": "thinking",
+    "content": "."
+  },
+  {
+    "type": "content.start"
+  },
+  {
+    "type": "content",
+    "content": "Hello"
+  },
+  {
+    "type": "content",
+    "content": "! How"
+  },
+  {
+    "type": "content",
+    "content": " can I help you today"
+  },
+  {
+    "type": "content",
+    "content": "? I'm an"
+  },
+  {
+    "type": "content",
+    "content": " AI assistant that"
+  },
+  {
+    "type": "content",
+    "content": " can answer"
+  },
+  {
+    "type": "content",
+    "content": " questions an"
+  },
+  {
+    "type": "content",
+    "content": "d help with various tasks."
+  },
+  {
+    "type": "content",
+    "content": " Feel"
+  },
+  {
+    "type": "content",
+    "content": " free to ask me anything"
+  },
+  {
+    "type": "content",
+    "content": " you'd like to know"
+  },
+  {
+    "type": "content",
+    "content": " or"
+  },
+  {
+    "type": "content",
+    "content": " discuss"
+  },
+  {
+    "type": "content",
+    "content": "!"
+  },
+  {
+    "type": "content.end"
+  },
+  {
+    "type": "thinking.end"
+  },
+  {
+    "type": "token_usage",
+    "inputTokens": 399,
+    "outputTokens": 107,
+    "cacheReadTokens": 0,
+    "reasoningTokens": 69
+  }
+]

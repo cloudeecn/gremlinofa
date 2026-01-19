@@ -1,0 +1,20 @@
+[
+  {
+    "category": "backstage",
+    "blocks": [
+      {
+        "type": "thinking",
+        "thinking": "The user has just sent a greeting message \"hi\". This is a simple salutation and doesn't contain any explicit request to test tool calling or any other specific tool-related query. None of the available tools (just \"ping\" in this case) are relevant for this simple greeting."
+      }
+    ]
+  },
+  {
+    "category": "text",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "Hello! How can I help you today? I'm an AI assistant that can answer questions and help with various tasks. Feel free to ask me anything you'd like to know or discuss!"
+      }
+    ]
+  }
+]

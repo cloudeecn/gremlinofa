@@ -312,30 +312,32 @@ describe('clientSideTools', () => {
       toolRegistry.unregister('tool_no_prompt');
     });
 
-    it('should return system prompts for enabled tools without apiOverrides', () => {
-      const prompts = toolRegistry.getSystemPrompts('chatgpt', ['tool_with_prompt']);
+    it('should return system prompts for enabled tools without apiOverrides', async () => {
+      const prompts = await toolRegistry.getSystemPrompts('chatgpt', ['tool_with_prompt']);
       expect(prompts).toEqual(['You have access to tool_with_prompt for testing.']);
     });
 
-    it('should skip tools without systemPrompt defined', () => {
-      const prompts = toolRegistry.getSystemPrompts('chatgpt', ['tool_no_prompt']);
+    it('should skip tools without systemPrompt defined', async () => {
+      const prompts = await toolRegistry.getSystemPrompts('chatgpt', ['tool_no_prompt']);
       expect(prompts).toEqual([]);
     });
 
-    it('should skip tools that use apiOverrides for the current API type', () => {
+    it('should skip tools that use apiOverrides for the current API type', async () => {
       // For Anthropic, tool_with_prompt_override has an override - should skip its prompt
-      const prompts = toolRegistry.getSystemPrompts('anthropic', ['tool_with_prompt_override']);
+      const prompts = await toolRegistry.getSystemPrompts('anthropic', [
+        'tool_with_prompt_override',
+      ]);
       expect(prompts).toEqual([]);
     });
 
-    it('should include prompt when apiOverrides does not apply to current API type', () => {
+    it('should include prompt when apiOverrides does not apply to current API type', async () => {
       // For ChatGPT, tool_with_prompt_override has no override - should include its prompt
-      const prompts = toolRegistry.getSystemPrompts('chatgpt', ['tool_with_prompt_override']);
+      const prompts = await toolRegistry.getSystemPrompts('chatgpt', ['tool_with_prompt_override']);
       expect(prompts).toEqual(['This prompt should be skipped for Anthropic.']);
     });
 
-    it('should return multiple prompts for multiple enabled tools', () => {
-      const prompts = toolRegistry.getSystemPrompts('chatgpt', [
+    it('should return multiple prompts for multiple enabled tools', async () => {
+      const prompts = await toolRegistry.getSystemPrompts('chatgpt', [
         'tool_with_prompt',
         'tool_with_prompt_override',
       ]);
@@ -344,15 +346,15 @@ describe('clientSideTools', () => {
       expect(prompts).toContain('This prompt should be skipped for Anthropic.');
     });
 
-    it('should return empty array when no tools are enabled', () => {
-      const prompts = toolRegistry.getSystemPrompts('chatgpt', []);
+    it('should return empty array when no tools are enabled', async () => {
+      const prompts = await toolRegistry.getSystemPrompts('chatgpt', []);
       // ping is alwaysEnabled but has no systemPrompt, so still empty
       expect(prompts).toEqual([]);
     });
 
-    it('should include alwaysEnabled tools if they have systemPrompt', () => {
+    it('should include alwaysEnabled tools if they have systemPrompt', async () => {
       // ping is alwaysEnabled but has no systemPrompt
-      const prompts = toolRegistry.getSystemPrompts('anthropic', []);
+      const prompts = await toolRegistry.getSystemPrompts('anthropic', []);
       expect(prompts).toEqual([]);
     });
   });

@@ -3,7 +3,11 @@ import Mustache from 'mustache';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
 import { executeClientSideTool } from '../services/tools/clientSideTools';
-import { initMemoryTool, disposeMemoryTool } from '../services/tools/memoryTool';
+import {
+  initMemoryTool,
+  disposeMemoryTool,
+  setMemoryUseSystemPrompt,
+} from '../services/tools/memoryTool';
 import { initFsTool, disposeFsTool } from '../services/tools/fsTool';
 import { initJsTool, disposeJsTool } from '../services/tools/jsTool';
 import {
@@ -465,6 +469,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       // 3c. Initialize memory tool if enabled
       if (loadedProject.memoryEnabled) {
         console.debug('[useChat] Initializing memory tool for project:', loadedProject.id);
+        // Set system prompt mode before initializing
+        setMemoryUseSystemPrompt(loadedProject.id, loadedProject.memoryUseSystemPrompt ?? false);
         await initMemoryTool(loadedProject.id);
         if (isCancelled) return;
       }

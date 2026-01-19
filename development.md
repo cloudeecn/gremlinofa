@@ -398,7 +398,9 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   - **Anthropic**: `{ name, description, input_schema }` or custom override
   - **OpenAI/Responses**: `{ type: 'function', function: { name, description, parameters } }`
 - `ping` tool included for testing tool infrastructure ("test tool calling" → pong), marked `alwaysEnabled: true`
-- `memory` tool provides persistent virtual filesystem (see Memory Tool section below), dynamically registered/unregistered per project; uses Anthropic's `memory_20250818` shorthand via `apiOverrides`
+- `memory` tool provides persistent virtual filesystem (see Memory Tool section below), dynamically registered/unregistered per project; two modes:
+  - **Native mode (default)**: Uses Anthropic's `memory_20250818` shorthand via `apiOverrides`
+  - **System prompt mode**: Injects memory listing + README.md into system prompt (toggle in Project Settings)
 - Agentic loop in `useChat.ts` handles `stop_reason: 'tool_use'`:
   1. Extract `tool_use` blocks from `fullContent`
   2. Execute client-side tools locally

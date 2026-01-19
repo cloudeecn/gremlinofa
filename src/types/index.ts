@@ -190,6 +190,7 @@ export interface Project {
 
   // Memory tool
   memoryEnabled?: boolean;
+  memoryUseSystemPrompt?: boolean; // Use system prompt injection instead of native memory tool (Anthropic)
   // JavaScript execution tool
   jsExecutionEnabled?: boolean;
   jsLibEnabled?: boolean; // Auto-load /lib/*.js scripts when JS session starts
@@ -342,6 +343,14 @@ export interface ToolResult {
   isError?: boolean;
 }
 
+/** Context passed to system prompt functions for dynamic generation */
+export interface SystemPromptContext {
+  projectId: string;
+  chatId: string;
+  apiDefinitionId: string;
+  modelId: string;
+}
+
 export interface ClientSideTool {
   name: string;
   description: string;
@@ -355,8 +364,8 @@ export interface ClientSideTool {
   apiOverrides?: Partial<APIToolOverrides>;
   /** Tools with alwaysEnabled: true are included regardless of enabledTools list */
   alwaysEnabled?: boolean;
-  /** System prompt to inject when tool is enabled. Skipped if apiOverrides is used for the current API type. */
-  systemPrompt?: string;
+  /** System prompt to inject when tool is enabled. Can be a string or async function. Skipped if apiOverrides is used for the current API type. */
+  systemPrompt?: string | ((context: SystemPromptContext) => Promise<string> | string);
   /** Transform tool input for display in tool_use blocks. Default: JSON.stringify */
   renderInput?: (input: Record<string, unknown>) => string;
   /** Transform tool output for display in tool_result blocks. Default: show raw content */

@@ -7,7 +7,6 @@
  * Key features:
  * - Async methods return promises resolved during event loop processing
  * - Readonly paths enforcement (/memories is readonly)
- * - Directory creation via .newdir marker file
  * - Aliased to globalThis.fs and globalThis.__fs
  */
 
@@ -17,9 +16,6 @@ import { VfsError, normalizePath } from '../../vfs/vfsService';
 
 /** Readonly paths - any write/delete to these paths throws EROFS */
 const READONLY_PATHS = ['/memories'];
-
-/** Marker file for directories created via fs.mkdir */
-const DIR_MARKER = '.newdir';
 
 /** Pending fs operation to be resolved during event loop */
 export interface PendingFsOp {
@@ -244,7 +240,6 @@ export class FsBridge {
     existsFn.dispose();
 
     // fs.mkdir(path) -> Promise<void>
-    // Creates a directory by creating a .newdir marker file inside it
     const mkdirFn = this.context.newFunction('mkdir', (pathHandle: QuickJSHandle) => {
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
@@ -253,18 +248,10 @@ export class FsBridge {
           return { ok: false, error: `EROFS: read-only file system, mkdir '${path}'` };
         }
         try {
-          const normalized = normalizePath(path);
-          const markerPath = `${normalized}/${DIR_MARKER}`;
-
-          // Create the marker file (vfs.createFile will create parent dirs)
-          await vfs.createFile(this.projectId, markerPath, '');
+          await vfs.mkdir(this.projectId, path);
           return { ok: true, value: undefined };
         } catch (error) {
           if (error instanceof VfsError) {
-            // FILE_EXISTS on marker means dir exists
-            if (error.code === 'FILE_EXISTS') {
-              return { ok: false, error: `EEXIST: file already exists, '${path}'` };
-            }
             return { ok: false, error: vfsErrorToErrno(error, path) };
           }
           throw error;
@@ -280,8 +267,7 @@ export class FsBridge {
       return this.queueOp(async () => {
         try {
           const entries = await vfs.readDir(this.projectId, path);
-          // Filter out .newdir marker files
-          const names = entries.filter(e => e.name !== DIR_MARKER).map(e => e.name);
+          const names = entries.map(e => e.name);
           return { ok: true, value: names };
         } catch (error) {
           if (error instanceof VfsError) {

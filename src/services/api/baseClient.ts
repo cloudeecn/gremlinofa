@@ -94,7 +94,7 @@ export type StreamChunk =
 export interface StreamResult<T> {
   textContent: string; // Pure text for display & cross-model compatibility
   thinkingContent?: string; // Pure text for display (used during streaming only)
-  fullContent: T; // Provider-specific blocks (Anthropic: ContentBlock[], OpenAI: [{type:'text',text:string}])
+  fullContent: T; // Provider-specific blocks (Anthropic: ContentBlock[], ChatCompletions: {role,content,tool_calls?,refusal})
   stopReason?: string; // Why the response ended (end_turn, max_tokens, etc.)
   error?: {
     message: string;

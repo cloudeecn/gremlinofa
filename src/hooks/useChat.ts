@@ -2,7 +2,6 @@ import { useEffect, useState, useMemo, useCallback } from 'react';
 import Mustache from 'mustache';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
-import { executeClientSideTool } from '../services/tools/clientSideTools';
 import {
   initMemoryTool,
   disposeMemoryTool,
@@ -12,7 +11,8 @@ import { initFsTool, disposeFsTool } from '../services/tools/fsTool';
 import { initJsTool, disposeJsTool } from '../services/tools/jsTool';
 import {
   runAgenticLoop,
-  createToolResultRenderBlock,
+  executeToolsAndBuildPendingMessage,
+  buildErrorToolResultPendingMessage,
   type AgenticLoopContext,
   type AgenticLoopCallbacks,
   type PendingMessage,
@@ -22,10 +22,10 @@ import type {
   Chat,
   Message,
   MessageAttachment,
+  Model,
   Project,
   RenderingBlockGroup,
   TokenUsage,
-  ToolResultBlock,
   ToolUseBlock,
 } from '../types';
 import type { ToolResultRenderBlock } from '../types/content';
@@ -149,6 +149,103 @@ function generateMessageWithMetadata(
  */
 function stripMetadata(content: string): string {
   return content.replace(/^<metadata>.*?<\/metadata>\s*/s, '');
+}
+
+/**
+ * Parameters for preparing and sending a user message via the agentic loop.
+ */
+interface PrepareAndSendParams {
+  messageText: string;
+  attachments?: MessageAttachment[];
+  chatId: string;
+  chat: Chat;
+  project: Project;
+  apiDef: APIDefinition;
+  model: Model | undefined;
+  effectiveModelId: string;
+  currentMessages: Message<unknown>[];
+  loopCallbacks: AgenticLoopCallbacks;
+  /** Messages to send before the user message (e.g., tool results) */
+  prependPendingMessages?: PendingMessage[];
+}
+
+/**
+ * Prepare a user message (with metadata, attachments) and run the agentic loop.
+ * Shared logic for sendMessage, resolvePendingToolCalls, and pendingState handling.
+ */
+async function prepareAndSendUserMessage(params: PrepareAndSendParams): Promise<void> {
+  const {
+    messageText,
+    attachments,
+    chatId,
+    chat,
+    project,
+    apiDef,
+    model,
+    effectiveModelId,
+    currentMessages,
+    loopCallbacks,
+    prependPendingMessages = [],
+  } = params;
+
+  // Generate message with metadata/template applied
+  const firstMessageTimestamp =
+    currentMessages.length > 0 ? currentMessages[0].timestamp : undefined;
+  const messageWithMetadata = generateMessageWithMetadata(
+    messageText,
+    project,
+    chat,
+    effectiveModelId,
+    firstMessageTimestamp
+  );
+
+  // Extract attachment IDs if any
+  const attachmentIds = attachments?.map(att => att.id) || [];
+
+  // Create user message
+  const userMessage: Message<string> = {
+    id: generateUniqueId('msg_user'),
+    role: 'user',
+    content: {
+      type: 'text',
+      content: messageWithMetadata,
+      renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: messageText }] }],
+      ...(attachmentIds.length > 0 && {
+        attachmentIds,
+        originalAttachmentCount: attachmentIds.length,
+      }),
+    },
+    timestamp: new Date(),
+  };
+
+  // Save attachments if any
+  if (attachments && attachments.length > 0) {
+    console.debug(
+      `[useChat] Saving ${attachments.length} attachments for message ${userMessage.id}`
+    );
+    for (const attachment of attachments) {
+      await storage.saveAttachment(userMessage.id, attachment);
+    }
+  }
+
+  // Build context for agentic loop
+  const context: AgenticLoopContext = {
+    chatId,
+    chat,
+    project,
+    apiDef,
+    modelId: effectiveModelId,
+    model,
+    currentMessages,
+  };
+
+  // Combine prepended messages with user message
+  const pending: PendingMessage[] = [
+    ...prependPendingMessages,
+    { type: 'user', message: userMessage },
+  ];
+
+  await runAgenticLoop(context, pending, loopCallbacks);
 }
 
 /**
@@ -531,57 +628,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
             const effectiveModelId = updatedChat.modelId ?? loadedProject.modelId;
             if (effectiveModelId) {
-              // Generate message with metadata/template applied
-              const firstMessageTimestamp =
-                loadedMessages.length > 0 ? loadedMessages[0].timestamp : undefined;
-              const messageWithMetadata = generateMessageWithMetadata(
-                messageText,
-                loadedProject,
-                updatedChat,
-                effectiveModelId,
-                firstMessageTimestamp
-              );
-
-              // Extract attachment IDs if any
-              const attachmentIds = attachments?.map(att => att.id) || [];
-
-              // Create user message
-              const userMessage: Message<string> = {
-                id: generateUniqueId('msg_user'),
-                role: 'user',
-                content: {
-                  type: 'text',
-                  content: messageWithMetadata,
-                  renderingContent: [
-                    { category: 'text', blocks: [{ type: 'text', text: messageText }] },
-                  ],
-                  ...(attachmentIds.length > 0 && {
-                    attachmentIds,
-                    originalAttachmentCount: attachmentIds.length,
-                  }),
-                },
-                timestamp: new Date(),
-              };
-
-              // Save attachments if any
-              if (attachments && attachments.length > 0) {
-                for (const attachment of attachments) {
-                  await storage.saveAttachment(userMessage.id, attachment);
-                }
-              }
-
               const model = await storage.getModel(loadedApiDef.id, effectiveModelId);
-
-              // Build context for agentic loop using loaded variables (not React state)
-              const context: AgenticLoopContext = {
-                chatId,
-                chat: updatedChat,
-                project: loadedProject,
-                apiDef: loadedApiDef,
-                modelId: effectiveModelId,
-                model,
-                currentMessages: loadedMessages,
-              };
 
               // Build callbacks that update React state
               const loopCallbacks: AgenticLoopCallbacks = {
@@ -613,9 +660,19 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
                 onError: (error: Error) => console.error('[useChat] Loop error:', error),
               };
 
-              // Run the agentic loop with the user message
-              const pendingMessage: PendingMessage = { type: 'user', message: userMessage };
-              runAgenticLoop(context, [pendingMessage], loopCallbacks);
+              // Use shared helper for message preparation and loop invocation
+              prepareAndSendUserMessage({
+                messageText,
+                attachments,
+                chatId,
+                chat: updatedChat,
+                project: loadedProject,
+                apiDef: loadedApiDef,
+                model,
+                effectiveModelId,
+                currentMessages: loadedMessages,
+                loopCallbacks,
+              });
             }
           }
         } else if (loadedChat.pendingState.type === 'forkMessage') {
@@ -754,61 +811,20 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       return;
     }
 
-    // Generate message with metadata/template applied
-    const firstMessageTimestamp = messages.length > 0 ? messages[0].timestamp : undefined;
-    const messageWithMetadata = generateMessageWithMetadata(
-      messageText,
-      project,
-      chat,
-      effectiveModelId,
-      firstMessageTimestamp
-    );
-
-    // Extract attachment IDs if any
-    const attachmentIds = attachments?.map(att => att.id) || [];
-
-    // Create user message
-    const userMessage: Message<string> = {
-      id: generateUniqueId('msg_user'),
-      role: 'user',
-      content: {
-        type: 'text',
-        content: messageWithMetadata,
-        renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: messageText }] }],
-        ...(attachmentIds.length > 0 && {
-          attachmentIds,
-          originalAttachmentCount: attachmentIds.length,
-        }),
-      },
-      timestamp: new Date(),
-    };
-
-    // Save attachments if any
-    if (attachments && attachments.length > 0) {
-      console.debug(
-        `[useChat] Saving ${attachments.length} attachments for message ${userMessage.id}`
-      );
-      for (const attachment of attachments) {
-        await storage.saveAttachment(userMessage.id, attachment);
-      }
-    }
-
     const model = await storage.getModel(apiDefinition.id, effectiveModelId);
 
-    // Build context for agentic loop
-    const context: AgenticLoopContext = {
+    await prepareAndSendUserMessage({
+      messageText,
+      attachments,
       chatId,
       chat,
       project,
       apiDef: apiDefinition,
-      modelId: effectiveModelId,
       model,
+      effectiveModelId,
       currentMessages: messages,
-    };
-
-    // Run the agentic loop with the user message
-    const pendingMessage: PendingMessage = { type: 'user', message: userMessage };
-    await runAgenticLoop(context, [pendingMessage], buildLoopCallbacks());
+      loopCallbacks: buildLoopCallbacks(),
+    });
   };
 
   const editMessage = async (incomingChatId: string, messageId: string, _content: string) => {
@@ -936,113 +952,42 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     const effectiveModelId = chat.modelId ?? project.modelId;
     if (!effectiveModelId) return;
 
-    // Build pending messages for the agentic loop
-    const pending: PendingMessage[] = [];
-
-    // Create tool results based on mode
-    const toolResults: ToolResultBlock[] = [];
-    const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
-
-    if (mode === 'stop') {
-      // Create error responses for all unresolved tool calls
-      for (const toolUse of unresolvedToolCalls) {
-        const errorContent = 'Token limit reached, ask user to continue';
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: toolUse.id,
-          content: errorContent,
-          is_error: true,
-        });
-        toolResultRenderBlocks.push(
-          createToolResultRenderBlock(toolUse.id, toolUse.name, errorContent, true)
-        );
-      }
-    } else {
-      // Execute tools and collect results (JS session managed by agentic loop)
-      for (const toolUse of unresolvedToolCalls) {
-        console.debug('[useChat] Executing tool:', toolUse.name, 'id:', toolUse.id);
-        const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: toolUse.id,
-          content: toolResult.content,
-          is_error: toolResult.isError,
-        });
-        toolResultRenderBlocks.push(
-          createToolResultRenderBlock(
-            toolUse.id,
-            toolUse.name,
-            toolResult.content,
-            toolResult.isError
-          )
-        );
-      }
-    }
-
-    // Build tool result message using API-specific format
-    const toolResultMessage = apiService.buildToolResultMessage(apiDefinition.apiType, toolResults);
-
-    // Add rendering content to tool result message
-    toolResultMessage.content.renderingContent = [
-      { category: 'backstage' as const, blocks: toolResultRenderBlocks },
-    ];
-
-    pending.push({ type: 'tool_result', message: toolResultMessage });
-
-    // Optional user message after tool results
-    if (userMessage?.trim() || attachments?.length) {
-      const messageText = userMessage?.trim() || '';
-      const firstMessageTimestamp = messages.length > 0 ? messages[0].timestamp : undefined;
-      const messageWithMetadata = generateMessageWithMetadata(
-        messageText,
-        project,
-        chat,
-        effectiveModelId,
-        firstMessageTimestamp
-      );
-
-      const attachmentIds = attachments?.map(att => att.id) || [];
-
-      const userMsg: Message<string> = {
-        id: generateUniqueId('msg_user'),
-        role: 'user',
-        content: {
-          type: 'text',
-          content: messageWithMetadata,
-          renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: messageText }] }],
-          ...(attachmentIds.length > 0 && {
-            attachmentIds,
-            originalAttachmentCount: attachmentIds.length,
-          }),
-        },
-        timestamp: new Date(),
-      };
-
-      // Save attachments if any
-      if (attachments && attachments.length > 0) {
-        for (const attachment of attachments) {
-          await storage.saveAttachment(userMsg.id, attachment);
-        }
-      }
-
-      pending.push({ type: 'user', message: userMsg });
-    }
+    // Build tool result message based on mode
+    const toolResultPending =
+      mode === 'stop'
+        ? buildErrorToolResultPendingMessage(apiDefinition.apiType, unresolvedToolCalls)
+        : await executeToolsAndBuildPendingMessage(apiDefinition.apiType, unresolvedToolCalls);
 
     const model = await storage.getModel(apiDefinition.id, effectiveModelId);
 
-    // Build context for agentic loop
-    const context: AgenticLoopContext = {
-      chatId: chat.id,
-      chat,
-      project,
-      apiDef: apiDefinition,
-      modelId: effectiveModelId,
-      model,
-      currentMessages: messages,
-    };
-
-    // Run the agentic loop - handles both 'stop' and 'continue' modes
-    await runAgenticLoop(context, pending, buildLoopCallbacks());
+    // If user message provided, use shared helper with tool results prepended
+    if (userMessage?.trim() || attachments?.length) {
+      await prepareAndSendUserMessage({
+        messageText: userMessage?.trim() || '',
+        attachments,
+        chatId: chat.id,
+        chat,
+        project,
+        apiDef: apiDefinition,
+        model,
+        effectiveModelId,
+        currentMessages: messages,
+        loopCallbacks: buildLoopCallbacks(),
+        prependPendingMessages: [toolResultPending],
+      });
+    } else {
+      // No user message - run loop with tool results only
+      const context: AgenticLoopContext = {
+        chatId: chat.id,
+        chat,
+        project,
+        apiDef: apiDefinition,
+        modelId: effectiveModelId,
+        model,
+        currentMessages: messages,
+      };
+      await runAgenticLoop(context, [toolResultPending], buildLoopCallbacks());
+    }
   };
 
   return {

@@ -7,6 +7,17 @@ import OpenAI from 'openai';
 // Mock OpenAI SDK
 vi.mock('openai');
 
+// Mock storage module (sendMessageStream calls storage.getModel for reasoning config)
+// Use vi.hoisted() since vi.mock is hoisted to the top of the file
+const { mockGetModel } = vi.hoisted(() => ({
+  mockGetModel: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../../storage', () => ({
+  storage: {
+    getModel: mockGetModel,
+  },
+}));
+
 describe('ResponsesClient', () => {
   let client: ResponsesClient;
   let mockApiDefinition: APIDefinition;
@@ -211,6 +222,13 @@ describe('ResponsesClient', () => {
     });
 
     it('should use non-streaming when disableStream is true', async () => {
+      // Mock model with supported reasoning efforts
+      mockGetModel.mockResolvedValueOnce({
+        id: 'o3-mini',
+        apiType: 'responses_api',
+        supportedReasoningEfforts: ['low', 'medium', 'high'],
+      });
+
       const messages: Message<any>[] = [
         {
           id: 'msg1',

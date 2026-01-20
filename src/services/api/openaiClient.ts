@@ -27,6 +27,11 @@ import {
   mapCompletionChunkToStreamChunks,
 } from './completionStreamMapper';
 import { getModelMetadataFor } from './modelMetadata';
+import { storage } from '../storage';
+import {
+  populateFromOpenRouterModel,
+  type OpenRouterModel,
+} from './model_metadatas/openRouterModelMapper';
 
 export class OpenAIClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
@@ -39,6 +44,7 @@ export class OpenAIClient implements APIClient {
 
     // Get all models from the API
     const modelsResponse = await client.models.list();
+    console.debug(`Models for ${apiDefinition.name}:`, modelsResponse);
 
     // Filter for chat completion models
     // Only filter for OpenAI (no custom baseUrl) to show gpt-* and o* models
@@ -91,10 +97,14 @@ export class OpenAIClient implements APIClient {
     });
 
     // Convert OpenAI models to our Model format
-    const models: Model[] = chatModels.map(openaiModel =>
-      getModelMetadataFor(apiDefinition, openaiModel.id)
-    );
-
+    const models: Model[] = chatModels.map(rawModel => {
+      // Start with hardcoded knowledge as base
+      const model = getModelMetadataFor(apiDefinition, rawModel.id);
+      // Overlay OpenRouter-specific fields if present
+      populateFromOpenRouterModel(model, rawModel as unknown as OpenRouterModel);
+      return model;
+    });
+    console.debug(`Argumented models for ${apiDefinition.name}:`, models);
     return models;
   }
 
@@ -263,7 +273,7 @@ export class OpenAIClient implements APIClient {
       }
 
       // Get model metadata for reasoning configuration
-      const model = getModelMetadataFor(apiDefinition, modelId);
+      const model = await storage.getModel(apiDefinition.id, modelId);
       this.applyReasoning(requestParams, options, model);
 
       // Track token usage and finish reason

@@ -4,38 +4,8 @@ import { type ClientSideTool, type ToolResult } from '../../../types';
 
 describe('clientSideTools', () => {
   describe('toolRegistry', () => {
-    it('should have ping tool registered by default', () => {
-      const tool = toolRegistry.get('ping');
-      expect(tool).toBeDefined();
-      expect(tool?.name).toBe('ping');
-    });
-
-    it('should identify ping as a client-side tool', () => {
-      expect(toolRegistry.isClientSideTool('ping')).toBe(true);
-    });
-
     it('should not identify unknown tools as client-side', () => {
       expect(toolRegistry.isClientSideTool('unknown_tool')).toBe(false);
-    });
-
-    it('should return all registered tools', () => {
-      const tools = toolRegistry.getAll();
-      expect(tools.length).toBeGreaterThanOrEqual(1);
-      expect(tools.some(t => t.name === 'ping')).toBe(true);
-    });
-
-    it('should return tool definitions for API', () => {
-      const definitions = toolRegistry.getToolDefinitions();
-      expect(definitions.length).toBeGreaterThanOrEqual(1);
-
-      const pingDef = definitions.find(d => d.name === 'ping');
-      expect(pingDef).toBeDefined();
-      expect(pingDef?.description).toContain('test tool calling');
-      expect(pingDef?.input_schema).toEqual({
-        type: 'object',
-        properties: {},
-        required: [],
-      });
     });
 
     it('should allow registering custom tools', () => {
@@ -60,12 +30,6 @@ describe('clientSideTools', () => {
   });
 
   describe('executeClientSideTool', () => {
-    it('should execute ping tool and return pong', async () => {
-      const result = await executeClientSideTool('ping', {});
-      expect(result.content).toBe('pong');
-      expect(result.isError).toBeUndefined();
-    });
-
     it('should return error for unknown tool', async () => {
       const result = await executeClientSideTool('nonexistent_tool', {});
       expect(result.content).toContain('Unknown tool');
@@ -91,33 +55,6 @@ describe('clientSideTools', () => {
     });
   });
 
-  describe('ping tool', () => {
-    it('should have correct description for tool calling', () => {
-      const tool = toolRegistry.get('ping');
-      expect(tool?.description).toContain('user explicitly asks');
-      expect(tool?.description).toContain('test tool calling');
-    });
-
-    it('should have empty input schema', () => {
-      const tool = toolRegistry.get('ping');
-      expect(tool?.inputSchema.properties).toEqual({});
-      expect(tool?.inputSchema.required).toEqual([]);
-    });
-
-    it('should execute correctly via direct call', async () => {
-      const tool = toolRegistry.get('ping');
-      expect(tool).toBeDefined();
-
-      const result = await tool!.execute({});
-      expect(result.content).toBe('pong');
-    });
-
-    it('should be marked as alwaysEnabled', () => {
-      const tool = toolRegistry.get('ping');
-      expect(tool?.alwaysEnabled).toBe(true);
-    });
-  });
-
   describe('getToolDefinitionsForAPI', () => {
     const testTool: ClientSideTool = {
       name: 'test_api_tool',
@@ -139,10 +76,9 @@ describe('clientSideTools', () => {
       toolRegistry.unregister('tool_with_override');
     });
 
-    it('should always include alwaysEnabled tools (ping)', () => {
+    it('should return empty array when no tools are enabled', () => {
       const defs = toolRegistry.getToolDefinitionsForAPI('anthropic', []);
-      const pingDef = defs.find(d => (d as { name?: string }).name === 'ping');
-      expect(pingDef).toBeDefined();
+      expect(defs).toEqual([]);
     });
 
     it('should include explicitly enabled tools', () => {
@@ -348,13 +284,6 @@ describe('clientSideTools', () => {
 
     it('should return empty array when no tools are enabled', async () => {
       const prompts = await toolRegistry.getSystemPrompts('chatgpt', []);
-      // ping is alwaysEnabled but has no systemPrompt, so still empty
-      expect(prompts).toEqual([]);
-    });
-
-    it('should include alwaysEnabled tools if they have systemPrompt', async () => {
-      // ping is alwaysEnabled but has no systemPrompt
-      const prompts = await toolRegistry.getSystemPrompts('anthropic', []);
       expect(prompts).toEqual([]);
     });
   });

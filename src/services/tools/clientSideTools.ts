@@ -176,29 +176,8 @@ class ClientSideToolRegistry {
   }
 }
 
-/**
- * Ping tool - simple test fixture to validate client-side tool infrastructure.
- * User says "test tool calling" → Claude calls ping → client responds pong → Claude reports success.
- */
-const pingTool: ClientSideTool = {
-  name: 'ping',
-  description: 'Use this tool when the user explicitly asks to test tool calling',
-  inputSchema: {
-    type: 'object',
-    properties: {},
-    required: [],
-  },
-  execute: async (): Promise<ToolResult> => {
-    return { content: 'pong' };
-  },
-  alwaysEnabled: true,
-};
-
 // Create and export singleton registry
 export const toolRegistry = new ClientSideToolRegistry();
-
-// Register built-in tools
-toolRegistry.register(pingTool);
 
 /**
  * Execute a client-side tool by name.

@@ -5,6 +5,7 @@ import type {
   Message,
   MessageStopReason,
   Model,
+  ReasoningEffort,
   RenderingBlockGroup,
   ToolResultBlock,
   ToolUseBlock,
@@ -261,7 +262,9 @@ export class OpenAIClient implements APIClient {
         requestParams.tools = [...(requestParams.tools || []), ...clientToolDefs];
       }
 
-      this.applyReasoning(requestParams, options);
+      // Get model metadata for reasoning configuration
+      const model = getModelMetadataFor(apiDefinition, modelId);
+      this.applyReasoning(requestParams, options, model);
 
       // Track token usage and finish reason
       let inputTokens = 0;
@@ -439,72 +442,31 @@ export class OpenAIClient implements APIClient {
     requestParams: ChatCompletionCreateParams,
     options: {
       temperature?: number;
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
-    }
+      reasoningEffort?: ReasoningEffort;
+    },
+    model?: Model
   ) {
-    const modelId = requestParams.model || '';
     const effort = options.reasoningEffort;
 
     if (options.temperature) requestParams.temperature = options.temperature;
 
-    // Non-reasoning models - early return
-    if (modelId.includes('gpt-5') && modelId.includes('-chat')) {
-      return;
-    }
-    if (modelId.startsWith('grok-4') && modelId.includes('non-reasoning')) {
+    // No reasoning support
+    if (model?.reasoningMode === 'none') {
       return;
     }
 
-    // OpenAI o-series: map to low/medium/high
-    if (modelId.startsWith('o')) {
-      const mappedEffort = mapReasoningEffort(effort, ['low', 'medium', 'high'] as const);
-      if (mappedEffort !== undefined) {
-        requestParams.reasoning_effort = mappedEffort;
-      }
+    const supportedEfforts = model?.supportedReasoningEfforts;
+
+    // Model with reasoning but no configurable effort (e.g., grok-4)
+    if (!supportedEfforts || supportedEfforts.length === 0) {
+      // No effort param needed - model always reasons or doesn't support effort config
       return;
     }
 
-    // gpt-5.1/5.2: all efforts supported
-    if (modelId.startsWith('gpt-5.1') || modelId.startsWith('gpt-5.2')) {
-      const mappedEffort = mapReasoningEffort(effort, [
-        'none',
-        'minimal',
-        'low',
-        'medium',
-        'high',
-      ] as const);
-      if (mappedEffort !== undefined) {
-        requestParams.reasoning_effort = mappedEffort;
-      }
-      return;
-    }
-
-    // gpt-5: all except 'none'
-    if (modelId.startsWith('gpt-5')) {
-      const mappedEffort = mapReasoningEffort(effort, [
-        'minimal',
-        'low',
-        'medium',
-        'high',
-      ] as const);
-      if (mappedEffort !== undefined) {
-        requestParams.reasoning_effort = mappedEffort;
-      }
-      return;
-    }
-
-    // xAI grok-3-mini: only low/high
-    if (modelId.startsWith('grok-3-mini')) {
-      const mappedEffort = mapReasoningEffort(effort, ['low', 'high'] as const);
-      if (mappedEffort !== undefined) {
-        requestParams.reasoning_effort = mappedEffort;
-      }
-      return;
-    }
-
-    // xAI grok-4: reasoning-only, no effort param
-    if (modelId.startsWith('grok-4')) {
-      return;
+    // Model with configurable reasoning effort
+    const mappedEffort = mapReasoningEffort(effort, supportedEfforts as ReasoningEffort[]);
+    if (mappedEffort !== undefined) {
+      requestParams.reasoning_effort = mappedEffort;
     }
   }
 

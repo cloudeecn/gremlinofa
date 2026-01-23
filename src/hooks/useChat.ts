@@ -9,14 +9,16 @@ import {
 } from '../services/tools/memoryTool';
 import { initFsTool, disposeFsTool } from '../services/tools/fsTool';
 import { initJsTool, disposeJsTool } from '../services/tools/jsTool';
+import { toolRegistry, executeClientSideTool } from '../services/tools/clientSideTools';
 import {
   runAgenticLoop,
-  executeToolsAndBuildPendingMessage,
-  buildErrorToolResultPendingMessage,
-  type AgenticLoopContext,
-  type AgenticLoopCallbacks,
-  type PendingMessage,
-} from './agenticLoop';
+  createTokenTotals,
+  addTokens,
+  createToolResultRenderBlock,
+  type AgenticLoopOptions,
+  type AgenticLoopEvent,
+  type TokenTotals,
+} from '../services/agentic/agenticLoopGenerator';
 import type {
   APIDefinition,
   Chat,
@@ -27,6 +29,7 @@ import type {
   RenderingBlockGroup,
   TokenUsage,
   ToolUseBlock,
+  ToolResultBlock,
 } from '../types';
 import type { ToolResultRenderBlock } from '../types/content';
 
@@ -152,50 +155,24 @@ function stripMetadata(content: string): string {
 }
 
 /**
- * Parameters for preparing and sending a user message via the agentic loop.
+ * Create and persist a user message with attachments.
+ * Returns the created message (caller is responsible for updating React state).
  */
-interface PrepareAndSendParams {
-  messageText: string;
-  attachments?: MessageAttachment[];
-  chatId: string;
-  chat: Chat;
-  project: Project;
-  apiDef: APIDefinition;
-  model: Model | undefined;
-  effectiveModelId: string;
-  currentMessages: Message<unknown>[];
-  loopCallbacks: AgenticLoopCallbacks;
-  /** Messages to send before the user message (e.g., tool results) */
-  prependPendingMessages?: PendingMessage[];
-}
-
-/**
- * Prepare a user message (with metadata, attachments) and run the agentic loop.
- * Shared logic for sendMessage, resolvePendingToolCalls, and pendingState handling.
- */
-async function prepareAndSendUserMessage(params: PrepareAndSendParams): Promise<void> {
-  const {
-    messageText,
-    attachments,
-    chatId,
-    chat,
-    project,
-    apiDef,
-    model,
-    effectiveModelId,
-    currentMessages,
-    loopCallbacks,
-    prependPendingMessages = [],
-  } = params;
-
+async function createAndSaveUserMessage(
+  chatId: string,
+  messageText: string,
+  project: Project,
+  chat: Chat,
+  modelId: string,
+  firstMessageTimestamp: Date | undefined,
+  attachments?: MessageAttachment[]
+): Promise<Message<string>> {
   // Generate message with metadata/template applied
-  const firstMessageTimestamp =
-    currentMessages.length > 0 ? currentMessages[0].timestamp : undefined;
   const messageWithMetadata = generateMessageWithMetadata(
     messageText,
     project,
     chat,
-    effectiveModelId,
+    modelId,
     firstMessageTimestamp
   );
 
@@ -220,32 +197,232 @@ async function prepareAndSendUserMessage(params: PrepareAndSendParams): Promise<
 
   // Save attachments if any
   if (attachments && attachments.length > 0) {
-    console.debug(
-      `[useChat] Saving ${attachments.length} attachments for message ${userMessage.id}`
-    );
     for (const attachment of attachments) {
       await storage.saveAttachment(userMessage.id, attachment);
     }
   }
 
-  // Build context for agentic loop
-  const context: AgenticLoopContext = {
-    chatId,
-    chat,
-    project,
-    apiDef,
-    modelId: effectiveModelId,
-    model,
-    currentMessages,
+  // Save user message to storage
+  await storage.saveMessage(chatId, userMessage);
+
+  return userMessage;
+}
+
+// ============================================================================
+// Generator-based Agentic Loop Helpers
+// ============================================================================
+
+/**
+ * Build enabled tools list from project settings.
+ */
+function buildEnabledTools(project: Project): string[] {
+  const enabledTools: string[] = [];
+  if (project.memoryEnabled) enabledTools.push('memory');
+  if (project.jsExecutionEnabled) enabledTools.push('javascript');
+  if (project.fsToolEnabled) enabledTools.push('filesystem');
+  return enabledTools;
+}
+
+/**
+ * Build AgenticLoopOptions from Chat/Project.
+ * The generator expects flat options instead of nested entities.
+ */
+async function buildAgenticLoopOptions(
+  chat: Chat,
+  project: Project,
+  apiDef: APIDefinition,
+  model: Model,
+  modelId: string
+): Promise<AgenticLoopOptions> {
+  const enabledTools = buildEnabledTools(project);
+
+  // Build system prompt context
+  const systemPromptContext = {
+    projectId: project.id,
+    chatId: chat.id,
+    apiDefinitionId: apiDef.id,
+    modelId,
   };
 
-  // Combine prepended messages with user message
-  const pending: PendingMessage[] = [
-    ...prependPendingMessages,
-    { type: 'user', message: userMessage },
+  // Build combined system prompt: project prompt + tool prompts (async)
+  const toolSystemPrompts = await toolRegistry.getSystemPrompts(
+    apiDef.apiType,
+    enabledTools,
+    systemPromptContext
+  );
+  const combinedSystemPrompt = [project.systemPrompt, ...toolSystemPrompts]
+    .filter(Boolean)
+    .join('\n\n');
+
+  return {
+    apiDef,
+    model,
+    projectId: project.id,
+    chatId: chat.id,
+    temperature: project.temperature ?? undefined,
+    maxTokens: project.maxOutputTokens,
+    systemPrompt: combinedSystemPrompt || undefined,
+    preFillResponse: project.preFillResponse,
+    webSearchEnabled: project.webSearchEnabled,
+    enabledTools,
+    disableStream: project.disableStream ?? false,
+    enableReasoning: project.enableReasoning,
+    reasoningBudgetTokens: project.reasoningBudgetTokens,
+    thinkingKeepTurns: project.thinkingKeepTurns,
+    reasoningEffort: project.reasoningEffort,
+    reasoningSummary: project.reasoningSummary,
+    jsLibEnabled: project.jsLibEnabled,
+  };
+}
+
+/**
+ * Event handlers for consuming the agentic loop generator.
+ */
+interface LoopEventHandlers {
+  onMessageSaved: (message: Message<unknown>) => void;
+  onStreamingStart: () => void;
+  onStreamingUpdate: (groups: RenderingBlockGroup[]) => void;
+  onStreamingEnd: () => void;
+  onFirstChunk: () => void;
+  onChatUpdated: (chat: Chat) => void;
+  onProjectUpdated: (project: Project) => void;
+}
+
+/**
+ * Consume the agentic loop generator, handling events and persistence.
+ * Returns the final accumulated tokens.
+ */
+async function consumeAgenticLoop(
+  options: AgenticLoopOptions,
+  context: Message<unknown>[],
+  chat: Chat,
+  project: Project,
+  handlers: LoopEventHandlers
+): Promise<TokenTotals> {
+  const totals = createTokenTotals();
+  let lastContextWindowUsage = 0;
+  let hasUnreliableCost = false;
+
+  handlers.onStreamingStart();
+
+  try {
+    const gen = runAgenticLoop(options, context);
+
+    let result: IteratorResult<
+      AgenticLoopEvent,
+      Awaited<ReturnType<typeof runAgenticLoop>> extends AsyncGenerator<infer _E, infer R, infer _N>
+        ? R
+        : never
+    >;
+    do {
+      result = await gen.next();
+
+      if (!result.done) {
+        const event = result.value;
+
+        switch (event.type) {
+          case 'streaming_start':
+            // Clear previous iteration's streaming content (multi-iteration agentic loops)
+            handlers.onStreamingUpdate([]);
+            break;
+
+          case 'streaming_chunk':
+            handlers.onStreamingUpdate(event.groups);
+            break;
+
+          case 'streaming_end':
+            // Will call handlers.onStreamingEnd in finally
+            break;
+
+          case 'first_chunk':
+            handlers.onFirstChunk();
+            break;
+
+          case 'message_created':
+            // Save message to storage and notify UI
+            await storage.saveMessage(chat.id, event.message);
+            handlers.onMessageSaved(event.message);
+            // Clear streaming content when assistant message is saved to prevent
+            // any gap where both StreamingMessage and MessageBubble show same content
+            handlers.onStreamingUpdate([]);
+            // Track context window usage from assistant messages
+            if (event.message.role === 'assistant' && event.message.metadata?.contextWindowUsage) {
+              lastContextWindowUsage = event.message.metadata.contextWindowUsage;
+            }
+            // Track cost reliability
+            if (event.message.metadata?.costUnreliable) {
+              hasUnreliableCost = true;
+            }
+            break;
+
+          case 'tokens_consumed':
+            addTokens(totals, event.tokens);
+            break;
+        }
+      }
+    } while (!result.done);
+
+    // Handle final result status
+    const finalResult = result.value;
+
+    if (finalResult.status === 'error') {
+      console.error('[useChat] Agentic loop error:', finalResult.error.message);
+    } else if (finalResult.status === 'max_iterations') {
+      console.warn('[useChat] Agentic loop reached max iterations');
+    } else if (finalResult.status === 'suspended') {
+      console.debug(
+        '[useChat] Agentic loop suspended, pending tool call:',
+        finalResult.pendingToolCall.name
+      );
+    }
+
+    // Build and save final Chat object with accumulated totals
+    const updatedChat: Chat = {
+      ...chat,
+      totalInputTokens: (chat.totalInputTokens ?? 0) + totals.inputTokens,
+      totalOutputTokens: (chat.totalOutputTokens ?? 0) + totals.outputTokens,
+      totalReasoningTokens: (chat.totalReasoningTokens ?? 0) + totals.reasoningTokens,
+      totalCacheCreationTokens: (chat.totalCacheCreationTokens ?? 0) + totals.cacheCreationTokens,
+      totalCacheReadTokens: (chat.totalCacheReadTokens ?? 0) + totals.cacheReadTokens,
+      totalCost: (chat.totalCost ?? 0) + totals.cost,
+      contextWindowUsage: lastContextWindowUsage,
+      messageCount: (chat.messageCount ?? 0) + finalResult.messages.length - context.length,
+      lastModifiedAt: new Date(),
+      costUnreliable:
+        hasUnreliableCost || totals.costUnreliable || chat.costUnreliable || undefined,
+    };
+    await storage.saveChat(updatedChat);
+    handlers.onChatUpdated(updatedChat);
+
+    // Build and save final Project object with lastUsedAt
+    const updatedProject: Project = {
+      ...project,
+      lastUsedAt: new Date(),
+    };
+    await storage.saveProject(updatedProject);
+    handlers.onProjectUpdated(updatedProject);
+
+    return totals;
+  } finally {
+    handlers.onStreamingEnd();
+  }
+}
+
+/**
+ * Build tool result message from tool results and render blocks.
+ */
+function buildToolResultMessage(
+  apiType: APIDefinition['apiType'],
+  toolResults: ToolResultBlock[],
+  toolResultRenderBlocks: ToolResultRenderBlock[]
+): Message<unknown> {
+  const toolResultMessage = apiService.buildToolResultMessage(apiType, toolResults);
+
+  toolResultMessage.content.renderingContent = [
+    { category: 'backstage' as const, blocks: toolResultRenderBlocks },
   ];
 
-  await runAgenticLoop(context, pending, loopCallbacks);
+  return toolResultMessage;
 }
 
 /**
@@ -629,17 +806,21 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
             const effectiveModelId = updatedChat.modelId ?? loadedProject.modelId;
             if (effectiveModelId) {
               const model = await storage.getModel(loadedApiDef.id, effectiveModelId);
+              if (!model) {
+                console.error('[useChat] Model not found:', effectiveModelId);
+                return;
+              }
 
-              // Build callbacks that update React state
-              const loopCallbacks: AgenticLoopCallbacks = {
+              // Build event handlers that update React state
+              const eventHandlers: LoopEventHandlers = {
                 onMessageSaved: (msg: Message<unknown>) => {
                   setMessages(prev => [...prev, msg]);
                   callbacks.onMessageAppended(chatId, msg);
                 },
-                onStreamingStart: (text: string) => {
+                onStreamingStart: () => {
                   setIsLoading(true);
                   setHasReceivedFirstChunk(false);
-                  callbacks.onStreamingStart(chatId, text);
+                  callbacks.onStreamingStart(chatId, 'Thinking...');
                 },
                 onStreamingUpdate: (groups: RenderingBlockGroup[]) => {
                   setStreamingGroups(groups);
@@ -657,22 +838,39 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
                 onProjectUpdated: (project: Project) => {
                   setProject(project);
                 },
-                onError: (error: Error) => console.error('[useChat] Loop error:', error),
               };
 
-              // Use shared helper for message preparation and loop invocation
-              prepareAndSendUserMessage({
+              // Create and save user message
+              const firstMessageTimestamp =
+                loadedMessages.length > 0 ? loadedMessages[0].timestamp : undefined;
+              const userMessage = await createAndSaveUserMessage(
+                updatedChat.id,
                 messageText,
-                attachments,
-                chatId,
-                chat: updatedChat,
-                project: loadedProject,
-                apiDef: loadedApiDef,
-                model,
+                loadedProject,
+                updatedChat,
                 effectiveModelId,
-                currentMessages: loadedMessages,
-                loopCallbacks,
-              });
+                firstMessageTimestamp,
+                attachments
+              );
+
+              // Update React state with user message and notify UI
+              setMessages(prev => [...prev, userMessage]);
+              callbacks.onMessageAppended(chatId, userMessage);
+
+              // Build context with user message
+              const context = [...loadedMessages, userMessage];
+
+              // Build loop options
+              const options = await buildAgenticLoopOptions(
+                updatedChat,
+                loadedProject,
+                loadedApiDef,
+                model,
+                effectiveModelId
+              );
+
+              // Consume the agentic loop generator (fire and forget, no await to avoid blocking)
+              consumeAgenticLoop(options, context, updatedChat, loadedProject, eventHandlers);
             }
           }
         } else if (loadedChat.pendingState.type === 'forkMessage') {
@@ -759,19 +957,18 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   }, [chat?.apiDefinitionId, project?.apiDefinitionId, apiDefinition?.id]);
 
   /**
-   * Build agentic loop callbacks that update React state.
-   * The loop handles storage saves; callbacks are pure state setters.
+   * Build event handlers for consuming the agentic loop generator.
    */
-  const buildLoopCallbacks = useCallback(
-    (): AgenticLoopCallbacks => ({
+  const buildEventHandlers = useCallback(
+    (): LoopEventHandlers => ({
       onMessageSaved: (msg: Message<unknown>) => {
         setMessages(prev => [...prev, msg]);
         callbacks.onMessageAppended(chatId, msg);
       },
-      onStreamingStart: (text: string) => {
+      onStreamingStart: () => {
         setIsLoading(true);
         setHasReceivedFirstChunk(false);
-        callbacks.onStreamingStart(chatId, text);
+        callbacks.onStreamingStart(chatId, 'Thinking...');
       },
       onStreamingUpdate: (groups: RenderingBlockGroup[]) => {
         setStreamingGroups(groups);
@@ -789,7 +986,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       onProjectUpdated: (updatedProject: Project) => {
         setProject(updatedProject);
       },
-      onError: (error: Error) => console.error('[useChat] Loop error:', error),
     }),
     [chatId, callbacks]
   );
@@ -812,19 +1008,41 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     }
 
     const model = await storage.getModel(apiDefinition.id, effectiveModelId);
+    if (!model) {
+      showAlert('Model Not Found', `Model ${effectiveModelId} not found in ${apiDefinition.name}.`);
+      return;
+    }
 
-    await prepareAndSendUserMessage({
+    // Create and save user message
+    const firstMessageTimestamp = messages.length > 0 ? messages[0].timestamp : undefined;
+    const userMessage = await createAndSaveUserMessage(
+      chat.id,
       messageText,
-      attachments,
-      chatId,
+      project,
+      chat,
+      effectiveModelId,
+      firstMessageTimestamp,
+      attachments
+    );
+
+    // Update React state with user message and notify UI
+    setMessages(prev => [...prev, userMessage]);
+    callbacks.onMessageAppended(chatId, userMessage);
+
+    // Build context with user message
+    const context = [...messages, userMessage];
+
+    // Build loop options
+    const options = await buildAgenticLoopOptions(
       chat,
       project,
-      apiDef: apiDefinition,
+      apiDefinition,
       model,
-      effectiveModelId,
-      currentMessages: messages,
-      loopCallbacks: buildLoopCallbacks(),
-    });
+      effectiveModelId
+    );
+
+    // Consume the agentic loop generator
+    await consumeAgenticLoop(options, context, chat, project, buildEventHandlers());
   };
 
   const editMessage = async (incomingChatId: string, messageId: string, _content: string) => {
@@ -952,42 +1170,96 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     const effectiveModelId = chat.modelId ?? project.modelId;
     if (!effectiveModelId) return;
 
-    // Build tool result message based on mode
-    const toolResultPending =
-      mode === 'stop'
-        ? buildErrorToolResultPendingMessage(apiDefinition.apiType, unresolvedToolCalls)
-        : await executeToolsAndBuildPendingMessage(apiDefinition.apiType, unresolvedToolCalls);
-
     const model = await storage.getModel(apiDefinition.id, effectiveModelId);
+    if (!model) return;
 
-    // If user message provided, use shared helper with tool results prepended
-    if (userMessage?.trim() || attachments?.length) {
-      await prepareAndSendUserMessage({
-        messageText: userMessage?.trim() || '',
-        attachments,
-        chatId: chat.id,
-        chat,
-        project,
-        apiDef: apiDefinition,
-        model,
-        effectiveModelId,
-        currentMessages: messages,
-        loopCallbacks: buildLoopCallbacks(),
-        prependPendingMessages: [toolResultPending],
-      });
-    } else {
-      // No user message - run loop with tool results only
-      const context: AgenticLoopContext = {
-        chatId: chat.id,
-        chat,
-        project,
-        apiDef: apiDefinition,
-        modelId: effectiveModelId,
-        model,
-        currentMessages: messages,
-      };
-      await runAgenticLoop(context, [toolResultPending], buildLoopCallbacks());
+    // Build tool result message based on mode
+    const toolResults: ToolResultBlock[] = [];
+    const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+
+    for (const toolUse of unresolvedToolCalls) {
+      if (mode === 'stop') {
+        // Error response for stop mode
+        const errorMessage = 'Token limit reached, ask user to continue';
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: errorMessage,
+          is_error: true,
+        });
+        toolResultRenderBlocks.push(
+          createToolResultRenderBlock(toolUse.id, toolUse.name, errorMessage, true)
+        );
+      } else {
+        // Execute tool for continue mode
+        const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: toolResult.content,
+          is_error: toolResult.isError,
+        });
+        toolResultRenderBlocks.push(
+          createToolResultRenderBlock(
+            toolUse.id,
+            toolUse.name,
+            toolResult.content,
+            toolResult.isError
+          )
+        );
+      }
     }
+
+    const toolResultMessage = buildToolResultMessage(
+      apiDefinition.apiType,
+      toolResults,
+      toolResultRenderBlocks
+    );
+
+    // Save tool result message to storage
+    await storage.saveMessage(chat.id, toolResultMessage);
+
+    // Update React state with tool result message and notify UI
+    setMessages(prev => [...prev, toolResultMessage]);
+    callbacks.onMessageAppended(chatId, toolResultMessage);
+
+    // Build context with tool result message
+    let context = [...messages, toolResultMessage];
+
+    // If user message provided, add it to context
+    if (userMessage?.trim() || attachments?.length) {
+      const messageText = userMessage?.trim() || '';
+      const firstMessageTimestamp = messages.length > 0 ? messages[0].timestamp : undefined;
+
+      // Create and save user message
+      const userMsg = await createAndSaveUserMessage(
+        chat.id,
+        messageText,
+        project,
+        chat,
+        effectiveModelId,
+        firstMessageTimestamp,
+        attachments
+      );
+
+      // Update React state with user message and notify UI
+      setMessages(prev => [...prev, userMsg]);
+      callbacks.onMessageAppended(chatId, userMsg);
+
+      context = [...context, userMsg];
+    }
+
+    // Build loop options
+    const options = await buildAgenticLoopOptions(
+      chat,
+      project,
+      apiDefinition,
+      model,
+      effectiveModelId
+    );
+
+    // Consume the agentic loop generator
+    await consumeAgenticLoop(options, context, chat, project, buildEventHandlers());
   };
 
   return {

@@ -14,6 +14,8 @@ vi.mock('../../services/api/apiService');
 vi.mock('../../services/api/modelMetadata');
 vi.mock('../../utils/idGenerator');
 vi.mock('../../utils/alerts');
+// Note: agenticLoopGenerator is NOT mocked - we let the real generator run
+// which will call the mocked apiService.sendMessageStream
 
 describe('useChat', () => {
   const mockProject: Project = {

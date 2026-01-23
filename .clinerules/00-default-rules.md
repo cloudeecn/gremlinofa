@@ -18,6 +18,10 @@ This is a general-purpose AI chatbot built with React (Vite).
   - Add unit tests to new features. Update unit tests to updated code.
   - Check if `development.md` or `README.md` contains obsolete information, update if necessery.
 - DON'T TOUCH THE CONTENT BEFORE `## Overview` when updating `README.md`. Make sure any new document follows `documentation-tone`
+- Use design & planing document in `/plans` for complex tasks
+  - If user tells you to dump your plan to ##-something.md, You create a design & planning document with: The problem / request, the design with justification, and plan with phased checklist and stop. The user will create tasks to implement it phase by phase.
+  - If user tells to you to implement something, check for unresolved design & planning in /plans. If the relevant document is marked as completed, stop and tell the user. Else implement the mentioned phases (or all phases if not mentioned). After implementing them, mark the completed phases as done. If any deviate is needed when implenting (for example, implementation need to change to comply with a library, to make test pass or for any reason), document them.
+  - If all phases of a plan is finished, Add "This plan has been completed" to the first line of the document, and rename the ##-something.md to ##-completed-something.md.
 
 ## standalone packages
 

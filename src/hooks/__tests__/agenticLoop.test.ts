@@ -691,8 +691,15 @@ describe('agenticLoop', () => {
   });
 
   describe('buildStreamOptions', () => {
-    it('should build options from project settings', () => {
-      const options = buildStreamOptions(mockProject, []);
+    it('should build options from project settings', async () => {
+      const context = {
+        project: mockProject,
+        chatId: 'chat_123',
+        apiDefId: 'api_123',
+        modelId: 'gpt-4',
+        apiType: 'anthropic' as const,
+      };
+      const options = await buildStreamOptions(context, []);
 
       expect(options.temperature).toBe(1.0);
       expect(options.maxTokens).toBe(2048);
@@ -700,18 +707,21 @@ describe('agenticLoop', () => {
       expect(options.systemPrompt).toBe('Test prompt');
     });
 
-    it('should combine system prompts with tool prompts', () => {
+    it('should combine system prompts with tool prompts', async () => {
       // Register a mock tool system prompt
-      const originalGet = toolRegistry.getSystemPrompts;
-      vi.spyOn(toolRegistry, 'getSystemPrompts').mockReturnValue(['Tool system prompt']);
+      vi.spyOn(toolRegistry, 'getSystemPrompts').mockResolvedValue(['Tool system prompt']);
 
-      const options = buildStreamOptions(mockProject, ['memory']);
+      const context = {
+        project: mockProject,
+        chatId: 'chat_123',
+        apiDefId: 'api_123',
+        modelId: 'gpt-4',
+        apiType: 'anthropic' as const,
+      };
+      const options = await buildStreamOptions(context, ['memory']);
 
       expect(options.systemPrompt).toContain('Test prompt');
       expect(options.systemPrompt).toContain('Tool system prompt');
-
-      // Restore
-      toolRegistry.getSystemPrompts = originalGet;
     });
   });
 

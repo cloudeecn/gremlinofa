@@ -218,14 +218,36 @@ interface StreamOptions {
   disableStream: boolean;
 }
 
+interface BuildStreamOptionsContext {
+  project: Project;
+  chatId: string;
+  apiDefId: string;
+  modelId: string;
+  apiType: import('../types').APIType;
+}
+
 /**
  * Build stream options from project settings.
  */
-function buildStreamOptions(project: Project, enabledTools: string[]): StreamOptions {
-  // Build combined system prompt: project prompt + tool prompts
-  const toolSystemPrompts = toolRegistry.getSystemPrompts(
-    project.apiDefinitionId ? 'anthropic' : 'responses_api', // Will be overridden
-    enabledTools
+async function buildStreamOptions(
+  context: BuildStreamOptionsContext,
+  enabledTools: string[]
+): Promise<StreamOptions> {
+  const { project, chatId, apiDefId, modelId, apiType } = context;
+
+  // Build context for system prompt functions
+  const systemPromptContext = {
+    projectId: project.id,
+    chatId,
+    apiDefinitionId: apiDefId,
+    modelId,
+  };
+
+  // Build combined system prompt: project prompt + tool prompts (async)
+  const toolSystemPrompts = await toolRegistry.getSystemPrompts(
+    apiType,
+    enabledTools,
+    systemPromptContext
   );
   const combinedSystemPrompt = [project.systemPrompt, ...toolSystemPrompts]
     .filter(Boolean)
@@ -345,7 +367,14 @@ export async function runAgenticLoop(
           : messagesWithAttachments;
 
       // 4. Build options (no prefill for continuation iterations)
-      const options = buildStreamOptions(context.project, enabledTools);
+      const optionsContext: BuildStreamOptionsContext = {
+        project: context.project,
+        chatId: context.chatId,
+        apiDefId: context.apiDef.id,
+        modelId: context.modelId,
+        apiType: context.apiDef.apiType,
+      };
+      const options = await buildStreamOptions(optionsContext, enabledTools);
       if (iteration > 1) {
         options.preFillResponse = undefined; // No prefill for continuation
       }

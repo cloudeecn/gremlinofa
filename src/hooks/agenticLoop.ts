@@ -18,6 +18,7 @@ import { executeClientSideTool, toolRegistry } from '../services/tools/clientSid
 import { configureJsTool } from '../services/tools/jsTool';
 import type {
   APIDefinition,
+  APIType,
   Chat,
   Message,
   MessageAttachment,
@@ -25,6 +26,7 @@ import type {
   Project,
   RenderingBlockGroup,
   ToolResultBlock,
+  ToolUseBlock,
 } from '../types';
 import type { ToolResultRenderBlock, ToolUseRenderBlock } from '../types/content';
 import { generateUniqueId } from '../utils/idGenerator';
@@ -98,7 +100,7 @@ interface PricingSnapshot {
 function mergeToolUseInputFromFullContent(
   groups: RenderingBlockGroup[],
   fullContent: unknown,
-  apiType: import('../types').APIType
+  apiType: APIType
 ): void {
   // Extract actual tool inputs from fullContent
   const toolUseBlocks = apiService.extractToolUseBlocks(apiType, fullContent);
@@ -172,6 +174,80 @@ function createToolResultRenderBlock(
 }
 
 /**
+ * Execute tools and build a tool result PendingMessage.
+ * Shared by agenticLoop (after tool_use) and resolvePendingToolCalls (continue mode).
+ */
+async function executeToolsAndBuildPendingMessage(
+  apiType: APIType,
+  toolUseBlocks: ToolUseBlock[]
+): Promise<PendingMessage> {
+  const toolResults: ToolResultBlock[] = [];
+  const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+
+  for (const toolUse of toolUseBlocks) {
+    console.debug('[agenticLoop] Executing tool:', toolUse.name, 'id:', toolUse.id);
+    const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
+
+    toolResults.push({
+      type: 'tool_result',
+      tool_use_id: toolUse.id,
+      content: toolResult.content,
+      is_error: toolResult.isError,
+    });
+
+    toolResultRenderBlocks.push(
+      createToolResultRenderBlock(toolUse.id, toolUse.name, toolResult.content, toolResult.isError)
+    );
+  }
+
+  // Build tool result message using API-specific format
+  const toolResultMessage = apiService.buildToolResultMessage(apiType, toolResults);
+
+  // Add rendering content to tool result message
+  toolResultMessage.content.renderingContent = [
+    { category: 'backstage' as const, blocks: toolResultRenderBlocks },
+  ];
+
+  return { type: 'tool_result', message: toolResultMessage };
+}
+
+/**
+ * Build error tool results for unresolved tool calls (stop mode).
+ * Creates error responses without executing the tools.
+ */
+function buildErrorToolResultPendingMessage(
+  apiType: APIType,
+  toolUseBlocks: ToolUseBlock[],
+  errorMessage: string = 'Token limit reached, ask user to continue'
+): PendingMessage {
+  const toolResults: ToolResultBlock[] = [];
+  const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+
+  for (const toolUse of toolUseBlocks) {
+    toolResults.push({
+      type: 'tool_result',
+      tool_use_id: toolUse.id,
+      content: errorMessage,
+      is_error: true,
+    });
+
+    toolResultRenderBlocks.push(
+      createToolResultRenderBlock(toolUse.id, toolUse.name, errorMessage, true)
+    );
+  }
+
+  // Build tool result message using API-specific format
+  const toolResultMessage = apiService.buildToolResultMessage(apiType, toolResults);
+
+  // Add rendering content to tool result message
+  toolResultMessage.content.renderingContent = [
+    { category: 'backstage' as const, blocks: toolResultRenderBlocks },
+  ];
+
+  return { type: 'tool_result', message: toolResultMessage };
+}
+
+/**
  * Get pricing snapshot for a message.
  */
 async function getPricingSnapshot(
@@ -223,7 +299,7 @@ interface BuildStreamOptionsContext {
   chatId: string;
   apiDefId: string;
   modelId: string;
-  apiType: import('../types').APIType;
+  apiType: APIType;
 }
 
 /**
@@ -575,44 +651,14 @@ export async function runAgenticLoop(
 
         console.debug('[agenticLoop] Executing', toolUseBlocks.length, 'tool(s)');
 
-        // Execute tools and collect results
-        const toolResults: ToolResultBlock[] = [];
-        const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
-
-        for (const toolUse of toolUseBlocks) {
-          console.debug('[agenticLoop] Executing tool:', toolUse.name, 'id:', toolUse.id);
-          const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
-
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            content: toolResult.content,
-            is_error: toolResult.isError,
-          });
-
-          toolResultRenderBlocks.push(
-            createToolResultRenderBlock(
-              toolUse.id,
-              toolUse.name,
-              toolResult.content,
-              toolResult.isError
-            )
-          );
-        }
-
-        // Build tool result message using API-specific format
-        const toolResultMessage = apiService.buildToolResultMessage(
+        // Execute tools and build result message
+        const toolResultPending = await executeToolsAndBuildPendingMessage(
           context.apiDef.apiType,
-          toolResults
+          toolUseBlocks
         );
 
-        // Add rendering content to tool result message
-        toolResultMessage.content.renderingContent = [
-          { category: 'backstage' as const, blocks: toolResultRenderBlocks },
-        ];
-
         // Push tool result to buffer for next iteration
-        messageBuffer.push({ type: 'tool_result', message: toolResultMessage });
+        messageBuffer.push(toolResultPending);
       }
     }
 
@@ -741,6 +787,8 @@ async function loadAttachmentsForMessages(
 export {
   populateToolRenderFields,
   createToolResultRenderBlock,
+  executeToolsAndBuildPendingMessage,
+  buildErrorToolResultPendingMessage,
   getEnabledTools,
   buildStreamOptions,
   loadAttachmentsForMessages,

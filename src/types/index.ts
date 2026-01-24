@@ -341,12 +341,20 @@ export interface ToolResultBlock {
 export interface ToolResult {
   content: string;
   isError?: boolean;
+  /** Signal to break the agentic loop */
+  breakLoop?: {
+    /** 'suspended' = await external input, 'complete' = return value */
+    status: 'suspended' | 'complete';
+    /** For 'complete' status - value to return from the loop */
+    returnValue?: string;
+  };
 }
 
 /** Context passed to system prompt functions for dynamic generation */
 export interface SystemPromptContext {
   projectId: string;
-  chatId: string;
+  /** Optional - undefined when running standalone/sub-agent loops */
+  chatId?: string;
   apiDefinitionId: string;
   modelId: string;
 }

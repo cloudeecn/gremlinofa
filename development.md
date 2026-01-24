@@ -961,42 +961,54 @@ At the start of each agentic loop, `configureJsTool(projectId, loadLib)` is call
 
 **Architecture:**
 
-The agentic loop logic is extracted into a separate module (`src/hooks/agenticLoop.ts`) as a pure async function for cleaner separation and easier testing.
+The agentic loop is implemented as an async generator in `src/services/agentic/agenticLoopGenerator.ts`. This design yields events instead of using callbacks, enabling:
 
-**Key Components:**
+- Chat/project agnostic operation (receives flat `AgenticLoopOptions`)
+- Tool suspension support via `ToolResult.breakLoop` field
+- Nested agent calls via `collectAgenticLoop()` helper
+- Single context array (no separate message buffer)
+- Token accumulation across iterations via `TokenTotals` type
 
-- `runAgenticLoop(context, initialMessages, callbacks)` - Main loop function
-- `AgenticLoopContext` - Chat context (chatId, chat, project, apiDef, modelId, currentMessages)
-- `AgenticLoopCallbacks` - React state update callbacks (pure setters)
-- `PendingMessage` - Message buffer item (type: 'user' | 'tool_result')
+**Key Exports** (`agenticLoopGenerator.ts`):
 
-**Callback Interface:**
+- `runAgenticLoop(options, context)` - Main async generator function
+- `collectAgenticLoop(gen)` - Helper to consume generator and get final result
+- `createTokenTotals()` - Create zero-initialized token totals
+- `addTokens(target, source)` - Accumulate tokens (mutates target)
+- `populateToolRenderFields(groups)` - Add rendered display fields to tool blocks
+- `createToolResultRenderBlock(...)` - Create tool result render block with display fields
+- `loadAttachmentsForMessages(messages)` - Load attachments and handle missing attachment notes
+
+**Event Types:**
 
 ```typescript
-interface AgenticLoopCallbacks {
-  onMessageSaved: (message: Message<unknown>) => void;
-  onStreamingStart: (loadingText: string) => void;
-  onStreamingUpdate: (groups: RenderingBlockGroup[]) => void;
-  onStreamingEnd: () => void;
-  onFirstChunk: () => void;
-  onChatUpdated: (chat: Chat) => void; // Receives FINAL object after storage save
-  onProjectUpdated: (project: Project) => void; // Receives FINAL object after storage save
-  onError: (error: Error) => void;
-}
+type AgenticLoopEvent =
+  | { type: 'streaming_start' }
+  | { type: 'streaming_chunk'; groups: RenderingBlockGroup[] }
+  | { type: 'streaming_end' }
+  | { type: 'message_created'; message: Message<unknown> }
+  | { type: 'tokens_consumed'; tokens: TokenTotals }
+  | { type: 'first_chunk' };
 ```
 
-**Message Buffer Pattern:**
+**Result Types:**
 
+```typescript
+type AgenticLoopResult =
+  | { status: 'complete'; messages; tokens; returnValue? }
+  | { status: 'suspended'; messages; tokens; pendingToolCall; otherToolResults }
+  | { status: 'error'; messages; tokens; error }
+  | { status: 'max_iterations'; messages; tokens };
 ```
-while (messageBuffer.length > 0 && iteration < MAX_ITERATIONS) {  // MAX_ITERATIONS = 50
-  1. Take messages from buffer, save to storage, notify UI
-  2. Send to API, stream response
-  3. Process result (save assistant message, update costs)
-  4. If tool_use, execute tools and push results back to buffer
-  5. Loop continues automatically
-}
-// After loop: build final Chat/Project objects, save to storage, call callbacks
-```
+
+**Consumer** (`useChat.ts`):
+
+- `consumeAgenticLoop(options, context, chat, project, handlers)` - Consumes generator and handles persistence
+- `buildAgenticLoopOptions()` - Builds flat options from Chat/Project/APIDefinition/Model
+- `buildEventHandlers()` - Creates event handler callbacks for React state updates
+- User messages saved before calling generator
+- Tool result messages saved before calling generator
+- Assistant messages saved via `message_created` events from generator
 
 **Features:**
 
@@ -1004,25 +1016,15 @@ while (messageBuffer.length > 0 && iteration < MAX_ITERATIONS) {  // MAX_ITERATI
 - Automatic tool execution and continuation
 - JS tool configuration at loop start (project context, library log reset)
 - Cost/token accumulation across iterations
-- Storage saves handled in loop (callbacks are pure state setters)
+- Read-only storage access (reads attachments, consumer handles persistence)
 - Error handling with cleanup
-
-**Helper Functions:**
-
-- `buildStreamOptions(project, enabledTools)` - Build API stream options from project settings
-- `getEnabledTools(project)` - Extract enabled tool names from project
-- `mergeToolUseInputFromFullContent(groups, fullContent, apiType)` - Merge tool inputs from fullContent into renderingContent (fixes OpenRouter streaming quirk where tool arguments are empty during streaming but present in final response)
-- `populateToolRenderFields(groups)` - Add rendered display fields to tool blocks
-- `createToolResultRenderBlock(...)` - Create tool result render block with display fields
-- `loadAttachmentsForMessages(messages)` - Load attachments and handle missing attachment notes
 
 **Integration with useChat.ts:**
 
-- `buildLoopCallbacks()` - Builds pure setter callbacks from React state
 - `sendMessage` - Thin wrapper: reads state → builds context → calls `runAgenticLoop`
 - `resolvePendingToolCalls` - Thin wrapper: builds tool results → optional user message → calls `runAgenticLoop`
 - Both 'stop' and 'continue' modes use the agentic loop (stop sends error responses to API)
-- Loop handles storage.saveChat and storage.saveProject internally
+- Consumer handles `storage.saveChat` and `storage.saveProject` after loop completes
 
 **Project Setting:**
 

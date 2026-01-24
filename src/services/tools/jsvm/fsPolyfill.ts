@@ -178,33 +178,58 @@ export class FsBridge {
     readFileFn.dispose();
 
     // fs.writeFile(path, data) -> Promise<void>
-    // data can be string or ArrayBuffer/Uint8Array
+    // data must be string or ArrayBuffer/TypedArray (strict Node.js behavior)
     const writeFileFn = this.context.newFunction(
       'writeFile',
       (pathHandle: QuickJSHandle, dataHandle: QuickJSHandle) => {
         const path = this.context.getString(pathHandle);
 
-        // Try to get data as ArrayBuffer first, fall back to string
+        // Strict Node.js behavior: only accept string or ArrayBuffer/TypedArray
         let data: string | ArrayBuffer;
-        try {
-          // Check if it's an ArrayBuffer by trying to get its byteLength
-          const byteLengthHandle = this.context.getProp(dataHandle, 'byteLength');
-          const byteLength = this.context.getNumber(byteLengthHandle);
-          byteLengthHandle.dispose();
 
-          if (typeof byteLength === 'number' && !isNaN(byteLength)) {
-            // It's an ArrayBuffer or TypedArray - get the underlying buffer
-            // getArrayBuffer returns { value: Uint8Array }, so we need to copy to ArrayBuffer
-            const uint8 = this.context.getArrayBuffer(dataHandle).value;
-            const buffer = new ArrayBuffer(uint8.byteLength);
-            new Uint8Array(buffer).set(uint8);
-            data = buffer;
-          } else {
-            data = this.context.getString(dataHandle);
-          }
+        // 1. Try ArrayBuffer directly
+        let gotBuffer = false;
+        try {
+          const uint8 = this.context.getArrayBuffer(dataHandle).value;
+          const buffer = new ArrayBuffer(uint8.byteLength);
+          new Uint8Array(buffer).set(uint8);
+          data = buffer;
+          gotBuffer = true;
         } catch {
-          // Not an ArrayBuffer, treat as string
-          data = this.context.getString(dataHandle);
+          // Not an ArrayBuffer, continue checking
+        }
+
+        if (!gotBuffer) {
+          // 2. Check for TypedArray's .buffer property (Uint8Array, Int8Array, etc.)
+          const bufferHandle = this.context.getProp(dataHandle, 'buffer');
+          const bufferType = this.context.typeof(bufferHandle);
+
+          if (bufferType === 'object') {
+            try {
+              const uint8 = this.context.getArrayBuffer(bufferHandle).value;
+              const buffer = new ArrayBuffer(uint8.byteLength);
+              new Uint8Array(buffer).set(uint8);
+              data = buffer;
+              gotBuffer = true;
+            } catch {
+              // .buffer exists but isn't an ArrayBuffer
+            }
+          }
+          bufferHandle.dispose();
+        }
+
+        if (!gotBuffer) {
+          // 3. Check if it's a string
+          const dataType = this.context.typeof(dataHandle);
+          if (dataType === 'string') {
+            data = this.context.getString(dataHandle);
+          } else {
+            // 4. Invalid type - return error (no silent stringify)
+            return this.queueOp(async () => ({
+              ok: false,
+              error: `EINVAL: invalid argument, data must be string or buffer, '${path}'`,
+            }));
+          }
         }
 
         return this.queueOp(async () => {

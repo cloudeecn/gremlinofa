@@ -1,5 +1,25 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi, type Mock, beforeEach } from 'vitest';
 import { JsVMContext } from '../JsVMContext';
+import * as vfs from '../../../vfs/vfsService';
+
+// Mock vfsService for fs tests
+vi.mock('../../../vfs/vfsService', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../../vfs/vfsService')>();
+  return {
+    ...actual,
+    isDirectory: vi.fn(),
+    readDir: vi.fn(),
+    exists: vi.fn(),
+    stat: vi.fn(),
+    readFile: vi.fn(),
+    readFileWithMeta: vi.fn(),
+    writeFile: vi.fn(),
+    mkdir: vi.fn(),
+    deleteFile: vi.fn(),
+    rmdir: vi.fn(),
+    rename: vi.fn(),
+  };
+});
 
 describe('JsVMContext', () => {
   let vm: JsVMContext | null = null;
@@ -423,6 +443,108 @@ describe('JsVMContext', () => {
     });
   });
 
+  describe('halt', () => {
+    it('stops execution immediately with message', async () => {
+      vm = await JsVMContext.create();
+      const result = await vm.evaluate(`
+        halt("stopping here");
+        console.log("should not run");
+        42
+      `);
+
+      expect(result.isError).toBe(true);
+      expect(result.value).toBe('Halted');
+      expect(result.consoleOutput).toHaveLength(1);
+      expect(result.consoleOutput[0].level).toBe('ERROR');
+      expect(result.consoleOutput[0].message).toBe('stopping here');
+    });
+
+    it('is uncatchable by try/catch', async () => {
+      vm = await JsVMContext.create();
+      const result = await vm.evaluate(`
+        try {
+          halt("caught?");
+          console.log("a");
+        } catch {
+          console.log("b");
+        }
+        console.log("c");
+      `);
+
+      expect(result.isError).toBe(true);
+      expect(result.value).toBe('Halted');
+      // Only the halt message, no other console output
+      expect(result.consoleOutput).toHaveLength(1);
+      expect(result.consoleOutput[0].message).toBe('caught?');
+    });
+
+    it('uses default message when called without argument', async () => {
+      vm = await JsVMContext.create();
+      const result = await vm.evaluate('halt()');
+
+      expect(result.isError).toBe(true);
+      expect(result.value).toBe('Halted');
+      expect(result.consoleOutput).toHaveLength(1);
+      expect(result.consoleOutput[0].message).toBe('Halted');
+    });
+
+    it('preserves console output before halt', async () => {
+      vm = await JsVMContext.create();
+      const result = await vm.evaluate(`
+        console.log("before");
+        console.warn("also before");
+        halt("the message");
+      `);
+
+      expect(result.isError).toBe(true);
+      // Console output before halt is preserved, halt message appended
+      expect(result.consoleOutput).toHaveLength(3);
+      expect(result.consoleOutput[0].message).toBe('before');
+      expect(result.consoleOutput[1].message).toBe('also before');
+      expect(result.consoleOutput[2].level).toBe('ERROR');
+      expect(result.consoleOutput[2].message).toBe('the message');
+    });
+
+    it('stops async execution', async () => {
+      vm = await JsVMContext.create();
+      const result = await vm.evaluate(`
+        (async () => {
+          await Promise.resolve();
+          halt("async halt");
+          console.log("after await");
+        })()
+      `);
+
+      expect(result.isError).toBe(true);
+      expect(result.value).toBe('Halted');
+      expect(result.consoleOutput).toHaveLength(1);
+      expect(result.consoleOutput[0].message).toBe('async halt');
+    });
+
+    it('stops execution after await, preserving logs before halt', async () => {
+      vm = await JsVMContext.create();
+      const result = await vm.evaluate(`
+        (async () => {
+          console.log("before");
+          await Promise.resolve();
+          console.log("after await");
+          halt("stopping after await");
+          console.log("should not matter");
+          return "done";
+        })()
+      `);
+
+      expect(result.isError).toBe(true);
+      expect(result.value).toBe('Halted');
+      // Console output before halt is preserved, output after halt is discarded
+      expect(result.consoleOutput).toHaveLength(3);
+      expect(result.consoleOutput[0].message).toBe('before');
+      expect(result.consoleOutput[1].message).toBe('after await');
+      expect(result.consoleOutput[2].level).toBe('ERROR');
+      expect(result.consoleOutput[2].message).toBe('stopping after await');
+    });
+  });
+
   describe('dispose', () => {
     it('can be disposed safely', async () => {
       vm = await JsVMContext.create();
@@ -436,6 +558,114 @@ describe('JsVMContext', () => {
       vm.getContext().evalCode('setTimeout(() => {})');
       vm.dispose();
       vm = null;
+    });
+  });
+
+  describe('fs.writeFile', () => {
+    const projectId = 'test-project';
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      (vfs.isDirectory as Mock).mockResolvedValue(false); // No /lib directory
+      (vfs.writeFile as Mock).mockResolvedValue(undefined);
+    });
+
+    it('writes Uint8Array as raw bytes', async () => {
+      vm = await JsVMContext.create(projectId, false);
+
+      const result = await vm.evaluate(`
+        (async () => {
+          const bytes = new Uint8Array([0x7F, 0x45, 0x4C, 0x46]);
+          await fs.writeFile('/test', bytes);
+          return 'done';
+        })()
+      `);
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toBe('done');
+      expect(vfs.writeFile).toHaveBeenCalledTimes(1);
+
+      // Verify the data is an ArrayBuffer with correct bytes
+      const [, , data] = (vfs.writeFile as Mock).mock.calls[0];
+      expect(data).toBeInstanceOf(ArrayBuffer);
+      const written = new Uint8Array(data);
+      expect(Array.from(written)).toEqual([0x7f, 0x45, 0x4c, 0x46]);
+    });
+
+    it('writes ArrayBuffer as raw bytes', async () => {
+      vm = await JsVMContext.create(projectId, false);
+
+      const result = await vm.evaluate(`
+        (async () => {
+          const bytes = new Uint8Array([0x7F, 0x45, 0x4C, 0x46]);
+          await fs.writeFile('/test', bytes.buffer);
+          return 'done';
+        })()
+      `);
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toBe('done');
+
+      const [, , data] = (vfs.writeFile as Mock).mock.calls[0];
+      expect(data).toBeInstanceOf(ArrayBuffer);
+      const written = new Uint8Array(data);
+      expect(Array.from(written)).toEqual([0x7f, 0x45, 0x4c, 0x46]);
+    });
+
+    it('writes string as text', async () => {
+      vm = await JsVMContext.create(projectId, false);
+
+      const result = await vm.evaluate(`
+        (async () => {
+          await fs.writeFile('/test.txt', 'hello world');
+          return 'done';
+        })()
+      `);
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toBe('done');
+
+      const [, , data] = (vfs.writeFile as Mock).mock.calls[0];
+      expect(data).toBe('hello world');
+    });
+
+    it('rejects non-string non-buffer data', async () => {
+      vm = await JsVMContext.create(projectId, false);
+
+      const result = await vm.evaluate(`
+        (async () => {
+          try {
+            await fs.writeFile('/test', { foo: 'bar' });
+            return 'should not reach';
+          } catch (e) {
+            return e.message;
+          }
+        })()
+      `);
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toContain('EINVAL');
+      expect(result.value).toContain('data must be string or buffer');
+      expect(vfs.writeFile).not.toHaveBeenCalled();
+    });
+
+    it('rejects number data', async () => {
+      vm = await JsVMContext.create(projectId, false);
+
+      const result = await vm.evaluate(`
+        (async () => {
+          try {
+            await fs.writeFile('/test', 12345);
+            return 'should not reach';
+          } catch (e) {
+            return e.message;
+          }
+        })()
+      `);
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toContain('EINVAL');
+      expect(vfs.writeFile).not.toHaveBeenCalled();
     });
   });
 });

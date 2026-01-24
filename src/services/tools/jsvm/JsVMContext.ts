@@ -62,6 +62,9 @@ export class JsVMContext {
   private cancelledTimers = new Set<number>();
   private pendingCallbacks = new Map<number, QuickJSHandle>();
   private fsBridge: FsBridge | null = null;
+  private isHalted = false;
+  private haltMessage = '';
+  private haltConsoleSnapshot: ConsoleEntry[] = [];
 
   private constructor(context: QuickJSContext) {
     this.context = context;
@@ -78,6 +81,7 @@ export class JsVMContext {
     const vm = new JsVMContext(context);
     vm.setupConsole();
     vm.setupTimers();
+    vm.setupHalt();
     injectPolyfills(context);
 
     // Set up fs bridge if projectId provided
@@ -218,9 +222,14 @@ export class JsVMContext {
     this.consoleOutput = [];
     this.cancelledTimers.clear();
 
-    // Set up 60s timeout via interrupt handler
+    // Reset halt state
+    this.isHalted = false;
+    this.haltMessage = '';
+    this.haltConsoleSnapshot = [];
+
+    // Set up interrupt handler for timeout and halt
     const deadline = Date.now() + TIMEOUT_MS;
-    this.context.runtime.setInterruptHandler(() => Date.now() > deadline);
+    this.context.runtime.setInterruptHandler(() => this.isHalted || Date.now() > deadline);
 
     try {
       const result = this.context.evalCode(code, filename, {
@@ -231,6 +240,18 @@ export class JsVMContext {
       if (result.error) {
         const errorValue = this.context.dump(result.error);
         result.error.dispose();
+
+        // Check if this was a halt (triggered by interrupt handler)
+        if (this.isHalted) {
+          return {
+            value: 'Halted',
+            consoleOutput: [
+              ...this.haltConsoleSnapshot,
+              { level: 'ERROR', message: this.haltMessage },
+            ],
+            isError: true,
+          };
+        }
 
         const message = this.formatError(errorValue);
         return {
@@ -244,6 +265,19 @@ export class JsVMContext {
       const loopError = await this.drainPendingJobs(deadline);
       if (loopError) {
         result.value.dispose();
+
+        // Check if this was a halt during async execution
+        if (loopError.startsWith('HALT:')) {
+          return {
+            value: 'Halted',
+            consoleOutput: [
+              ...this.haltConsoleSnapshot,
+              { level: 'ERROR', message: loopError.substring(5) },
+            ],
+            isError: true,
+          };
+        }
+
         return {
           value: loopError,
           consoleOutput: [...this.consoleOutput],
@@ -261,6 +295,19 @@ export class JsVMContext {
           promiseState.value.dispose();
         }
         result.value.dispose();
+
+        // Check if halt was called during execution (even if caught by user code)
+        if (this.isHalted) {
+          return {
+            value: 'Halted',
+            consoleOutput: [
+              ...this.haltConsoleSnapshot,
+              { level: 'ERROR', message: this.haltMessage },
+            ],
+            isError: true,
+          };
+        }
+
         return {
           value,
           consoleOutput: [...this.consoleOutput],
@@ -272,6 +319,19 @@ export class JsVMContext {
         const errorValue = this.context.dump(promiseState.error);
         promiseState.error.dispose();
         result.value.dispose();
+
+        // Check if halt was called during async execution
+        if (this.isHalted) {
+          return {
+            value: 'Halted',
+            consoleOutput: [
+              ...this.haltConsoleSnapshot,
+              { level: 'ERROR', message: this.haltMessage },
+            ],
+            isError: true,
+          };
+        }
+
         return {
           value: this.formatError(errorValue),
           consoleOutput: [...this.consoleOutput],
@@ -360,6 +420,12 @@ export class JsVMContext {
         if (pendingResult.error) {
           const errorValue = this.context.dump(pendingResult.error);
           pendingResult.error.dispose();
+
+          // Check if this was a halt
+          if (this.isHalted) {
+            return `HALT:${this.haltMessage}`;
+          }
+
           return this.formatError(errorValue);
         }
       }
@@ -522,6 +588,30 @@ export class JsVMContext {
     });
     this.context.setProp(this.context.global, 'clearInterval', clearIntervalFn);
     clearIntervalFn.dispose();
+  }
+
+  /**
+   * Set up halt(message) function.
+   * halt() immediately stops execution and logs the message at ERROR level.
+   *
+   * Implementation: halt sets a flag via host call, captures console snapshot, then throws.
+   * Even if user code catches the throw, the isHalted flag remains set and we override
+   * the result at the end of evaluation. Console output before halt() is preserved,
+   * but output after halt() (including catch blocks) is discarded.
+   */
+  private setupHalt(): void {
+    // Host function sets halt state, captures console snapshot, and throws to break execution
+    const haltFn = this.context.newFunction('halt', (messageHandle?: QuickJSHandle) => {
+      const message = messageHandle ? this.context.getString(messageHandle) : 'Halted';
+      this.isHalted = true;
+      this.haltMessage = message;
+      // Capture console output at halt time (logs before halt are preserved)
+      this.haltConsoleSnapshot = [...this.consoleOutput];
+      // Throw to break current execution (may be caught, but isHalted flag persists)
+      throw new Error('__HALT__');
+    });
+    this.context.setProp(this.context.global, 'halt', haltFn);
+    haltFn.dispose();
   }
 
   private stringify(value: unknown): string {

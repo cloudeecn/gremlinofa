@@ -208,13 +208,14 @@ function createJsClientSideTool(): ClientSideTool {
     description: `
 Execute JavaScript in a QuickJS sandbox (ES2023). Code runs inside an async function body, so use \`return\` to output values and \`await\` is supported at top level.
   - Usage: calculations, data transformation, string/JSON processing, algorithm implementation, file operations.
-  - Available APIs: ES2023 core, setTimeout, TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await.
+  - Available APIs: ES2023 core, setTimeout, TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await, halt.
   - fs API (async only, use with await): fs.readFile, fs.writeFile, fs.exists, fs.mkdir, fs.readdir, fs.unlink, fs.rmdir, fs.rename, fs.stat.
     - readFile(path) returns ArrayBuffer (binary), readFile(path, 'utf-8') returns string.
     - writeFile(path, data) accepts string or ArrayBuffer for binary files.
     - stat() returns {isFile, isDirectory, size, readonly, mtime, isBinary, mime}.
     - Example: \`const data = await fs.readFile('/data.json', 'utf-8'); return JSON.parse(data);\`
     - Note: /memories is read-only.
+  - halt(message): Immediately stops execution and outputs message at ERROR level.
   - Limitations: No fetch or DOM. setInterval runs once only. No ES modules.
   - Each call runs in a fresh context. Variables do NOT persist between calls. To persist data, use the fs API to write to files.
   - If /lib directory exists and contains .js files, they are pre-loaded as utilities (e.g., lodash UMD builds).

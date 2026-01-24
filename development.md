@@ -874,6 +874,7 @@ The `JsVMContext` class provides a browser-like JavaScript execution environment
 | `TextDecoder`            | UTF-8 bytes to string                                   |
 | `btoa(str)`              | Base64 encode                                           |
 | `atob(str)`              | Base64 decode                                           |
+| `halt(message)`          | Immediately stop execution, preserve logs before halt   |
 | `fs` / `__fs`            | VFS filesystem API (see below)                          |
 
 **UMD/IIFE Library Compatibility:**

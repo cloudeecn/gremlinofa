@@ -379,7 +379,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 - Tools registered with `toolRegistry.register()`, executed via `executeClientSideTool()`
 - Tool definitions sent to API via `getToolDefinitionsForAPI(apiType, enabledToolNames)`
 - `ClientSideTool` interface supports:
-  - `alwaysEnabled: true` - Tool included regardless of enabledToolNames (e.g., `ping`)
+  - `alwaysEnabled: true` - Tool included regardless of enabledToolNames
   - `apiOverrides: Partial<APIToolOverrides>` - Type-safe API-specific definition overrides using SDK types (`BetaToolUnion` for Anthropic, `ChatCompletionTool` for OpenAI, `Tool` for Responses API)
   - `systemPrompt?: string` - Injected after project's system prompt when tool is enabled; skipped if tool uses `apiOverrides` for the current API type (provider handles its own system prompt injection)
   - `renderInput?: (input) => string` - Transform tool input for display in BackstageView (default: JSON.stringify)
@@ -397,7 +397,6 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 - API-specific format generation:
   - **Anthropic**: `{ name, description, input_schema }` or custom override
   - **OpenAI/Responses**: `{ type: 'function', function: { name, description, parameters } }`
-- `ping` tool included for testing tool infrastructure ("test tool calling" → pong), marked `alwaysEnabled: true`
 - `memory` tool provides persistent virtual filesystem (see Memory Tool section below), dynamically registered/unregistered per project; two modes:
   - **Native mode (default)**: Uses Anthropic's `memory_20250818` shorthand via `apiOverrides`
   - **System prompt mode**: Injects memory listing + README.md into system prompt (toggle in Project Settings)

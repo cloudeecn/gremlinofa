@@ -605,6 +605,21 @@ describe('agenticLoop', () => {
   });
 
   describe('populateToolRenderFields', () => {
+    beforeEach(() => {
+      // Register a test tool for render field tests
+      toolRegistry.register({
+        name: 'test_render_tool',
+        description: 'Test tool for render field population',
+        inputSchema: { type: 'object', properties: {}, required: [] },
+        execute: async () => ({ content: 'ok' }),
+        iconInput: '🔧',
+      });
+    });
+
+    afterEach(() => {
+      toolRegistry.unregister('test_render_tool');
+    });
+
     it('should populate render fields for tool_use blocks', () => {
       const groups: RenderingBlockGroup[] = [
         {
@@ -613,7 +628,7 @@ describe('agenticLoop', () => {
             {
               type: 'tool_use',
               id: 'tool_1',
-              name: 'ping',
+              name: 'test_render_tool',
               input: { message: 'test' },
             } as ToolUseRenderBlock,
           ],
@@ -635,7 +650,7 @@ describe('agenticLoop', () => {
             {
               type: 'tool_use',
               id: 'tool_1',
-              name: 'ping',
+              name: 'test_render_tool',
               input: {},
             } as ToolUseRenderBlock,
           ],

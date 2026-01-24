@@ -4,6 +4,7 @@ import type {
   Message,
   MessageStopReason,
   Model,
+  ReasoningEffort,
   RenderingBlockGroup,
   RenderingContentBlock,
   ToolResultBlock,
@@ -23,6 +24,11 @@ import {
   parseResponsesStreamEvent,
 } from './responsesStreamMapper';
 import { getModelMetadataFor } from './modelMetadata';
+import { storage } from '../storage';
+import {
+  populateFromOpenRouterModel,
+  type OpenRouterModel,
+} from './model_metadatas/openRouterModelMapper';
 
 export class ResponsesClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
@@ -87,10 +93,14 @@ export class ResponsesClient implements APIClient {
     });
 
     // Convert OpenAI models to our Model format
-    const models: Model[] = chatModels.map(openaiModel =>
-      getModelMetadataFor(apiDefinition, openaiModel.id)
-    );
-
+    const models: Model[] = chatModels.map(rawModel => {
+      // Start with hardcoded knowledge as base
+      const model = getModelMetadataFor(apiDefinition, rawModel.id);
+      // Overlay OpenRouter-specific fields if present
+      populateFromOpenRouterModel(model, rawModel as unknown as OpenRouterModel);
+      return model;
+    });
+    console.debug(`Argumented models for ${apiDefinition.name}:`, models);
     return models;
   }
 
@@ -250,7 +260,9 @@ export class ResponsesClient implements APIClient {
         store: false, // Keep chat history in the app
       };
 
-      this.applyReasoning(requestParams, options);
+      // Get model metadata for reasoning configuration
+      const model = await storage.getModel(apiDefinition.id, modelId);
+      this.applyReasoning(requestParams, options, model);
 
       // Add tools if present
       if (tools.length > 0) {
@@ -434,89 +446,36 @@ export class ResponsesClient implements APIClient {
     requestParams: OpenAI.Responses.ResponseCreateParams,
     options: {
       temperature?: number;
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      reasoningEffort?: ReasoningEffort;
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
-    }
+    },
+    model?: Model
   ) {
-    const modelId = requestParams.model || '';
     const effort = options.reasoningEffort;
     const summary = options.reasoningSummary;
 
     if (options.temperature) requestParams.temperature = options.temperature;
 
-    // No reasoning models - early return
-    if (modelId.includes('gpt-5') && modelId.includes('-chat') && !modelId.includes('gpt-5.')) {
-      return;
-    }
-    if (modelId.startsWith('grok-4') && modelId.includes('non-reasoning')) {
+    // No reasoning support
+    if (model?.reasoningMode === 'none') {
       return;
     }
 
-    // OpenAI o-series: map to low/medium/high
-    if (modelId.startsWith('o')) {
-      const mappedEffort = mapReasoningEffort(effort, ['low', 'medium', 'high'] as const);
-      if (mappedEffort !== undefined || summary !== undefined) {
-        requestParams.reasoning = { effort: mappedEffort, summary };
-      }
-      requestParams.include = ['reasoning.encrypted_content'];
-      return;
-    }
+    const supportedEfforts = model?.supportedReasoningEfforts;
 
-    // gpt-5.1/5.2: all efforts supported
-    if (modelId.startsWith('gpt-5.1') || modelId.startsWith('gpt-5.2')) {
-      const mappedEffort = mapReasoningEffort(effort, [
-        'none',
-        'minimal',
-        'low',
-        'medium',
-        'high',
-      ] as const);
-      if (mappedEffort !== undefined || summary !== undefined) {
-        requestParams.reasoning = { effort: mappedEffort, summary };
-      }
-      requestParams.include = ['reasoning.encrypted_content'];
-      return;
-    }
-
-    // gpt-5: all except 'none'
-    if (modelId.startsWith('gpt-5')) {
-      const mappedEffort = mapReasoningEffort(effort, [
-        'minimal',
-        'low',
-        'medium',
-        'high',
-      ] as const);
-      if (mappedEffort !== undefined || summary !== undefined) {
-        requestParams.reasoning = { effort: mappedEffort, summary };
-      }
-      requestParams.include = ['reasoning.encrypted_content'];
-      return;
-    }
-
-    // xAI grok-3-mini: only low/high
-    if (modelId.startsWith('grok-3-mini')) {
-      const mappedEffort = mapReasoningEffort(effort, ['low', 'high'] as const);
-      if (mappedEffort !== undefined || summary !== undefined) {
-        requestParams.reasoning = { effort: mappedEffort, summary };
+    // Model with reasoning but no configurable effort (e.g., grok-4)
+    if (!supportedEfforts || supportedEfforts.length === 0) {
+      if (model?.reasoningMode === 'always' || model?.reasoningMode === 'optional') {
+        requestParams.reasoning = { summary };
         requestParams.include = ['reasoning.encrypted_content'];
       }
       return;
     }
 
-    // xAI grok-4: reasoning-only, no effort param
-    if (modelId.startsWith('grok-4')) {
-      if (summary !== undefined) {
-        requestParams.reasoning = { summary };
-      }
-      requestParams.include = ['reasoning.encrypted_content'];
-      return;
-    }
-
-    // Other models: inject reasoning if effort or summary specified
-    if (effort !== undefined || summary !== undefined) {
-      requestParams.reasoning = { summary };
-      requestParams.include = ['reasoning.encrypted_content'];
-    }
+    // Model with configurable reasoning effort
+    const mappedEffort = mapReasoningEffort(effort, supportedEfforts as ReasoningEffort[]);
+    requestParams.reasoning = { effort: mappedEffort, summary };
+    requestParams.include = ['reasoning.encrypted_content'];
   }
 
   migrateMessageRendering(

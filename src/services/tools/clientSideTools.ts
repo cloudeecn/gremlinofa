@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ChatCompletionTool } from 'openai/resources/index.mjs';
 import type OpenAI from 'openai';
-import type { APIType, ClientSideTool, ToolResult } from '../../types';
+import type { APIType, ClientSideTool, SystemPromptContext, ToolResult } from '../../types';
 
 /**
  * Registry for client-side tools that run locally instead of on the API server.
@@ -63,17 +63,35 @@ class ClientSideToolRegistry {
   /**
    * Get system prompts from enabled tools that don't use apiOverrides for the given API type.
    * Returns array of non-empty system prompts to be appended to the project's system prompt.
+   * Handles both static strings and async functions.
    */
-  getSystemPrompts(apiType: APIType, enabledToolNames: string[]): string[] {
-    return this.getEnabledTools(enabledToolNames)
-      .filter(tool => {
-        // Skip if tool uses an apiOverrides for this API type
-        if (tool.apiOverrides?.[apiType]) return false;
-        // Skip if no systemPrompt defined
-        if (!tool.systemPrompt) return false;
-        return true;
-      })
-      .map(tool => tool.systemPrompt!);
+  async getSystemPrompts(
+    apiType: APIType,
+    enabledToolNames: string[],
+    context?: SystemPromptContext
+  ): Promise<string[]> {
+    const toolsWithPrompts = this.getEnabledTools(enabledToolNames).filter(tool => {
+      // Skip if tool uses an apiOverrides for this API type
+      if (tool.apiOverrides?.[apiType]) return false;
+      // Skip if no systemPrompt defined
+      if (!tool.systemPrompt) return false;
+      return true;
+    });
+
+    const prompts: string[] = [];
+    for (const tool of toolsWithPrompts) {
+      const promptDef = tool.systemPrompt!;
+      if (typeof promptDef === 'function') {
+        if (context) {
+          const result = await promptDef(context);
+          if (result) prompts.push(result);
+        }
+        // If no context provided, skip function-based prompts
+      } else {
+        prompts.push(promptDef);
+      }
+    }
+    return prompts;
   }
 
   /**

@@ -4,16 +4,21 @@
  * Client-side tool that provides Claude with a persistent virtual filesystem.
  * Implements Anthropic's memory tool commands: view, create, str_replace, insert, delete, rename.
  *
+ * Supports two modes:
+ * - Native mode (Anthropic): Uses memory_20250818 shorthand via apiOverrides
+ * - System prompt mode: Injects memory listing and README.md into system prompt
+ *
  * Internally uses VfsService for tree-structured storage with versioning.
  */
 
-import { type ClientSideTool, type ToolResult } from '../../types';
+import { type ClientSideTool, type SystemPromptContext, type ToolResult } from '../../types';
 import * as vfs from '../vfs/vfsService';
 import { VfsError } from '../vfs/vfsService';
 import { toolRegistry } from './clientSideTools';
 
 const MEMORIES_ROOT = '/memories';
 const MAX_LINE_COUNT = 999999;
+const README_MAX_CHARS = 32000; // 32k limit for README.md content
 
 /** Memory tool command input types */
 interface ViewInput {
@@ -626,65 +631,210 @@ function renderMemoryInput(input: Record<string, unknown>): string {
 }
 
 /**
+ * Generate the memory system prompt for a project.
+ * Returns listing of /memories and content of /memories/README.md (if exists).
+ */
+async function getMemorySystemPrompt(context: SystemPromptContext): Promise<string> {
+  const { projectId } = context;
+
+  const parts: string[] = [];
+
+  // Part 1: Description and file listing
+  const description = `You have access to a persistent memory system under /memories with "memory" tool. Use it to record your progress, status, thoughts, and important information across conversations. Changes to README.md will immediately reflect in this system prompt on the next message.
+
+Unless asked otherwise, as you make progress, record status / progress / thoughts etc in your memory and use README.md as an index.`;
+
+  try {
+    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT);
+    if (memoriesExists) {
+      const entries = await listTwoLevels(projectId, MEMORIES_ROOT);
+
+      if (entries.length > 0) {
+        const listing = entries
+          .map(entry => {
+            const size = entry.size !== undefined ? formatSize(entry.size) : '0';
+            return `${size}\t${entry.path}`;
+          })
+          .join('\n');
+
+        parts.push(`## Memory
+
+${description}
+
+### Files
+
+Here are the files and directories up to 2 levels deep in /memories:
+<listing>
+${listing}
+</listing>`);
+      } else {
+        parts.push(`## Memory
+
+${description}
+
+The /memories directory is empty.`);
+      }
+    } else {
+      parts.push(`## Memory
+
+${description}
+
+The /memories directory is empty.`);
+    }
+  } catch {
+    parts.push(`## Memory
+
+${description}
+
+The /memories directory is empty.`);
+  }
+
+  // Part 2: Read /memories/README.md if it exists
+  const readmePath = `${MEMORIES_ROOT}/README.md`;
+  try {
+    const readmeExists = await vfs.exists(projectId, readmePath);
+    if (readmeExists) {
+      const content = await vfs.readFile(projectId, readmePath);
+      const lines = content.split('\n');
+      const totalLines = lines.length;
+
+      if (content.length > README_MAX_CHARS) {
+        // Truncate and add note
+        let charCount = 0;
+        let displayedLines = 0;
+
+        for (let i = 0; i < lines.length; i++) {
+          charCount += lines[i].length + 1; // +1 for newline
+          if (charCount > README_MAX_CHARS) break;
+          displayedLines++;
+        }
+
+        const truncatedContent = lines.slice(0, displayedLines).join('\n');
+        parts.push(`## /memories/README.md
+
+<content>
+${truncatedContent}
+</content>
+
+[Content truncated: showing lines 1-${displayedLines} of ${totalLines} total. Use the memory tool's view command with view_range to see more.]`);
+      } else {
+        parts.push(`## /memories/README.md
+
+<content>
+${content}
+</content>`);
+      }
+    }
+  } catch {
+    // README.md doesn't exist or can't be read, skip
+  }
+
+  return parts.join('\n\n');
+}
+
+// Tool description per Anthropic spec
+const MEMORY_TOOL_DESCRIPTION = `Tool for reading, writing, and managing files in a memory system that lives under /memories. This system records your own memory, and is initialized as an empty folder when the task started. This tool can only change files under /memories. This is your memory, you are free to structure this directory as you see fit.
+* The view command supports the following cases:
+  - Directories: Lists files and directories up to 2 levels deep, ignoring hidden items and node_modules
+  - Text files: Displays numbered lines. Lines are determined from Python's .splitlines() method, which recognizes all standard line breaks. If the file contains more than 16000 characters, the output will be truncated.
+* The create command creates or overwrites text files with the content specified in the file_text parameter.
+* The str_replace command replaces text in a file. Requires an exact, unique match of old_str (whitespace sensitive).
+  - Will fail if old_str doesn't exist or appears multiple times
+  - Omitting new_str deletes the matched text
+* The insert command inserts the text insert_text at the line insert_line.
+* The delete command deletes a file or directory (including all contents if a directory).
+* The rename command renames a file or directory. Both old_path and new_path must be provided.
+* All operations are restricted to files and directories within /memories.
+* You cannot delete or rename /memories itself, only its contents.
+* Note: when editing your memory folder, always try to keep the content up-to-date, coherent and organized. You can rename or delete files that are no longer relevant. Do not create new files unless necessary.`;
+
+// Input schema per Anthropic spec
+const MEMORY_INPUT_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    command: {
+      description:
+        'The operation to perform. Choose from: view, create, str_replace, insert, delete, rename.',
+      enum: ['view', 'create', 'str_replace', 'insert', 'delete', 'rename'],
+      type: 'string',
+    },
+    file_text: {
+      description:
+        'Required for create command. Contains the complete text content to write to the file.',
+      type: 'string',
+    },
+    insert_line: {
+      description:
+        'Required parameter of insert command with line position for insertion: 0 places text at the beginning of the file, N places text after line N, and using the total number of lines in the file places text at the end.',
+      type: 'integer',
+    },
+    insert_text: {
+      description:
+        'Required parameter of insert command, containing the text to insert. Must end with a newline character for the new text to appear on a separate line.',
+      type: 'string',
+    },
+    new_path: {
+      description: 'Required for rename command. The new path for the file or directory.',
+      type: 'string',
+    },
+    new_str: {
+      description:
+        'Optional for str_replace command. The text that will replace old_str. If omitted, old_str will be deleted without replacement.',
+      type: 'string',
+    },
+    old_path: {
+      description:
+        'Required for rename command. The current path of the file or directory to rename.',
+      type: 'string',
+    },
+    old_str: {
+      description:
+        'Required parameter of str_replace command, with string to be replaced. Must be an EXACT and UNIQUE match in the file.',
+      type: 'string',
+    },
+    path: {
+      description:
+        'Required for view, create, str_replace, insert, and delete commands. Absolute path to file or directory.',
+      type: 'string',
+    },
+    view_range: {
+      description:
+        'Optional parameter for the view command (text files only). Format: [start_line, end_line]',
+      items: { type: 'integer' },
+      type: 'array',
+    },
+  },
+  required: ['command'],
+};
+
+// Track whether to use system prompt mode (set per project during init)
+const projectUseSystemPrompt = new Map<string, boolean>();
+
+/**
+ * Set whether to use system prompt mode for a project.
+ * Called during memory tool initialization based on project settings.
+ */
+export function setMemoryUseSystemPrompt(projectId: string, useSystemPrompt: boolean): void {
+  projectUseSystemPrompt.set(projectId, useSystemPrompt);
+}
+
+/**
  * Create a ClientSideTool adapter for the memory tool.
  * The actual execution is delegated to the MemoryToolInstance.
- * Anthropic uses the memory_20250818 shorthand; other APIs use the full schema.
+ *
+ * Two modes:
+ * - Native mode (default for Anthropic): Uses memory_20250818 shorthand via apiOverrides
+ * - System prompt mode: Injects memory listing into system prompt, no apiOverrides
  */
 export function createMemoryClientSideTool(projectId: string): ClientSideTool {
-  return {
+  const useSystemPrompt = projectUseSystemPrompt.get(projectId) ?? false;
+
+  const tool: ClientSideTool = {
     name: 'memory',
-    description:
-      'Use this tool to store and retrieve information across conversations. Files persist per project.',
+    description: MEMORY_TOOL_DESCRIPTION,
     iconInput: '🧠',
     renderInput: renderMemoryInput,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        command: {
-          type: 'string',
-          enum: ['view', 'create', 'str_replace', 'insert', 'delete', 'rename'],
-          description: 'The command to execute',
-        },
-        path: {
-          type: 'string',
-          description: 'Path to the file or directory',
-        },
-        file_text: {
-          type: 'string',
-          description: 'Content for create command',
-        },
-        old_str: {
-          type: 'string',
-          description: 'String to find for str_replace command',
-        },
-        new_str: {
-          type: 'string',
-          description: 'Replacement string for str_replace command',
-        },
-        insert_line: {
-          type: 'number',
-          description: 'Line number to insert at for insert command (0-indexed)',
-        },
-        insert_text: {
-          type: 'string',
-          description: 'Text to insert for insert command',
-        },
-        old_path: {
-          type: 'string',
-          description: 'Source path for rename command',
-        },
-        new_path: {
-          type: 'string',
-          description: 'Destination path for rename command',
-        },
-        view_range: {
-          type: 'array',
-          items: { type: 'number' },
-          description: 'Optional line range [start, end] for view command',
-        },
-      },
-      required: ['command'],
-    },
+    inputSchema: MEMORY_INPUT_SCHEMA,
     execute: async (input: Record<string, unknown>): Promise<ToolResult> => {
       const instance = getMemoryTool(projectId);
       if (!instance) {
@@ -695,12 +845,34 @@ export function createMemoryClientSideTool(projectId: string): ClientSideTool {
       }
       return instance.execute(input);
     },
-    // Anthropic uses shorthand type; other APIs get the full schema generated
-    apiOverrides: {
+  };
+
+  // Only add systemPrompt function if using system prompt mode
+  if (useSystemPrompt) {
+    tool.systemPrompt = getMemorySystemPrompt;
+  } else {
+    // Use Anthropic's native memory tool shorthand
+    tool.apiOverrides = {
       ['anthropic']: {
         type: 'memory_20250818',
         name: 'memory',
       },
-    },
-  };
+    };
+  }
+
+  return tool;
+}
+
+/**
+ * Re-register the memory tool when settings change.
+ * Called when project.memoryUseSystemPrompt changes.
+ */
+export function updateMemoryToolMode(projectId: string, useSystemPrompt: boolean): void {
+  setMemoryUseSystemPrompt(projectId, useSystemPrompt);
+
+  // Re-register if already initialized
+  if (instances.has(projectId)) {
+    toolRegistry.unregister('memory');
+    toolRegistry.register(createMemoryClientSideTool(projectId));
+  }
 }

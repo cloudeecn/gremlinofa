@@ -63,6 +63,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const tooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(project?.memoryEnabled || false);
+  const [memoryUseSystemPrompt, setMemoryUseSystemPrompt] = useState(
+    project?.memoryUseSystemPrompt || false
+  );
   const [jsExecutionEnabled, setJsExecutionEnabled] = useState(
     project?.jsExecutionEnabled || false
   );
@@ -106,6 +109,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setMetadataTemplate(project.metadataTemplate || '{{userMessage}}');
       setMetadataNewContext(project.metadataNewContext || false);
       setMemoryEnabled(project.memoryEnabled || false);
+      setMemoryUseSystemPrompt(project.memoryUseSystemPrompt || false);
       setJsExecutionEnabled(project.jsExecutionEnabled || false);
       setJsLibEnabled(project.jsLibEnabled ?? true);
       setFsToolEnabled(project.fsToolEnabled || false);
@@ -166,6 +170,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         metadataTemplate,
         metadataNewContext,
         memoryEnabled,
+        memoryUseSystemPrompt,
         jsExecutionEnabled,
         jsLibEnabled,
         fsToolEnabled,
@@ -201,6 +206,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     metadataTemplate,
     metadataNewContext,
     memoryEnabled,
+    memoryUseSystemPrompt,
     jsExecutionEnabled,
     jsLibEnabled,
     fsToolEnabled,
@@ -780,6 +786,32 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                         className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
+
+                    {/* Memory Use System Prompt - nested under Memory */}
+                    {memoryEnabled && (
+                      <div className="mt-2 ml-4 flex items-center justify-between border-l-2 border-gray-200 pl-4">
+                        <div>
+                          <label
+                            htmlFor="memoryUseSystemPrompt"
+                            className="cursor-pointer text-sm font-medium text-gray-900"
+                          >
+                            (Anthropic) Use System Prompt Mode
+                          </label>
+                          <p className="text-xs text-gray-500">
+                            Inject memory listing into system prompt instead of native tool. (Cannot
+                            disable for other providers.)
+                          </p>
+                        </div>
+                        <input
+                          id="memoryUseSystemPrompt"
+                          type="checkbox"
+                          checked={memoryUseSystemPrompt}
+                          onChange={e => setMemoryUseSystemPrompt(e.target.checked)}
+                          className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    )}
+
                     <Link
                       to={`/project/${projectId}/vfs/memories`}
                       className="mt-2 block text-sm text-blue-600 hover:text-blue-700 hover:underline"

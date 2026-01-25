@@ -680,8 +680,33 @@ export class ResponsesClient implements APIClient {
 
   /**
    * Get client-side tool definitions for Responses API format.
+   * Translates standard definitions to { type: 'function', name, description, parameters, strict: false }
    */
-  protected getClientSideTools(enabledTools: string[]): OpenAI.Responses.Tool[] {
-    return toolRegistry.getToolDefinitionsForAPI('responses_api', enabledTools);
+  protected getClientSideTools(
+    enabledTools: string[],
+    toolOptions: Record<string, Record<string, boolean>> = {}
+  ): OpenAI.Responses.Tool[] {
+    const standardDefs = toolRegistry.getToolDefinitions(enabledTools, toolOptions);
+
+    return standardDefs.map(def => {
+      // Check for provider-specific override first
+      const override = toolRegistry.getToolOverride(
+        def.name,
+        'responses_api',
+        toolOptions[def.name] ?? {}
+      );
+      if (override) {
+        return override as OpenAI.Responses.Tool;
+      }
+
+      // Translate standard definition to Responses API format
+      return {
+        type: 'function' as const,
+        name: def.name,
+        description: def.description,
+        parameters: def.input_schema,
+        strict: false,
+      };
+    });
   }
 }

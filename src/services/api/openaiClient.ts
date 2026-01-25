@@ -606,9 +606,35 @@ export class OpenAIClient implements APIClient {
   }
 
   /**
-   * Get client-side tool definitions for OpenAI format.
+   * Get client-side tool definitions for OpenAI Chat Completions format.
+   * Translates standard definitions to { type: 'function', function: { name, description, parameters } }
    */
-  protected getClientSideTools(enabledTools: string[]): ChatCompletionTool[] {
-    return toolRegistry.getToolDefinitionsForAPI('chatgpt', enabledTools);
+  protected getClientSideTools(
+    enabledTools: string[],
+    toolOptions: Record<string, Record<string, boolean>> = {}
+  ): ChatCompletionTool[] {
+    const standardDefs = toolRegistry.getToolDefinitions(enabledTools, toolOptions);
+
+    return standardDefs.map(def => {
+      // Check for provider-specific override first
+      const override = toolRegistry.getToolOverride(
+        def.name,
+        'chatgpt',
+        toolOptions[def.name] ?? {}
+      );
+      if (override) {
+        return override as ChatCompletionTool;
+      }
+
+      // Translate standard definition to Chat Completions format
+      return {
+        type: 'function' as const,
+        function: {
+          name: def.name,
+          description: def.description,
+          parameters: def.input_schema,
+        },
+      };
+    });
   }
 }

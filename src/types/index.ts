@@ -188,14 +188,22 @@ export interface Project {
   metadataTemplate?: string;
   metadataNewContext?: boolean;
 
-  // Memory tool
+  // Tool configuration (new unified format)
+  enabledTools?: string[]; // ['memory', 'javascript', 'filesystem']
+  toolOptions?: Record<string, ToolOptions>; // Per-tool options, e.g., { memory: { useSystemPrompt: true } }
+
+  // === DEPRECATED tool fields (kept for migration only) ===
+  /** @deprecated Use enabledTools.includes('memory') instead */
   memoryEnabled?: boolean;
-  memoryUseSystemPrompt?: boolean; // Use system prompt injection instead of native memory tool (Anthropic)
-  // JavaScript execution tool
+  /** @deprecated Use toolOptions.memory.useSystemPrompt instead */
+  memoryUseSystemPrompt?: boolean;
+  /** @deprecated Use enabledTools.includes('javascript') instead */
   jsExecutionEnabled?: boolean;
-  jsLibEnabled?: boolean; // Auto-load /lib/*.js scripts when JS session starts
-  // Filesystem tool
+  /** @deprecated Use toolOptions.javascript.loadLib instead */
+  jsLibEnabled?: boolean;
+  /** @deprecated Use enabledTools.includes('filesystem') instead */
   fsToolEnabled?: boolean;
+
   // Disable streaming (use non-streaming API calls)
   disableStream?: boolean;
 }
@@ -350,6 +358,24 @@ export interface ToolResult {
   };
 }
 
+/** Per-tool options - keyed by option ID, boolean values only */
+export type ToolOptions = Record<string, boolean>;
+
+/** Definition for a configurable tool option */
+export interface ToolOptionDefinition {
+  id: string; // e.g., "loadLib"
+  label: string; // e.g., "Load /lib Scripts"
+  description?: string; // Shown below the toggle in ProjectSettings (deprecated, use subtitle)
+  subtitle?: string; // Short UI description shown below the toggle
+  default: boolean;
+}
+
+/** Context passed to tool execute function */
+export interface ToolContext {
+  projectId: string;
+  chatId?: string;
+}
+
 /** Context passed to system prompt functions for dynamic generation */
 export interface SystemPromptContext {
   projectId: string;
@@ -357,23 +383,67 @@ export interface SystemPromptContext {
   chatId?: string;
   apiDefinitionId: string;
   modelId: string;
+  /** API type of the current API definition (optional for backward compat) */
+  apiType?: APIType;
+}
+
+/** Input schema type for tool definitions - includes index signature for SDK compatibility */
+export interface ToolInputSchema {
+  type: 'object';
+  properties: Record<string, unknown>;
+  required: string[];
+  [key: string]: unknown;
+}
+
+/**
+ * Standard tool definition format (Anthropic-aligned).
+ * API clients translate this to their provider-specific format.
+ */
+export interface StandardToolDefinition {
+  name: string;
+  description: string;
+  input_schema: ToolInputSchema;
 }
 
 export interface ClientSideTool {
   name: string;
-  description: string;
-  inputSchema: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required: string[];
-  };
-  execute(input: Record<string, unknown>): Promise<ToolResult>;
-  /** API-specific definition overrides (e.g., Anthropic's memory_20250818 shorthand) */
-  apiOverrides?: Partial<APIToolOverrides>;
-  /** Tools with alwaysEnabled: true are included regardless of enabledTools list */
-  alwaysEnabled?: boolean;
-  /** System prompt to inject when tool is enabled. Can be a string or async function. Skipped if apiOverrides is used for the current API type. */
-  systemPrompt?: string | ((context: SystemPromptContext) => Promise<string> | string);
+  /** Display name for UI (e.g., "JavaScript Execution"). Falls back to name if not provided. */
+  displayName?: string;
+  /** Short UI description shown below the tool toggle in ProjectSettings */
+  displaySubtitle?: string;
+  /** Tool description - can be static string or function for dynamic content */
+  description: string | ((options: ToolOptions) => string);
+  /** Input schema - can be static or function for dynamic content */
+  inputSchema: ToolInputSchema | ((options: ToolOptions) => ToolInputSchema);
+  /** Tool-specific boolean options the user can configure per-project */
+  optionDefinitions?: ToolOptionDefinition[];
+  /**
+   * Execute the tool. New signature receives toolOptions and context.
+   * @param input - The tool input parameters
+   * @param toolOptions - Tool-specific options (optional for backward compat)
+   * @param context - Execution context with projectId, chatId (optional for backward compat)
+   */
+  execute(
+    input: Record<string, unknown>,
+    toolOptions?: ToolOptions,
+    context?: ToolContext
+  ): Promise<ToolResult>;
+  /**
+   * Dynamic API overrides - returns provider-specific tool definition.
+   * Return undefined to use standard definition (with resolved description/inputSchema).
+   */
+  getApiOverride?(
+    apiType: APIType,
+    toolOptions: ToolOptions
+  ): Anthropic.Beta.BetaToolUnion | ChatCompletionTool | OpenAI.Responses.Tool | undefined;
+  /**
+   * System prompt to inject when tool is enabled.
+   * Can be a static string or async function that receives context and toolOptions.
+   * Skipped if getApiOverride() returns non-undefined for the current API type.
+   */
+  systemPrompt?:
+    | string
+    | ((context: SystemPromptContext, toolOptions: ToolOptions) => Promise<string> | string);
   /** Transform tool input for display in tool_use blocks. Default: JSON.stringify */
   renderInput?: (input: Record<string, unknown>) => string;
   /** Transform tool output for display in tool_result blocks. Default: show raw content */
@@ -382,6 +452,12 @@ export interface ClientSideTool {
   iconInput?: string;
   /** Icon for tool_result blocks (emoji/unicode). Default:  or L based on error state */
   iconOutput?: string;
+
+  // === DEPRECATED fields (kept for migration) ===
+  /** @deprecated Use getApiOverride() instead */
+  apiOverrides?: Partial<APIToolOverrides>;
+  /** @deprecated No longer used - tools are included based on enabledTools list */
+  alwaysEnabled?: boolean;
 }
 
 // Virtual Filesystem (VFS) types

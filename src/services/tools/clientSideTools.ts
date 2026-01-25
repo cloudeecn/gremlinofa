@@ -1,7 +1,27 @@
-import type Anthropic from '@anthropic-ai/sdk';
-import type { ChatCompletionTool } from 'openai/resources/index.mjs';
-import type OpenAI from 'openai';
-import type { APIType, ClientSideTool, SystemPromptContext, ToolResult } from '../../types';
+import type {
+  APIType,
+  ClientSideTool,
+  StandardToolDefinition,
+  SystemPromptContext,
+  ToolContext,
+  ToolInputSchema,
+  ToolOptions,
+  ToolResult,
+} from '../../types';
+
+/**
+ * Resolve description from tool - handles both static string and function.
+ */
+function resolveDescription(tool: ClientSideTool, options: ToolOptions): string {
+  return typeof tool.description === 'function' ? tool.description(options) : tool.description;
+}
+
+/**
+ * Resolve inputSchema from tool - handles both static object and function.
+ */
+function resolveInputSchema(tool: ClientSideTool, options: ToolOptions): ToolInputSchema {
+  return typeof tool.inputSchema === 'function' ? tool.inputSchema(options) : tool.inputSchema;
+}
 
 /**
  * Registry for client-side tools that run locally instead of on the API server.
@@ -10,169 +30,128 @@ import type { APIType, ClientSideTool, SystemPromptContext, ToolResult } from '.
 class ClientSideToolRegistry {
   private tools = new Map<string, ClientSideTool>();
 
-  register(tool: ClientSideTool): void {
-    this.tools.set(tool.name, tool);
+  /**
+   * Register all tools at app startup.
+   * This is the primary registration method - tools are statically defined.
+   */
+  registerAll(tools: ClientSideTool[]): void {
+    for (const tool of tools) {
+      this.tools.set(tool.name, tool);
+    }
   }
 
-  unregister(name: string): void {
-    this.tools.delete(name);
-  }
-
+  /**
+   * Get a tool by name (from all registered tools).
+   */
   get(name: string): ClientSideTool | undefined {
     return this.tools.get(name);
   }
 
-  isClientSideTool(name: string): boolean {
+  /**
+   * Check if tool exists in registry.
+   */
+  has(name: string): boolean {
     return this.tools.has(name);
   }
 
-  getAll(): ClientSideTool[] {
+  /**
+   * Get all registered tools (for ProjectSettings UI).
+   */
+  getAllTools(): ClientSideTool[] {
     return Array.from(this.tools.values());
   }
 
   /**
-   * Get tool definitions formatted for the Anthropic API.
-   * Only includes tools that should be sent to the API.
-   * @deprecated Use getToolDefinitionsForAPI() for API-specific formats
-   */
-  getToolDefinitions(): Array<{
-    name: string;
-    description: string;
-    input_schema: {
-      type: 'object';
-      properties: Record<string, unknown>;
-      required: string[];
-    };
-  }> {
-    return this.getAll().map(tool => ({
-      name: tool.name,
-      description: tool.description,
-      input_schema: tool.inputSchema,
-    }));
-  }
-
-  /**
-   * Get tools that should be included based on enabledToolNames.
-   * Includes alwaysEnabled tools + explicitly enabled tools.
-   */
-  private getEnabledTools(enabledToolNames: string[]): ClientSideTool[] {
-    const enabledSet = new Set(enabledToolNames);
-    return this.getAll().filter(tool => tool.alwaysEnabled || enabledSet.has(tool.name));
-  }
-
-  /**
-   * Get system prompts from enabled tools that don't use apiOverrides for the given API type.
+   * Get system prompts from enabled tools that don't use getApiOverride for the given API type.
    * Returns array of non-empty system prompts to be appended to the project's system prompt.
    * Handles both static strings and async functions.
+   *
+   * @param apiType - The API type
+   * @param enabledToolNames - List of enabled tool names
+   * @param context - System prompt context
+   * @param toolOptions - Per-tool options
    */
   async getSystemPrompts(
     apiType: APIType,
     enabledToolNames: string[],
-    context?: SystemPromptContext
+    context: SystemPromptContext,
+    toolOptions: Record<string, ToolOptions>
   ): Promise<string[]> {
-    const toolsWithPrompts = this.getEnabledTools(enabledToolNames).filter(tool => {
-      // Skip if tool uses an apiOverrides for this API type
-      if (tool.apiOverrides?.[apiType]) return false;
-      // Skip if no systemPrompt defined
-      if (!tool.systemPrompt) return false;
-      return true;
-    });
-
+    const toolsToCheck = this.getAllTools().filter(t => enabledToolNames.includes(t.name));
     const prompts: string[] = [];
-    for (const tool of toolsWithPrompts) {
-      const promptDef = tool.systemPrompt!;
+
+    for (const tool of toolsToCheck) {
+      // Get tool-specific options
+      const opts = toolOptions[tool.name] ?? {};
+
+      // Skip if tool uses getApiOverride for this API type (provider handles prompts)
+      if (tool.getApiOverride) {
+        const override = tool.getApiOverride(apiType, opts);
+        if (override) continue;
+      }
+
+      // Skip if no systemPrompt defined
+      if (!tool.systemPrompt) continue;
+
+      // Resolve system prompt
+      const promptDef = tool.systemPrompt;
       if (typeof promptDef === 'function') {
-        if (context) {
-          const result = await promptDef(context);
-          if (result) prompts.push(result);
-        }
-        // If no context provided, skip function-based prompts
+        const result = await promptDef(context, opts);
+        if (result) prompts.push(result);
       } else {
         prompts.push(promptDef);
       }
     }
+
     return prompts;
   }
 
   /**
-   * Get tool definitions for a specific API type.
-   * Includes alwaysEnabled tools + explicitly enabled tools.
-   * Returns API-specific format (uses apiOverrides when available).
+   * Get standard tool definitions for enabled tools.
+   * Returns API-agnostic format; clients translate to their provider-specific format.
+   *
+   * @param enabledToolNames - List of enabled tool names
+   * @param toolOptions - Per-tool options
    */
-  getToolDefinitionsForAPI(
-    apiType: 'anthropic',
-    enabledToolNames: string[]
-  ): Anthropic.Beta.BetaToolUnion[];
-  getToolDefinitionsForAPI(apiType: 'chatgpt', enabledToolNames: string[]): ChatCompletionTool[];
-  getToolDefinitionsForAPI(
-    apiType: 'responses_api',
-    enabledToolNames: string[]
-  ): OpenAI.Responses.Tool[];
-  getToolDefinitionsForAPI(
-    apiType: 'webllm',
-    enabledToolNames: string[]
-  ): Anthropic.Beta.BetaToolUnion[];
-  getToolDefinitionsForAPI(
+  getToolDefinitions(
+    enabledToolNames: string[],
+    toolOptions: Record<string, ToolOptions>
+  ): StandardToolDefinition[] {
+    const enabledTools = this.getAllTools().filter(t => enabledToolNames.includes(t.name));
+
+    return enabledTools.map(tool => {
+      const opts = toolOptions[tool.name] ?? {};
+      return {
+        name: tool.name,
+        description: resolveDescription(tool, opts),
+        input_schema: resolveInputSchema(tool, opts),
+      };
+    });
+  }
+
+  /**
+   * Get provider-specific override for a tool, if one exists.
+   * Returns undefined if no override exists (client should use standard definition).
+   *
+   * @param toolName - Name of the tool
+   * @param apiType - The API type
+   * @param toolOptions - Per-tool options
+   */
+  getToolOverride(
+    toolName: string,
     apiType: APIType,
-    enabledToolNames: string[]
-  ): Anthropic.Beta.BetaToolUnion[] | ChatCompletionTool[] | OpenAI.Responses.Tool[] {
-    const tools = this.getEnabledTools(enabledToolNames);
+    toolOptions: ToolOptions
+  ): unknown | undefined {
+    const tool = this.tools.get(toolName);
+    if (!tool?.getApiOverride) return undefined;
+    return tool.getApiOverride(apiType, toolOptions);
+  }
 
-    switch (apiType) {
-      case 'anthropic': {
-        const mapper = (tool: ClientSideTool): Anthropic.Beta.BetaToolUnion => {
-          const override = tool.apiOverrides?.['anthropic'];
-          if (override) return override;
-          return {
-            name: tool.name,
-            description: tool.description,
-            input_schema: tool.inputSchema,
-          };
-        };
-        return tools.map(mapper);
-      }
-
-      case 'chatgpt': {
-        const mapper = (tool: ClientSideTool): ChatCompletionTool => {
-          const override = tool.apiOverrides?.['chatgpt'];
-          if (override) return override;
-          return {
-            type: 'function',
-            function: {
-              name: tool.name,
-              description: tool.description,
-              parameters: tool.inputSchema,
-            },
-          };
-        };
-        return tools.map(mapper);
-      }
-
-      case 'responses_api': {
-        const mapper = (tool: ClientSideTool): OpenAI.Responses.Tool => {
-          const override = tool.apiOverrides?.['responses_api'];
-          if (override) return override;
-          // Responses API uses flat structure (no nested "function" object)
-          return {
-            type: 'function',
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.inputSchema,
-            strict: false,
-          };
-        };
-        return tools.map(mapper);
-      }
-
-      case 'webllm': {
-        // WebLLM doesn't support tools yet - use Anthropic format as fallback
-        return tools.map(tool => ({
-          name: tool.name,
-          description: tool.description,
-          input_schema: tool.inputSchema,
-        }));
-      }
-    }
+  /**
+   * Reset registry to empty state. For tests only.
+   */
+  _resetForTests(): void {
+    this.tools.clear();
   }
 }
 
@@ -181,12 +160,31 @@ export const toolRegistry = new ClientSideToolRegistry();
 
 /**
  * Execute a client-side tool by name.
- * Returns the tool result or an error if the tool is not found.
+ *
+ * - Checks if tool is in enabledToolNames (disabled tools return "Unknown tool" error)
+ * - Passes toolOptions and context to execute()
+ *
+ * @param toolName - Name of the tool to execute
+ * @param input - Tool input parameters
+ * @param enabledToolNames - List of enabled tool names
+ * @param toolOptions - Per-tool options
+ * @param context - Execution context
  */
 export async function executeClientSideTool(
   toolName: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  enabledToolNames: string[],
+  toolOptions: Record<string, ToolOptions>,
+  context: ToolContext
 ): Promise<ToolResult> {
+  // Check if tool is enabled
+  if (!enabledToolNames.includes(toolName)) {
+    return {
+      content: `Unknown tool: ${toolName}`,
+      isError: true,
+    };
+  }
+
   const tool = toolRegistry.get(toolName);
 
   if (!tool) {
@@ -197,7 +195,8 @@ export async function executeClientSideTool(
   }
 
   try {
-    return await tool.execute(input);
+    const opts = toolOptions[toolName] ?? {};
+    return await tool.execute(input, opts, context);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {

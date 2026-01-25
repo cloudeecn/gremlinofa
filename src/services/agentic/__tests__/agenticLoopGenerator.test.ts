@@ -141,6 +141,7 @@ const createMockOptions = (overrides?: Partial<AgenticLoopOptions>): AgenticLoop
   systemPrompt: 'You are a helpful assistant.',
   webSearchEnabled: false,
   enabledTools: [],
+  toolOptions: {},
   disableStream: false,
   enableReasoning: false,
   reasoningBudgetTokens: 0,
@@ -343,7 +344,13 @@ describe('agenticLoopGenerator', () => {
       const result = await collectAgenticLoop(runAgenticLoop(options, context));
 
       expect(result.status).toBe('complete');
-      expect(executeClientSideTool).toHaveBeenCalledWith('memory', { command: 'view', path: '/' });
+      expect(executeClientSideTool).toHaveBeenCalledWith(
+        'memory',
+        { command: 'view', path: '/' },
+        ['memory'],
+        {},
+        { projectId: 'proj_test', chatId: 'chat_test' }
+      );
       if (result.status === 'complete') {
         expect(result.returnValue).toBe('tool executed');
       }
@@ -595,7 +602,13 @@ describe('agenticLoopGenerator', () => {
       const result = await collectAgenticLoop(runAgenticLoop(options, context));
 
       expect(result.status).toBe('complete');
-      expect(executeClientSideTool).toHaveBeenCalledWith('memory', { command: 'view', path: '/' });
+      expect(executeClientSideTool).toHaveBeenCalledWith(
+        'memory',
+        { command: 'view', path: '/' },
+        ['memory'],
+        {},
+        { projectId: 'proj_test', chatId: 'chat_test' }
+      );
       // user + assistant (tool_use) + tool_result + assistant (final) = 4 messages
       expect(result.messages).toHaveLength(4);
     });
@@ -713,8 +726,22 @@ describe('agenticLoopGenerator', () => {
 
       expect(result.status).toBe('complete');
       expect(executeClientSideTool).toHaveBeenCalledTimes(2);
-      expect(executeClientSideTool).toHaveBeenNthCalledWith(1, 'read', { path: '/a' });
-      expect(executeClientSideTool).toHaveBeenNthCalledWith(2, 'write', { path: '/b' });
+      expect(executeClientSideTool).toHaveBeenNthCalledWith(
+        1,
+        'read',
+        { path: '/a' },
+        ['read', 'write'],
+        {},
+        { projectId: 'proj_test', chatId: 'chat_test' }
+      );
+      expect(executeClientSideTool).toHaveBeenNthCalledWith(
+        2,
+        'write',
+        { path: '/b' },
+        ['read', 'write'],
+        {},
+        { projectId: 'proj_test', chatId: 'chat_test' }
+      );
       // 100 + 120 + 140 = 360 input tokens
       expect(result.tokens.inputTokens).toBe(360);
       // 30 + 40 + 50 = 120 output tokens

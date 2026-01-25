@@ -12,6 +12,7 @@ import type {
   MessageAttachment,
   Model,
   Project,
+  ToolOptions,
 } from '../../types';
 import { clearAllDrafts } from '../../hooks/useDraftPersistence';
 import { generateUniqueId } from '../../utils/idGenerator';
@@ -19,6 +20,58 @@ import { encryptionService } from '../encryption/encryptionService';
 import { type StorageAdapter, Tables } from './StorageAdapter';
 import { getStorageConfig } from './storageConfig';
 import { RemoteStorageAdapter } from './adapters/RemoteStorageAdapter';
+
+/**
+ * Migrate project tool settings from deprecated boolean flags to new unified format.
+ * Called when loading projects from storage.
+ * @returns The migrated project and whether migration occurred
+ */
+function migrateProjectToolSettings(project: Project): { project: Project; migrated: boolean } {
+  // Skip if already migrated (enabledTools field exists)
+  if (project.enabledTools !== undefined) {
+    return { project, migrated: false };
+  }
+
+  const enabledTools: string[] = [];
+  const toolOptions: Record<string, ToolOptions> = {};
+
+  // Migrate memory tool
+  if (project.memoryEnabled) {
+    enabledTools.push('memory');
+    if (project.memoryUseSystemPrompt) {
+      toolOptions.memory = { useSystemPrompt: true };
+    }
+  }
+
+  // Migrate JS tool
+  if (project.jsExecutionEnabled) {
+    enabledTools.push('javascript');
+    // Note: jsLibEnabled defaults to true, so only store if explicitly false
+    if (project.jsLibEnabled === false) {
+      toolOptions.javascript = { loadLib: false };
+    }
+  }
+
+  // Migrate filesystem tool
+  if (project.fsToolEnabled) {
+    enabledTools.push('filesystem');
+  }
+
+  // Create migrated project with new fields and cleared deprecated fields
+  const migratedProject: Project = {
+    ...project,
+    enabledTools,
+    toolOptions: Object.keys(toolOptions).length > 0 ? toolOptions : undefined,
+    // Clear deprecated fields
+    memoryEnabled: undefined,
+    memoryUseSystemPrompt: undefined,
+    jsExecutionEnabled: undefined,
+    jsLibEnabled: undefined,
+    fsToolEnabled: undefined,
+  };
+
+  return { project: migratedProject, migrated: true };
+}
 
 export class UnifiedStorage {
   private adapter: StorageAdapter;
@@ -267,11 +320,19 @@ export class UnifiedStorage {
     for (const record of records) {
       try {
         const proj = await this.decrypt<Project>(record.encryptedData);
-        projects.push({
+        const projectWithDates = {
           ...proj,
           createdAt: new Date(proj.createdAt),
           lastUsedAt: new Date(proj.lastUsedAt),
-        });
+        };
+
+        // Migrate tool settings if needed
+        const { project: migratedProject, migrated } = migrateProjectToolSettings(projectWithDates);
+        if (migrated) {
+          console.debug(`[Storage] Migrating tool settings for project: ${migratedProject.name}`);
+          await this.saveProject(migratedProject);
+        }
+        projects.push(migratedProject);
       } catch (error) {
         console.error('Failed to decrypt project:', error);
       }
@@ -286,11 +347,20 @@ export class UnifiedStorage {
 
     try {
       const proj = await this.decrypt<Project>(record.encryptedData);
-      return {
+      const projectWithDates = {
         ...proj,
         createdAt: new Date(proj.createdAt),
         lastUsedAt: new Date(proj.lastUsedAt),
       };
+
+      // Migrate tool settings if needed
+      const { project: migratedProject, migrated } = migrateProjectToolSettings(projectWithDates);
+      if (migrated) {
+        console.debug(`[Storage] Migrating tool settings for project: ${migratedProject.name}`);
+        await this.saveProject(migratedProject);
+      }
+
+      return migratedProject;
     } catch (error) {
       console.error('Failed to decrypt project:', error);
       return null;

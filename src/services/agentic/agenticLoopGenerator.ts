@@ -17,7 +17,6 @@ import { calculateCost, isCostUnreliable } from '../api/modelMetadata';
 import { storage } from '../storage';
 import { StreamingContentAssembler } from '../streaming/StreamingContentAssembler';
 import { executeClientSideTool, toolRegistry } from '../tools/clientSideTools';
-import { configureJsTool } from '../tools/jsTool';
 import type {
   APIDefinition,
   APIType,
@@ -43,6 +42,8 @@ const MAX_ITERATIONS = 50;
 // Types
 // ============================================================================
 
+import type { ToolOptions } from '../../types';
+
 /**
  * Flat configuration for the agentic loop.
  * Consumer builds this via buildAgenticLoopOptions() from Chat/Project.
@@ -63,6 +64,7 @@ export interface AgenticLoopOptions {
   preFillResponse?: string;
   webSearchEnabled: boolean;
   enabledTools: string[];
+  toolOptions: Record<string, ToolOptions>;
   disableStream: boolean;
 
   // Anthropic reasoning
@@ -73,9 +75,6 @@ export interface AgenticLoopOptions {
   // OpenAI/Responses reasoning
   reasoningEffort?: ReasoningEffort;
   reasoningSummary?: ReasoningSummary;
-
-  // JS tool config
-  jsLibEnabled?: boolean;
 }
 
 /**
@@ -436,17 +435,15 @@ export async function* runAgenticLoop(
   options: AgenticLoopOptions,
   context: Message<unknown>[]
 ): AsyncGenerator<AgenticLoopEvent, AgenticLoopResult, void> {
-  const { apiDef, model, projectId, enabledTools, jsLibEnabled } = options;
+  const { apiDef, model, projectId, chatId, enabledTools, toolOptions } = options;
+
+  // Build tool execution context
+  const toolContext = { projectId, chatId };
 
   // Copy to avoid mutating caller's array (React state safety)
   const messages = [...context];
   const totals = createTokenTotals();
   let iteration = 0;
-
-  // Configure JS tool if enabled
-  if (enabledTools.includes('javascript')) {
-    configureJsTool(projectId, jsLibEnabled ?? true);
-  }
 
   try {
     while (iteration < MAX_ITERATIONS) {
@@ -602,7 +599,13 @@ export async function* runAgenticLoop(
 
       for (const toolUse of toolUseBlocks) {
         console.debug('[agenticLoopGen] Executing tool:', toolUse.name, 'id:', toolUse.id);
-        const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
+        const toolResult = await executeClientSideTool(
+          toolUse.name,
+          toolUse.input,
+          enabledTools,
+          toolOptions,
+          toolContext
+        );
 
         // Check for suspension
         if (toolResult.breakLoop?.status === 'suspended') {

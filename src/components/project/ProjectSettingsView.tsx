@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
 import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
-import type { Project, APIType } from '../../types';
+import type { Project, APIType, ToolOptions } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
 import { clearDraft } from '../../hooks/useDraftPersistence';
 import Spinner from '../ui/Spinner';
@@ -11,6 +11,7 @@ import ModelSelector from './ModelSelector';
 import SystemPromptModal from './SystemPromptModal';
 import AnthropicReasoningConfig from './AnthropicReasoningConfig';
 import OpenAIReasoningConfig from './OpenAIReasoningConfig';
+import { toolRegistry } from '../../services/tools/clientSideTools';
 
 interface ProjectSettingsViewProps {
   projectId: string;
@@ -62,15 +63,11 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   );
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const tooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [memoryEnabled, setMemoryEnabled] = useState(project?.memoryEnabled || false);
-  const [memoryUseSystemPrompt, setMemoryUseSystemPrompt] = useState(
-    project?.memoryUseSystemPrompt || false
+  // Unified tool state - replaces individual tool state variables
+  const [enabledTools, setEnabledTools] = useState<string[]>(project?.enabledTools ?? []);
+  const [toolOptionsState, setToolOptionsState] = useState<Record<string, ToolOptions>>(
+    project?.toolOptions ?? {}
   );
-  const [jsExecutionEnabled, setJsExecutionEnabled] = useState(
-    project?.jsExecutionEnabled || false
-  );
-  const [jsLibEnabled, setJsLibEnabled] = useState(project?.jsLibEnabled ?? true);
-  const [fsToolEnabled, setFsToolEnabled] = useState(project?.fsToolEnabled || false);
   const [reasoningEffort, setReasoningEffort] = useState<
     'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined
   >(project?.reasoningEffort);
@@ -108,11 +105,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setMetadataIncludeCost(project.metadataIncludeCost || false);
       setMetadataTemplate(project.metadataTemplate || '{{userMessage}}');
       setMetadataNewContext(project.metadataNewContext || false);
-      setMemoryEnabled(project.memoryEnabled || false);
-      setMemoryUseSystemPrompt(project.memoryUseSystemPrompt || false);
-      setJsExecutionEnabled(project.jsExecutionEnabled || false);
-      setJsLibEnabled(project.jsLibEnabled ?? true);
-      setFsToolEnabled(project.fsToolEnabled || false);
+      // Load unified tool state (projects are migrated on load)
+      setEnabledTools(project.enabledTools ?? []);
+      setToolOptionsState(project.toolOptions ?? {});
       setReasoningEffort(project.reasoningEffort);
       setReasoningSummary(project.reasoningSummary);
       setTemperature(project.temperature?.toString() || '');
@@ -147,6 +142,46 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     ? `${apiDef ? getApiDefinitionIcon(apiDef) + ' ' : ''}${apiDef?.name || 'Unknown'} • ${selectedModelId}`
     : 'Select a model to get started';
 
+  // Get all available tools from registry
+  const availableTools = useMemo(() => toolRegistry.getAllTools(), []);
+
+  // Helper functions for tool state management
+  const isToolEnabled = useCallback(
+    (toolName: string) => enabledTools.includes(toolName),
+    [enabledTools]
+  );
+
+  const toggleTool = useCallback((toolName: string, enabled: boolean) => {
+    setEnabledTools(prev =>
+      enabled ? [...prev.filter(t => t !== toolName), toolName] : prev.filter(t => t !== toolName)
+    );
+  }, []);
+
+  const getToolOption = useCallback(
+    (toolName: string, optionId: string, defaultValue: boolean) =>
+      toolOptionsState[toolName]?.[optionId] ?? defaultValue,
+    [toolOptionsState]
+  );
+
+  const setToolOption = useCallback(
+    (toolName: string, optionId: string, value: boolean, defaultValue: boolean) => {
+      setToolOptionsState(prev => {
+        const toolOpts = { ...prev[toolName] };
+        if (value === defaultValue) {
+          delete toolOpts[optionId];
+        } else {
+          toolOpts[optionId] = value;
+        }
+        if (Object.keys(toolOpts).length === 0) {
+          const { [toolName]: _, ...rest } = prev;
+          return rest;
+        }
+        return { ...prev, [toolName]: toolOpts };
+      });
+    },
+    []
+  );
+
   const handleSave = useCallback(async () => {
     if (!project) return;
 
@@ -169,11 +204,15 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         metadataIncludeCost,
         metadataTemplate,
         metadataNewContext,
-        memoryEnabled,
-        memoryUseSystemPrompt,
-        jsExecutionEnabled,
-        jsLibEnabled,
-        fsToolEnabled,
+        // Unified tool format
+        enabledTools: enabledTools.length > 0 ? enabledTools : undefined,
+        toolOptions: Object.keys(toolOptionsState).length > 0 ? toolOptionsState : undefined,
+        // Clear deprecated fields
+        memoryEnabled: undefined,
+        memoryUseSystemPrompt: undefined,
+        jsExecutionEnabled: undefined,
+        jsLibEnabled: undefined,
+        fsToolEnabled: undefined,
         reasoningEffort,
         reasoningSummary,
         temperature: temperature === '' ? null : parseFloat(temperature),
@@ -205,11 +244,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     metadataIncludeCost,
     metadataTemplate,
     metadataNewContext,
-    memoryEnabled,
-    memoryUseSystemPrompt,
-    jsExecutionEnabled,
-    jsLibEnabled,
-    fsToolEnabled,
+    enabledTools,
+    toolOptionsState,
     reasoningEffort,
     reasoningSummary,
     temperature,
@@ -758,135 +794,68 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                     />
                   </div>
 
-                  {/* Client-side Tools */}
+                  {/* Client-side Tools - dynamically rendered from registry */}
                   <p className="mt-2 text-xs font-medium tracking-wide text-gray-500 uppercase">
                     Client-side
                   </p>
 
-                  {/* Memory */}
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <label
-                          htmlFor="memoryEnabled"
-                          className="cursor-pointer text-sm font-medium text-gray-900"
-                        >
-                          Memory
-                        </label>
-                        <p className="text-xs text-gray-500">
-                          Use a virtual FS to remember across conversations (Optimized for
-                          Anthropic)
-                        </p>
-                      </div>
-                      <input
-                        id="memoryEnabled"
-                        type="checkbox"
-                        checked={memoryEnabled}
-                        onChange={e => setMemoryEnabled(e.target.checked)}
-                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-
-                    {/* Memory Use System Prompt - nested under Memory */}
-                    {memoryEnabled && (
-                      <div className="mt-2 ml-4 flex items-center justify-between border-l-2 border-gray-200 pl-4">
+                  {availableTools.map(tool => (
+                    <div key={tool.name}>
+                      {/* Tool toggle */}
+                      <div className="flex items-center justify-between">
                         <div>
                           <label
-                            htmlFor="memoryUseSystemPrompt"
+                            htmlFor={`tool-${tool.name}`}
                             className="cursor-pointer text-sm font-medium text-gray-900"
                           >
-                            (Anthropic) Use System Prompt Mode
+                            {tool.displayName || tool.name}
                           </label>
-                          <p className="text-xs text-gray-500">
-                            Inject memory listing into system prompt instead of native tool. (Cannot
-                            disable for other providers.)
-                          </p>
+                          {tool.displaySubtitle && (
+                            <p className="text-xs text-gray-500">{tool.displaySubtitle}</p>
+                          )}
                         </div>
                         <input
-                          id="memoryUseSystemPrompt"
+                          id={`tool-${tool.name}`}
                           type="checkbox"
-                          checked={memoryUseSystemPrompt}
-                          onChange={e => setMemoryUseSystemPrompt(e.target.checked)}
+                          checked={isToolEnabled(tool.name)}
+                          onChange={e => toggleTool(tool.name, e.target.checked)}
                           className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                         />
                       </div>
-                    )}
 
-                    <Link
-                      to={`/project/${projectId}/vfs/memories`}
-                      className="mt-2 block text-sm text-blue-600 hover:text-blue-700 hover:underline"
-                    >
-                      📁 Manage Memory Files
-                    </Link>
-                  </div>
-
-                  {/* JavaScript Execution */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label
-                        htmlFor="jsExecutionEnabled"
-                        className="cursor-pointer text-sm font-medium text-gray-900"
-                      >
-                        JavaScript Execution
-                      </label>
-                      <p className="text-xs text-gray-500">
-                        Execute code in a secure sandbox in your browser
-                      </p>
+                      {/* Tool options - nested under tool toggle when enabled */}
+                      {isToolEnabled(tool.name) &&
+                        tool.optionDefinitions &&
+                        tool.optionDefinitions.length > 0 && (
+                          <div className="mt-2 ml-4 space-y-2 border-l-2 border-gray-200 pl-4">
+                            {tool.optionDefinitions.map(opt => (
+                              <div key={opt.id} className="flex items-center justify-between">
+                                <div>
+                                  <label
+                                    htmlFor={`tool-${tool.name}-${opt.id}`}
+                                    className="cursor-pointer text-sm font-medium text-gray-900"
+                                  >
+                                    {opt.label}
+                                  </label>
+                                  {opt.subtitle && (
+                                    <p className="text-xs text-gray-500">{opt.subtitle}</p>
+                                  )}
+                                </div>
+                                <input
+                                  id={`tool-${tool.name}-${opt.id}`}
+                                  type="checkbox"
+                                  checked={getToolOption(tool.name, opt.id, opt.default)}
+                                  onChange={e =>
+                                    setToolOption(tool.name, opt.id, e.target.checked, opt.default)
+                                  }
+                                  className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
                     </div>
-                    <input
-                      id="jsExecutionEnabled"
-                      type="checkbox"
-                      checked={jsExecutionEnabled}
-                      onChange={e => setJsExecutionEnabled(e.target.checked)}
-                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  {/* JS Library Preloading - nested under JS Execution */}
-                  {jsExecutionEnabled && (
-                    <div className="ml-4 flex items-center justify-between border-l-2 border-gray-200 pl-4">
-                      <div>
-                        <label
-                          htmlFor="jsLibEnabled"
-                          className="cursor-pointer text-sm font-medium text-gray-900"
-                        >
-                          Load /lib Scripts
-                        </label>
-                        <p className="text-xs text-gray-500">
-                          Auto-load .js files from /lib when JS session starts
-                        </p>
-                      </div>
-                      <input
-                        id="jsLibEnabled"
-                        type="checkbox"
-                        checked={jsLibEnabled}
-                        onChange={e => setJsLibEnabled(e.target.checked)}
-                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                  )}
-
-                  {/* Filesystem Tool */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label
-                        htmlFor="fsToolEnabled"
-                        className="cursor-pointer text-sm font-medium text-gray-900"
-                      >
-                        Filesystem Access
-                      </label>
-                      <p className="text-xs text-gray-500">
-                        Read/write VFS files (/memories readonly)
-                      </p>
-                    </div>
-                    <input
-                      id="fsToolEnabled"
-                      type="checkbox"
-                      checked={fsToolEnabled}
-                      onChange={e => setFsToolEnabled(e.target.checked)}
-                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
+                  ))}
                 </div>
               </div>
             )}

@@ -37,6 +37,56 @@ vi.mock('../../../hooks/useAlert', () => ({
   }),
 }));
 
+// Mock toolRegistry to provide tools for dynamic rendering
+vi.mock('../../../services/tools/clientSideTools', () => ({
+  toolRegistry: {
+    getAllTools: () => [
+      {
+        name: 'memory',
+        displayName: 'Memory',
+        displaySubtitle:
+          'Use a virtual FS to remember across conversations (Optimized for Anthropic)',
+        optionDefinitions: [
+          {
+            id: 'useSystemPrompt',
+            label: '(Anthropic) Use System Prompt Mode',
+            subtitle:
+              'Inject memory listing into system prompt instead of native tool. (Cannot disable for other providers.)',
+            default: false,
+          },
+        ],
+      },
+      {
+        name: 'javascript',
+        displayName: 'JavaScript Execution',
+        displaySubtitle: 'Execute code in a secure sandbox in your browser',
+        optionDefinitions: [
+          {
+            id: 'loadLib',
+            label: 'Load /lib Scripts',
+            subtitle: 'Auto-load .js files from /lib when JS session starts',
+            default: true,
+          },
+        ],
+      },
+      {
+        name: 'filesystem',
+        displayName: 'Filesystem Access',
+        displaySubtitle: 'Read/write VFS files (/memories readonly)',
+        optionDefinitions: [],
+      },
+    ],
+    getTool: (name: string) => {
+      const tools: Record<string, unknown> = {
+        memory: { name: 'memory', displayName: 'Memory' },
+        javascript: { name: 'javascript', displayName: 'JavaScript Execution' },
+        filesystem: { name: 'filesystem', displayName: 'Filesystem Access' },
+      };
+      return tools[name] || null;
+    },
+  },
+}));
+
 const mockProject: Project = {
   id: 'project-1',
   name: 'Test Project',
@@ -52,7 +102,8 @@ const mockProject: Project = {
   metadataTimestampMode: 'disabled',
   metadataIncludeContextWindow: false,
   metadataIncludeCost: false,
-  memoryEnabled: false,
+  // New tool format
+  enabledTools: [],
   temperature: null,
   maxOutputTokens: 2048,
   createdAt: new Date(),
@@ -84,7 +135,8 @@ vi.mock('../ModelSelector', () => ({
 }));
 
 function renderWithRouter(memoryEnabled = false) {
-  mockProject.memoryEnabled = memoryEnabled;
+  // Use new enabledTools format
+  mockProject.enabledTools = memoryEnabled ? ['memory'] : [];
 
   return render(
     <MemoryRouter>
@@ -96,7 +148,8 @@ function renderWithRouter(memoryEnabled = false) {
 describe('ProjectSettingsView Memory Section', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockProject.memoryEnabled = false;
+    // Use new enabledTools format
+    mockProject.enabledTools = [];
   });
 
   describe('Memory Toggle', () => {

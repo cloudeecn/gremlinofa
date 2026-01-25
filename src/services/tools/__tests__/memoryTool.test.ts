@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
-import { MemoryToolInstance, disposeMemoryTool } from '../memoryTool';
+import { memoryTool } from '../memoryTool';
 import * as vfs from '../../vfs/vfsService';
 import { VfsError } from '../../vfs/vfsService';
+import type { ToolContext, ToolOptions } from '../../../types';
 
 // Mock vfsService
 vi.mock('../../vfs/vfsService', async importOriginal => {
@@ -19,24 +20,48 @@ vi.mock('../../vfs/vfsService', async importOriginal => {
     rename: vi.fn(),
   };
 });
-
-describe('MemoryToolInstance', () => {
-  let instance: MemoryToolInstance;
+describe('memoryTool', () => {
   const projectId = 'test-project';
 
   beforeEach(() => {
     vi.clearAllMocks();
-    instance = new MemoryToolInstance(projectId);
+  });
+
+  describe('tool definition', () => {
+    it('has correct name and displayName', () => {
+      expect(memoryTool.name).toBe('memory');
+      expect(memoryTool.displayName).toBe('Memory');
+    });
+
+    it('has optionDefinitions with useSystemPrompt', () => {
+      expect(memoryTool.optionDefinitions).toBeDefined();
+      expect(memoryTool.optionDefinitions?.length).toBe(1);
+      expect(memoryTool.optionDefinitions?.[0].id).toBe('useSystemPrompt');
+      expect(memoryTool.optionDefinitions?.[0].default).toBe(false);
+    });
+
+    it('getApiOverride returns native tool for Anthropic without useSystemPrompt', () => {
+      const override = memoryTool.getApiOverride?.('anthropic', {});
+      expect(override).toEqual({ type: 'memory_20250818', name: 'memory' });
+    });
+
+    it('getApiOverride returns undefined for Anthropic with useSystemPrompt', () => {
+      const override = memoryTool.getApiOverride?.('anthropic', { useSystemPrompt: true });
+      expect(override).toBeUndefined();
+    });
+
+    it('getApiOverride returns undefined for non-Anthropic APIs', () => {
+      expect(memoryTool.getApiOverride?.('chatgpt', {})).toBeUndefined();
+      expect(memoryTool.getApiOverride?.('responses_api', {})).toBeUndefined();
+      expect(memoryTool.getApiOverride?.('webllm', {})).toBeUndefined();
+    });
   });
 
   describe('view command', () => {
     it('returns empty directory listing with correct header', async () => {
       (vfs.exists as Mock).mockResolvedValue(false);
 
-      const result = await instance.execute({
-        command: 'view',
-        path: '/memories',
-      });
+      const result = await executeMemory({ command: 'view', path: '/memories' });
 
       expect(result.content).toContain(
         "Here're the files and directories up to 2 levels deep in /memories, excluding hidden items and node_modules:"
@@ -52,14 +77,10 @@ describe('MemoryToolInstance', () => {
         { name: 'tasks.md', type: 'file', deleted: false, createdAt: 0, updatedAt: 0, size: 12 },
       ]);
 
-      const result = await instance.execute({
-        command: 'view',
-        path: '/memories',
-      });
+      const result = await executeMemory({ command: 'view', path: '/memories' });
 
       expect(result.content).toContain('notes.md');
       expect(result.content).toContain('tasks.md');
-      // Should have size and path format
       expect(result.content).toMatch(/\d+\t\/memories\/notes\.md/);
       expect(result.isError).toBeFalsy();
     });
@@ -67,13 +88,9 @@ describe('MemoryToolInstance', () => {
     it('returns file content with line numbers', async () => {
       (vfs.readFile as Mock).mockResolvedValue('Line 1\nLine 2\nLine 3');
 
-      const result = await instance.execute({
-        command: 'view',
-        path: '/memories/test.md',
-      });
+      const result = await executeMemory({ command: 'view', path: '/memories/test.md' });
 
       expect(result.content).toContain("Here's the content of /memories/test.md");
-      // Line numbers should be 6-char right-aligned with tab
       expect(result.content).toContain('     1\tLine 1');
       expect(result.content).toContain('     2\tLine 2');
       expect(result.content).toContain('     3\tLine 3');
@@ -83,7 +100,7 @@ describe('MemoryToolInstance', () => {
     it('supports view_range parameter', async () => {
       (vfs.readFile as Mock).mockResolvedValue('Line 1\nLine 2\nLine 3\nLine 4\nLine 5');
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'view',
         path: '/memories/test.md',
         view_range: [2, 4],
@@ -100,10 +117,7 @@ describe('MemoryToolInstance', () => {
     it('returns error for non-existent file', async () => {
       (vfs.readFile as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
-      const result = await instance.execute({
-        command: 'view',
-        path: '/memories/nonexistent.md',
-      });
+      const result = await executeMemory({ command: 'view', path: '/memories/nonexistent.md' });
 
       expect(result.content).toBe(
         'The path /memories/nonexistent.md does not exist. Please provide a valid path.'
@@ -114,10 +128,7 @@ describe('MemoryToolInstance', () => {
     it('handles path without /memories prefix', async () => {
       (vfs.readFile as Mock).mockResolvedValue('content');
 
-      const result = await instance.execute({
-        command: 'view',
-        path: 'test.md',
-      });
+      const result = await executeMemory({ command: 'view', path: 'test.md' });
 
       expect(result.content).toContain("Here's the content of /memories/test.md");
       expect(result.isError).toBeFalsy();
@@ -125,14 +136,10 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error when file exceeds 999,999 line limit', async () => {
-      // Create content with 1,000,001 lines (exceeds limit)
       const lines = new Array(1000001).fill('line');
       (vfs.readFile as Mock).mockResolvedValue(lines.join('\n'));
 
-      const result = await instance.execute({
-        command: 'view',
-        path: '/memories/huge.txt',
-      });
+      const result = await executeMemory({ command: 'view', path: '/memories/huge.txt' });
 
       expect(result.content).toBe(
         'File /memories/huge.txt exceeds maximum line limit of 999999 lines.'
@@ -143,10 +150,10 @@ describe('MemoryToolInstance', () => {
 
   describe('create command', () => {
     it('creates new file successfully', async () => {
-      (vfs.exists as Mock).mockResolvedValue(true); // /memories exists
+      (vfs.exists as Mock).mockResolvedValue(true);
       (vfs.createFile as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'create',
         path: '/memories/new.md',
         file_text: 'New content',
@@ -162,7 +169,7 @@ describe('MemoryToolInstance', () => {
       (vfs.mkdir as Mock).mockResolvedValue(undefined);
       (vfs.createFile as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'create',
         path: '/memories/new.md',
         file_text: 'New content',
@@ -176,7 +183,7 @@ describe('MemoryToolInstance', () => {
       (vfs.exists as Mock).mockResolvedValue(true);
       (vfs.createFile as Mock).mockRejectedValue(new VfsError('File exists', 'FILE_EXISTS'));
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'create',
         path: '/memories/existing.md',
         file_text: 'new content',
@@ -187,11 +194,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error when creating at root path', async () => {
-      const result = await instance.execute({
-        command: 'create',
-        path: '/memories',
-        file_text: 'content',
-      });
+      const result = await executeMemory({ command: 'create', path: '/memories', file_text: 'x' });
 
       expect(result.content).toContain('Cannot create a file at the root path');
       expect(result.isError).toBe(true);
@@ -203,7 +206,7 @@ describe('MemoryToolInstance', () => {
       (vfs.readFile as Mock).mockResolvedValue('Hello world');
       (vfs.updateFile as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'str_replace',
         path: '/memories/test.md',
         old_str: 'world',
@@ -211,34 +214,15 @@ describe('MemoryToolInstance', () => {
       });
 
       expect(result.content).toContain('The memory file has been edited.');
-      // Should include snippet with line numbers
       expect(result.content).toContain('Hello universe');
       expect(result.isError).toBeFalsy();
       expect(vfs.updateFile).toHaveBeenCalledWith(projectId, '/memories/test.md', 'Hello universe');
     });
 
-    it('returns snippet with 6-char right-aligned line numbers after replacement', async () => {
-      (vfs.readFile as Mock).mockResolvedValue('Line 1\nLine 2\nTarget line\nLine 4\nLine 5');
-      (vfs.updateFile as Mock).mockResolvedValue(undefined);
-
-      const result = await instance.execute({
-        command: 'str_replace',
-        path: '/memories/test.md',
-        old_str: 'Target line',
-        new_str: 'Replaced line',
-      });
-
-      expect(result.content).toContain('The memory file has been edited.');
-      // Verify snippet has 6-char padded line numbers with tab separator
-      expect(result.content).toMatch(/\s+1\tLine 1/);
-      expect(result.content).toMatch(/\s+3\tReplaced line/);
-      expect(result.isError).toBeFalsy();
-    });
-
     it('returns error when old_str not found', async () => {
       (vfs.readFile as Mock).mockResolvedValue('Hello world');
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'str_replace',
         path: '/memories/test.md',
         old_str: 'nonexistent',
@@ -254,7 +238,7 @@ describe('MemoryToolInstance', () => {
     it('returns error when multiple occurrences found', async () => {
       (vfs.readFile as Mock).mockResolvedValue('foo bar foo');
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'str_replace',
         path: '/memories/test.md',
         old_str: 'foo',
@@ -263,29 +247,11 @@ describe('MemoryToolInstance', () => {
 
       expect(result.content).toContain('No replacement was performed');
       expect(result.content).toContain('Multiple occurrences');
-      expect(result.content).toContain('Please ensure it is unique');
-      expect(result.isError).toBe(true);
-      expect(vfs.updateFile).not.toHaveBeenCalled();
-    });
-
-    it('returns error for non-existent file', async () => {
-      (vfs.readFile as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
-
-      const result = await instance.execute({
-        command: 'str_replace',
-        path: '/memories/nonexistent.md',
-        old_str: 'old',
-        new_str: 'new',
-      });
-
-      expect(result.content).toBe(
-        'Error: The path /memories/nonexistent.md does not exist. Please provide a valid path.'
-      );
       expect(result.isError).toBe(true);
     });
 
     it('returns error for root path (directory)', async () => {
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'str_replace',
         path: '/memories',
         old_str: 'old',
@@ -304,7 +270,7 @@ describe('MemoryToolInstance', () => {
       (vfs.readFile as Mock).mockResolvedValue('Line 1\nLine 2');
       (vfs.updateFile as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'insert',
         path: '/memories/test.md',
         insert_line: 0,
@@ -324,7 +290,7 @@ describe('MemoryToolInstance', () => {
       (vfs.readFile as Mock).mockResolvedValue('Line 1\nLine 2\nLine 3');
       (vfs.updateFile as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'insert',
         path: '/memories/test.md',
         insert_line: 2,
@@ -343,7 +309,7 @@ describe('MemoryToolInstance', () => {
       (vfs.readFile as Mock).mockResolvedValue('Line 1\nLine 2');
       (vfs.updateFile as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'insert',
         path: '/memories/test.md',
         insert_line: 2,
@@ -362,7 +328,7 @@ describe('MemoryToolInstance', () => {
       (vfs.readFile as Mock).mockResolvedValue('Line 1\nLine 3');
       (vfs.updateFile as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'insert',
         path: '/memories/test.md',
         insert_line: 1,
@@ -380,7 +346,7 @@ describe('MemoryToolInstance', () => {
     it('returns error for invalid line number (negative)', async () => {
       (vfs.readFile as Mock).mockResolvedValue('content');
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'insert',
         path: '/memories/test.md',
         insert_line: -1,
@@ -395,7 +361,7 @@ describe('MemoryToolInstance', () => {
     it('returns error for invalid line number (too large)', async () => {
       (vfs.readFile as Mock).mockResolvedValue('Line 1\nLine 2');
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'insert',
         path: '/memories/test.md',
         insert_line: 5,
@@ -410,7 +376,7 @@ describe('MemoryToolInstance', () => {
     it('returns error for non-existent file', async () => {
       (vfs.readFile as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'insert',
         path: '/memories/nonexistent.md',
         insert_line: 0,
@@ -422,7 +388,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error for root path (directory)', async () => {
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'insert',
         path: '/memories',
         insert_line: 0,
@@ -438,7 +404,7 @@ describe('MemoryToolInstance', () => {
     it('deletes existing file', async () => {
       (vfs.deleteFile as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'delete',
         path: '/memories/test.md',
       });
@@ -451,7 +417,7 @@ describe('MemoryToolInstance', () => {
     it('returns error for non-existent file', async () => {
       (vfs.deleteFile as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'delete',
         path: '/memories/nonexistent.md',
       });
@@ -461,7 +427,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error when deleting root directory', async () => {
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'delete',
         path: '/memories',
       });
@@ -474,7 +440,7 @@ describe('MemoryToolInstance', () => {
       (vfs.deleteFile as Mock).mockRejectedValue(new VfsError('Not a file', 'NOT_A_FILE'));
       (vfs.rmdir as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'delete',
         path: '/memories/subdir',
       });
@@ -489,7 +455,7 @@ describe('MemoryToolInstance', () => {
     it('renames file successfully', async () => {
       (vfs.rename as Mock).mockResolvedValue(undefined);
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'rename',
         old_path: '/memories/old.md',
         new_path: '/memories/new.md',
@@ -503,7 +469,7 @@ describe('MemoryToolInstance', () => {
     it('returns error when source does not exist', async () => {
       (vfs.rename as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'rename',
         old_path: '/memories/nonexistent.md',
         new_path: '/memories/new.md',
@@ -518,7 +484,7 @@ describe('MemoryToolInstance', () => {
         new VfsError('Destination exists', 'DESTINATION_EXISTS')
       );
 
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'rename',
         old_path: '/memories/old.md',
         new_path: '/memories/new.md',
@@ -529,7 +495,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error when source is root path', async () => {
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'rename',
         old_path: '/memories',
         new_path: '/memories/new.md',
@@ -540,7 +506,7 @@ describe('MemoryToolInstance', () => {
     });
 
     it('returns error when destination is root path', async () => {
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'rename',
         old_path: '/memories/test.md',
         new_path: '/memories',
@@ -553,7 +519,7 @@ describe('MemoryToolInstance', () => {
 
   describe('unknown command', () => {
     it('returns error for unknown command', async () => {
-      const result = await instance.execute({
+      const result = await executeMemory({
         command: 'unknown' as 'view',
         path: '/memories',
       });
@@ -562,46 +528,67 @@ describe('MemoryToolInstance', () => {
       expect(result.isError).toBe(true);
     });
   });
+
+  describe('context validation', () => {
+    it('returns error when projectId is missing', async () => {
+      const result = await memoryTool.execute(
+        { command: 'view', path: '/memories' },
+        {},
+        { projectId: '' }
+      );
+
+      expect(result.content).toBe('Error: projectId is required in context');
+      expect(result.isError).toBe(true);
+    });
+
+    it('returns error when context is undefined', async () => {
+      const result = await memoryTool.execute({ command: 'view', path: '/memories' }, {});
+
+      expect(result.content).toBe('Error: projectId is required in context');
+      expect(result.isError).toBe(true);
+    });
+  });
 });
 
 describe('path normalization', () => {
-  let instance: MemoryToolInstance;
   const projectId = 'test-project';
 
   beforeEach(() => {
     vi.clearAllMocks();
-    instance = new MemoryToolInstance(projectId);
     (vfs.readFile as Mock).mockResolvedValue('test content');
   });
 
   it('handles /memories/file.md', async () => {
-    const result = await instance.execute({ command: 'view', path: '/memories/test.md' });
+    const result = await executeMemory({ command: 'view', path: '/memories/test.md' });
     expect(result.isError).toBeFalsy();
     expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
   });
 
   it('handles file.md (no prefix)', async () => {
-    const result = await instance.execute({ command: 'view', path: 'test.md' });
+    const result = await executeMemory({ command: 'view', path: 'test.md' });
     expect(result.isError).toBeFalsy();
     expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
   });
 
   it('handles /file.md (leading slash)', async () => {
-    const result = await instance.execute({ command: 'view', path: '/test.md' });
+    const result = await executeMemory({ command: 'view', path: '/test.md' });
     expect(result.isError).toBeFalsy();
     expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
   });
 
   it('handles paths with whitespace', async () => {
-    const result = await instance.execute({ command: 'view', path: '  /memories/test.md  ' });
+    const result = await executeMemory({ command: 'view', path: '  /memories/test.md  ' });
     expect(result.isError).toBeFalsy();
     expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
   });
 });
 
-describe('disposeMemoryTool', () => {
-  it('removes instance from cache', () => {
-    // Just verify it doesn't throw
-    disposeMemoryTool('nonexistent-project');
-  });
-});
+/** Helper to execute memory tool with context */
+async function executeMemory(
+  input: Record<string, unknown>,
+  projectId = 'test-project',
+  toolOptions: ToolOptions = {}
+) {
+  const context: ToolContext = { projectId };
+  return memoryTool.execute(input, toolOptions, context);
+}

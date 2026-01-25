@@ -5,16 +5,23 @@
  * Implements Anthropic's memory tool commands: view, create, str_replace, insert, delete, rename.
  *
  * Supports two modes:
- * - Native mode (Anthropic): Uses memory_20250818 shorthand via apiOverrides
+ * - Native mode (Anthropic default): Uses memory_20250818 shorthand via getApiOverride()
  * - System prompt mode: Injects memory listing and README.md into system prompt
  *
+ * This is a stateless tool - all state is passed via toolOptions and context.
  * Internally uses VfsService for tree-structured storage with versioning.
  */
 
-import { type ClientSideTool, type SystemPromptContext, type ToolResult } from '../../types';
+import type {
+  APIType,
+  ClientSideTool,
+  SystemPromptContext,
+  ToolContext,
+  ToolOptions,
+  ToolResult,
+} from '../../types';
 import * as vfs from '../vfs/vfsService';
 import { VfsError } from '../vfs/vfsService';
-import { toolRegistry } from './clientSideTools';
 
 const MEMORIES_ROOT = '/memories';
 const MAX_LINE_COUNT = 999999;
@@ -190,40 +197,97 @@ async function listTwoLevels(projectId: string, basePath: string): Promise<Listi
   return entries;
 }
 
-/**
- * Memory Tool instance for a specific project.
- * Uses VfsService for persistent storage with versioning.
- */
-export class MemoryToolInstance {
-  private projectId: string;
+// ============================================================================
+// Command Handlers (stateless - receive projectId explicitly)
+// ============================================================================
 
-  constructor(projectId: string) {
-    this.projectId = projectId;
+/** Handle view command */
+async function handleView(
+  projectId: string,
+  path: string,
+  viewRange?: [number, number]
+): Promise<ToolResult> {
+  const vfsPath = normalizeToVfsPath(path);
+
+  // Directory listing (root)
+  if (vfsPath === MEMORIES_ROOT) {
+    try {
+      // Ensure the /memories directory exists
+      const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT);
+      if (!memoriesExists) {
+        return {
+          content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
+        };
+      }
+
+      const entries = await listTwoLevels(projectId, MEMORIES_ROOT);
+
+      if (entries.length === 0) {
+        return {
+          content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
+        };
+      }
+
+      const listing = entries
+        .map(entry => {
+          const size = entry.size !== undefined ? formatSize(entry.size) : '0';
+          return `${size}\t${entry.path}`;
+        })
+        .join('\n');
+
+      return {
+        content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n${listing}`,
+      };
+    } catch (error) {
+      if (error instanceof VfsError && error.code === 'PATH_NOT_FOUND') {
+        return {
+          content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
+        };
+      }
+      throw error;
+    }
   }
 
-  /** Handle view command */
-  async handleView(path: string, viewRange?: [number, number]): Promise<ToolResult> {
-    const vfsPath = normalizeToVfsPath(path);
+  // File content
+  try {
+    const content = await vfs.readFile(projectId, vfsPath);
+    const lines = content.split('\n');
 
-    // Directory listing (root)
-    if (vfsPath === MEMORIES_ROOT) {
-      try {
-        // Ensure the /memories directory exists
-        const memoriesExists = await vfs.exists(this.projectId, MEMORIES_ROOT);
-        if (!memoriesExists) {
-          return {
-            content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
-          };
-        }
+    if (lines.length > MAX_LINE_COUNT) {
+      return {
+        content: `File ${vfsPath} exceeds maximum line limit of ${MAX_LINE_COUNT} lines.`,
+        isError: true,
+      };
+    }
 
-        const entries = await listTwoLevels(this.projectId, MEMORIES_ROOT);
+    let numberedContent: string;
+    if (viewRange) {
+      const [start, end] = viewRange;
+      numberedContent = formatFileWithLineNumbers(content, start, end);
+    } else {
+      numberedContent = formatFileWithLineNumbers(content);
+    }
 
-        if (entries.length === 0) {
-          return {
-            content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
-          };
-        }
-
+    return {
+      content: `Here's the content of ${vfsPath} with line numbers:\n${numberedContent}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (error.code === 'PATH_NOT_FOUND') {
+        return {
+          content: `The path ${vfsPath} does not exist. Please provide a valid path.`,
+          isError: true,
+        };
+      }
+      if (error.code === 'IS_DELETED') {
+        return {
+          content: `The path ${vfsPath} does not exist. Please provide a valid path.`,
+          isError: true,
+        };
+      }
+      if (error.code === 'NOT_A_FILE') {
+        // It's a directory, list its contents (2 levels deep)
+        const entries = await listTwoLevels(projectId, vfsPath);
         const listing = entries
           .map(entry => {
             const size = entry.size !== undefined ? formatSize(entry.size) : '0';
@@ -232,383 +296,317 @@ export class MemoryToolInstance {
           .join('\n');
 
         return {
-          content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n${listing}`,
-        };
-      } catch (error) {
-        if (error instanceof VfsError && error.code === 'PATH_NOT_FOUND') {
-          return {
-            content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
-          };
-        }
-        throw error;
-      }
-    }
-
-    // File content
-    try {
-      const content = await vfs.readFile(this.projectId, vfsPath);
-      const lines = content.split('\n');
-
-      if (lines.length > MAX_LINE_COUNT) {
-        return {
-          content: `File ${vfsPath} exceeds maximum line limit of ${MAX_LINE_COUNT} lines.`,
-          isError: true,
+          content: `Here're the files and directories up to 2 levels deep in ${vfsPath}, excluding hidden items and node_modules:\n${listing || '(empty)'}`,
         };
       }
-
-      let numberedContent: string;
-      if (viewRange) {
-        const [start, end] = viewRange;
-        numberedContent = formatFileWithLineNumbers(content, start, end);
-      } else {
-        numberedContent = formatFileWithLineNumbers(content);
-      }
-
-      return {
-        content: `Here's the content of ${vfsPath} with line numbers:\n${numberedContent}`,
-      };
-    } catch (error) {
-      if (error instanceof VfsError) {
-        if (error.code === 'PATH_NOT_FOUND') {
-          return {
-            content: `The path ${vfsPath} does not exist. Please provide a valid path.`,
-            isError: true,
-          };
-        }
-        if (error.code === 'IS_DELETED') {
-          return {
-            content: `The path ${vfsPath} does not exist. Please provide a valid path.`,
-            isError: true,
-          };
-        }
-        if (error.code === 'NOT_A_FILE') {
-          // It's a directory, list its contents (2 levels deep)
-          const entries = await listTwoLevels(this.projectId, vfsPath);
-          const listing = entries
-            .map(entry => {
-              const size = entry.size !== undefined ? formatSize(entry.size) : '0';
-              return `${size}\t${entry.path}`;
-            })
-            .join('\n');
-
-          return {
-            content: `Here're the files and directories up to 2 levels deep in ${vfsPath}, excluding hidden items and node_modules:\n${listing || '(empty)'}`,
-          };
-        }
-      }
-      throw error;
     }
+    throw error;
+  }
+}
+
+/** Handle create command */
+async function handleCreate(
+  projectId: string,
+  path: string,
+  fileText: string
+): Promise<ToolResult> {
+  const vfsPath = normalizeToVfsPath(path);
+
+  if (vfsPath === MEMORIES_ROOT) {
+    return {
+      content: 'Error: Cannot create a file at the root path.',
+      isError: true,
+    };
   }
 
-  /** Handle create command */
-  async handleCreate(path: string, fileText: string): Promise<ToolResult> {
-    const vfsPath = normalizeToVfsPath(path);
+  try {
+    // Ensure /memories directory exists
+    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT);
+    if (!memoriesExists) {
+      await vfs.mkdir(projectId, MEMORIES_ROOT);
+    }
 
-    if (vfsPath === MEMORIES_ROOT) {
+    await vfs.createFile(projectId, vfsPath, fileText);
+
+    return {
+      content: `File created successfully at: ${vfsPath}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError && error.code === 'FILE_EXISTS') {
       return {
-        content: 'Error: Cannot create a file at the root path.',
+        content: `Error: File ${vfsPath} already exists`,
+        isError: true,
+      };
+    }
+    throw error;
+  }
+}
+
+/** Handle str_replace command */
+async function handleStrReplace(
+  projectId: string,
+  path: string,
+  oldStr: string,
+  newStr: string
+): Promise<ToolResult> {
+  const vfsPath = normalizeToVfsPath(path);
+
+  if (vfsPath === MEMORIES_ROOT) {
+    return {
+      content: `Error: The path ${MEMORIES_ROOT} does not exist. Please provide a valid path.`,
+      isError: true,
+    };
+  }
+
+  try {
+    const content = await vfs.readFile(projectId, vfsPath);
+
+    const occurrences = countOccurrences(content, oldStr);
+
+    if (occurrences === 0) {
+      return {
+        content: `No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${vfsPath}.`,
         isError: true,
       };
     }
 
-    try {
-      // Ensure /memories directory exists
-      const memoriesExists = await vfs.exists(this.projectId, MEMORIES_ROOT);
-      if (!memoriesExists) {
-        await vfs.mkdir(this.projectId, MEMORIES_ROOT);
-      }
-
-      await vfs.createFile(this.projectId, vfsPath, fileText);
-
+    if (occurrences > 1) {
+      const lineNumbers = findOccurrenceLines(content, oldStr);
       return {
-        content: `File created successfully at: ${vfsPath}`,
-      };
-    } catch (error) {
-      if (error instanceof VfsError && error.code === 'FILE_EXISTS') {
-        return {
-          content: `Error: File ${vfsPath} already exists`,
-          isError: true,
-        };
-      }
-      throw error;
-    }
-  }
-
-  /** Handle str_replace command */
-  async handleStrReplace(path: string, oldStr: string, newStr: string): Promise<ToolResult> {
-    const vfsPath = normalizeToVfsPath(path);
-
-    if (vfsPath === MEMORIES_ROOT) {
-      return {
-        content: `Error: The path ${MEMORIES_ROOT} does not exist. Please provide a valid path.`,
+        content: `No replacement was performed. Multiple occurrences of old_str \`${oldStr}\` in lines: ${lineNumbers.join(', ')}. Please ensure it is unique`,
         isError: true,
       };
     }
 
-    try {
-      const content = await vfs.readFile(this.projectId, vfsPath);
+    // Find line number where replacement occurs
+    const beforeReplace = content.substring(0, content.indexOf(oldStr));
+    const editLine = beforeReplace.split('\n').length;
 
-      const occurrences = countOccurrences(content, oldStr);
+    // Replace first (and only) occurrence
+    const newContent = content.replace(oldStr, newStr);
+    await vfs.updateFile(projectId, vfsPath, newContent);
 
-      if (occurrences === 0) {
+    const snippet = formatEditSnippet(newContent, editLine);
+
+    return {
+      content: `The memory file has been edited.\n${snippet}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (
+        error.code === 'PATH_NOT_FOUND' ||
+        error.code === 'IS_DELETED' ||
+        error.code === 'NOT_A_FILE'
+      ) {
         return {
-          content: `No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${vfsPath}.`,
+          content: `Error: The path ${vfsPath} does not exist. Please provide a valid path.`,
           isError: true,
         };
       }
+    }
+    throw error;
+  }
+}
 
-      if (occurrences > 1) {
-        const lineNumbers = findOccurrenceLines(content, oldStr);
-        return {
-          content: `No replacement was performed. Multiple occurrences of old_str \`${oldStr}\` in lines: ${lineNumbers.join(', ')}. Please ensure it is unique`,
-          isError: true,
-        };
-      }
+/** Handle insert command */
+async function handleInsert(
+  projectId: string,
+  path: string,
+  insertLine: number,
+  insertText: string
+): Promise<ToolResult> {
+  const vfsPath = normalizeToVfsPath(path);
 
-      // Find line number where replacement occurs
-      const beforeReplace = content.substring(0, content.indexOf(oldStr));
-      const editLine = beforeReplace.split('\n').length;
+  if (vfsPath === MEMORIES_ROOT) {
+    return {
+      content: `Error: The path ${MEMORIES_ROOT} does not exist`,
+      isError: true,
+    };
+  }
 
-      // Replace first (and only) occurrence
-      const newContent = content.replace(oldStr, newStr);
-      await vfs.updateFile(this.projectId, vfsPath, newContent);
+  try {
+    const content = await vfs.readFile(projectId, vfsPath);
+    const lines = content.split('\n');
+    const nLines = lines.length;
 
-      const snippet = formatEditSnippet(newContent, editLine);
-
+    // insert_line is 0-indexed for insertion: 0 means before first line
+    if (insertLine < 0 || insertLine > nLines) {
       return {
-        content: `The memory file has been edited.\n${snippet}`,
+        content: `Error: Invalid \`insert_line\` parameter: ${insertLine}. It should be within the range of lines of the file: [0, ${nLines}]`,
+        isError: true,
       };
-    } catch (error) {
-      if (error instanceof VfsError) {
-        if (
-          error.code === 'PATH_NOT_FOUND' ||
-          error.code === 'IS_DELETED' ||
-          error.code === 'NOT_A_FILE'
-        ) {
+    }
+
+    // Insert the text at the specified line
+    const textLines = insertText.split('\n');
+    lines.splice(insertLine, 0, ...textLines);
+    const newContent = lines.join('\n');
+
+    await vfs.updateFile(projectId, vfsPath, newContent);
+
+    return {
+      content: `The file ${vfsPath} has been edited.`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (
+        error.code === 'PATH_NOT_FOUND' ||
+        error.code === 'IS_DELETED' ||
+        error.code === 'NOT_A_FILE'
+      ) {
+        return {
+          content: `Error: The path ${vfsPath} does not exist`,
+          isError: true,
+        };
+      }
+    }
+    throw error;
+  }
+}
+
+/** Handle delete command */
+async function handleDelete(projectId: string, path: string): Promise<ToolResult> {
+  const vfsPath = normalizeToVfsPath(path);
+
+  if (vfsPath === MEMORIES_ROOT) {
+    return {
+      content: `Error: The path ${MEMORIES_ROOT} does not exist`,
+      isError: true,
+    };
+  }
+
+  try {
+    await vfs.deleteFile(projectId, vfsPath);
+
+    return {
+      content: `Successfully deleted ${vfsPath}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
+        return {
+          content: `Error: The path ${vfsPath} does not exist`,
+          isError: true,
+        };
+      }
+      if (error.code === 'NOT_A_FILE') {
+        // Try deleting as a directory
+        try {
+          await vfs.rmdir(projectId, vfsPath, true);
           return {
-            content: `Error: The path ${vfsPath} does not exist. Please provide a valid path.`,
-            isError: true,
+            content: `Successfully deleted ${vfsPath}`,
           };
-        }
-      }
-      throw error;
-    }
-  }
-
-  /** Handle insert command */
-  async handleInsert(path: string, insertLine: number, insertText: string): Promise<ToolResult> {
-    const vfsPath = normalizeToVfsPath(path);
-
-    if (vfsPath === MEMORIES_ROOT) {
-      return {
-        content: `Error: The path ${MEMORIES_ROOT} does not exist`,
-        isError: true,
-      };
-    }
-
-    try {
-      const content = await vfs.readFile(this.projectId, vfsPath);
-      const lines = content.split('\n');
-      const nLines = lines.length;
-
-      // insert_line is 0-indexed for insertion: 0 means before first line
-      if (insertLine < 0 || insertLine > nLines) {
-        return {
-          content: `Error: Invalid \`insert_line\` parameter: ${insertLine}. It should be within the range of lines of the file: [0, ${nLines}]`,
-          isError: true,
-        };
-      }
-
-      // Insert the text at the specified line
-      const textLines = insertText.split('\n');
-      lines.splice(insertLine, 0, ...textLines);
-      const newContent = lines.join('\n');
-
-      await vfs.updateFile(this.projectId, vfsPath, newContent);
-
-      return {
-        content: `The file ${vfsPath} has been edited.`,
-      };
-    } catch (error) {
-      if (error instanceof VfsError) {
-        if (
-          error.code === 'PATH_NOT_FOUND' ||
-          error.code === 'IS_DELETED' ||
-          error.code === 'NOT_A_FILE'
-        ) {
+        } catch {
           return {
             content: `Error: The path ${vfsPath} does not exist`,
             isError: true,
           };
         }
       }
-      throw error;
     }
+    throw error;
+  }
+}
+
+/** Handle rename command */
+async function handleRename(
+  projectId: string,
+  oldPath: string,
+  newPath: string
+): Promise<ToolResult> {
+  const oldVfsPath = normalizeToVfsPath(oldPath);
+  const newVfsPath = normalizeToVfsPath(newPath);
+
+  if (oldVfsPath === MEMORIES_ROOT) {
+    return {
+      content: `Error: The path ${MEMORIES_ROOT} does not exist`,
+      isError: true,
+    };
   }
 
-  /** Handle delete command */
-  async handleDelete(path: string): Promise<ToolResult> {
-    const vfsPath = normalizeToVfsPath(path);
-
-    if (vfsPath === MEMORIES_ROOT) {
-      return {
-        content: `Error: The path ${MEMORIES_ROOT} does not exist`,
-        isError: true,
-      };
-    }
-
-    try {
-      await vfs.deleteFile(this.projectId, vfsPath);
-
-      return {
-        content: `Successfully deleted ${vfsPath}`,
-      };
-    } catch (error) {
-      if (error instanceof VfsError) {
-        if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
-          return {
-            content: `Error: The path ${vfsPath} does not exist`,
-            isError: true,
-          };
-        }
-        if (error.code === 'NOT_A_FILE') {
-          // Try deleting as a directory
-          try {
-            await vfs.rmdir(this.projectId, vfsPath, true);
-            return {
-              content: `Successfully deleted ${vfsPath}`,
-            };
-          } catch {
-            return {
-              content: `Error: The path ${vfsPath} does not exist`,
-              isError: true,
-            };
-          }
-        }
-      }
-      throw error;
-    }
+  if (newVfsPath === MEMORIES_ROOT) {
+    return {
+      content: `Error: The destination ${MEMORIES_ROOT} already exists`,
+      isError: true,
+    };
   }
 
-  /** Handle rename command */
-  async handleRename(oldPath: string, newPath: string): Promise<ToolResult> {
-    const oldVfsPath = normalizeToVfsPath(oldPath);
-    const newVfsPath = normalizeToVfsPath(newPath);
+  try {
+    await vfs.rename(projectId, oldVfsPath, newVfsPath);
 
-    if (oldVfsPath === MEMORIES_ROOT) {
-      return {
-        content: `Error: The path ${MEMORIES_ROOT} does not exist`,
-        isError: true,
-      };
-    }
-
-    if (newVfsPath === MEMORIES_ROOT) {
-      return {
-        content: `Error: The destination ${MEMORIES_ROOT} already exists`,
-        isError: true,
-      };
-    }
-
-    try {
-      await vfs.rename(this.projectId, oldVfsPath, newVfsPath);
-
-      return {
-        content: `Successfully renamed ${oldVfsPath} to ${newVfsPath}`,
-      };
-    } catch (error) {
-      if (error instanceof VfsError) {
-        if (error.code === 'PATH_NOT_FOUND') {
-          return {
-            content: `Error: The path ${oldVfsPath} does not exist`,
-            isError: true,
-          };
-        }
-        if (error.code === 'IS_DELETED') {
-          return {
-            content: `Error: The path ${oldVfsPath} does not exist`,
-            isError: true,
-          };
-        }
-        if (error.code === 'DESTINATION_EXISTS') {
-          return {
-            content: `Error: The destination ${newVfsPath} already exists`,
-            isError: true,
-          };
-        }
-      }
-      throw error;
-    }
-  }
-
-  /** Execute a memory command */
-  async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const memoryInput = input as unknown as MemoryInput;
-
-    switch (memoryInput.command) {
-      case 'view':
-        return this.handleView(memoryInput.path, memoryInput.view_range);
-      case 'create':
-        return this.handleCreate(memoryInput.path, memoryInput.file_text);
-      case 'str_replace':
-        return this.handleStrReplace(memoryInput.path, memoryInput.old_str, memoryInput.new_str);
-      case 'insert':
-        return this.handleInsert(
-          memoryInput.path,
-          memoryInput.insert_line,
-          memoryInput.insert_text
-        );
-      case 'delete':
-        return this.handleDelete(memoryInput.path);
-      case 'rename':
-        return this.handleRename(memoryInput.old_path, memoryInput.new_path);
-      default:
+    return {
+      content: `Successfully renamed ${oldVfsPath} to ${newVfsPath}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (error.code === 'PATH_NOT_FOUND') {
         return {
-          content: `Unknown memory command: ${(memoryInput as { command: string }).command}`,
+          content: `Error: The path ${oldVfsPath} does not exist`,
           isError: true,
         };
+      }
+      if (error.code === 'IS_DELETED') {
+        return {
+          content: `Error: The path ${oldVfsPath} does not exist`,
+          isError: true,
+        };
+      }
+      if (error.code === 'DESTINATION_EXISTS') {
+        return {
+          content: `Error: The destination ${newVfsPath} already exists`,
+          isError: true,
+        };
+      }
     }
+    throw error;
   }
 }
 
-// Active memory tool instances keyed by projectId
-const instances = new Map<string, MemoryToolInstance>();
-
-/**
- * Initialize memory tool for a project.
- * Creates a new instance for VFS-backed storage.
- * Also registers the memory tool with the global toolRegistry.
- */
-export async function initMemoryTool(projectId: string): Promise<MemoryToolInstance> {
-  const existing = instances.get(projectId);
-  if (existing) {
-    return existing;
+/** Execute a memory command */
+async function executeMemoryCommand(
+  input: Record<string, unknown>,
+  _toolOptions?: ToolOptions,
+  context?: ToolContext
+): Promise<ToolResult> {
+  if (!context?.projectId) {
+    return {
+      content: 'Error: projectId is required in context',
+      isError: true,
+    };
   }
 
-  const instance = new MemoryToolInstance(projectId);
-  instances.set(projectId, instance);
+  const projectId = context.projectId;
+  const memoryInput = input as unknown as MemoryInput;
 
-  // Register memory tool with the global registry
-  toolRegistry.register(createMemoryClientSideTool(projectId));
-
-  return instance;
-}
-
-/**
- * Get active memory tool instance for a project.
- * Returns undefined if not initialized.
- */
-export function getMemoryTool(projectId: string): MemoryToolInstance | undefined {
-  return instances.get(projectId);
-}
-
-/**
- * Dispose memory tool for a project.
- * Should be called when chat closes.
- * Also unregisters the memory tool from the global toolRegistry.
- */
-export function disposeMemoryTool(_projectId: string): void {
-  toolRegistry.unregister('memory');
-  instances.delete(_projectId);
+  switch (memoryInput.command) {
+    case 'view':
+      return handleView(projectId, memoryInput.path, memoryInput.view_range);
+    case 'create':
+      return handleCreate(projectId, memoryInput.path, memoryInput.file_text);
+    case 'str_replace':
+      return handleStrReplace(
+        projectId,
+        memoryInput.path,
+        memoryInput.old_str,
+        memoryInput.new_str
+      );
+    case 'insert':
+      return handleInsert(
+        projectId,
+        memoryInput.path,
+        memoryInput.insert_line,
+        memoryInput.insert_text
+      );
+    case 'delete':
+      return handleDelete(projectId, memoryInput.path);
+    case 'rename':
+      return handleRename(projectId, memoryInput.old_path, memoryInput.new_path);
+    default:
+      return {
+        content: `Unknown memory command: ${(memoryInput as { command: string }).command}`,
+        isError: true,
+      };
+  }
 }
 
 /** Render memory tool input for display */
@@ -634,8 +632,19 @@ function renderMemoryInput(input: Record<string, unknown>): string {
  * Generate the memory system prompt for a project.
  * Returns listing of /memories and content of /memories/README.md (if exists).
  */
-async function getMemorySystemPrompt(context: SystemPromptContext): Promise<string> {
-  const { projectId } = context;
+async function getMemorySystemPrompt(
+  context: SystemPromptContext,
+  toolOptions: ToolOptions
+): Promise<string> {
+  const { projectId, apiType } = context;
+
+  // System prompt injection rules:
+  // - Anthropic with useSystemPrompt=false: NO injection (native tool handles it)
+  // - Anthropic with useSystemPrompt=true: YES injection
+  // - Non-Anthropic APIs: ALWAYS inject (they don't have native tool support)
+  if (apiType === 'anthropic' && !toolOptions.useSystemPrompt) {
+    return '';
+  }
 
   const parts: string[] = [];
 
@@ -650,12 +659,7 @@ Unless asked otherwise, as you make progress, record status / progress / thought
       const entries = await listTwoLevels(projectId, MEMORIES_ROOT);
 
       if (entries.length > 0) {
-        const listing = entries
-          .map(entry => {
-            const size = entry.size !== undefined ? formatSize(entry.size) : '0';
-            return `${size}\t${entry.path}`;
-          })
-          .join('\n');
+        const listing = entries.map(entry => `\t${entry.path}`).join('\n');
 
         parts.push(`## Memory
 
@@ -807,72 +811,53 @@ const MEMORY_INPUT_SCHEMA = {
   required: ['command'],
 };
 
-// Track whether to use system prompt mode (set per project during init)
-const projectUseSystemPrompt = new Map<string, boolean>();
-
 /**
- * Set whether to use system prompt mode for a project.
- * Called during memory tool initialization based on project settings.
- */
-export function setMemoryUseSystemPrompt(projectId: string, useSystemPrompt: boolean): void {
-  projectUseSystemPrompt.set(projectId, useSystemPrompt);
-}
-
-/**
- * Create a ClientSideTool adapter for the memory tool.
- * The actual execution is delegated to the MemoryToolInstance.
+ * Memory tool definition.
+ * Stateless - all configuration passed via toolOptions and context.
  *
- * Two modes:
- * - Native mode (default for Anthropic): Uses memory_20250818 shorthand via apiOverrides
- * - System prompt mode: Injects memory listing into system prompt, no apiOverrides
+ * Two modes controlled by toolOptions.useSystemPrompt:
+ * - false (default, Anthropic): Uses native memory_20250818 shorthand
+ * - true (Anthropic) or any non-Anthropic API: Injects memory listing into system prompt
  */
-export function createMemoryClientSideTool(projectId: string): ClientSideTool {
-  const useSystemPrompt = projectUseSystemPrompt.get(projectId) ?? false;
-
-  const tool: ClientSideTool = {
-    name: 'memory',
-    description: MEMORY_TOOL_DESCRIPTION,
-    iconInput: '🧠',
-    renderInput: renderMemoryInput,
-    inputSchema: MEMORY_INPUT_SCHEMA,
-    execute: async (input: Record<string, unknown>): Promise<ToolResult> => {
-      const instance = getMemoryTool(projectId);
-      if (!instance) {
-        return {
-          content: 'Memory tool not initialized for this project',
-          isError: true,
-        };
-      }
-      return instance.execute(input);
+export const memoryTool: ClientSideTool = {
+  name: 'memory',
+  displayName: 'Memory',
+  displaySubtitle: 'Use a virtual FS to remember across conversations (Optimized for Anthropic)',
+  optionDefinitions: [
+    {
+      id: 'useSystemPrompt',
+      label: '(Anthropic) Use System Prompt Mode',
+      subtitle:
+        'Inject memory listing into system prompt instead of native tool. (Cannot disable for other providers.)',
+      default: false,
     },
-  };
+  ],
+  description: MEMORY_TOOL_DESCRIPTION,
+  iconInput: '🧠',
+  renderInput: renderMemoryInput,
+  inputSchema: MEMORY_INPUT_SCHEMA,
 
-  // Only add systemPrompt function if using system prompt mode
-  if (useSystemPrompt) {
-    tool.systemPrompt = getMemorySystemPrompt;
-  } else {
-    // Use Anthropic's native memory tool shorthand
-    tool.apiOverrides = {
-      ['anthropic']: {
-        type: 'memory_20250818',
-        name: 'memory',
-      },
-    };
-  }
+  /**
+   * Dynamic API override.
+   * Returns Anthropic native tool shorthand only when:
+   * 1. API is Anthropic, AND
+   * 2. NOT using system prompt mode
+   */
+  getApiOverride: (apiType: APIType, toolOptions: ToolOptions) => {
+    if (apiType === 'anthropic' && !toolOptions.useSystemPrompt) {
+      return { type: 'memory_20250818', name: 'memory' };
+    }
+    // All other cases: return undefined (use standard definition)
+    return undefined;
+  },
 
-  return tool;
-}
+  /**
+   * System prompt injection.
+   * Returns memory listing when:
+   * - Non-Anthropic API (they don't have native tool support)
+   * - Anthropic with useSystemPrompt=true
+   */
+  systemPrompt: getMemorySystemPrompt,
 
-/**
- * Re-register the memory tool when settings change.
- * Called when project.memoryUseSystemPrompt changes.
- */
-export function updateMemoryToolMode(projectId: string, useSystemPrompt: boolean): void {
-  setMemoryUseSystemPrompt(projectId, useSystemPrompt);
-
-  // Re-register if already initialized
-  if (instances.has(projectId)) {
-    toolRegistry.unregister('memory');
-    toolRegistry.register(createMemoryClientSideTool(projectId));
-  }
-}
+  execute: executeMemoryCommand,
+};

@@ -65,6 +65,7 @@ export class AnthropicClient implements APIClient {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
+      toolOptions?: Record<string, Record<string, boolean>>;
     }
   ): AsyncGenerator<
     StreamChunk,
@@ -217,13 +218,29 @@ export class AnthropicClient implements APIClient {
         );
       }
 
-      // Get client-side tool definitions for Anthropic format
-      // Uses apiOverrides for special tools (e.g., memory_20250818 shorthand)
-      const clientToolDefs = toolRegistry.getToolDefinitionsForAPI(
-        'anthropic',
-        options.enabledTools || []
-      );
-      tools.push(...clientToolDefs);
+      // Get client-side tool definitions and translate to Anthropic format
+      const enabledTools = options.enabledTools || [];
+      const toolOpts = options.toolOptions || {};
+      const standardDefs = toolRegistry.getToolDefinitions(enabledTools, toolOpts);
+
+      for (const def of standardDefs) {
+        // Check for provider-specific override first
+        const override = toolRegistry.getToolOverride(
+          def.name,
+          'anthropic',
+          toolOpts[def.name] ?? {}
+        );
+        if (override) {
+          tools.push(override as Anthropic.Beta.BetaToolUnion);
+        } else {
+          // Standard definition already matches Anthropic format
+          tools.push({
+            name: def.name,
+            description: def.description,
+            input_schema: def.input_schema,
+          });
+        }
+      }
 
       // Prepare thinking configuration if reasoning is enabled
       const thinkingConfig = options.enableReasoning
@@ -243,7 +260,6 @@ export class AnthropicClient implements APIClient {
       // Build betas array - always include web-fetch and interleaved-thinking,
       // add context-management when memory tool is enabled or thinkingKeepTurns is set
       const betas = ['web-fetch-2025-09-10', 'interleaved-thinking-2025-05-14'];
-      const enabledTools = options.enabledTools || [];
       const needsContextManagement =
         enabledTools.includes('memory') || options.thinkingKeepTurns !== undefined;
       if (needsContextManagement) {

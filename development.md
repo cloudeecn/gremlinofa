@@ -376,16 +376,28 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 **Client-Side Tools:**
 
 - `src/services/tools/clientSideTools.ts` - Tool registry and execution
-- Tools registered with `toolRegistry.register()`, executed via `executeClientSideTool()`
-- Tool definitions sent to API via `getToolDefinitionsForAPI(apiType, enabledToolNames)`
-- `ClientSideTool` interface supports:
-  - `alwaysEnabled: true` - Tool included regardless of enabledToolNames
-  - `apiOverrides: Partial<APIToolOverrides>` - Type-safe API-specific definition overrides using SDK types (`BetaToolUnion` for Anthropic, `ChatCompletionTool` for OpenAI, `Tool` for Responses API)
-  - `systemPrompt?: string` - Injected after project's system prompt when tool is enabled; skipped if tool uses `apiOverrides` for the current API type (provider handles its own system prompt injection)
+- Static registration at startup: `registerAllTools()` called in `main.tsx` before React renders
+- Available tools: `memory`, `javascript`, `filesystem`
+- Tool definitions sent to API via `getToolDefinitionsForAPI(apiType, enabledToolNames, toolOptions)`
+- Execution via `executeClientSideTool(toolName, input, enabledToolNames, toolOptions, context)`
+- `ClientSideTool` interface:
+  - `displayName?: string` - Display name for UI (falls back to `name`)
+  - `displaySubtitle?: string` - Description shown below toggle in ProjectSettings
+  - `optionDefinitions?: ToolOptionDefinition[]` - Tool-specific boolean options configurable per-project
+  - `description: string | ((opts) => string)` - Static or dynamic description based on toolOptions
+  - `inputSchema: ToolInputSchema | ((opts) => ToolInputSchema)` - Static or dynamic input schema
+  - `execute(input, toolOptions, context)` - Stateless execution with toolOptions and context (required)
+  - `getApiOverride?(apiType, toolOptions)` - Returns provider-specific tool definition or undefined
+  - `systemPrompt?: string | ((ctx, opts) => Promise<string> | string)` - Static or dynamic system prompt
   - `renderInput?: (input) => string` - Transform tool input for display in BackstageView (default: JSON.stringify)
   - `renderOutput?: (output, isError?) => string` - Transform tool output for display (default: raw content)
   - `iconInput?: string` - Emoji/unicode icon for tool_use blocks (default: 🔧)
   - `iconOutput?: string` - Emoji/unicode icon for tool_result blocks (default: ✅/❌)
+- **Tool Options System** (Project schema):
+  - `enabledTools?: string[]` - List of enabled tool names (e.g., `['memory', 'javascript', 'filesystem']`)
+  - `toolOptions?: Record<string, ToolOptions>` - Per-tool boolean options (e.g., `{ memory: { useSystemPrompt: true } }`)
+  - Migration: Storage layer auto-migrates old boolean flags on project load (see `migrateProjectToolSettings()` in `unifiedStorage.ts`)
+  - Legacy fields (`memoryEnabled`, `jsExecutionEnabled`, etc.) cleared after migration
 - **Persisted rendering**: Tool render functions are called at message save time, not render time:
   - `ToolUseRenderBlock.renderedInput` and `ToolUseRenderBlock.icon` populated in `useChat` after `finalize()`
   - `ToolResultRenderBlock.renderedContent` and `ToolResultRenderBlock.icon` populated when creating tool result blocks
@@ -722,10 +734,10 @@ Old memory system data (`memories`, `memory_journals` tables) is automatically m
 
 **Instance Management:**
 
-- `MemoryToolInstance` class wraps VfsService for memory tool operations
-- `initMemoryTool(projectId)` - Create instance, register with toolRegistry
-- `getMemoryTool(projectId)` - Get cached instance
-- `disposeMemoryTool(projectId)` - Unregister and remove from cache
+- `memoryTool` - Static tool definition exported from `memoryTool.ts`
+- Tools registered via `registerAllTools()` at app startup (in `main.tsx`)
+- `initMemoryTool(projectId)` - **Deprecated** stub (kept for backward compatibility)
+- `disposeMemoryTool(projectId)` - **Deprecated** no-op
 
 **Message Format (exact wording per spec):**
 
@@ -785,9 +797,9 @@ Client-side tool that provides LLM access to the project's virtual filesystem. S
 
 **Instance Management:**
 
-- `initFsTool(projectId)` - Create instance, register with toolRegistry
-- `getFsTool(projectId)` - Get cached instance
-- `disposeFsTool(projectId)` - Unregister and remove from cache
+- `fsTool` - Static tool definition exported from `fsTool.ts`
+- `initFsTool(projectId)` - **Deprecated** stub (kept for backward compatibility)
+- `disposeFsTool(projectId)` - **Deprecated** no-op
 
 ### JavaScript Execution Tool
 
@@ -946,16 +958,16 @@ Each tool call loads and executes all `.js` files in the `/lib` directory (if it
 
 **Agentic Loop Integration:**
 
-At the start of each agentic loop, `configureJsTool(projectId, loadLib)` is called to:
-
-- Set the project context for VFS file access
-- Reset library log tracking (so first JS call shows library output)
+Library output is always shown (no first-call tracking). The `loadLib` option controls whether `/lib` scripts are loaded.
 
 **Instance Management:**
 
-- `initJsTool()` - Create singleton instance, register with toolRegistry
-- `disposeJsTool()` - Unregister from toolRegistry, clear instance
-- `configureJsTool(projectId, loadLib)` - Set project context and reset library log state
+> **Note:** See deprecation note in Memory Tool section - same applies here.
+
+- `jsTool` - Static tool definition exported from `jsTool.ts`
+- `initJsTool()` - **Deprecated** stub
+- `disposeJsTool()` - **Deprecated** no-op
+- `configureJsTool(projectId, loadLib)` - **Deprecated** no-op (library loading now via `toolOptions.loadLib`)
 
 ### Agentic Loop
 

@@ -2,13 +2,6 @@ import { useEffect, useState, useMemo, useCallback } from 'react';
 import Mustache from 'mustache';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
-import {
-  initMemoryTool,
-  disposeMemoryTool,
-  setMemoryUseSystemPrompt,
-} from '../services/tools/memoryTool';
-import { initFsTool, disposeFsTool } from '../services/tools/fsTool';
-import { initJsTool, disposeJsTool } from '../services/tools/jsTool';
 import { toolRegistry, executeClientSideTool } from '../services/tools/clientSideTools';
 import {
   runAgenticLoop,
@@ -213,17 +206,6 @@ async function createAndSaveUserMessage(
 // ============================================================================
 
 /**
- * Build enabled tools list from project settings.
- */
-function buildEnabledTools(project: Project): string[] {
-  const enabledTools: string[] = [];
-  if (project.memoryEnabled) enabledTools.push('memory');
-  if (project.jsExecutionEnabled) enabledTools.push('javascript');
-  if (project.fsToolEnabled) enabledTools.push('filesystem');
-  return enabledTools;
-}
-
-/**
  * Build AgenticLoopOptions from Chat/Project.
  * The generator expects flat options instead of nested entities.
  */
@@ -234,21 +216,25 @@ async function buildAgenticLoopOptions(
   model: Model,
   modelId: string
 ): Promise<AgenticLoopOptions> {
-  const enabledTools = buildEnabledTools(project);
+  // Storage layer handles migration on read, so we can read new fields directly
+  const enabledTools = project.enabledTools ?? [];
+  const toolOptions = project.toolOptions ?? {};
 
-  // Build system prompt context
+  // Build system prompt context with apiType for tool prompt generation
   const systemPromptContext = {
     projectId: project.id,
     chatId: chat.id,
     apiDefinitionId: apiDef.id,
     modelId,
+    apiType: apiDef.apiType,
   };
 
   // Build combined system prompt: project prompt + tool prompts (async)
   const toolSystemPrompts = await toolRegistry.getSystemPrompts(
     apiDef.apiType,
     enabledTools,
-    systemPromptContext
+    systemPromptContext,
+    toolOptions
   );
   const combinedSystemPrompt = [project.systemPrompt, ...toolSystemPrompts]
     .filter(Boolean)
@@ -265,13 +251,13 @@ async function buildAgenticLoopOptions(
     preFillResponse: project.preFillResponse,
     webSearchEnabled: project.webSearchEnabled,
     enabledTools,
+    toolOptions,
     disableStream: project.disableStream ?? false,
     enableReasoning: project.enableReasoning,
     reasoningBudgetTokens: project.reasoningBudgetTokens,
     thinkingKeepTurns: project.thinkingKeepTurns,
     reasoningEffort: project.reasoningEffort,
     reasoningSummary: project.reasoningSummary,
-    jsLibEnabled: project.jsLibEnabled,
   };
 }
 
@@ -740,29 +726,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       setMessages(loadedMessages);
       callbacks.onMessagesLoaded(chatId, loadedMessages);
 
-      // 3c. Initialize memory tool if enabled
-      if (loadedProject.memoryEnabled) {
-        console.debug('[useChat] Initializing memory tool for project:', loadedProject.id);
-        // Set system prompt mode before initializing
-        setMemoryUseSystemPrompt(loadedProject.id, loadedProject.memoryUseSystemPrompt ?? false);
-        await initMemoryTool(loadedProject.id);
-        if (isCancelled) return;
-      }
-
-      // 3d. Initialize JavaScript tool if enabled
-      if (loadedProject.jsExecutionEnabled) {
-        console.debug('[useChat] Initializing JavaScript tool');
-        initJsTool();
-      }
-
-      // 3e. Initialize filesystem tool if enabled
-      if (loadedProject.fsToolEnabled) {
-        console.debug('[useChat] Initializing filesystem tool for project:', loadedProject.id);
-        await initFsTool(loadedProject.id);
-        if (isCancelled) return;
-      }
-
-      // 4. Load API definition
+      // 3c. Load API definition
       let loadedApiDef: APIDefinition | null = null;
       const effectiveApiDefId = loadedChat.apiDefinitionId ?? loadedProject.apiDefinitionId;
       if (effectiveApiDefId) {
@@ -907,36 +871,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       cost: chat.totalCost || 0,
     };
   }, [chat]);
-
-  // Cleanup memory tool when project changes or unmounts
-  useEffect(() => {
-    return () => {
-      if (project?.id && project.memoryEnabled) {
-        console.debug('[useChat] Disposing memory tool for project:', project.id);
-        disposeMemoryTool(project.id);
-      }
-    };
-  }, [project?.id, project?.memoryEnabled]);
-
-  // Cleanup JavaScript tool when project changes or unmounts
-  useEffect(() => {
-    return () => {
-      if (project?.jsExecutionEnabled) {
-        console.debug('[useChat] Disposing JavaScript tool');
-        disposeJsTool();
-      }
-    };
-  }, [project?.jsExecutionEnabled]);
-
-  // Cleanup filesystem tool when project changes or unmounts
-  useEffect(() => {
-    return () => {
-      if (project?.id && project.fsToolEnabled) {
-        console.debug('[useChat] Disposing filesystem tool for project:', project.id);
-        disposeFsTool(project.id);
-      }
-    };
-  }, [project?.id, project?.fsToolEnabled]);
 
   // Reload API definition when chat/project API definition changes
   useEffect(() => {
@@ -1192,7 +1126,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         );
       } else {
         // Execute tool for continue mode
-        const toolResult = await executeClientSideTool(toolUse.name, toolUse.input);
+        const toolResult = await executeClientSideTool(
+          toolUse.name,
+          toolUse.input,
+          project.enabledTools || [],
+          project.toolOptions || {},
+          { projectId: project.id }
+        );
         toolResults.push({
           type: 'tool_result',
           tool_use_id: toolUse.id,

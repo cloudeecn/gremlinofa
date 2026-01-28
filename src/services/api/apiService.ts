@@ -11,9 +11,82 @@ import type {
 import { groupAndConsolidateBlocks } from '../../types';
 import { AnthropicClient } from './anthropicClient';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import { getModelMetadataFor } from './modelMetadata';
+import {
+  populateFromOpenRouterModel,
+  type OpenRouterModel,
+} from './model_metadatas/openRouterModelMapper';
 import { OpenAIClient } from './openaiClient';
 import { ResponsesClient } from './responsesClient';
 import { WebLLMClient } from './webllmClient';
+
+/**
+ * Fetch models from a custom endpoint using plain fetch (no auth).
+ * Auto-detects response format:
+ * - OpenAI-compatible: { "data": [{ "id": "...", ... }] }
+ * - Plain object array: [{ "id": "...", ... }]
+ * - String array: ["model-1", "model-2"]
+ */
+async function fetchModelsFromEndpoint(apiDefinition: APIDefinition): Promise<Model[]> {
+  const endpoint = apiDefinition.modelsEndpoint!;
+  console.debug(`[APIService] Fetching models from custom endpoint: ${endpoint}`);
+
+  const response = await fetch(endpoint);
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch models from ${endpoint}: ${response.status} ${response.statusText}`
+    );
+  }
+
+  const json = await response.json();
+
+  // Auto-detect format and extract model array
+  let rawModels: unknown[];
+  if (json && typeof json === 'object' && 'data' in json && Array.isArray(json.data)) {
+    // OpenAI-compatible format: { data: [...] }
+    rawModels = json.data;
+  } else if (Array.isArray(json)) {
+    // Plain array format
+    rawModels = json;
+  } else {
+    throw new Error(`Unexpected response format from ${endpoint}`);
+  }
+
+  // Convert to Model[]
+  const models: Model[] = rawModels.map((item: unknown) => {
+    // Handle string array format
+    if (typeof item === 'string') {
+      return getModelMetadataFor(apiDefinition, item);
+    }
+
+    // Handle object format
+    if (typeof item === 'object' && item !== null) {
+      const obj = item as Record<string, unknown>;
+      const modelId = (obj.id as string) || (obj.name as string) || String(obj);
+
+      // Get base metadata from hardcoded knowledge
+      const model = getModelMetadataFor(apiDefinition, modelId);
+
+      // Overlay API-provided metadata (OpenRouter format support)
+      populateFromOpenRouterModel(model, obj as unknown as OpenRouterModel);
+
+      // Use name from API if provided
+      if (obj.name && typeof obj.name === 'string') {
+        model.name = obj.name;
+      } else if (obj.display_name && typeof obj.display_name === 'string') {
+        model.name = obj.display_name;
+      }
+
+      return model;
+    }
+
+    // Fallback for unexpected item types
+    return getModelMetadataFor(apiDefinition, String(item));
+  });
+
+  console.debug(`[APIService] Fetched ${models.length} models from custom endpoint`);
+  return models;
+}
 
 // Main API service that routes to the correct client
 class APIService {
@@ -34,6 +107,11 @@ class APIService {
 
   // Discover models for a given API definition
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
+    // Use custom models endpoint if configured
+    if (apiDefinition.modelsEndpoint) {
+      return fetchModelsFromEndpoint(apiDefinition);
+    }
+
     const client = this.getClient(apiDefinition.apiType);
 
     if (!client) {

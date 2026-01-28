@@ -37,6 +37,7 @@ export interface APIDefinition {
   icon?: string; // Custom emoji icon (defaults to apiType icon)
   isDefault?: boolean; // Mark as default (non-deletable) definition
   isLocal?: boolean; // Local provider - API key is optional (e.g., Ollama, LM Studio)
+  modelsEndpoint?: string; // Custom endpoint for fetching models list (no auth)
   createdAt: Date;
   updatedAt: Date;
 }

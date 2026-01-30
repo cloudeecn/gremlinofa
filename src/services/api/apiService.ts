@@ -11,6 +11,7 @@ import type {
 import { groupAndConsolidateBlocks } from '../../types';
 import { AnthropicClient } from './anthropicClient';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import { BedrockClient } from './bedrockClient';
 import { getModelMetadataFor } from './modelMetadata';
 import {
   populateFromOpenRouterModel,
@@ -98,6 +99,7 @@ class APIService {
     this.clients.set('anthropic', new AnthropicClient());
     this.clients.set('chatgpt', new OpenAIClient());
     this.clients.set('webllm', new WebLLMClient());
+    this.clients.set('bedrock', new BedrockClient());
   }
 
   // Get the appropriate client for an API type

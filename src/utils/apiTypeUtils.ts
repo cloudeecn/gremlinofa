@@ -6,6 +6,7 @@ const API_TYPE_DISPLAY_NAMES: Record<APIType, string> = {
   responses_api: 'Responses',
   anthropic: 'Anthropic',
   webllm: 'WebLLM',
+  bedrock: 'Bedrock',
 };
 
 /** Default emoji icons for API types */
@@ -14,6 +15,7 @@ const API_TYPE_DEFAULT_ICONS: Record<APIType, string> = {
   chatgpt: '💬',
   anthropic: '✨',
   webllm: '🏠',
+  bedrock: '☁️',
 };
 
 /** Get the display name for an API type */

@@ -300,6 +300,7 @@ public/             # Static assets and PWA icons
 - `ResponsesClient` (OpenAI Responses API with reasoning, vision, web search)
 - `OpenAIClient` (Chat Completions with o-series/GPT-5 support)
 - `AnthropicClient` (thinking blocks, prompt caching, web search/fetch, citations)
+- `BedrockClient` (AWS Bedrock Converse API - see Bedrock Client section below)
 - `WebLLMClient` (local inference via WebGPU, no API key required)
   - Runs models entirely in browser using WebGPU
   - Default API definition created on first run
@@ -313,12 +314,43 @@ public/             # Static assets and PWA icons
   - Loading state observable via `subscribeToLoadingState()` for UI progress display
   - Engine lifecycle: singleton per session; when switching models, unloads current before loading new; `disposeEngine()` available to release GPU memory
 
+**Bedrock Client:**
+
+AWS Bedrock Converse API support via `@aws-sdk/client-bedrock` and `@aws-sdk/client-bedrock-runtime`.
+
+- **Authentication**: Bearer token via `token` config option (API key-based, not IAM credentials)
+- **Model Discovery**: `ListFoundationModelsCommand` with fallback to empty list
+- **Supported Models**: Claude, Llama, Mistral, Amazon Titan (all models with TEXT output modality)
+- **Model ID Format**: `provider.model-name-version` (e.g., `anthropic.claude-3-5-sonnet-20241022-v2:0`)
+
+**Streaming:**
+
+- Default: `ConverseStreamCommand` for real-time responses
+- Non-streaming: `ConverseCommand` when `disableStream: true`
+- Both paths convert to unified `StreamChunk` types via `bedrockStreamMapper.ts`
+
+**Content Block Types:**
+
+- TextMember (`{ text: string }`)
+- ToolUseMember (`{ toolUse: { toolUseId, name, input } }`)
+- ToolResultMember (`{ toolResult: { toolUseId, content, status } }`)
+- ReasoningContentMember (`{ reasoningContent: { reasoningText: { text, signature? } } }`)
+- CitationsContentMember (`{ citationsContent: {...} }`)
+- ImageMember (`{ image: { format, source: { bytes } } }`)
+
+**Reasoning Support:**
+
+- Enabled for Claude models (`modelId.startsWith('anthropic.claude')`)
+- Uses `additionalModelRequestFields.thinking` config
+- Budget controlled via `reasoningBudgetTokens`
+
 **Stream Mapper Pattern:**
 
 - Separates provider-specific event mapping from client logic
 - Event → MapperState → StreamChunk[] (stateful transformation)
-- Mappers: `anthropicStreamMapper.ts`, `responsesStreamMapper.ts`, `completionStreamMapper.ts`
+- Mappers: `anthropicStreamMapper.ts`, `responsesStreamMapper.ts`, `completionStreamMapper.ts`, `bedrockStreamMapper.ts`
 - `completionFullContentAccumulator.ts` - Accumulates streaming chunks to build fullContent for Chat Completions (content + tool_calls, excludes reasoning which can't be sent back to API)
+- `bedrockFullContentAccumulator.ts` - Accumulates raw Bedrock stream events to build fullContent (all 6 ContentBlock types: Text, ToolUse, ToolResult, Reasoning, Citations, Image)
 
 ### Message Content Architecture
 

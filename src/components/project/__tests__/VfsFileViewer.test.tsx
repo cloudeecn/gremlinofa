@@ -35,6 +35,8 @@ describe('VfsFileViewer', () => {
       version: 3,
       createdAt: Date.now() - 86400000,
       updatedAt: Date.now(),
+      minStoredVersion: 1,
+      storedVersionCount: 3,
     });
   });
 
@@ -77,7 +79,11 @@ describe('VfsFileViewer', () => {
     });
 
     it('displays version badge', async () => {
-      mockGetFileMeta.mockResolvedValue({ version: 5 });
+      mockGetFileMeta.mockResolvedValue({
+        version: 5,
+        minStoredVersion: 1,
+        storedVersionCount: 5,
+      });
 
       render(<VfsFileViewer {...defaultProps} />);
 

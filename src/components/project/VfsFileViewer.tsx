@@ -8,17 +8,21 @@ export interface VfsFileViewerProps {
   onEdit: () => void;
   onDiff: () => void;
   onDelete: () => void;
+  onDropVersions?: () => void; // Optional callback when versions are dropped
   onClose?: () => void; // Mobile only
 }
 
 interface FileState {
   content: string;
   version: number;
+  storedVersionCount: number;
   loading: boolean;
   error: string | null;
   isBinary: boolean;
   mime: string;
 }
+
+const KEEP_VERSIONS = 10;
 
 export default function VfsFileViewer({
   projectId,
@@ -26,11 +30,13 @@ export default function VfsFileViewer({
   onEdit,
   onDiff,
   onDelete,
+  onDropVersions,
   onClose,
 }: VfsFileViewerProps) {
   const [state, setState] = useState<FileState>({
     content: '',
     version: 0,
+    storedVersionCount: 0,
     loading: true,
     error: null,
     isBinary: false,
@@ -49,6 +55,7 @@ export default function VfsFileViewer({
       setState({
         content: result.content,
         version: meta?.version ?? 1,
+        storedVersionCount: meta?.storedVersionCount ?? 1,
         loading: false,
         error: null,
         isBinary: result.isBinary,
@@ -75,15 +82,45 @@ export default function VfsFileViewer({
   const filename = getBasename(path);
 
   const handleDownload = useCallback(() => {
-    // content is base64 for binary files
-    const dataUrl = `data:${state.mime};base64,${state.content}`;
+    let blob: Blob;
+    if (state.isBinary) {
+      // Binary: content is base64
+      const binary = atob(state.content);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      blob = new Blob([bytes], { type: state.mime });
+    } else {
+      // Text: create UTF-8 blob
+      blob = new Blob([state.content], { type: 'text/plain;charset=utf-8' });
+    }
+
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = dataUrl;
+    link.href = url;
     link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  }, [state.content, state.mime, filename]);
+    URL.revokeObjectURL(url);
+  }, [state.content, state.isBinary, state.mime, filename]);
+
+  const handleDropVersions = useCallback(async () => {
+    try {
+      const fileId = await vfsService.getFileId(projectId, path);
+      if (!fileId) return;
+
+      const deleted = await vfsService.dropOldVersions(projectId, fileId, KEEP_VERSIONS);
+      if (deleted > 0) {
+        // Reload to update version display
+        loadFile();
+        onDropVersions?.();
+      }
+    } catch (error) {
+      console.debug('[VfsFileViewer] Failed to drop versions:', error);
+    }
+  }, [projectId, path, loadFile, onDropVersions]);
 
   if (state.loading) {
     return (
@@ -136,11 +173,13 @@ export default function VfsFileViewer({
       <Header
         filename={filename}
         version={state.version}
+        storedVersionCount={state.storedVersionCount}
         onClose={onClose}
         onEdit={state.isBinary ? undefined : onEdit}
         onDiff={state.isBinary ? undefined : onDiff}
         onDelete={onDelete}
-        onDownload={state.isBinary ? handleDownload : undefined}
+        onDownload={handleDownload}
+        onDropVersions={state.version > KEEP_VERSIONS ? handleDropVersions : undefined}
         isBinary={state.isBinary}
         mime={state.mime}
       />
@@ -167,11 +206,13 @@ export default function VfsFileViewer({
 interface HeaderProps {
   filename: string;
   version: number | null;
+  storedVersionCount?: number;
   onClose?: () => void;
   onEdit?: () => void;
   onDiff?: () => void;
   onDelete: () => void;
   onDownload?: () => void;
+  onDropVersions?: () => void;
   isBinary?: boolean;
   mime?: string;
   disabled?: boolean;
@@ -180,15 +221,21 @@ interface HeaderProps {
 function Header({
   filename,
   version,
+  storedVersionCount,
   onClose,
   onEdit,
   onDiff,
   onDelete,
   onDownload,
+  onDropVersions,
   isBinary,
   mime,
   disabled,
 }: HeaderProps) {
+  // Show stored count when it differs from version (old versions were dropped)
+  const showStoredCount =
+    version !== null && storedVersionCount !== undefined && storedVersionCount < version;
+
   return (
     <div className="flex items-center gap-3 border-b border-gray-200 bg-white px-4 py-3">
       {/* Filename and version */}
@@ -198,6 +245,7 @@ function Header({
           {version !== null && (
             <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">
               v{version}
+              {showStoredCount && ` (${storedVersionCount} stored)`}
             </span>
           )}
           {isBinary && mime && (
@@ -241,6 +289,17 @@ function Header({
             title="View diff"
           >
             📊
+          </button>
+        )}
+        {onDropVersions && (
+          <button
+            type="button"
+            className="rounded p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-orange-600 disabled:opacity-50"
+            onClick={onDropVersions}
+            disabled={disabled}
+            title="Drop old versions (keep last 10)"
+          >
+            🧹
           </button>
         )}
         <button

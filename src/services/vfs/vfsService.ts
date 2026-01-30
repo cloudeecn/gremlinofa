@@ -1268,12 +1268,18 @@ export async function stat(projectId: string, path: string): Promise<VfsStat> {
 }
 
 /**
- * Get file metadata (version, timestamps) without loading content
+ * Get file metadata (version, timestamps, minStoredVersion) without loading content
  */
 export async function getFileMeta(
   projectId: string,
   path: string
-): Promise<{ version: number; createdAt: number; updatedAt: number } | null> {
+): Promise<{
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+  minStoredVersion: number;
+  storedVersionCount: number;
+} | null> {
   const tree = await loadTree(projectId);
   const normalized = normalizePath(path);
   const { node } = navigateToNode(tree, normalized);
@@ -1285,10 +1291,15 @@ export async function getFileMeta(
   const file = await loadFile(node.fileId);
   if (!file) return null;
 
+  const minStoredVersion = file.minStoredVersion ?? 1;
+  const storedVersionCount = file.version - minStoredVersion + 1;
+
   return {
     version: file.version,
     createdAt: file.createdAt,
     updatedAt: file.updatedAt,
+    minStoredVersion,
+    storedVersionCount,
   };
 }
 
@@ -1383,6 +1394,53 @@ export async function listVersions(_projectId: string, fileId: string): Promise<
   });
 
   return versions;
+}
+
+/**
+ * Drop old versions of a file, keeping only the most recent N versions
+ * @param projectId Project ID
+ * @param fileId The file's stable UUID
+ * @param keepCount Number of versions to keep (default: 10)
+ * @returns Number of versions deleted
+ */
+export async function dropOldVersions(
+  projectId: string,
+  fileId: string,
+  keepCount = 10
+): Promise<number> {
+  const currentFile = await loadFile(fileId);
+  if (!currentFile) return 0;
+
+  const totalVersions = currentFile.version;
+  if (totalVersions <= keepCount) return 0;
+
+  // Delete versions 1 to (totalVersions - keepCount)
+  // Current version is in vfs_files, historical are in vfs_versions
+  const deleteUpTo = totalVersions - keepCount;
+  const newMinStoredVersion = deleteUpTo + 1;
+  const adapter = storage.getAdapter();
+  let deleted = 0;
+
+  for (let v = 1; v <= deleteUpTo; v++) {
+    const versionId = `${fileId}_v${v}`;
+    try {
+      await adapter.delete(Tables.VFS_VERSIONS, versionId);
+      deleted++;
+    } catch {
+      // Version might not exist (e.g., already deleted)
+    }
+  }
+
+  // Update minStoredVersion in the file metadata
+  if (deleted > 0) {
+    const updatedFile: VfsFile = {
+      ...currentFile,
+      minStoredVersion: newMinStoredVersion,
+    };
+    await saveFile(fileId, updatedFile, projectId);
+  }
+
+  return deleted;
 }
 
 // ============================================================================

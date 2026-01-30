@@ -698,6 +698,11 @@ Features:
 - **File editor**: Edit with draft persistence (`vfs-editor` place), auto-versioning on save (text files only)
 - **Diff viewer**: Compare versions with LCS diff algorithm, rollback support
 - **Delete**: Soft-delete files and directories (recursive)
+- **Download**: UTF-8 text files download as `.txt`, binary files download with original MIME type
+- **Create**: Create empty text files and directories from directory panel
+- **Upload**: Upload files with auto-detection (valid UTF-8 → text, otherwise → binary via magic bytes)
+- **Download ZIP**: Download entire directory as ZIP archive (uses `fflate` library)
+- **Drop old versions**: For files with >10 versions, drop historical versions keeping last 10. After dropping, badge shows "v15 (10 stored)" to indicate actual stored version count differs from version number. Diff viewer respects minStoredVersion and shows "Oldest stored:" label when viewing the earliest available version.
 
 **Provider-Specific Settings Pattern:**
 

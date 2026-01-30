@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useAlert } from '../../hooks/useAlert';
@@ -8,6 +8,7 @@ import VfsFileEditor from './VfsFileEditor';
 import VfsDiffViewer from './VfsDiffViewer';
 import VfsFileModal from './VfsFileModal';
 import * as vfsService from '../../services/vfs/vfsService';
+import { zip } from 'fflate';
 
 export interface VfsManagerViewProps {
   projectId: string;
@@ -42,6 +43,12 @@ export default function VfsManagerView({
 
   // Content refresh key for desktop
   const [contentKey, setContentKey] = useState(0);
+
+  // File upload input ref
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Loading state for operations
+  const [isOperating, setIsOperating] = useState(false);
 
   // Handle initial path from URL deep link
   useEffect(() => {
@@ -94,7 +101,7 @@ export default function VfsManagerView({
   }, []);
 
   const handleBack = useCallback(() => {
-    navigate(`/project/${projectId}/settings`);
+    navigate(`/project/${projectId}`);
   }, [navigate, projectId]);
 
   // Desktop: Edit
@@ -199,6 +206,168 @@ export default function VfsManagerView({
     // Don't refresh on close to preserve expand state
   }, []);
 
+  // Create new file
+  const handleCreateFile = useCallback(async () => {
+    const dirPath = selectedPath && selectedType === 'dir' ? selectedPath : '/';
+    const filename = prompt('Enter file name:');
+    if (!filename || !filename.trim()) return;
+
+    const filePath = dirPath === '/' ? `/${filename.trim()}` : `${dirPath}/${filename.trim()}`;
+
+    try {
+      await vfsService.createFile(projectId, filePath, '');
+      setTreeKey(k => k + 1);
+      setSelectedPath(filePath);
+      setSelectedType('file');
+      setContentKey(k => k + 1);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Failed to create file';
+      alert(msg);
+    }
+  }, [projectId, selectedPath, selectedType]);
+
+  // Create new directory
+  const handleCreateDirectory = useCallback(async () => {
+    const dirPath = selectedPath && selectedType === 'dir' ? selectedPath : '/';
+    const dirname = prompt('Enter directory name:');
+    if (!dirname || !dirname.trim()) return;
+
+    const newDirPath = dirPath === '/' ? `/${dirname.trim()}` : `${dirPath}/${dirname.trim()}`;
+
+    try {
+      await vfsService.mkdir(projectId, newDirPath);
+      setTreeKey(k => k + 1);
+      setSelectedPath(newDirPath);
+      setSelectedType('dir');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Failed to create directory';
+      alert(msg);
+    }
+  }, [projectId, selectedPath, selectedType]);
+
+  // Upload file - detect UTF-8 or binary
+  const handleFileUpload = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      // Reset input so same file can be re-selected
+      event.target.value = '';
+
+      const dirPath = selectedPath && selectedType === 'dir' ? selectedPath : '/';
+      const filePath = dirPath === '/' ? `/${file.name}` : `${dirPath}/${file.name}`;
+
+      setIsOperating(true);
+      try {
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+
+        // Try to decode as UTF-8
+        let isText = false;
+        let textContent = '';
+        try {
+          const decoder = new TextDecoder('utf-8', { fatal: true });
+          textContent = decoder.decode(bytes);
+          isText = true;
+        } catch {
+          // Contains invalid UTF-8 sequences, treat as binary
+          isText = false;
+        }
+
+        if (isText) {
+          await vfsService.writeFile(projectId, filePath, textContent);
+        } else {
+          await vfsService.writeFile(projectId, filePath, buffer);
+        }
+
+        setTreeKey(k => k + 1);
+        setSelectedPath(filePath);
+        setSelectedType('file');
+        setContentKey(k => k + 1);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Failed to upload file';
+        alert(msg);
+      } finally {
+        setIsOperating(false);
+      }
+    },
+    [projectId, selectedPath, selectedType]
+  );
+
+  // Download directory as ZIP
+  const handleDownloadZip = useCallback(async () => {
+    if (!selectedPath || selectedType !== 'dir') return;
+
+    setIsOperating(true);
+    try {
+      // Collect all files recursively
+      const files: Record<string, Uint8Array> = {};
+
+      const collectFiles = async (dirPath: string, prefix: string) => {
+        const entries = await vfsService.readDir(projectId, dirPath);
+        for (const entry of entries) {
+          const entryPath = dirPath === '/' ? `/${entry.name}` : `${dirPath}/${entry.name}`;
+          const zipPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+          if (entry.type === 'file') {
+            const result = await vfsService.readFileWithMeta(projectId, entryPath);
+            if (result.isBinary) {
+              // Binary: content is base64
+              const binary = atob(result.content);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+              }
+              files[zipPath] = bytes;
+            } else {
+              // Text: encode as UTF-8
+              const encoder = new TextEncoder();
+              files[zipPath] = encoder.encode(result.content);
+            }
+          } else if (entry.type === 'dir') {
+            await collectFiles(entryPath, zipPath);
+          }
+        }
+      };
+
+      const dirName = vfsService.getBasename(selectedPath) || 'root';
+      await collectFiles(selectedPath, '');
+
+      if (Object.keys(files).length === 0) {
+        alert('Directory is empty');
+        setIsOperating(false);
+        return;
+      }
+
+      // Create ZIP using fflate
+      zip(files, { level: 6 }, (err, data) => {
+        setIsOperating(false);
+        if (err) {
+          console.debug('[VfsManagerView] Failed to create ZIP:', err);
+          alert('Failed to create ZIP file');
+          return;
+        }
+
+        // Download the ZIP (copy to new ArrayBuffer to satisfy TypeScript)
+        const arrayBuffer = new ArrayBuffer(data.length);
+        new Uint8Array(arrayBuffer).set(data);
+        const blob = new Blob([arrayBuffer], { type: 'application/zip' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${dirName}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      });
+    } catch (error) {
+      setIsOperating(false);
+      const msg = error instanceof Error ? error.message : 'Failed to download directory';
+      alert(msg);
+    }
+  }, [projectId, selectedPath, selectedType]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-gray-50">
       {/* Header with safe area */}
@@ -240,24 +409,62 @@ export default function VfsManagerView({
             onSelectDir={handleSelectDir}
           />
 
-          {/* Directory actions */}
+          {/* Directory actions (mobile) */}
           {selectedType === 'dir' && selectedPath && (
             <div className="border-t border-gray-200 bg-white p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">
+              <div className="flex flex-col gap-3">
+                <div className="text-sm text-gray-600">
                   Selected:{' '}
-                  <span className="font-medium">{vfsService.getBasename(selectedPath)}</span>
-                </span>
-                <button
-                  type="button"
-                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700"
-                  onClick={handleDeleteDirectory}
-                >
-                  Delete
-                </button>
+                  <span className="font-medium">{vfsService.getBasename(selectedPath) || '/'}</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                    onClick={handleCreateFile}
+                    disabled={isOperating}
+                  >
+                    📄 New File
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                    onClick={handleCreateDirectory}
+                    disabled={isOperating}
+                  >
+                    📁 New Folder
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md bg-green-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isOperating}
+                  >
+                    ⬆️ Upload
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-purple-700 disabled:opacity-50"
+                    onClick={handleDownloadZip}
+                    disabled={isOperating}
+                  >
+                    📦 Download ZIP
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                    onClick={handleDeleteDirectory}
+                    disabled={isOperating}
+                  >
+                    🗑️ Delete
+                  </button>
+                </div>
               </div>
             </div>
           )}
+
+          {/* Hidden file input for upload */}
+          <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
 
           {/* Mobile modal */}
           {selectedPath && selectedType === 'file' && (
@@ -301,16 +508,65 @@ export default function VfsManagerView({
                   </span>
                 </div>
                 {/* Directory actions */}
-                <div className="flex flex-1 flex-col items-center justify-center gap-4 p-4">
-                  <p className="text-gray-500">Directory selected</p>
-                  <button
-                    type="button"
-                    className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700"
-                    onClick={handleDeleteDirectory}
-                  >
-                    🗑️ Delete Directory
-                  </button>
+                <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6">
+                  <div className="flex flex-wrap justify-center gap-3">
+                    <button
+                      type="button"
+                      className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                      onClick={handleCreateFile}
+                      disabled={isOperating}
+                    >
+                      📄 New File
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                      onClick={handleCreateDirectory}
+                      disabled={isOperating}
+                    >
+                      📁 New Folder
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isOperating}
+                    >
+                      ⬆️ Upload File
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap justify-center gap-3">
+                    <button
+                      type="button"
+                      className="rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-purple-700 disabled:opacity-50"
+                      onClick={handleDownloadZip}
+                      disabled={isOperating}
+                    >
+                      📦 Download ZIP
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                      onClick={handleDeleteDirectory}
+                      disabled={isOperating}
+                    >
+                      🗑️ Delete Directory
+                    </button>
+                  </div>
+                  {isOperating && (
+                    <div className="flex items-center gap-2 text-gray-500">
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
+                      <span className="text-sm">Processing...</span>
+                    </div>
+                  )}
                 </div>
+                {/* Hidden file input for upload (desktop) */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                />
               </div>
             ) : desktopMode === 'view' ? (
               <VfsFileViewer

@@ -4,13 +4,13 @@ import VfsDiffViewer from '../VfsDiffViewer';
 
 // Mock vfsService
 const mockGetFileId = vi.fn();
-const mockListVersions = vi.fn();
+const mockGetFileMeta = vi.fn();
 const mockGetVersion = vi.fn();
 const mockUpdateFile = vi.fn();
 
 vi.mock('../../../services/vfs/vfsService', () => ({
   getFileId: (...args: unknown[]) => mockGetFileId(...args),
-  listVersions: (...args: unknown[]) => mockListVersions(...args),
+  getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),
   getVersion: (...args: unknown[]) => mockGetVersion(...args),
   updateFile: (...args: unknown[]) => mockUpdateFile(...args),
   getBasename: (path: string) => {
@@ -30,11 +30,13 @@ describe('VfsDiffViewer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetFileId.mockResolvedValue('file_abc123');
-    mockListVersions.mockResolvedValue([
-      { version: 1, createdAt: Date.now() - 86400000 },
-      { version: 2, createdAt: Date.now() - 43200000 },
-      { version: 3, createdAt: Date.now() },
-    ]);
+    mockGetFileMeta.mockResolvedValue({
+      version: 3,
+      createdAt: Date.now() - 86400000,
+      updatedAt: Date.now(),
+      minStoredVersion: 1,
+      storedVersionCount: 3,
+    });
     mockGetVersion.mockImplementation(async (_proj, _fileId, version) => {
       if (version === 1) return 'Content v1';
       if (version === 2) return 'Content v2\nLine 2';
@@ -67,7 +69,11 @@ describe('VfsDiffViewer', () => {
     });
 
     it('displays error when no version history', async () => {
-      mockListVersions.mockResolvedValue([{ version: 1, createdAt: Date.now() }]);
+      mockGetFileMeta.mockResolvedValue({
+        version: 1,
+        minStoredVersion: 1,
+        storedVersionCount: 1,
+      });
 
       render(<VfsDiffViewer {...defaultProps} />);
 

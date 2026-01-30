@@ -32,6 +32,7 @@
     "@jitl/quickjs-singlefile-browser-release-sync": "^0.31.0",
     "@mlc-ai/web-llm": "^0.2.80",
     "dompurify": "^3.3.0",
+    "fflate": "^0.8.2",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.27",
     "marked": "^17.0.0",

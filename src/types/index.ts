@@ -491,6 +491,7 @@ export interface VfsFile {
   version: number;
   createdAt: number; // Unix timestamp (ms)
   updatedAt: number; // Unix timestamp (ms)
+  minStoredVersion?: number; // Minimum version still stored (1 if all versions exist)
 }
 
 export interface VfsVersion {

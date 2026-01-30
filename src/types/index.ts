@@ -17,8 +17,9 @@ import type { RenderingBlockGroup, MessageStopReason } from './content';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ChatCompletionTool } from 'openai/resources/index.mjs';
 import type OpenAI from 'openai';
+import type { Tool as BedrockTool } from '@aws-sdk/client-bedrock-runtime';
 
-export type APIType = 'anthropic' | 'chatgpt' | 'responses_api' | 'webllm';
+export type APIType = 'anthropic' | 'chatgpt' | 'responses_api' | 'webllm' | 'bedrock';
 
 /** Type-safe tool definition overrides for each API type */
 export interface APIToolOverrides {
@@ -26,6 +27,7 @@ export interface APIToolOverrides {
   chatgpt?: ChatCompletionTool;
   responses_api?: OpenAI.Responses.Tool;
   webllm?: void;
+  bedrock?: BedrockTool;
 }
 
 export interface APIDefinition {

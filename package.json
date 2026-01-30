@@ -26,6 +26,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.0",
+    "@aws-sdk/client-bedrock": "^3.978.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.978.0",
     "@jitl/quickjs-ng-wasmfile-release-sync": "^0.31.0",
     "@jitl/quickjs-singlefile-browser-release-sync": "^0.31.0",
     "@mlc-ai/web-llm": "^0.2.80",

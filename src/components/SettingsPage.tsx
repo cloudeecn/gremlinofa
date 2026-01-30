@@ -64,6 +64,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     { id: 'responses_api', name: 'OpenAI - Responses (new)', icon: '⚡' },
     { id: 'chatgpt', name: 'OpenAI - Chat Completions', icon: '💬' },
     { id: 'anthropic', name: 'Anthropic', icon: '✨' },
+    { id: 'bedrock', name: 'AWS Bedrock', icon: '☁️' },
     { id: 'webllm', name: 'WebLLM (Local)', icon: '🏠' },
   ] as const;
 

@@ -1118,6 +1118,7 @@ export class UnifiedStorage {
         baseUrl: 'https://api.x.ai/v1',
       },
       { apiType: 'anthropic', name: 'Anthropic Official', baseUrl: '' },
+      { apiType: 'bedrock', name: 'AWS Bedrock', baseUrl: '' },
       { apiType: 'webllm', name: 'WebLLM (Local)', baseUrl: '' },
     ] as const;
 

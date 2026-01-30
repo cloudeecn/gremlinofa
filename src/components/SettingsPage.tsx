@@ -34,6 +34,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [formApiKey, setFormApiKey] = useState('');
   const [formIsLocal, setFormIsLocal] = useState(false);
+  const [formModelsEndpoint, setFormModelsEndpoint] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
   // WebGPU capability state
@@ -56,6 +57,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormBaseUrl('');
     setFormApiKey('');
     setFormIsLocal(false);
+    setFormModelsEndpoint('');
   };
 
   const apiTypes = [
@@ -79,6 +81,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormBaseUrl(def.baseUrl);
     setFormApiKey(def.apiKey);
     setFormIsLocal(def.isLocal || false);
+    setFormModelsEndpoint(def.modelsEndpoint || '');
   };
 
   const handleStartAdd = () => {
@@ -90,6 +93,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormBaseUrl('');
     setFormApiKey('');
     setFormIsLocal(false);
+    setFormModelsEndpoint('');
   };
 
   const handleSave = useCallback(async () => {
@@ -116,6 +120,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
         apiKey: formApiKey.trim(),
         isDefault: editingId ? apiDefinitions.find(d => d.id === editingId)?.isDefault : false,
         isLocal: formIsLocal,
+        modelsEndpoint: formModelsEndpoint.trim() || undefined,
         createdAt: editingId
           ? apiDefinitions.find(d => d.id === editingId)?.createdAt || new Date()
           : new Date(),
@@ -138,6 +143,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formApiType,
     formIsLocal,
     formApiKey,
+    formModelsEndpoint,
     editingId,
     apiDefinitions,
     formBaseUrl,
@@ -352,6 +358,17 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           </div>
                         )}
 
+                        <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                          Models Endpoint (Optional)
+                        </label>
+                        <input
+                          type="text"
+                          className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                          placeholder="SDK default"
+                          value={formModelsEndpoint}
+                          onChange={e => setFormModelsEndpoint(e.target.value)}
+                        />
+
                         <div className="flex justify-end gap-2">
                           <button
                             onClick={handleCancel}
@@ -483,6 +500,17 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                       </p>
                     </div>
                   )}
+
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                    Models Endpoint (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                    placeholder="SDK default"
+                    value={formModelsEndpoint}
+                    onChange={e => setFormModelsEndpoint(e.target.value)}
+                  />
 
                   <div className="flex justify-end gap-2">
                     <button

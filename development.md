@@ -129,6 +129,10 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - Multiple API definitions per provider type (APIType: `responses_api`, `chatgpt`, `anthropic`, `webllm`)
 - Each definition: name, icon (optional emoji), baseUrl (optional), apiKey (not required for WEBLLM or when `isLocal` is true)
 - `isLocal` flag marks non-WebLLM providers that don't need API keys (e.g., local LLM servers)
+- `modelsEndpoint` (optional) - Custom URL for fetching models list without authentication
+  - When set, uses plain `fetch()` instead of SDK's model listing API
+  - Auto-detects response format: OpenAI-compatible `{ data: [...] }`, plain array `[{...}]`, or string array `["model-1", ...]`
+  - Applies OpenRouter metadata (pricing, context window) if present in response
 - `isDefault` flag marks system-provided definitions (can be deleted by users)
 - **Default creation**: On first run, one default definition created per API type for discoverability
 - **Deletion**: Users can delete any definition including defaults; won't respawn unless entire API type is missing

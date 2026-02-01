@@ -13,6 +13,12 @@ export default defineConfig(({ command }) => {
 
   return {
     base,
+    resolve: {
+      alias: {
+        // Redirect Node.js smithy package to browser version for @anthropic-ai/bedrock-sdk
+        '@smithy/eventstream-serde-node': '@smithy/eventstream-serde-browser',
+      },
+    },
     build: {
       sourcemap: true,
     },

@@ -8,9 +8,10 @@
 
 - [ ] Bug fix
 - [ ] New feature
-- [ ] Breaking change
+- [ ] UI change
 - [ ] Documentation update
 - [ ] Code cleanup / refactor
+- [ ] De-slop
 
 ## Testing
 
@@ -18,11 +19,9 @@
 
 ## Checklist
 
-- [ ] `npm run verify` passes (type check, lint, format)
-- [ ] `npm run test:silent` passes
+- [ ] `npm run verify && npm run test:silent` passes (type check, lint, format, unit tests)
 - [ ] Added/updated tests for new features or bug fixes
 - [ ] Updated documentation if behavior changed
-- [ ] Checked `development.md` if this affects architecture
 
 ## Sign-off
 

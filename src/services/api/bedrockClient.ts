@@ -111,6 +111,7 @@ export class BedrockClient implements APIClient {
             m.outputModalities?.includes('TEXT') &&
             m.modelLifecycle?.status !== 'LEGACY'
         )
+        .sort((a, b) => (a?.modelId ?? '').localeCompare(b?.modelId ?? ''))
         .map(m => ({
           ...getModelMetadataFor(apiDefinition, m.modelId!),
           name: m.modelName || m.modelId!,
@@ -330,7 +331,7 @@ export class BedrockClient implements APIClient {
 
   /**
    * Convert our message format to Bedrock format.
-   * Handles base64’Uint8Array conversion for fields stored as base64 for JSON serialization.
+   * Handles base64ï¿½Uint8Array conversion for fields stored as base64 for JSON serialization.
    */
   private convertMessages(messages: Message<BedrockFullContent>[]): BedrockMessage[] {
     return messages.map(msg => {

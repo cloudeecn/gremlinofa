@@ -330,6 +330,7 @@ function ModelSelectorContent({
                         )}
                       </div>
                     </div>
+                    <div className="truncate font-mono text-xs text-gray-400">{model.id}</div>
                     <div
                       className={`mt-1 text-xs font-medium ${isDisabled ? 'text-gray-500' : 'text-green-700'}`}
                     >

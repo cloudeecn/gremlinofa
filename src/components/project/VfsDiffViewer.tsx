@@ -16,10 +16,11 @@ interface DiffState {
   versions: VersionInfo[];
   fileId: string | null;
   currentVersion: number;
+  minStoredVersion: number; // Minimum stored version (can't navigate below this)
   // Single viewing version - shows diff from (viewingVersion-1) to viewingVersion
   viewingVersion: number;
   // Content
-  prevContent: string; // Content of viewingVersion-1 (empty string for v1)
+  prevContent: string; // Content of viewingVersion-1 (empty string for v1 or minStoredVersion)
   currentContent: string; // Content of viewingVersion
 }
 
@@ -35,6 +36,7 @@ export default function VfsDiffViewer({
     versions: [],
     fileId: null,
     currentVersion: 1,
+    minStoredVersion: 1,
     viewingVersion: 1,
     prevContent: '',
     currentContent: '',
@@ -43,7 +45,7 @@ export default function VfsDiffViewer({
 
   // Load content for a specific version (shows diff from prev to this version)
   const loadVersionContent = useCallback(
-    async (fileId: string, version: number) => {
+    async (fileId: string, version: number, minVersion: number) => {
       setState(prev => ({ ...prev, loading: true, error: null }));
 
       try {
@@ -53,9 +55,9 @@ export default function VfsDiffViewer({
           throw new Error('Version content not found');
         }
 
-        // Load previous version content (empty string for v1)
+        // Load previous version content (empty string for minStoredVersion or v1)
         let prevContent = '';
-        if (version > 1) {
+        if (version > minVersion) {
           const prev = await vfsService.getVersion(projectId, fileId, version - 1);
           if (prev === null) {
             throw new Error('Previous version content not found');
@@ -92,22 +94,33 @@ export default function VfsDiffViewer({
         throw new Error('File not found');
       }
 
-      const versions = await vfsService.listVersions(projectId, fileId);
-      if (versions.length < 2) {
+      // Get file metadata including minStoredVersion
+      const meta = await vfsService.getFileMeta(projectId, path);
+      if (!meta) {
+        throw new Error('File metadata not found');
+      }
+
+      const { version: currentVersion, minStoredVersion, storedVersionCount } = meta;
+      if (storedVersionCount < 2) {
         throw new Error('No version history available');
       }
 
-      const currentVersion = versions[versions.length - 1].version;
+      // Build versions list for UI (only stored versions)
+      const versions: VersionInfo[] = [];
+      for (let v = minStoredVersion; v <= currentVersion; v++) {
+        versions.push({ version: v, createdAt: 0 }); // Timestamps not needed for UI
+      }
 
       setState(prev => ({
         ...prev,
         fileId,
         versions,
         currentVersion,
+        minStoredVersion,
       }));
 
       // Start by showing the current version (latest changes)
-      await loadVersionContent(fileId, currentVersion);
+      await loadVersionContent(fileId, currentVersion, minStoredVersion);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load versions';
       setState(prev => ({
@@ -120,16 +133,22 @@ export default function VfsDiffViewer({
 
   // Navigation handlers
   const handlePrev = useCallback(() => {
-    if (state.viewingVersion > 1 && state.fileId) {
-      loadVersionContent(state.fileId, state.viewingVersion - 1);
+    if (state.viewingVersion > state.minStoredVersion && state.fileId) {
+      loadVersionContent(state.fileId, state.viewingVersion - 1, state.minStoredVersion);
     }
-  }, [state.viewingVersion, state.fileId, loadVersionContent]);
+  }, [state.viewingVersion, state.minStoredVersion, state.fileId, loadVersionContent]);
 
   const handleNext = useCallback(() => {
     if (state.viewingVersion < state.currentVersion && state.fileId) {
-      loadVersionContent(state.fileId, state.viewingVersion + 1);
+      loadVersionContent(state.fileId, state.viewingVersion + 1, state.minStoredVersion);
     }
-  }, [state.viewingVersion, state.currentVersion, state.fileId, loadVersionContent]);
+  }, [
+    state.viewingVersion,
+    state.currentVersion,
+    state.minStoredVersion,
+    state.fileId,
+    loadVersionContent,
+  ]);
 
   // Rollback handler - restores to the viewing version
   const handleRollback = useCallback(async () => {
@@ -164,7 +183,7 @@ export default function VfsDiffViewer({
   const filename = getBasename(path);
 
   // Navigation state
-  const canPrev = state.viewingVersion > 1;
+  const canPrev = state.viewingVersion > state.minStoredVersion;
   const canNext = state.viewingVersion < state.currentVersion;
   const canRollback = state.viewingVersion < state.currentVersion;
 
@@ -206,7 +225,11 @@ export default function VfsDiffViewer({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="text-sm text-gray-500">
-            {state.viewingVersion === 1 ? 'Created:' : 'Changes in:'}
+            {state.viewingVersion === state.minStoredVersion
+              ? state.minStoredVersion === 1
+                ? 'Created:'
+                : 'Oldest stored:'
+              : 'Changes in:'}
           </span>
           <div className="flex items-center gap-1">
             <button

@@ -85,12 +85,12 @@ describe('VfsManagerView', () => {
       expect(screen.getByText('←')).toBeInTheDocument();
     });
 
-    it('navigates back to project settings on back button click', async () => {
+    it('navigates back to project view on back button click', async () => {
       renderWithRouter(<VfsManagerView {...defaultProps} />);
 
       fireEvent.click(screen.getByText('←'));
 
-      expect(mockNavigate).toHaveBeenCalledWith('/project/proj_test_123/settings');
+      expect(mockNavigate).toHaveBeenCalledWith('/project/proj_test_123');
     });
 
     it('renders menu button on mobile when onMenuPress provided', async () => {
@@ -145,7 +145,8 @@ describe('VfsManagerView', () => {
       fireEvent.click(screen.getByText('docs'));
 
       await waitFor(() => {
-        expect(screen.getByText('Directory selected')).toBeInTheDocument();
+        // Directory actions panel should be visible with action buttons
+        expect(screen.getByText('📄 New File')).toBeInTheDocument();
       });
     });
   });
@@ -174,7 +175,7 @@ describe('VfsManagerView', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Selected:')).toBeInTheDocument();
-        expect(screen.getByText('Delete')).toBeInTheDocument();
+        expect(screen.getByText('🗑️ Delete')).toBeInTheDocument();
       });
     });
   });
@@ -257,10 +258,10 @@ describe('VfsManagerView', () => {
       fireEvent.click(screen.getByText('docs'));
 
       await waitFor(() => {
-        expect(screen.getByText('Delete')).toBeInTheDocument();
+        expect(screen.getByText('🗑️ Delete')).toBeInTheDocument();
       });
 
-      fireEvent.click(screen.getByText('Delete'));
+      fireEvent.click(screen.getByText('🗑️ Delete'));
 
       await waitFor(() => {
         // Tree should be refreshed (readDir called again)

@@ -209,6 +209,7 @@ describe('RemoteStorageAdapter E2E', () => {
       const result = await adapter.get(table, testId);
       expect(result).toEqual({
         encryptedData: testData,
+        timestamp: testTimestamp,
         unencryptedData: undefined,
       });
     });
@@ -221,16 +222,18 @@ describe('RemoteStorageAdapter E2E', () => {
     it('should save record with unencryptedData', async () => {
       const testId = 'proj-with-meta';
       const testData = 'encrypted-stuff';
+      const testTimestamp = new Date().toISOString();
       const unencryptedMeta = '{"version":2,"flags":["test"]}';
 
       await adapter.save(Tables.PROJECTS, testId, testData, {
-        timestamp: new Date().toISOString(),
+        timestamp: testTimestamp,
         unencryptedData: unencryptedMeta,
       });
 
       const result = await adapter.get(Tables.PROJECTS, testId);
       expect(result).toEqual({
         encryptedData: testData,
+        timestamp: testTimestamp,
         unencryptedData: unencryptedMeta,
       });
     });

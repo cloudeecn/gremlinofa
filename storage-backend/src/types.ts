@@ -60,6 +60,7 @@ export interface StoredRecord {
  */
 export interface RecordResponse {
   encryptedData: string;
+  timestamp?: string;
   unencryptedData?: string;
 }
 

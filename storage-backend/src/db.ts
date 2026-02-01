@@ -104,7 +104,7 @@ function getSaveStmt(): Database.Statement {
 function getGetStmt(): Database.Statement {
   if (!stmtGet) {
     stmtGet = db.prepare(`
-      SELECT encryptedData, unencryptedData 
+      SELECT encryptedData, timestamp, unencryptedData 
       FROM records 
       WHERE userId = ? AND tableName = ? AND id = ?
     `);
@@ -150,12 +150,15 @@ export function saveRecord(
  */
 export function getRecord(userId: string, tableName: string, id: string): RecordResponse | null {
   const row = getGetStmt().get(userId, tableName, id) as
-    | Pick<StoredRecord, 'encryptedData' | 'unencryptedData'>
+    | Pick<StoredRecord, 'encryptedData' | 'timestamp' | 'unencryptedData'>
     | undefined;
 
   if (!row) return null;
 
   const result: RecordResponse = { encryptedData: row.encryptedData };
+  if (row.timestamp) {
+    result.timestamp = row.timestamp;
+  }
   if (row.unencryptedData) {
     result.unencryptedData = row.unencryptedData;
   }

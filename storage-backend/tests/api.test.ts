@@ -131,7 +131,10 @@ describe('CRUD Operations', () => {
     // Retrieve
     const { status: getStatus, body } = await request('GET', '/api/projects/proj_1');
     expect(getStatus).toBe(200);
-    expect(body).toEqual({ encryptedData: 'encrypted-content-here' });
+    expect(body).toEqual({
+      encryptedData: 'encrypted-content-here',
+      timestamp: '2024-01-01T00:00:00Z',
+    });
   });
 
   it('should return 404 for non-existent record', async () => {

@@ -25,6 +25,7 @@
     "test:silent": "CI=true vitest run --no-color --silent passed-only"
   },
   "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.26.2",
     "@anthropic-ai/sdk": "^0.71.0",
     "@aws-sdk/client-bedrock": "^3.978.0",
     "@aws-sdk/client-bedrock-runtime": "^3.978.0",

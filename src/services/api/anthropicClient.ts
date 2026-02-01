@@ -1,4 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
+import {
+  BedrockClient as BedrockControlPlaneClient,
+  ListFoundationModelsCommand,
+  ListInferenceProfilesCommand,
+  type FoundationModelSummary,
+} from '@aws-sdk/client-bedrock';
 import type {
   APIDefinition,
   Message,
@@ -23,13 +30,140 @@ import {
 import { toolRegistry } from '../tools/clientSideTools';
 import { getModelMetadataFor } from './modelMetadata';
 
+/**
+ * Parse baseUrl to detect Bedrock endpoints.
+ * Supports shorthand format "bedrock:us-east-2" and full URL.
+ */
+function parseBedrockEndpoint(baseUrl: string | undefined): {
+  isBedrock: boolean;
+  region: string;
+  url: string | undefined;
+} {
+  if (!baseUrl) {
+    return { isBedrock: false, region: 'us-east-1', url: undefined };
+  }
+
+  // Shorthand format: "bedrock:us-east-2" - SDK auto-generates URL from region
+  const shorthandMatch = baseUrl.match(/^bedrock:([a-z0-9-]+)$/i);
+  if (shorthandMatch) {
+    return {
+      isBedrock: true,
+      region: shorthandMatch[1],
+      url: undefined, // Let SDK generate URL
+    };
+  }
+
+  // Full URL format: "https://bedrock-runtime.us-east-2.amazonaws.com"
+  const urlMatch = baseUrl.match(/bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com/i);
+  if (urlMatch) {
+    return {
+      isBedrock: true,
+      region: urlMatch[1],
+      url: baseUrl,
+    };
+  }
+
+  return { isBedrock: false, region: 'us-east-1', url: baseUrl };
+}
+
 export class AnthropicClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
+    const bedrockInfo = parseBedrockEndpoint(apiDefinition.baseUrl);
+
+    // Use AWS SDK for Bedrock model discovery
+    if (bedrockInfo.isBedrock) {
+      try {
+        const controlPlaneClient = new BedrockControlPlaneClient({
+          region: bedrockInfo.region,
+          ...(apiDefinition.apiKey && {
+            token: { token: apiDefinition.apiKey },
+            authSchemePreference: ['httpBearerAuth'],
+          }),
+          ...(bedrockInfo.url && {
+            endpoint: bedrockInfo.url.replace('bedrock-runtime', 'bedrock'),
+          }),
+        });
+
+        // Fetch foundation models and inference profiles in parallel
+        const [modelsResponse, profilesResponse] = await Promise.all([
+          controlPlaneClient.send(
+            new ListFoundationModelsCommand({
+              byProvider: 'Anthropic',
+              byOutputModality: 'TEXT',
+            })
+          ),
+          controlPlaneClient.send(new ListInferenceProfilesCommand({})),
+        ]);
+
+        console.debug(
+          `[AnthropicClient] Bedrock foundation models for ${apiDefinition.name}:`,
+          modelsResponse
+        );
+        console.debug(
+          `[AnthropicClient] Bedrock inference profiles for ${apiDefinition.name}:`,
+          profilesResponse
+        );
+
+        // Build modelArn � model lookup from foundation models
+        const arnToModel = new Map<string, FoundationModelSummary>();
+        const models: Model[] = [];
+
+        for (const m of modelsResponse.modelSummaries ?? []) {
+          if (m.modelId && m.modelArn && m.modelLifecycle?.status !== 'LEGACY') {
+            arnToModel.set(m.modelArn, m);
+            // Add on-demand foundation models directly
+            if (m.inferenceTypesSupported?.includes('ON_DEMAND')) {
+              models.push({
+                ...getModelMetadataFor(apiDefinition, m.modelId),
+                id: m.modelId,
+                name: `${m.providerName} ${m.modelName || m.modelId}`,
+                baseModelId: m.modelId,
+              });
+            }
+          }
+        }
+
+        // Add inference profiles (most models require these)
+        for (const profile of profilesResponse.inferenceProfileSummaries ?? []) {
+          if (!profile.inferenceProfileId || profile.status !== 'ACTIVE') continue;
+
+          for (const profileModel of profile.models ?? []) {
+            const baseModel = arnToModel.get(profileModel.modelArn ?? '');
+            if (baseModel && baseModel.modelId) {
+              models.push({
+                ...getModelMetadataFor(apiDefinition, baseModel.modelId),
+                id: profile.inferenceProfileId,
+                name: profile.inferenceProfileName || profile.inferenceProfileId,
+                baseModelId: baseModel.modelId,
+              });
+            }
+          }
+        }
+
+        // Sort by base model ID first, then by full ID
+        models.sort((a, b) => {
+          const baseA = a.baseModelId ?? a.id;
+          const baseB = b.baseModelId ?? b.id;
+          const baseCompare = baseA.localeCompare(baseB);
+          if (baseCompare !== 0) return baseCompare;
+          return a.id.localeCompare(b.id);
+        });
+
+        console.debug(
+          `[AnthropicClient] Discovered ${models.length} Bedrock models for ${apiDefinition.name}`
+        );
+        return models;
+      } catch (error) {
+        console.warn('[AnthropicClient] Failed to discover Bedrock models:', error);
+        return [];
+      }
+    }
+
     // Create Anthropic client with API key and custom baseUrl if provided
     const client = new Anthropic({
       dangerouslyAllowBrowser: true,
       apiKey: apiDefinition.apiKey,
-      baseURL: apiDefinition.baseUrl || undefined,
+      baseURL: bedrockInfo.url,
     });
 
     // Use Anthropic's models API to get the latest available models
@@ -73,12 +207,24 @@ export class AnthropicClient implements APIClient {
     unknown
   > {
     try {
-      // Create Anthropic client with API key and custom baseUrl if provided
-      const client = new Anthropic({
-        dangerouslyAllowBrowser: true,
-        apiKey: apiDefinition.apiKey,
-        baseURL: apiDefinition.baseUrl || undefined,
-      });
+      const bedrockInfo = parseBedrockEndpoint(apiDefinition.baseUrl);
+
+      // Create appropriate client based on endpoint type
+      const client: Anthropic | AnthropicBedrock = bedrockInfo.isBedrock
+        ? new AnthropicBedrock({
+            dangerouslyAllowBrowser: true,
+            awsRegion: bedrockInfo.region,
+            ...(bedrockInfo.url && { baseURL: bedrockInfo.url }),
+            skipAuth: true, // Skip AWS SigV4 signing
+            defaultHeaders: {
+              Authorization: `Bearer ${apiDefinition.apiKey}`,
+            },
+          })
+        : new Anthropic({
+            dangerouslyAllowBrowser: true,
+            apiKey: apiDefinition.apiKey,
+            baseURL: bedrockInfo.url,
+          });
 
       // Convert our message format to Anthropic's format
       const anthropicMessages: Anthropic.Beta.BetaMessageParam[] = messages.map((msg, idx, arr) => {
@@ -259,7 +405,11 @@ export class AnthropicClient implements APIClient {
 
       // Build betas array - always include web-fetch and interleaved-thinking,
       // add context-management when memory tool is enabled or thinkingKeepTurns is set
-      const betas = ['web-fetch-2025-09-10', 'interleaved-thinking-2025-05-14'];
+      const betas: string[] = ['interleaved-thinking-2025-05-14'];
+      if (options.webSearchEnabled) {
+        betas.push('web-fetch-2025-09-10');
+      }
+
       const needsContextManagement =
         enabledTools.includes('memory') || options.thinkingKeepTurns !== undefined;
       if (needsContextManagement) {

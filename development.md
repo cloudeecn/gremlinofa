@@ -299,8 +299,8 @@ public/             # Static assets and PWA icons
 - Base client with shared streaming logic
 - `ResponsesClient` (OpenAI Responses API with reasoning, vision, web search)
 - `OpenAIClient` (Chat Completions with o-series/GPT-5 support)
-- `AnthropicClient` (thinking blocks, prompt caching, web search/fetch, citations)
-- `BedrockClient` (AWS Bedrock Converse API - see Bedrock Client section below)
+- `AnthropicClient` (thinking blocks, prompt caching, web search/fetch, citations, Bedrock via `@anthropic-ai/bedrock-sdk` - see below)
+- `BedrockClient` (AWS Bedrock Converse API for non-Claude models - see Bedrock Client section below)
 - `WebLLMClient` (local inference via WebGPU, no API key required)
   - Runs models entirely in browser using WebGPU
   - Default API definition created on first run
@@ -313,6 +313,19 @@ public/             # Static assets and PWA icons
   - Model metadata (VRAM, download size, context window) from WebLLM's `prebuiltAppConfig`
   - Loading state observable via `subscribeToLoadingState()` for UI progress display
   - Engine lifecycle: singleton per session; when switching models, unloads current before loading new; `disposeEngine()` available to release GPU memory
+
+**AnthropicClient Bedrock Support:**
+
+`AnthropicClient` can route through AWS Bedrock using `@anthropic-ai/bedrock-sdk` as a drop-in replacement. This provides a simpler alternative to `BedrockClient` for Claude models on Bedrock.
+
+- **Endpoint Detection**: `baseUrl` is checked for Bedrock patterns
+- **Shorthand Format**: `bedrock:us-east-2` - SDK auto-generates URL from region
+- **Full URL Format**: `https://bedrock-runtime.us-east-2.amazonaws.com` (for custom endpoints/proxies)
+- **Authentication**: Bearer token injected via `Authorization` header using `defaultHeaders`
+- **Model Discovery**: Uses `@aws-sdk/client-bedrock` with `ListFoundationModelsCommand({ byProvider: 'Anthropic' })` + `ListInferenceProfilesCommand` (most models require inference profiles)
+- **Model Family**: Messages stored as `modelFamily: 'anthropic'` (same as direct Anthropic API)
+
+Usage: Create an Anthropic API definition with `baseUrl` set to `bedrock:us-west-2` (or full URL) and enter your API key.
 
 **Bedrock Client:**
 

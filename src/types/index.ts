@@ -159,6 +159,8 @@ export interface Model extends ModelMetadata {
   apiType: APIType;
 
   matchedMode?: 'exact' | 'fuzz' | 'unreliable' | 'default';
+  /** Base model ID for providers with aliasing (e.g., Bedrock inference profiles) */
+  baseModelId?: string;
 }
 
 // Project types

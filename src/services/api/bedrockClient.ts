@@ -20,6 +20,8 @@ import type { DocumentType } from '@smithy/types';
 import {
   BedrockClient as BedrockControlPlaneClient,
   ListFoundationModelsCommand,
+  ListInferenceProfilesCommand,
+  type FoundationModelSummary,
 } from '@aws-sdk/client-bedrock';
 
 import type {
@@ -27,6 +29,7 @@ import type {
   Message,
   MessageStopReason,
   Model,
+  ReasoningEffort,
   RenderingBlockGroup,
   RenderingContentBlock,
   ToolResultBlock,
@@ -48,6 +51,135 @@ import { BedrockFullContentAccumulator } from './bedrockFullContentAccumulator';
 
 // Default region for Bedrock - can be overridden via baseUrl
 const DEFAULT_REGION = 'us-east-1';
+
+/**
+ * Bedrock model types for reasoning configuration.
+ * Different model families require different reasoning config formats.
+ */
+type BedrockModelReasoningType = 'claude-3' | 'claude-4' | 'nova2' | 'deepseek' | 'none';
+
+/**
+ * Detect the reasoning type of a Bedrock model from its modelId.
+ * Handles both raw modelId and inference profile formats.
+ */
+export function detectBedrockReasoningType(modelId: string): BedrockModelReasoningType {
+  const normalizedId = modelId.toLowerCase();
+
+  // Claude detection - check for anthropic. prefix (handles both raw modelId and inference profiles)
+  if (normalizedId.includes('anthropic.')) {
+    if (normalizedId.includes('claude-3-')) {
+      return 'claude-3';
+    }
+    return 'claude-4';
+  }
+
+  // Nova detection - matches amazon.nova-* variants
+  if (normalizedId.includes('amazon.nova-2')) {
+    return 'nova2';
+  }
+
+  // DeepSeek detection
+  if (normalizedId.includes('deepseek')) {
+    return 'deepseek';
+  }
+
+  return 'none';
+}
+
+/**
+ * Map our ReasoningEffort type to Nova's maxReasoningEffort.
+ * Nova only supports 'low', 'medium', 'high'.
+ */
+function mapEffortToNova(effort: ReasoningEffort | undefined): 'low' | 'medium' | 'high' {
+  switch (effort) {
+    case 'none':
+    case 'minimal':
+    case 'low':
+      return 'low';
+    case 'medium':
+    case undefined:
+      return 'medium';
+    case 'high':
+    case 'xhigh':
+      return 'high';
+  }
+}
+
+/**
+ * Build the appropriate reasoning configuration for a Bedrock model.
+ * Returns undefined if reasoning should not be enabled.
+ *
+ * @param modelType - The detected model reasoning type
+ * @param options - Stream options containing reasoning settings
+ * @returns DocumentType for additionalModelRequestFields, or undefined
+ */
+export function buildReasoningConfig(
+  modelType: BedrockModelReasoningType,
+  options: {
+    enableReasoning: boolean;
+    reasoningBudgetTokens: number;
+    reasoningEffort?: ReasoningEffort;
+    thinkingKeepTurns?: number; // undefined = model default, -1 = all, 0+ = thinking_turns
+  }
+): DocumentType | undefined {
+  if (!options.enableReasoning || modelType === 'none') {
+    return undefined;
+  }
+
+  switch (modelType) {
+    case 'claude-3':
+      // Claude 3.x uses thinking config
+      return {
+        thinking: {
+          type: 'enabled',
+          budget_tokens: options.reasoningBudgetTokens,
+        },
+      } as DocumentType;
+
+    case 'claude-4': {
+      // Claude 4+ uses reasoning_config
+      // Calculate keep value from thinkingKeepTurns:
+      // undefined = model default (all), -1 = all, 0+ = thinking_turns
+      const keepValue =
+        options.thinkingKeepTurns === undefined || options.thinkingKeepTurns === -1
+          ? { type: 'all' }
+          : { type: 'thinking_turns', value: options.thinkingKeepTurns };
+      return {
+        reasoning_config: {
+          type: 'enabled',
+          budget_tokens: options.reasoningBudgetTokens,
+        },
+        anthropic_beta: ['interleaved-thinking-2025-05-14', 'context-management-2025-06-27'],
+        context_management: {
+          edits: [
+            {
+              type: 'clear_thinking_20251015',
+              keep: keepValue,
+            },
+          ],
+        },
+      } as DocumentType;
+    }
+
+    case 'nova2':
+      // Nova uses reasoningConfig with maxReasoningEffort
+      return {
+        reasoningConfig: {
+          type: 'enabled',
+          maxReasoningEffort: mapEffortToNova(options.reasoningEffort),
+        },
+      } as DocumentType;
+
+    case 'deepseek':
+      // DeepSeek uses showThinking boolean
+      return {
+        showThinking: true,
+      } as DocumentType;
+
+    default:
+      return undefined;
+  }
+}
 
 /**
  * Convert base64 string back to Uint8Array for SDK
@@ -78,7 +210,9 @@ export type BedrockFullContent = ContentBlock[];
 
 export class BedrockClient implements APIClient {
   /**
-   * Discover available models from Bedrock using ListFoundationModels
+   * Discover available models from Bedrock using ListFoundationModels and ListInferenceProfiles.
+   * Inference profiles are preferred when available (some models require them).
+   * Models without inference profiles are included with their raw modelId.
    */
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
     const region = extractRegionFromUrl(apiDefinition.baseUrl);
@@ -96,26 +230,67 @@ export class BedrockClient implements APIClient {
     });
 
     try {
-      const response = await controlPlaneClient.send(new ListFoundationModelsCommand({}));
-      console.debug(`[BedrockClient] Models for ${apiDefinition.name}:`, response);
+      // Fetch foundation models and inference profiles in parallel
+      const [modelsResponse, profilesResponse] = await Promise.all([
+        controlPlaneClient.send(new ListFoundationModelsCommand({})),
+        controlPlaneClient.send(new ListInferenceProfilesCommand({})),
+      ]);
 
-      if (!response.modelSummaries) {
-        return [];
+      console.debug(`[BedrockClient] Foundation models for ${apiDefinition.name}:`, modelsResponse);
+      console.debug(
+        `[BedrockClient] Inference profiles for ${apiDefinition.name}:`,
+        profilesResponse
+      );
+
+      // Build modelArn → modelId map from foundation models
+      const arnToModel = new Map<string, FoundationModelSummary>();
+      const models: Model[] = [];
+
+      // On demand Models
+      for (const m of modelsResponse.modelSummaries ?? []) {
+        if (
+          m.modelId &&
+          m.modelArn &&
+          m.outputModalities?.includes('TEXT') &&
+          m.modelLifecycle?.status !== 'LEGACY'
+        ) {
+          arnToModel.set(m.modelArn, m);
+          if (m.inferenceTypesSupported?.includes('ON_DEMAND')) {
+            models.push({
+              ...getModelMetadataFor(apiDefinition, m.modelId),
+              id: m.modelId,
+              name: `${m.providerName} ${m.modelName || m.modelId}`,
+              baseModelId: m.modelId,
+            });
+          }
+        }
       }
 
-      // Filter for active models with text output and convert to our Model format
-      const models: Model[] = response.modelSummaries
-        .filter(
-          m =>
-            m.modelId &&
-            m.outputModalities?.includes('TEXT') &&
-            m.modelLifecycle?.status !== 'LEGACY'
-        )
-        .sort((a, b) => (a?.modelId ?? '').localeCompare(b?.modelId ?? ''))
-        .map(m => ({
-          ...getModelMetadataFor(apiDefinition, m.modelId!),
-          name: m.modelName || m.modelId!,
-        }));
+      // Create Model entries from inference profiles
+      for (const profile of profilesResponse.inferenceProfileSummaries ?? []) {
+        if (!profile.inferenceProfileId || profile.status !== 'ACTIVE') continue;
+
+        for (const profileModel of profile.models ?? []) {
+          const baseModel = arnToModel.get(profileModel.modelArn ?? '');
+          if (baseModel && baseModel.modelId) {
+            models.push({
+              ...getModelMetadataFor(apiDefinition, baseModel.modelId),
+              id: profile.inferenceProfileId,
+              name: `${profile.inferenceProfileName || profile.inferenceProfileId}`,
+              baseModelId: baseModel.modelId,
+            });
+          }
+        }
+      }
+
+      // Sort by base model ID first, then by full ID for consistent ordering
+      models.sort((a, b) => {
+        const baseA = a.baseModelId ?? a.id;
+        const baseB = b.baseModelId ?? b.id;
+        const baseCompare = baseA.localeCompare(baseB);
+        if (baseCompare !== 0) return baseCompare;
+        return a.id.localeCompare(b.id);
+      });
 
       console.debug(`[BedrockClient] Discovered ${models.length} models for ${apiDefinition.name}`);
       return models;
@@ -185,19 +360,9 @@ export class BedrockClient implements APIClient {
         ...(options.temperature !== undefined && { temperature: options.temperature }),
       };
 
-      // Check if model supports reasoning (Claude models on Bedrock)
-      const supportsReasoning = modelId.startsWith('anthropic.claude');
-
-      // Build additional model request fields for reasoning (cast to DocumentType for SDK compatibility)
-      const additionalModelRequestFields: DocumentType | undefined =
-        supportsReasoning && options.enableReasoning
-          ? ({
-              thinking: {
-                type: 'enabled',
-                budget_tokens: options.reasoningBudgetTokens,
-              },
-            } as DocumentType)
-          : undefined;
+      // Detect model reasoning type and build appropriate config
+      const modelReasoningType = detectBedrockReasoningType(modelId);
+      const additionalModelRequestFields = buildReasoningConfig(modelReasoningType, options);
 
       // Use non-streaming if requested
       if (options.disableStream) {

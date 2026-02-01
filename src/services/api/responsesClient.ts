@@ -446,6 +446,7 @@ export class ResponsesClient implements APIClient {
     requestParams: OpenAI.Responses.ResponseCreateParams,
     options: {
       temperature?: number;
+      enableReasoning?: boolean;
       reasoningEffort?: ReasoningEffort;
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
     },
@@ -456,8 +457,8 @@ export class ResponsesClient implements APIClient {
 
     if (options.temperature) requestParams.temperature = options.temperature;
 
-    // No reasoning support
-    if (model?.reasoningMode === 'none') {
+    // Skip reasoning if explicitly disabled or model doesn't support it
+    if (options.enableReasoning === false || model?.reasoningMode === 'none') {
       return;
     }
 

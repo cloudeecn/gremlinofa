@@ -5,18 +5,19 @@ interface OpenAIReasoningConfigProps {
   setReasoningEffort: (value: ReasoningEffort) => void;
   reasoningSummary: ReasoningSummary;
   setReasoningSummary: (value: ReasoningSummary) => void;
-  /** Show section header */
-  showHeader?: boolean;
 }
 
+/**
+ * OpenAI/Responses/Nova reasoning configuration fields.
+ * Embedded-only component for use within the unified Reasoning section.
+ */
 export default function OpenAIReasoningConfig({
   reasoningEffort,
   setReasoningEffort,
   reasoningSummary,
   setReasoningSummary,
-  showHeader = true,
 }: OpenAIReasoningConfigProps) {
-  const content = (
+  return (
     <div className="space-y-4">
       <div>
         <label className="mb-2 block text-sm font-medium text-gray-900">Reasoning Effort</label>
@@ -58,19 +59,4 @@ export default function OpenAIReasoningConfig({
       </div>
     </div>
   );
-
-  if (showHeader) {
-    return (
-      <div className="overflow-hidden rounded-lg border border-gray-200">
-        {/* Section Header */}
-        <div className="bg-gray-50 px-4 py-3">
-          <span className="text-sm font-semibold text-gray-900">Reasoning</span>
-        </div>
-        {/* Section Content */}
-        <div className="bg-white p-4">{content}</div>
-      </div>
-    );
-  }
-
-  return content;
 }

@@ -1,75 +1,30 @@
 interface AnthropicReasoningConfigProps {
-  enableReasoning: boolean;
-  setEnableReasoning: (value: boolean) => void;
   reasoningBudgetTokens: string;
   setReasoningBudgetTokens: (value: string) => void;
   thinkingKeepTurns: string;
   setThinkingKeepTurns: (value: string) => void;
   maxOutputTokens: string;
-  /** Show as collapsible section with toggle header */
-  showHeader?: boolean;
 }
 
+/**
+ * Anthropic/Bedrock Claude reasoning configuration fields.
+ * Embedded-only component for use within the unified Reasoning section.
+ */
 export default function AnthropicReasoningConfig({
-  enableReasoning,
-  setEnableReasoning,
   reasoningBudgetTokens,
   setReasoningBudgetTokens,
   thinkingKeepTurns,
   setThinkingKeepTurns,
   maxOutputTokens,
-  showHeader = true,
 }: AnthropicReasoningConfigProps) {
-  if (showHeader) {
-    return (
-      <div className="overflow-hidden rounded-lg border border-gray-200">
-        {/* Section Header - full width clickable */}
-        <label className="flex w-full cursor-pointer items-center justify-between bg-gray-50 px-4 py-3">
-          <span className="text-sm font-semibold text-gray-900">Reasoning</span>
-          <input
-            type="checkbox"
-            checked={enableReasoning}
-            onChange={e => setEnableReasoning(e.target.checked)}
-            className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-          />
-        </label>
-        {/* Section Content */}
-        {enableReasoning && (
-          <div className="space-y-4 bg-white p-4">
-            <BudgetTokensField
-              value={reasoningBudgetTokens}
-              onChange={setReasoningBudgetTokens}
-              maxOutputTokens={maxOutputTokens}
-            />
-            <KeepThinkingTurnsField value={thinkingKeepTurns} onChange={setThinkingKeepTurns} />
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // Without header - just the fields for embedding in Other Provider Config
   return (
     <div className="space-y-4">
-      <label className="flex w-full cursor-pointer items-center justify-between">
-        <span className="text-sm font-medium text-gray-900">Enable Reasoning</span>
-        <input
-          type="checkbox"
-          checked={enableReasoning}
-          onChange={e => setEnableReasoning(e.target.checked)}
-          className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-        />
-      </label>
-      {enableReasoning && (
-        <>
-          <BudgetTokensField
-            value={reasoningBudgetTokens}
-            onChange={setReasoningBudgetTokens}
-            maxOutputTokens={maxOutputTokens}
-          />
-          <KeepThinkingTurnsField value={thinkingKeepTurns} onChange={setThinkingKeepTurns} />
-        </>
-      )}
+      <BudgetTokensField
+        value={reasoningBudgetTokens}
+        onChange={setReasoningBudgetTokens}
+        maxOutputTokens={maxOutputTokens}
+      />
+      <KeepThinkingTurnsField value={thinkingKeepTurns} onChange={setThinkingKeepTurns} />
     </div>
   );
 }

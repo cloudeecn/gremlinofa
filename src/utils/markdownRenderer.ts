@@ -224,6 +224,7 @@ export function parseMarkdown(content: string): string {
 export function sanitizeHtml(html: string): string {
   return DOMPurify.sanitize(html, {
     ADD_ATTR: ['data-code'], // Allow data-code attribute for copy button
+    ADD_TAGS: ['thinking'], // Allow <thinking> tag for models that output thinking in text
   });
 }
 

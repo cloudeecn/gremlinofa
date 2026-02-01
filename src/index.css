@@ -234,6 +234,15 @@
   color: inherit;
 }
 
+/* Thinking block styles (for models that output <thinking> in text) */
+.prose thinking {
+  display: block;
+  background-color: #faf5ff; /* purple-50 */
+  padding: 0.5em 0.75em;
+  margin: 0.5em 0;
+  border-radius: 4px;
+}
+
 /* Math rendering styles */
 .math-error {
   color: #cc0000;

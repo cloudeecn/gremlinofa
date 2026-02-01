@@ -64,7 +64,7 @@ interface PendingBlock {
   // Reasoning block - can have reasoningText OR redactedContent
   reasoningText?: string;
   reasoningSignature?: string;
-  reasoningRedactedBase64?: string; // Store as base64 for JSON serialization
+  reasoningRedactedChunks?: Uint8Array[]; // Accumulate raw bytes, encode at finalization
   // Citations block - accumulate citations array
   citationsContent?: Array<{ text?: string }>; // Generated content
   citations?: PendingCitation[];
@@ -144,12 +144,12 @@ export class BedrockFullContentAccumulator {
             this.pendingBlock.reasoningText =
               (this.pendingBlock.reasoningText || '') + delta.reasoningContent.text;
           }
-          // Accumulate redactedContent as base64 (for JSON serialization)]
-          // TODO: slop
+          // Accumulate raw bytes, encode at finalization (like images)
           if (delta.reasoningContent.redactedContent) {
-            const base64Chunk = uint8ArrayToBase64(delta.reasoningContent.redactedContent);
-            this.pendingBlock.reasoningRedactedBase64 =
-              (this.pendingBlock.reasoningRedactedBase64 || '') + base64Chunk;
+            if (!this.pendingBlock.reasoningRedactedChunks) {
+              this.pendingBlock.reasoningRedactedChunks = [];
+            }
+            this.pendingBlock.reasoningRedactedChunks.push(delta.reasoningContent.redactedContent);
           }
           // Signature comes at the end
           if (delta.reasoningContent.signature) {
@@ -160,8 +160,8 @@ export class BedrockFullContentAccumulator {
             type: 'reasoning',
             reasoningText: delta.reasoningContent.text || '',
             reasoningSignature: delta.reasoningContent.signature || '',
-            reasoningRedactedBase64: delta.reasoningContent.redactedContent
-              ? uint8ArrayToBase64(delta.reasoningContent.redactedContent)
+            reasoningRedactedChunks: delta.reasoningContent.redactedContent
+              ? [delta.reasoningContent.redactedContent]
               : undefined,
           };
         }
@@ -240,12 +240,23 @@ export class BedrockFullContentAccumulator {
 
       case 'reasoning':
         // ReasoningContentBlock can be either reasoningText or redactedContent (mutually exclusive)
-        if (this.pendingBlock.reasoningRedactedBase64) {
-          // Store redactedContent as base64 string for JSON serialization
+        if (this.pendingBlock.reasoningRedactedChunks?.length) {
+          // Combine chunks and encode to base64 (same pattern as image handling)
+          const totalLength = this.pendingBlock.reasoningRedactedChunks.reduce(
+            (sum, arr) => sum + arr.length,
+            0
+          );
+          const combined = new Uint8Array(totalLength);
+          let offset = 0;
+          for (const chunk of this.pendingBlock.reasoningRedactedChunks) {
+            combined.set(chunk, offset);
+            offset += chunk.length;
+          }
+          // Store as base64 string for JSON serialization
           // bedrockClient.convertMessages() will convert back to Uint8Array when sending to API
           this.blocks.push({
             reasoningContent: {
-              redactedContent: this.pendingBlock.reasoningRedactedBase64 as unknown as Uint8Array,
+              redactedContent: uint8ArrayToBase64(combined) as unknown as Uint8Array,
             },
           } as ContentBlock);
         } else if (this.pendingBlock.reasoningText) {

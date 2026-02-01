@@ -76,7 +76,6 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   >(project?.reasoningSummary);
   const [disableStream, setDisableStream] = useState(project?.disableStream || false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showOtherProviderConfig, setShowOtherProviderConfig] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [temperature, setTemperature] = useState(project?.temperature?.toString() || '');
   const [maxOutputTokens, setMaxOutputTokens] = useState(
@@ -132,9 +131,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     (selectedApiType === 'chatgpt' || selectedApiType === 'responses_api') &&
     selectedModelId?.startsWith('o');
 
-  // Check if selected API is Anthropic or OpenAI/Responses
+  // Check selected API type for conditional UI
   const isAnthropic = selectedApiType === 'anthropic';
-  const isOpenAIOrResponses = selectedApiType === 'chatgpt' || selectedApiType === 'responses_api';
   const isWebLLM = selectedApiType === 'webllm';
   const hasModelSelected = !!selectedModelId;
 
@@ -420,32 +418,50 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
               />
             </div>
 
-            {/* Reasoning Section - Dynamic based on API type */}
-            {isAnthropic && (
-              <div className="mb-6">
-                <AnthropicReasoningConfig
-                  enableReasoning={enableReasoning}
-                  setEnableReasoning={setEnableReasoning}
-                  reasoningBudgetTokens={reasoningBudgetTokens}
-                  setReasoningBudgetTokens={setReasoningBudgetTokens}
-                  thinkingKeepTurns={thinkingKeepTurns}
-                  setThinkingKeepTurns={setThinkingKeepTurns}
-                  maxOutputTokens={maxOutputTokens}
-                  showHeader={true}
+            {/* Unified Reasoning Section */}
+            <div className="mb-6 overflow-hidden rounded-lg border border-gray-200">
+              {/* Section Header with Enable Toggle */}
+              <label className="flex w-full cursor-pointer items-center justify-between bg-gray-50 px-4 py-3">
+                <span className="text-sm font-semibold text-gray-900">Reasoning</span>
+                <input
+                  type="checkbox"
+                  checked={enableReasoning}
+                  onChange={e => setEnableReasoning(e.target.checked)}
+                  className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                 />
-              </div>
-            )}
-            {isOpenAIOrResponses && (
-              <div className="mb-6">
-                <OpenAIReasoningConfig
-                  reasoningEffort={reasoningEffort}
-                  setReasoningEffort={setReasoningEffort}
-                  reasoningSummary={reasoningSummary}
-                  setReasoningSummary={setReasoningSummary}
-                  showHeader={true}
-                />
-              </div>
-            )}
+              </label>
+              {/* Section Content */}
+              {enableReasoning && (
+                <div className="space-y-6 bg-white p-4">
+                  {/* Anthropic / Bedrock Claude Subsection */}
+                  <div>
+                    <h4 className="mb-3 text-xs font-medium tracking-wide text-gray-500 uppercase">
+                      Anthropic / Bedrock Claude
+                    </h4>
+                    <AnthropicReasoningConfig
+                      reasoningBudgetTokens={reasoningBudgetTokens}
+                      setReasoningBudgetTokens={setReasoningBudgetTokens}
+                      thinkingKeepTurns={thinkingKeepTurns}
+                      setThinkingKeepTurns={setThinkingKeepTurns}
+                      maxOutputTokens={maxOutputTokens}
+                    />
+                  </div>
+
+                  {/* OpenAI / Nova / DeepSeek Subsection */}
+                  <div className="border-t border-gray-100 pt-4">
+                    <h4 className="mb-3 text-xs font-medium tracking-wide text-gray-500 uppercase">
+                      OpenAI / Bedrock Nova / DeepSeek
+                    </h4>
+                    <OpenAIReasoningConfig
+                      reasoningEffort={reasoningEffort}
+                      setReasoningEffort={setReasoningEffort}
+                      reasoningSummary={reasoningSummary}
+                      setReasoningSummary={setReasoningSummary}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Message Format Section */}
             <div className="mb-6 overflow-hidden rounded-lg border border-gray-200">
@@ -945,76 +961,6 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
-                </div>
-              )}
-            </div>
-
-            {/* Other Provider Config Section */}
-            <div className="mb-6 overflow-hidden rounded-lg border border-gray-200">
-              {/* Section Header */}
-              <div
-                onClick={() => setShowOtherProviderConfig(!showOtherProviderConfig)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    setShowOtherProviderConfig(!showOtherProviderConfig);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-                className="flex cursor-pointer items-center justify-between bg-gray-50 px-4 py-3 transition-colors hover:bg-gray-100"
-              >
-                <span className="text-sm font-semibold text-gray-900">Other Provider Config</span>
-                <span className="text-gray-600">{showOtherProviderConfig ? '▼' : '▶'}</span>
-              </div>
-              {/* Section Content */}
-              {showOtherProviderConfig && (
-                <div className="space-y-6 bg-white p-4">
-                  <p className="text-xs text-gray-500 italic">
-                    These settings apply when the model is overridden at chat level.
-                  </p>
-
-                  {/* OpenAI/Responses Reasoning (show if NOT OpenAI selected) */}
-                  {!isOpenAIOrResponses && hasModelSelected && (
-                    <div>
-                      <h4 className="mb-3 text-sm font-semibold text-gray-700">
-                        OpenAI / Responses API Reasoning
-                      </h4>
-                      <OpenAIReasoningConfig
-                        reasoningEffort={reasoningEffort}
-                        setReasoningEffort={setReasoningEffort}
-                        reasoningSummary={reasoningSummary}
-                        setReasoningSummary={setReasoningSummary}
-                        showHeader={false}
-                      />
-                    </div>
-                  )}
-
-                  {/* Anthropic Reasoning (show if NOT Anthropic selected) */}
-                  {!isAnthropic && hasModelSelected && (
-                    <div>
-                      <h4 className="mb-3 text-sm font-semibold text-gray-700">
-                        Anthropic Reasoning
-                      </h4>
-                      <AnthropicReasoningConfig
-                        enableReasoning={enableReasoning}
-                        setEnableReasoning={setEnableReasoning}
-                        reasoningBudgetTokens={reasoningBudgetTokens}
-                        setReasoningBudgetTokens={setReasoningBudgetTokens}
-                        thinkingKeepTurns={thinkingKeepTurns}
-                        setThinkingKeepTurns={setThinkingKeepTurns}
-                        maxOutputTokens={maxOutputTokens}
-                        showHeader={false}
-                      />
-                    </div>
-                  )}
-
-                  {/* No model selected hint */}
-                  {!hasModelSelected && (
-                    <p className="text-xs text-gray-500 italic">
-                      Select a model to see provider options
-                    </p>
-                  )}
                 </div>
               )}
             </div>

@@ -452,6 +452,7 @@ export class OpenAIClient implements APIClient {
     requestParams: ChatCompletionCreateParams,
     options: {
       temperature?: number;
+      enableReasoning?: boolean;
       reasoningEffort?: ReasoningEffort;
     },
     model?: Model
@@ -460,8 +461,8 @@ export class OpenAIClient implements APIClient {
 
     if (options.temperature) requestParams.temperature = options.temperature;
 
-    // No reasoning support
-    if (model?.reasoningMode === 'none') {
+    // Skip reasoning if explicitly disabled or model doesn't support it
+    if (options.enableReasoning === false || model?.reasoningMode === 'none') {
       return;
     }
 

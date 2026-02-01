@@ -319,9 +319,9 @@ public/             # Static assets and PWA icons
 AWS Bedrock Converse API support via `@aws-sdk/client-bedrock` and `@aws-sdk/client-bedrock-runtime`.
 
 - **Authentication**: Bearer token via `token` config option (API key-based, not IAM credentials)
-- **Model Discovery**: `ListFoundationModelsCommand` with fallback to empty list
+- **Model Discovery**: `ListFoundationModelsCommand` + `ListInferenceProfilesCommand` in parallel. Models with inference profiles use the profile ID for API calls (some models require this). Models without profiles use raw modelId.
 - **Supported Models**: Claude, Llama, Mistral, Amazon Titan (all models with TEXT output modality)
-- **Model ID Format**: `provider.model-name-version` (e.g., `anthropic.claude-3-5-sonnet-20241022-v2:0`)
+- **Model ID Format**: Foundation models use `provider.model-name-version`, inference profiles use `region.provider.model-version` (e.g., `us.anthropic.claude-3-5-sonnet-20241022-v2:0`)
 
 **Streaming:**
 
@@ -340,9 +340,13 @@ AWS Bedrock Converse API support via `@aws-sdk/client-bedrock` and `@aws-sdk/cli
 
 **Reasoning Support:**
 
-- Enabled for Claude models (`modelId.startsWith('anthropic.claude')`)
-- Uses `additionalModelRequestFields.thinking` config
-- Budget controlled via `reasoningBudgetTokens`
+- Model type detection via `detectBedrockReasoningType(modelId)`:
+  - Claude 3.x → `thinking` config (budget_tokens)
+  - Claude 4+ → `reasoning_config` (budget_tokens)
+  - Nova 2 → `reasoningConfig` with `maxReasoningEffort` (low/medium/high). Nova 1 models don't support reasoning.
+  - DeepSeek → `showThinking` boolean
+- Config built via `buildReasoningConfig(modelType, options)`
+- Budget controlled via `reasoningBudgetTokens` (Claude), effort via `reasoningEffort` (Nova 2)
 
 **Stream Mapper Pattern:**
 
@@ -704,9 +708,14 @@ Features:
 - **Download ZIP**: Download entire directory as ZIP archive (uses `fflate` library)
 - **Drop old versions**: For files with >10 versions, drop historical versions keeping last 10. After dropping, badge shows "v15 (10 stored)" to indicate actual stored version count differs from version number. Diff viewer respects minStoredVersion and shows "Oldest stored:" label when viewing the earliest available version.
 
-**Provider-Specific Settings Pattern:**
+**Unified Reasoning Section:**
 
-Settings that apply to the currently selected API provider appear in the main section. Settings for other providers appear in a collapsible "Other Provider Config" section. For example, when using an Anthropic model, Anthropic reasoning (enable + budget) appears in Reasoning section, while OpenAI reasoning (effort + summary) appears in Other Provider Config. This keeps the UI focused while still allowing pre-configuration of all providers.
+The Reasoning section in Project Settings uses a unified design with a global "Enable Reasoning" toggle in the header. When enabled, all provider-specific reasoning options are shown in organized subsections:
+
+- **Anthropic / Bedrock Claude**: Budget Tokens + Keep Thinking Turns
+- **OpenAI / Bedrock Nova / DeepSeek**: Reasoning Effort + Reasoning Summary
+
+This design eliminates the need for separate reasoning UI per provider, simplifying configuration when switching between models. The correct options are automatically applied based on the active model's provider.
 
 **Draft Persistence:**
 

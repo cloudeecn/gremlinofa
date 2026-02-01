@@ -300,11 +300,18 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         </label>
                         <input
                           type="text"
-                          className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                          className={`w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${def.apiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
                           placeholder="Leave empty for provider default"
                           value={formBaseUrl}
                           onChange={e => setFormBaseUrl(e.target.value)}
                         />
+                        {def.apiType === 'anthropic' && (
+                          <p className="mb-3 text-xs text-gray-500">
+                            You can enter{' '}
+                            <code className="rounded bg-gray-100 px-1">bedrock:&lt;region&gt;</code>{' '}
+                            to use Claude models in Bedrock
+                          </p>
+                        )}
 
                         {requiresApiKey(def.apiType) ? (
                           <>
@@ -416,6 +423,11 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                       </button>
                     ))}
                   </div>
+                  {formApiType === 'bedrock' && (
+                    <p className="mb-3 text-xs text-gray-500">
+                      💡 You can also choose "Anthropic" to use Claude models in Bedrock.
+                    </p>
+                  )}
 
                   <label className="mb-1.5 block text-sm font-medium text-gray-700">Name *</label>
                   <input
@@ -443,11 +455,18 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                   </label>
                   <input
                     type="text"
-                    className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                    className={`w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formApiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
                     placeholder="Leave empty for provider default"
                     value={formBaseUrl}
                     onChange={e => setFormBaseUrl(e.target.value)}
                   />
+                  {formApiType === 'anthropic' && (
+                    <p className="mb-3 text-xs text-gray-500">
+                      You can enter{' '}
+                      <code className="rounded bg-gray-100 px-1">bedrock:&lt;region&gt;</code> to
+                      use Claude models in Bedrock
+                    </p>
+                  )}
 
                   {requiresApiKey(formApiType) ? (
                     <>

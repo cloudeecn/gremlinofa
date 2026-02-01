@@ -48,6 +48,43 @@ renderer.code = ({ text, lang }: Tokens.Code) => {
 };
 
 // ============================================================================
+// Thinking Extension for marked
+// ============================================================================
+
+/**
+ * Block-level extension for <thinking>...</thinking> tags.
+ * Some models output thinking content in plain text within these tags.
+ * This extension ensures the closing tag is preserved through markdown parsing.
+ */
+const thinkingExtension: TokenizerExtension & RendererExtension = {
+  name: 'thinking',
+  level: 'block',
+
+  start(src: string) {
+    return src.indexOf('<thinking>');
+  },
+
+  tokenizer(src: string) {
+    // Match <thinking>...</thinking> block (non-greedy, handles multiline)
+    const match = src.match(/^<thinking>([\s\S]*?)<\/thinking>/);
+    if (match) {
+      return {
+        type: 'thinking',
+        raw: match[0],
+        content: match[1],
+      };
+    }
+    return undefined;
+  },
+
+  renderer(token) {
+    // Parse inner content as markdown, then wrap in thinking tag
+    const inner = marked.parse((token as unknown as { content: string }).content) as string;
+    return `<thinking>${inner}</thinking>`;
+  },
+};
+
+// ============================================================================
 // Math Extensions for marked
 // ============================================================================
 
@@ -203,12 +240,12 @@ const inlineMathExtension: TokenizerExtension & RendererExtension = {
   },
 };
 
-// Configure marked with GitHub Flavored Markdown, custom renderer, and math extensions
+// Configure marked with GitHub Flavored Markdown, custom renderer, and extensions
 marked.use({
   breaks: true,
   gfm: true,
   renderer,
-  extensions: [blockMathExtension, inlineMathExtension],
+  extensions: [thinkingExtension, blockMathExtension, inlineMathExtension],
 });
 
 /**

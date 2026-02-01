@@ -98,6 +98,54 @@ More math: $a+b$`;
     });
   });
 
+  describe('thinking block rendering', () => {
+    it('should preserve thinking tags with closing tag intact', () => {
+      const input = '<thinking>\nSome internal reasoning\n</thinking>\n\nRegular text here';
+      const result = renderMarkdownSafe(input);
+      // Thinking tag should be present with proper structure
+      expect(result).toContain('<thinking>');
+      expect(result).toContain('</thinking>');
+      // Regular text should be outside thinking block
+      expect(result).toContain('Regular text here');
+    });
+
+    it('should render markdown inside thinking blocks', () => {
+      const input = '<thinking>\n**bold** and *italic*\n</thinking>';
+      const result = renderMarkdownSafe(input);
+      expect(result).toContain('<thinking>');
+      expect(result).toContain('<strong>bold</strong>');
+      expect(result).toContain('<em>italic</em>');
+      expect(result).toContain('</thinking>');
+    });
+
+    it('should handle thinking block with complex content', () => {
+      const input = `<thinking>
+1. First item
+2. Second item
+- Bullet point
+</thinking>
+
+**Visible response** follows.`;
+      const result = renderMarkdownSafe(input);
+      // Thinking block with lists
+      expect(result).toContain('<thinking>');
+      expect(result).toContain('</thinking>');
+      // Regular bold text outside
+      expect(result).toContain('<strong>Visible response</strong>');
+    });
+
+    it('should not extend thinking tag to content after closing tag', () => {
+      const input = '<thinking>Internal</thinking>External content';
+      const result = renderMarkdownSafe(input);
+      // Parse the result - thinking should only contain "Internal"
+      expect(result).toMatch(/<thinking>[\s\S]*Internal[\s\S]*<\/thinking>/);
+      // External content should be outside the thinking tag
+      expect(result).toContain('External content');
+      // Verify external content is not inside thinking tag
+      expect(result).not.toMatch(/<thinking>[\s\S]*External content[\s\S]*<\/thinking>/);
+    });
+  });
+
   describe('edge cases', () => {
     it('should handle multiple code blocks with math between them', () => {
       const input = '`code1` then $x^2$ then `code2`';

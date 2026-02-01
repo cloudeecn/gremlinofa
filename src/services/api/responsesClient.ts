@@ -123,6 +123,7 @@ export class ResponsesClient implements APIClient {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
+      toolOptions?: Record<string, Record<string, boolean>>;
       disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.Responses.ResponseInputItem[]>, unknown> {
@@ -249,7 +250,10 @@ export class ResponsesClient implements APIClient {
         : [];
 
       // Add client-side tool definitions
-      const clientToolDefs = this.getClientSideTools(options.enabledTools || []);
+      const clientToolDefs = this.getClientSideTools(
+        options.enabledTools || [],
+        options.toolOptions || {}
+      );
       tools.push(...clientToolDefs);
 
       // Prepare API request parameters

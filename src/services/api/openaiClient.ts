@@ -127,6 +127,7 @@ export class OpenAIClient implements APIClient {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
+      toolOptions?: Record<string, Record<string, boolean>>;
       disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<CompletionMessage>, unknown> {
@@ -267,7 +268,10 @@ export class OpenAIClient implements APIClient {
       }
 
       // Add client-side tool definitions
-      const clientToolDefs = this.getClientSideTools(options.enabledTools || []);
+      const clientToolDefs = this.getClientSideTools(
+        options.enabledTools || [],
+        options.toolOptions || {}
+      );
       if (clientToolDefs.length > 0) {
         requestParams.tools = [...(requestParams.tools || []), ...clientToolDefs];
       }

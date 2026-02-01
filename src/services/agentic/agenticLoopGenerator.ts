@@ -468,6 +468,7 @@ export async function* runAgenticLoop(
         preFillResponse: iteration === 1 ? options.preFillResponse : undefined,
         webSearchEnabled: options.webSearchEnabled,
         enabledTools,
+        toolOptions,
         disableStream: options.disableStream,
       };
 

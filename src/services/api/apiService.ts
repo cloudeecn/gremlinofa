@@ -153,6 +153,7 @@ class APIService {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
+      toolOptions?: Record<string, Record<string, boolean>>;
       disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {

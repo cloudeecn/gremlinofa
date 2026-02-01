@@ -94,8 +94,8 @@ async function executeJavaScript(
     };
   }
 
-  // Get loadLib option (default: true)
-  const loadLib = toolOptions?.loadLib !== false;
+  // Get loadLib option (UI initializes to true when tool is enabled)
+  const loadLib = toolOptions?.loadLib ?? false;
 
   // Create fresh context for this execution
   const vm = await JsVMContext.create(context.projectId, loadLib);

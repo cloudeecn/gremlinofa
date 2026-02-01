@@ -149,11 +149,30 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     [enabledTools]
   );
 
-  const toggleTool = useCallback((toolName: string, enabled: boolean) => {
-    setEnabledTools(prev =>
-      enabled ? [...prev.filter(t => t !== toolName), toolName] : prev.filter(t => t !== toolName)
-    );
-  }, []);
+  const toggleTool = useCallback(
+    (toolName: string, enabled: boolean) => {
+      if (enabled) {
+        // Add to enabled list
+        setEnabledTools(prev => [...prev.filter(t => t !== toolName), toolName]);
+
+        // Initialize options with defaults from tool definition
+        const tool = availableTools.find(t => t.name === toolName);
+        if (tool?.optionDefinitions?.length) {
+          setToolOptionsState(prev => {
+            const defaults: ToolOptions = {};
+            for (const opt of tool.optionDefinitions!) {
+              defaults[opt.id] = opt.default;
+            }
+            return { ...prev, [toolName]: { ...defaults, ...prev[toolName] } };
+          });
+        }
+      } else {
+        // Remove from enabled list
+        setEnabledTools(prev => prev.filter(t => t !== toolName));
+      }
+    },
+    [availableTools]
+  );
 
   const getToolOption = useCallback(
     (toolName: string, optionId: string, defaultValue: boolean) =>

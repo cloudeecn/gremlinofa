@@ -180,24 +180,12 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     [toolOptionsState]
   );
 
-  const setToolOption = useCallback(
-    (toolName: string, optionId: string, value: boolean, defaultValue: boolean) => {
-      setToolOptionsState(prev => {
-        const toolOpts = { ...prev[toolName] };
-        if (value === defaultValue) {
-          delete toolOpts[optionId];
-        } else {
-          toolOpts[optionId] = value;
-        }
-        if (Object.keys(toolOpts).length === 0) {
-          const { [toolName]: _, ...rest } = prev;
-          return rest;
-        }
-        return { ...prev, [toolName]: toolOpts };
-      });
-    },
-    []
-  );
+  const setToolOption = useCallback((toolName: string, optionId: string, value: boolean) => {
+    setToolOptionsState(prev => ({
+      ...prev,
+      [toolName]: { ...prev[toolName], [optionId]: value },
+    }));
+  }, []);
 
   const handleSave = useCallback(async () => {
     if (!project) return;
@@ -880,9 +868,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                                   id={`tool-${tool.name}-${opt.id}`}
                                   type="checkbox"
                                   checked={getToolOption(tool.name, opt.id, opt.default)}
-                                  onChange={e =>
-                                    setToolOption(tool.name, opt.id, e.target.checked, opt.default)
-                                  }
+                                  onChange={e => setToolOption(tool.name, opt.id, e.target.checked)}
                                   className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                                 />
                               </div>

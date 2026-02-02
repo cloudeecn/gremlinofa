@@ -323,6 +323,11 @@ function ModelSelectorContent({
                         {contextDisplay && (
                           <span className="text-xs text-gray-500">{contextDisplay}</span>
                         )}
+                        {model.region && model.region.length > 0 && (
+                          <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800">
+                            {model.region.map(r => r.toUpperCase()).join(', ')}
+                          </span>
+                        )}
                         {isWebLLM && (
                           <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
                             {formatSize(model.vramRequired || 0)} VRAM

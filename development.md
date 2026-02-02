@@ -332,9 +332,14 @@ Usage: Create an Anthropic API definition with `baseUrl` set to `bedrock:us-west
 AWS Bedrock Converse API support via `@aws-sdk/client-bedrock` and `@aws-sdk/client-bedrock-runtime`.
 
 - **Authentication**: Bearer token via `token` config option (API key-based, not IAM credentials)
-- **Model Discovery**: `ListFoundationModelsCommand` + `ListInferenceProfilesCommand` in parallel. Models with inference profiles use the profile ID for API calls (some models require this). Models without profiles use raw modelId.
-- **Supported Models**: Claude, Llama, Mistral, Amazon Titan (all models with TEXT output modality)
-- **Model ID Format**: Foundation models use `provider.model-name-version`, inference profiles use `region.provider.model-version` (e.g., `us.anthropic.claude-3-5-sonnet-20241022-v2:0`)
+- **Model Discovery**: Multi-phase discovery process:
+  1. Primary region: `ListFoundationModelsCommand` + `ListInferenceProfilesCommand` + `ListImportedModelsCommand` + `ListCustomModelsCommand` in parallel
+  2. Cross-region: Collects regions from inference profile ARNs, fetches foundation models from other regions to get accurate modality data
+  3. Imported/Custom models added from primary region only (they don't have cross-region profiles)
+- **Supported Models**: Claude, Llama, Mistral, Amazon Titan (all models with TEXT output modality), plus user-imported and custom (fine-tuned/distilled) models
+- **Model ID Format**: Foundation models use `provider.model-name-version`, inference profiles use `inferenceProfileId` (e.g., `us.anthropic.claude-3-5-sonnet-20241022-v2:0`), imported/custom models use full ARN
+- **Region Tracking**: Inference profiles store `region: string[]` with all available regions (e.g., `["us-east-1", "us-west-2"]`)
+- **Model Naming**: Imported models prefixed with `[Imported]`, custom models prefixed with `[Custom]`
 
 **Streaming:**
 

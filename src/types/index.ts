@@ -161,6 +161,8 @@ export interface Model extends ModelMetadata {
   matchedMode?: 'exact' | 'fuzz' | 'unreliable' | 'default';
   /** Base model ID for providers with aliasing (e.g., Bedrock inference profiles) */
   baseModelId?: string;
+  /** Region codes for Bedrock cross-region inference profiles (e.g., ["us-east-1", "us-west-2"]) */
+  region?: string[];
 }
 
 // Project types

@@ -21,6 +21,8 @@ import {
   BedrockClient as BedrockControlPlaneClient,
   ListFoundationModelsCommand,
   ListInferenceProfilesCommand,
+  ListImportedModelsCommand,
+  ListCustomModelsCommand,
   type FoundationModelSummary,
 } from '@aws-sdk/client-bedrock';
 
@@ -210,76 +212,210 @@ export type BedrockFullContent = ContentBlock[];
 
 export class BedrockClient implements APIClient {
   /**
-   * Discover available models from Bedrock using ListFoundationModels and ListInferenceProfiles.
-   * Inference profiles are preferred when available (some models require them).
-   * Models without inference profiles are included with their raw modelId.
+   * Discover available models from Bedrock.
+   *
+   * Fetches from multiple sources:
+   * 1. Foundation models (on-demand) in the primary region
+   * 2. Inference profiles (cross-region capable)
+   * 3. Imported models (user-imported custom weights)
+   * 4. Custom models (fine-tuned/distilled models)
+   *
+   * For cross-region inference profiles, fetches foundation models from
+   * referenced regions to get accurate modality information.
    */
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
-    const region = extractRegionFromUrl(apiDefinition.baseUrl);
+    const primaryRegion = extractRegionFromUrl(apiDefinition.baseUrl);
 
     // Create control plane client for model discovery
-    const controlPlaneClient = new BedrockControlPlaneClient({
-      region,
-      ...(apiDefinition.apiKey && {
-        token: { token: apiDefinition.apiKey },
-        authSchemePreference: ['httpBearerAuth'],
-      }),
-      ...(apiDefinition.baseUrl && {
-        endpoint: apiDefinition.baseUrl.replace('bedrock-runtime', 'bedrock'),
-      }),
-    });
+    const createClient = (region: string) =>
+      new BedrockControlPlaneClient({
+        region,
+        ...(apiDefinition.apiKey && {
+          token: { token: apiDefinition.apiKey },
+          authSchemePreference: ['httpBearerAuth'],
+        }),
+        // Only set custom endpoint for primary region (other regions use default AWS endpoints)
+        ...(region === primaryRegion &&
+          apiDefinition.baseUrl && {
+            endpoint: apiDefinition.baseUrl.replace('bedrock-runtime', 'bedrock'),
+          }),
+      });
+
+    const primaryClient = createClient(primaryRegion);
 
     try {
-      // Fetch foundation models and inference profiles in parallel
-      const [modelsResponse, profilesResponse] = await Promise.all([
-        controlPlaneClient.send(new ListFoundationModelsCommand({})),
-        controlPlaneClient.send(new ListInferenceProfilesCommand({})),
-      ]);
+      // Phase 1: Fetch foundation models, inference profiles, imported and custom models in parallel
+      const [modelsResponse, profilesResponse, importedResponse, customResponse] =
+        await Promise.all([
+          primaryClient.send(new ListFoundationModelsCommand({})),
+          primaryClient.send(new ListInferenceProfilesCommand({})),
+          primaryClient.send(new ListImportedModelsCommand({})).catch(err => {
+            console.debug('[BedrockClient] ListImportedModels failed (may not be supported):', err);
+            return { modelSummaries: [] };
+          }),
+          primaryClient.send(new ListCustomModelsCommand({ modelStatus: 'Active' })).catch(err => {
+            console.debug('[BedrockClient] ListCustomModels failed (may not be supported):', err);
+            return { modelSummaries: [] };
+          }),
+        ]);
 
       console.debug(`[BedrockClient] Foundation models for ${apiDefinition.name}:`, modelsResponse);
       console.debug(
         `[BedrockClient] Inference profiles for ${apiDefinition.name}:`,
         profilesResponse
       );
+      console.debug(`[BedrockClient] Imported models for ${apiDefinition.name}:`, importedResponse);
+      console.debug(`[BedrockClient] Custom models for ${apiDefinition.name}:`, customResponse);
 
-      // Build modelArn → modelId map from foundation models
+      // Build modelArn → model map from primary region foundation models
       const arnToModel = new Map<string, FoundationModelSummary>();
+      const arnCurrentRegion = new Set<string>();
       const models: Model[] = [];
 
-      // On demand Models
       for (const m of modelsResponse.modelSummaries ?? []) {
-        if (
-          m.modelId &&
-          m.modelArn &&
-          m.outputModalities?.includes('TEXT') &&
-          m.modelLifecycle?.status !== 'LEGACY'
-        ) {
-          arnToModel.set(m.modelArn, m);
-          if (m.inferenceTypesSupported?.includes('ON_DEMAND')) {
+        if (m.modelId && m.modelArn && m.modelLifecycle?.status !== 'LEGACY') {
+          arnCurrentRegion.add(m.modelArn);
+          if (m.outputModalities?.includes('TEXT')) {
+            arnToModel.set(m.modelArn, m);
+            if (m.inferenceTypesSupported?.includes('ON_DEMAND')) {
+              models.push({
+                ...getModelMetadataFor(apiDefinition, m.modelId),
+                id: m.modelId,
+                name: `${m.providerName} ${m.modelName || m.modelId}`,
+                baseModelId: m.modelId,
+              });
+            }
+          }
+        }
+      }
+
+      // Phase 2: Collect regions referenced by inference profiles that we don't have yet
+      const regionsNeeded = new Set<string>();
+      outer_p2: for (const profile of profilesResponse.inferenceProfileSummaries ?? []) {
+        // If the profile contains a model in current region, skip the profile.
+        for (const profileModel of profile.models ?? []) {
+          if (profileModel.modelArn && arnCurrentRegion.has(profileModel.modelArn)) {
+            continue outer_p2;
+          }
+        }
+
+        for (const profileModel of profile.models ?? []) {
+          const arn = profileModel.modelArn;
+          // ARN format: arn:aws:bedrock:{region}::foundation-model/{modelId}
+          const regionMatch = arn?.match(/^arn:aws:bedrock:([a-z0-9-]+):/);
+          if (regionMatch && regionMatch[1] !== primaryRegion) {
+            // Check if we already have this ARN
+            if (!arnToModel.has(arn!)) {
+              regionsNeeded.add(regionMatch[1]);
+            }
+          }
+        }
+      }
+
+      // Phase 3: Fetch foundation models from other regions in parallel
+      if (regionsNeeded.size > 0) {
+        console.debug(
+          `[BedrockClient] Fetching models from cross-region:`,
+          Array.from(regionsNeeded)
+        );
+
+        const otherRegionResults = await Promise.allSettled(
+          Array.from(regionsNeeded).map(async otherRegion => {
+            const otherClient = createClient(otherRegion);
+            const response = await otherClient.send(new ListFoundationModelsCommand({}));
+            return { region: otherRegion, models: response.modelSummaries ?? [] };
+          })
+        );
+
+        // Add successfully fetched models to the map
+        for (const result of otherRegionResults) {
+          if (result.status === 'fulfilled') {
+            for (const m of result.value.models) {
+              if (
+                m.modelId &&
+                m.modelArn &&
+                m.outputModalities?.includes('TEXT') &&
+                m.modelLifecycle?.status !== 'LEGACY'
+              ) {
+                arnToModel.set(m.modelArn, m);
+              }
+            }
+          } else {
+            console.debug('[BedrockClient] Failed to fetch from a region:', result.reason);
+          }
+        }
+      }
+
+      // Phase 4: Create Model entries from inference profiles (one entry per profile)
+      outer_p4: for (const profile of profilesResponse.inferenceProfileSummaries ?? []) {
+        if (!profile.inferenceProfileId || profile.status !== 'ACTIVE') continue;
+        for (const profileModel of profile.models ?? []) {
+          if (profileModel.modelArn && arnCurrentRegion.has(profileModel.modelArn)) {
+            const foundModel = arnToModel.get(profileModel.modelArn ?? '');
+            if (foundModel?.modelId) {
+              models.push({
+                ...getModelMetadataFor(apiDefinition, foundModel.modelId),
+                id: profile.inferenceProfileId,
+                name: profile.inferenceProfileName || profile.inferenceProfileId,
+                baseModelId: foundModel.modelId,
+              });
+              continue outer_p4;
+            }
+          }
+        }
+
+        // Collect regions and find base model from inner loop
+        const regions: string[] = [];
+        let baseModel: FoundationModelSummary | undefined;
+        for (const profileModel of profile.models ?? []) {
+          const foundModel = arnToModel.get(profileModel.modelArn ?? '');
+          if (foundModel?.modelId) {
+            baseModel ??= foundModel; // Take first valid base model for metadata
+            const regionMatch = profileModel.modelArn?.match(/^arn:aws:bedrock:([a-z0-9-]+):/);
+            if (regionMatch?.[1]) regions.push(regionMatch[1]);
+          }
+        }
+
+        if (baseModel?.modelId) {
+          models.push({
+            ...getModelMetadataFor(apiDefinition, baseModel.modelId),
+            id: profile.inferenceProfileId,
+            name: profile.inferenceProfileName || profile.inferenceProfileId,
+            baseModelId: baseModel.modelId,
+            region: regions,
+          });
+        }
+      }
+
+      // Phase 5: Add imported models (primary region only)
+      for (const m of importedResponse.modelSummaries ?? []) {
+        if (m.modelArn && m.modelName) {
+          // Imported models use ARN as the ID for inference
+          // instructSupported indicates if it's a text model (chat-capable)
+          if (m.instructSupported !== false) {
             models.push({
-              ...getModelMetadataFor(apiDefinition, m.modelId),
-              id: m.modelId,
-              name: `${m.providerName} ${m.modelName || m.modelId}`,
-              baseModelId: m.modelId,
+              ...getModelMetadataFor(apiDefinition, m.modelName),
+              id: m.modelArn,
+              name: `[Imported] ${m.modelName}`,
+              baseModelId: m.modelArchitecture || m.modelName,
             });
           }
         }
       }
 
-      // Create Model entries from inference profiles
-      for (const profile of profilesResponse.inferenceProfileSummaries ?? []) {
-        if (!profile.inferenceProfileId || profile.status !== 'ACTIVE') continue;
+      // Phase 6: Add custom models (primary region only)
+      for (const m of customResponse.modelSummaries ?? []) {
+        if (m.modelArn && m.modelName) {
+          // Use baseModelArn to look up the base model for metadata
+          const baseModel = arnToModel.get(m.baseModelArn ?? '');
+          const baseModelId = baseModel?.modelId || m.baseModelName || m.modelName;
 
-        for (const profileModel of profile.models ?? []) {
-          const baseModel = arnToModel.get(profileModel.modelArn ?? '');
-          if (baseModel && baseModel.modelId) {
-            models.push({
-              ...getModelMetadataFor(apiDefinition, baseModel.modelId),
-              id: profile.inferenceProfileId,
-              name: `${profile.inferenceProfileName || profile.inferenceProfileId}`,
-              baseModelId: baseModel.modelId,
-            });
-          }
+          models.push({
+            ...getModelMetadataFor(apiDefinition, baseModelId),
+            id: m.modelArn,
+            name: `[Custom] ${m.modelName}`,
+            baseModelId,
+          });
         }
       }
 

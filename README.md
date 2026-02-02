@@ -24,8 +24,9 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 
 **Multi-Provider Support**
 
-- Anthropic (attachments, interleaved thinking, web search/fetch/citations, per-project memory)
-- OpenAI (both completions and responses APIs, with reasoning/web search and attachments)
+- Anthropic (attachments, interleaved thinking, web search/fetch/citations)
+- OpenAI (both chat completions and responses APIs, with reasoning/web search and attachments)
+- AWS Bedrock (Converse API plus Claude via Anthropic SDK)
 - Any ChatGPT-compatible API (xAI, OpenRouter, local models, whatever)
 - WebLLM (run models locally via WebGPU - free, private, no API key needed)
 
@@ -218,15 +219,15 @@ gremlin.example.com {
 
 ## Tech Stack
 
-| Layer     | Tech                                       |
-| --------- | ------------------------------------------ |
-| Framework | React 19 + Vite                            |
-| Styling   | Tailwind CSS                               |
-| Routing   | React Router v7                            |
-| Storage   | IndexedDB + AES-256-GCM                    |
-| AI SDKs   | @anthropic-ai/sdk, openai, @mlc-ai/web-llm |
-| Rendering | marked, highlight.js, KaTeX, DOMPurify     |
-| Testing   | Vitest + Testing Library                   |
+| Layer     | Tech                                                                        |
+| --------- | --------------------------------------------------------------------------- |
+| Framework | React 19 + Vite                                                             |
+| Styling   | Tailwind CSS                                                                |
+| Routing   | React Router v7                                                             |
+| Storage   | IndexedDB + AES-256-GCM                                                     |
+| AI SDKs   | @anthropic-ai/sdk, openai, @aws-sdk/client-bedrock-runtime, @mlc-ai/web-llm |
+| Rendering | marked, highlight.js, KaTeX, DOMPurify                                      |
+| Testing   | Vitest + Testing Library                                                    |
 
 ## Security
 
@@ -269,18 +270,32 @@ Phi-3.5, Llama 3.1, Qwen, SmolLM, Gemma, and more. Start small (SmolLM 360M) or 
 
 **Requirements:** WebGPU-compatible browser (Chrome 113+, Edge 113+, Safari 18+). GPU needs vary by model — SmolLM runs on your iPhone, 8B models want a real graphics card.
 
-### Memory That Actually Sticks 🧠
+### Agentic Tools 🔧
 
-Claude can remember things. Not "we'll email you a summary" remember — actual persistent storage that survives page reloads.
+Turn your AI into a semi-autonomous agent with client-side tool execution. No server required — everything runs in your browser. Works with all providers except WebLLM (requires model tool support).
 
-- **Per-project filesystem** — Each project gets its own `/memories` sandbox. Your side projects stay isolated from your work nonsense.
-- **Full file operations** — Create, view, edit, rename, delete. Claude can `str_replace` like a civilized text editor.
-- **Version history** — Every write logged with timestamps. Replay or diff any version. Time travel for your AI's notes.
-- **Encrypted at rest** — Same AES-256-GCM as everything else. Your AI's secrets are your secrets.
+**Memory Tool** — Persistent per-project storage that survives page reloads:
 
-Implements Anthropic's memory tool spec, so Claude already knows how to use it. Tell it to "remember this for later" and watch it figure out the rest.
+- **`/memories` sandbox** — Each project gets its own memory space, isolated from other projects
+- **README auto-injection** — `/memories/README.md` automatically injected into system prompt
+- **Full file operations** — Create, view, edit, rename, delete with version history
+- **Encrypted at rest** — Same AES-256-GCM as everything else
 
-**Memory Manager UI** lets you peek behind the curtain — see what Claude's been writing, diff versions, or wipe the slate clean.
+Implements Anthropic's memory tool spec, so Claude already knows how to use it. Other models figure it out.
+
+**JavaScript Execution** — Run code in a secure QuickJS sandbox:
+
+- **Isolated environment** — Fresh context per call, no DOM access, no network, 60s timeout
+- **Filesystem access** — `fs` API reads/writes to the project's virtual filesystem
+- **Library preloading** — Drop UMD/IIFE builds in `/lib` and they load automatically
+
+**Filesystem Tool** — Full VFS access for storing code, data, and artifacts:
+
+- **Text and binary files** — Create images, PDFs, whatever (via dataUrl)
+- **Tree operations** — Create, view, edit, rename, delete, recursive directory ops
+- **Readonly `/memories`** — Memory tool's space is protected, filesystem tool can read but not write
+
+All tools persist data in the project's encrypted VFS. **Filesystem Manager** lets you peek behind the curtain — view files, diff versions, or wipe the slate clean.
 
 ### Remote Storage 🔄
 

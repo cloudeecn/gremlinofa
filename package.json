@@ -22,7 +22,8 @@
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:ci": "CI=true vitest run",
-    "test:silent": "CI=true vitest run --no-color --silent passed-only"
+    "test:silent": "CI=true vitest run --no-color --silent passed-only",
+    "prepare": "husky"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.26.2",
@@ -65,7 +66,9 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "fake-indexeddb": "^6.2.5",
     "globals": "^16.5.0",
+    "husky": "^9.1.7",
     "jsdom": "^27.2.0",
+    "lint-staged": "^16.2.7",
     "prettier": "^3.6.2",
     "prettier-plugin-tailwindcss": "^0.7.1",
     "tailwindcss": "^4.1.17",
@@ -76,5 +79,8 @@
     "vite-plugin-pwa": "^1.1.0",
     "vitest": "^4.0.13",
     "workbox-window": "^7.4.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,json,css,md,yaml,html}": "prettier --write"
   }
 }

@@ -312,6 +312,13 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                             to use Claude models in Bedrock
                           </p>
                         )}
+                        {def.apiType === 'bedrock' && (
+                          <p className="mb-3 text-xs text-gray-500">
+                            You can enter just a region (e.g.,{' '}
+                            <code className="rounded bg-gray-100 px-1">us-west-2</code>) instead of
+                            the full URL
+                          </p>
+                        )}
 
                         {requiresApiKey(def.apiType) ? (
                           <>
@@ -465,6 +472,13 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                       You can enter{' '}
                       <code className="rounded bg-gray-100 px-1">bedrock:&lt;region&gt;</code> to
                       use Claude models in Bedrock
+                    </p>
+                  )}
+                  {formApiType === 'bedrock' && (
+                    <p className="mb-3 text-xs text-gray-500">
+                      You can enter just a region (e.g.,{' '}
+                      <code className="rounded bg-gray-100 px-1">us-west-2</code>) instead of the
+                      full URL
                     </p>
                   )}
 

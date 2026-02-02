@@ -55,6 +55,56 @@ import { BedrockFullContentAccumulator } from './bedrockFullContentAccumulator';
 const DEFAULT_REGION = 'us-east-1';
 
 /**
+ * Parse baseUrl to extract region and determine endpoint URLs.
+ * Supports shorthand formats for convenience:
+ * - "us-west-2" - Just the region
+ * - "bedrock:us-west-2" - Explicit bedrock prefix
+ * - "https://bedrock-runtime.us-west-2.amazonaws.com" - Full URL
+ */
+function parseBedrockEndpoint(baseUrl: string | undefined): {
+  region: string;
+  runtimeUrl: string | undefined;
+  controlPlaneUrl: string | undefined;
+} {
+  if (!baseUrl) {
+    return { region: DEFAULT_REGION, runtimeUrl: undefined, controlPlaneUrl: undefined };
+  }
+
+  // Shorthand format: "bedrock:us-east-2"
+  const shorthandMatch = baseUrl.match(/^bedrock:([a-z0-9-]+)$/i);
+  if (shorthandMatch) {
+    return {
+      region: shorthandMatch[1],
+      runtimeUrl: undefined, // Let SDK generate URL
+      controlPlaneUrl: undefined,
+    };
+  }
+
+  // Region-only format: "us-west-2" (AWS region pattern)
+  const regionOnlyMatch = baseUrl.match(/^([a-z]{2}-[a-z]+-\d+)$/i);
+  if (regionOnlyMatch) {
+    return {
+      region: regionOnlyMatch[1],
+      runtimeUrl: undefined, // Let SDK generate URL
+      controlPlaneUrl: undefined,
+    };
+  }
+
+  // Full URL format: "https://bedrock-runtime.us-east-2.amazonaws.com"
+  const urlMatch = baseUrl.match(/bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com/i);
+  if (urlMatch) {
+    return {
+      region: urlMatch[1],
+      runtimeUrl: baseUrl,
+      controlPlaneUrl: baseUrl.replace('bedrock-runtime', 'bedrock'),
+    };
+  }
+
+  // Fallback: treat as custom endpoint, use default region
+  return { region: DEFAULT_REGION, runtimeUrl: baseUrl, controlPlaneUrl: undefined };
+}
+
+/**
  * Bedrock model types for reasoning configuration.
  * Different model families require different reasoning config formats.
  */
@@ -196,16 +246,6 @@ function base64ToUint8Array(base64: string): Uint8Array {
 }
 
 /**
- * Extract region from Bedrock endpoint URL or return default
- * Expected format: https://bedrock-runtime.{region}.amazonaws.com
- */
-function extractRegionFromUrl(baseUrl: string): string {
-  if (!baseUrl) return DEFAULT_REGION;
-  const match = baseUrl.match(/bedrock(?:-runtime)?\.([a-z0-9-]+)\.amazonaws\.com/);
-  return match ? match[1] : DEFAULT_REGION;
-}
-
-/**
  * Bedrock fullContent type - array of ContentBlock
  */
 export type BedrockFullContent = ContentBlock[];
@@ -224,7 +264,7 @@ export class BedrockClient implements APIClient {
    * referenced regions to get accurate modality information.
    */
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
-    const primaryRegion = extractRegionFromUrl(apiDefinition.baseUrl);
+    const { region: primaryRegion, controlPlaneUrl } = parseBedrockEndpoint(apiDefinition.baseUrl);
 
     // Create control plane client for model discovery
     const createClient = (region: string) =>
@@ -235,10 +275,7 @@ export class BedrockClient implements APIClient {
           authSchemePreference: ['httpBearerAuth'],
         }),
         // Only set custom endpoint for primary region (other regions use default AWS endpoints)
-        ...(region === primaryRegion &&
-          apiDefinition.baseUrl && {
-            endpoint: apiDefinition.baseUrl.replace('bedrock-runtime', 'bedrock'),
-          }),
+        ...(region === primaryRegion && controlPlaneUrl && { endpoint: controlPlaneUrl }),
       });
 
     const primaryClient = createClient(primaryRegion);
@@ -465,7 +502,7 @@ export class BedrockClient implements APIClient {
     }
   ): AsyncGenerator<StreamChunk, StreamResult<BedrockFullContent>, unknown> {
     try {
-      const region = extractRegionFromUrl(apiDefinition.baseUrl);
+      const { region, runtimeUrl } = parseBedrockEndpoint(apiDefinition.baseUrl);
 
       // Create runtime client for inference
       const runtimeClient = new BedrockRuntimeClient({
@@ -474,9 +511,7 @@ export class BedrockClient implements APIClient {
           token: { token: apiDefinition.apiKey },
           authSchemePreference: ['httpBearerAuth'],
         }),
-        ...(apiDefinition.baseUrl && {
-          endpoint: apiDefinition.baseUrl,
-        }),
+        ...(runtimeUrl && { endpoint: runtimeUrl }),
       });
 
       // Convert messages to Bedrock format

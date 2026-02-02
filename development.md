@@ -331,6 +331,10 @@ Usage: Create an Anthropic API definition with `baseUrl` set to `bedrock:us-west
 
 AWS Bedrock Converse API support via `@aws-sdk/client-bedrock` and `@aws-sdk/client-bedrock-runtime`.
 
+- **Endpoint Shorthand**: `baseUrl` supports multiple formats for convenience:
+  - `us-west-2` - Just the region (simplest)
+  - `bedrock:us-west-2` - Explicit bedrock prefix
+  - `https://bedrock-runtime.us-west-2.amazonaws.com` - Full URL
 - **Authentication**: Bearer token via `token` config option (API key-based, not IAM credentials)
 - **Model Discovery**: Multi-phase discovery process:
   1. Primary region: `ListFoundationModelsCommand` + `ListInferenceProfilesCommand` + `ListImportedModelsCommand` + `ListCustomModelsCommand` in parallel

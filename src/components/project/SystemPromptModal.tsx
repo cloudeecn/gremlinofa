@@ -11,24 +11,16 @@ interface SystemPromptModalProps {
   isOpen: boolean;
   projectId: string;
   initialValue: string; // From DB
-  onSave: (value: string) => void;
+  onSave: (value: string) => Promise<void>;
   onCancel: () => void;
 }
 
 /**
- * Get initial value for system prompt, checking for draft first.
+ * Modal for editing project system prompt with draft persistence.
+ *
+ * IMPORTANT: Parent component must use `key={projectId}` on this component
+ * to ensure proper state reset when switching between projects.
  */
-function getInitialSystemPrompt(projectId: string, dbValue: string): string {
-  const draftKey = `draft_system-prompt-modal_${projectId}`;
-  const stored = localStorage.getItem(draftKey);
-  if (stored) {
-    // Draft exists for this project, will be restored by useDraftPersistence
-    // Return dbValue as placeholder; onChange will update it
-    return dbValue;
-  }
-  return dbValue;
-}
-
 export default function SystemPromptModal({
   isOpen,
   projectId,
@@ -36,11 +28,7 @@ export default function SystemPromptModal({
   onSave,
   onCancel,
 }: SystemPromptModalProps) {
-  // Use key to force remount when modal opens with different project
-  // This avoids setState in useEffect for reset behavior
-  const [systemPrompt, setSystemPrompt] = useState(() =>
-    getInitialSystemPrompt(projectId, initialValue)
-  );
+  const [systemPrompt, setSystemPrompt] = useState(initialValue);
   const [isSaving, setIsSaving] = useState(false);
 
   // Draft persistence with difference detection

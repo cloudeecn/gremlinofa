@@ -320,8 +320,9 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
 
       {/* System Prompt Modal */}
       <SystemPromptModal
+        key={project.id}
         isOpen={showSystemPrompt}
-        projectId={projectId}
+        projectId={project.id}
         initialValue={project.systemPrompt || ''}
         onSave={handleSystemPromptSave}
         onCancel={() => setShowSystemPrompt(false)}

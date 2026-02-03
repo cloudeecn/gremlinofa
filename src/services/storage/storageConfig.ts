@@ -3,6 +3,23 @@
  * Manages storage type configuration in localStorage
  */
 
+/**
+ * Hash password with SHA-512 and salt for secure storage/transmission.
+ * Prevents leaking user's original password if they reuse common passwords.
+ *
+ * @param password - The original password entered by user
+ * @returns Hex-encoded SHA-512 hash of `${password}|gremlinofa`, or empty string if password is empty
+ */
+export async function hashPassword(password: string): Promise<string> {
+  if (!password) return '';
+
+  const salted = `${password}|gremlinofa`;
+  const data = new TextEncoder().encode(salted);
+  const hashBuffer = await crypto.subtle.digest('SHA-512', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 export type StorageConfig =
   | { type: 'local' }
   | { type: 'remote'; baseUrl: string; password: string; userId: string };

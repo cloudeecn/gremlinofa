@@ -212,8 +212,9 @@ public/             # Static assets and PWA icons
 
 - `RemoteStorageAdapter` connects to `storage-backend/` via REST API
 - Auth: Basic authentication with userId + optional password
-- userId derived from CEK via `encryptionService.deriveUserId()` (PBKDF2-SHA256, 100k iterations, 64-char hex)
+- userId derived from CEK via `encryptionService.deriveUserId()` (PBKDF2-SHA256, 600k iterations, 64-char hex)
 - userId is computed once during OOBE and stored in `StorageConfig` (avoids async derivation at runtime)
+- Password hashing: User-entered password is hashed via `hashPassword()` (SHA-512 with `|gremlinofa` salt) before storage/transmission, preventing plaintext password leakage if users reuse common passwords
 - Config type: `StorageConfig = { type: 'local' } | { type: 'remote'; baseUrl; password; userId }`
 
 **Storage Entry Point (`index.ts`):**

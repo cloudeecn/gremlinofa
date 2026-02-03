@@ -208,7 +208,10 @@ export class WebLLMClient implements APIClient {
     const availableModels = prebuiltAppConfig.model_list;
 
     // Filter for instruction-tuned models (most useful for chat)
-    const chatModels = availableModels.filter(model => model.model_type === ModelType.LLM);
+    // Note: model_type is undefined for most LLM models in WebLLM's prebuilt config
+    const chatModels = availableModels.filter(
+      model => model.model_type === undefined || model.model_type === ModelType.LLM
+    );
 
     // Sort by resource usage: low_resource_required first, then by VRAM
     chatModels.sort((a, b) => {
@@ -226,7 +229,8 @@ export class WebLLMClient implements APIClient {
       name: model.model,
       apiType: apiDefinition.apiType,
       matchedMode: 'exact',
-      vramRequired: model.vram_required_MB,
+      // Convert MB to bytes for consistency with checkModelCompatibility and formatSize
+      vramRequired: model.vram_required_MB ? model.vram_required_MB * 1024 * 1024 : undefined,
       lowResourceRequired: model.low_resource_required,
       inputPrice: 0,
       outputPrice: 0,

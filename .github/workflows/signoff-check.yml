@@ -7,6 +7,8 @@ on:
 jobs:
   signoff-check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Check for sign-off
         env:

@@ -327,10 +327,11 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
 
       {/* System Prompt Modal */}
       <SystemPromptModal
+        key={project.id}
         isOpen={showSystemPromptModal}
-        projectId={projectId}
+        projectId={project.id}
         initialValue={project.systemPrompt || ''}
-        onSave={value => {
+        onSave={async value => {
           setSystemPrompt(value);
           setShowSystemPromptModal(false);
         }}

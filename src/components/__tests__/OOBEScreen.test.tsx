@@ -38,8 +38,13 @@ vi.mock('../../utils/dataImport', () => ({
 
 // Mock storage config
 const mockSetStorageConfig = vi.fn();
+// hashPassword mock returns a fixed hash (in real code it hashes with SHA-512)
+const mockHashPassword = vi.fn((password: string) =>
+  Promise.resolve(password ? `hashed_${password}` : '')
+);
 vi.mock('../../services/storage/storageConfig', () => ({
   setStorageConfig: (config: unknown) => mockSetStorageConfig(config),
+  hashPassword: (password: string) => mockHashPassword(password),
 }));
 
 // Mock fetch for connection testing
@@ -760,11 +765,11 @@ describe('OOBEScreen', () => {
       fireEvent.click(getStartedButton);
 
       await waitFor(() => {
-        // createStorage should be called with explicit remote config
+        // createStorage should be called with explicit remote config (password is hashed)
         expect(mockCreateStorage).toHaveBeenCalledWith({
           type: 'remote',
           baseUrl: 'https://my-server.com/storage',
-          password: 'secret123',
+          password: 'hashed_secret123',
           userId: 'derived_user_id_64_chars_abcdef1234567890abcdef1234567890abcdef12',
         });
       });
@@ -800,10 +805,11 @@ describe('OOBEScreen', () => {
       fireEvent.click(getStartedButton);
 
       await waitFor(() => {
+        // Password is hashed before being stored in config
         expect(mockSetStorageConfig).toHaveBeenCalledWith({
           type: 'remote',
           baseUrl: 'https://my-server.com/storage',
-          password: 'secret123',
+          password: 'hashed_secret123',
           userId: 'derived_user_id_64_chars_abcdef1234567890abcdef1234567890abcdef12',
         });
       });

@@ -7,6 +7,7 @@ import {
   getStorageConfig,
   setStorageConfig,
   clearStorageConfig,
+  hashPassword,
   type StorageConfig,
 } from '../storageConfig';
 
@@ -134,6 +135,48 @@ describe('storageConfig', () => {
 
     it('should not error when nothing stored', () => {
       expect(() => clearStorageConfig()).not.toThrow();
+    });
+  });
+
+  describe('hashPassword', () => {
+    it('should return empty string for empty password', async () => {
+      const result = await hashPassword('');
+      expect(result).toBe('');
+    });
+
+    it('should return 128-character hex string for non-empty password', async () => {
+      const result = await hashPassword('test-password');
+      expect(result).toHaveLength(128); // SHA-512 = 512 bits = 64 bytes = 128 hex chars
+      expect(result).toMatch(/^[0-9a-f]+$/);
+    });
+
+    it('should produce deterministic output for same input', async () => {
+      const result1 = await hashPassword('my-secret');
+      const result2 = await hashPassword('my-secret');
+      expect(result1).toBe(result2);
+    });
+
+    it('should produce different output for different inputs', async () => {
+      const result1 = await hashPassword('password1');
+      const result2 = await hashPassword('password2');
+      expect(result1).not.toBe(result2);
+    });
+
+    it('should include salt in hash (same password without salt would differ)', async () => {
+      // The hash is of `${password}|gremlinofa`, so it's salted
+      // We can verify by computing the expected hash manually
+      const password = 'test';
+      const result = await hashPassword(password);
+
+      // Compute expected hash: SHA-512 of "test|gremlinofa"
+      const expectedInput = `${password}|gremlinofa`;
+      const data = new TextEncoder().encode(expectedInput);
+      const hashBuffer = await crypto.subtle.digest('SHA-512', data);
+      const expected = Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+
+      expect(result).toBe(expected);
     });
   });
 });

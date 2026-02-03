@@ -5,7 +5,11 @@
  */
 
 import { useState, useRef } from 'react';
-import { setStorageConfig, type StorageConfig } from '../services/storage/storageConfig';
+import {
+  setStorageConfig,
+  hashPassword,
+  type StorageConfig,
+} from '../services/storage/storageConfig';
 import { createStorage } from '../services/storage';
 import { encryptionService } from '../services/encryption/encryptionService';
 import { migrateDataFromFile, type ImportProgress } from '../utils/dataImport';
@@ -107,6 +111,9 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
     setIsProcessing(true);
 
     try {
+      // Hash password for remote storage (never store/send plaintext password)
+      const hashedPassword = storageType === 'remote' ? await hashPassword(remotePassword) : '';
+
       // For remote storage, test connection first if not already tested successfully
       if (storageType === 'remote') {
         if (connectionStatus !== 'success') {
@@ -135,7 +142,7 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
           storageConfig = {
             type: 'remote',
             baseUrl: remoteUrl,
-            password: remotePassword,
+            password: hashedPassword,
             userId,
           };
         } else {
@@ -172,7 +179,7 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
 
         // Derive userId and create remote adapter
         const userId = await encryptionService.deriveUserId();
-        const adapter = new RemoteStorageAdapter(remoteUrl, userId, remotePassword);
+        const adapter = new RemoteStorageAdapter(remoteUrl, userId, hashedPassword);
         await adapter.initialize();
 
         // Try to fetch and decrypt one record to verify CEK
@@ -236,7 +243,7 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
         const storageConfig: StorageConfig = {
           type: 'remote',
           baseUrl: remoteUrl,
-          password: remotePassword,
+          password: hashedPassword,
           userId,
         };
         setStorageConfig(storageConfig);
@@ -273,7 +280,7 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
           storageConfig = {
             type: 'remote',
             baseUrl: remoteUrl,
-            password: remotePassword,
+            password: hashedPassword,
             userId,
           };
         } else {

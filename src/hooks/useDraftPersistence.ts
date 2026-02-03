@@ -182,7 +182,8 @@ export function useDraftPersistence({
 
     // Set new timer
     debounceTimerRef.current = window.setTimeout(() => {
-      if (value.trim()) {
+      // Only save if value differs from DB value (avoid littering localStorage)
+      if (value.trim() && value !== initialDbValue) {
         const draftData: DraftData = {
           content: value,
           createdAt: Date.now(),
@@ -190,9 +191,8 @@ export function useDraftPersistence({
         localStorage.setItem(localStorageKey, JSON.stringify(draftData));
         console.debug(`[useDraftPersistence] Saved draft for ${place}/${contextId}`);
       } else {
-        // Clear if empty
+        // Clear if empty or matches DB value
         localStorage.removeItem(localStorageKey);
-        console.debug(`[useDraftPersistence] Cleared draft (empty value)`);
       }
       debounceTimerRef.current = null;
     }, DEBOUNCE_MS);
@@ -203,7 +203,7 @@ export function useDraftPersistence({
         window.clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [enabled, place, contextId, value, localStorageKey]);
+  }, [enabled, place, contextId, value, localStorageKey, initialDbValue]);
 
   // Cleanup store entry on unmount
   useEffect(() => {

@@ -36,7 +36,7 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
 
   return (
     <div className="flex flex-col items-start">
-      <div className="w-full overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50 md:max-w-[85%]">
+      <div className="w-full overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50">
         <button
           onClick={() => setIsExpanded(!isExpanded)}
           className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm font-medium text-purple-800 transition-colors hover:bg-purple-100"

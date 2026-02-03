@@ -6,7 +6,6 @@ import {
   formatTokenCount,
 } from '../../utils/messageFormatters';
 import { showAlert } from '../../utils/alerts';
-import { useIsMobile } from '../../hooks/useIsMobile';
 import type { AssistantMessageBubbleProps } from './types';
 import BackstageView from './BackstageView';
 import ErrorBlockView from './ErrorBlockView';
@@ -17,8 +16,6 @@ export default function AssistantMessageBubble({
   message,
   isVisible,
 }: AssistantMessageBubbleProps) {
-  const isMobile = useIsMobile();
-
   const renderingContent = message.content.renderingContent as RenderingBlockGroup[];
 
   const handleCopy = async () => {
@@ -55,7 +52,7 @@ export default function AssistantMessageBubble({
   return (
     <>
       {/* Assistant message content */}
-      <div className={`${isMobile ? 'w-full' : 'max-w-[85%]'}`}>
+      <div className="w-full">
         {renderingContent.map((group, index) => (
           <div key={index} className="mb-2 last:mb-0">
             {group.category === 'backstage' ? (
@@ -63,13 +60,7 @@ export default function AssistantMessageBubble({
             ) : group.category === 'error' ? (
               <ErrorBlockView blocks={group.blocks} />
             ) : (
-              <div
-                className={
-                  isMobile
-                    ? 'w-full bg-transparent py-2 text-gray-900'
-                    : 'rounded-2xl bg-gray-100 px-4 py-3 text-gray-900 shadow-sm'
-                }
-              >
+              <div className="w-full bg-transparent py-2 text-gray-900">
                 <TextGroupView blocks={group.blocks} isVisible={isVisible} />
               </div>
             )}
@@ -78,11 +69,7 @@ export default function AssistantMessageBubble({
       </div>
 
       {/* Assistant metadata line */}
-      <div
-        className={`mt-1 flex items-center justify-start gap-2 text-[10px] text-gray-500 ${
-          isMobile ? 'w-full' : 'max-w-[85%]'
-        }`}
-      >
+      <div className="mt-1 flex w-full items-center justify-start gap-2 text-[10px] text-gray-500">
         <span>{formatTimestamp(message.timestamp)}</span>
         <button
           onClick={handleCopy}

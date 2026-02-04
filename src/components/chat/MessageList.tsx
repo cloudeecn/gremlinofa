@@ -33,8 +33,11 @@ export default function MessageList({
   const lastScrollButtonUpdateRef = useRef<number>(0);
   const pendingScrollButtonUpdateRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Virtual scrolling with 5 screen heights buffer (500% above + 500% below viewport)
-  const { visibleMessageIds, registerMessage, measureHeight, getHeight } = useVirtualScroll(5);
+  // Virtual scrolling with 5 screen heights buffer
+  const { visibleMessageIds, registerMessage, measureHeight, getHeight } = useVirtualScroll(
+    scrollContainerRef,
+    5
+  );
 
   // Auto-scroll to bottom when new messages arrive or streaming updates
   useEffect(() => {

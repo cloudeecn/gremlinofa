@@ -584,14 +584,18 @@ MessageList.tsx                    # Container with virtual scrolling
 
 ### Virtual Scrolling
 
-- `useVirtualScroll` hook with IntersectionObserver (5 screen heights buffer = 500% above + 500% below viewport)
+- `useVirtualScroll` hook with IntersectionObserver (5 screen heights buffer)
+- **Scroll container as root**: Observer uses the scroll container element as `root` instead of viewport, ensuring accurate intersection detection in nested scroll contexts
+- **Buffer calculation**: Uses pixel-based `rootMargin` (`containerHeight * bufferScreens`px) instead of percentages for reliable cross-browser behavior
+- **Minimum buffer**: 600px minimum container height ensures reasonable buffer on small screens
+- **Pending registration queue**: Handles race condition where ref callbacks fire before observer is ready
 - Height caching: measured synchronously on mount, tracked via ResizeObserver
 - Placeholders: render `<div style={{height: cachedHeight}}>` when offscreen
 - Flicker-free: messages render fully → measure → hide if outside buffer
 - Performance: 1000+ messages → ~20 DOM nodes
 - Scroll-to-bottom floating button (appears when scrolled up)
 - Auto-scroll correction after streaming ends (handles overscroll from markdown rendering)
-- Debug logging: console.debug messages track when elements enter/leave buffer zone with bounding rect coordinates
+- Debug logging: console.debug messages track observer creation, rootMargin, and element visibility changes
 
 ### Attachment Manager
 

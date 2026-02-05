@@ -42,28 +42,13 @@ export default defineConfig(({ command }) => {
       tailwindcss(),
       VitePWA({
         includeAssets: ['favicon.ico', 'assets/*'],
+        // Use static public/manifest.json for both dev and prod
+        manifest: false,
         workbox: {
           // Prevent service worker from caching /dev/* paths
           // This allows the dev server to work alongside prod PWA
           navigateFallbackDenylist: [/\/dev\//, /\/storage\//, /\/src\//],
           maximumFileSizeToCacheInBytes: 10485760,
-        },
-        manifest: {
-          name: 'Gremlin Of The Friday Afternoon',
-          short_name: 'GremlinOFA',
-          description: 'AI chatbot supporting multiple providers with project-based organization',
-          theme_color: '#ffffff',
-          background_color: '#ffffff',
-          display: 'standalone',
-          start_url: base,
-          icons: [
-            {
-              src: `${base}icons/gremlin-icon.png`,
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any',
-            },
-          ],
         },
       }),
     ],

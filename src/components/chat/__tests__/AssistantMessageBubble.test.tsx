@@ -5,13 +5,6 @@ import AssistantMessageBubble from '../AssistantMessageBubble';
 import type { Message, MessageMetadata } from '../../../types';
 import type { AssistantMessageBubbleProps } from '../types';
 
-// Mock hooks
-const mockUseIsMobile = vi.hoisted(() => vi.fn());
-
-vi.mock('../../../hooks/useIsMobile', () => ({
-  useIsMobile: mockUseIsMobile,
-}));
-
 vi.mock('../../../utils/messageFormatters', () => ({
   stripMetadata: (content: string) => content.replace(/<metadata>.*?<\/metadata>/gs, ''),
   formatTimestamp: (date: Date) => date.toISOString().split('T')[0],
@@ -90,7 +83,6 @@ function createProps(
 describe('AssistantMessageBubble', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUseIsMobile.mockReturnValue(false);
   });
 
   describe('Basic Rendering', () => {
@@ -334,47 +326,19 @@ describe('AssistantMessageBubble', () => {
     });
   });
 
-  describe('Responsive Behavior', () => {
-    it('desktop: max 85% width', () => {
-      mockUseIsMobile.mockReturnValue(false);
-
-      const { container } = render(<AssistantMessageBubble {...createProps()} />);
-
-      const contentWrapper = container.querySelector('.max-w-\\[85\\%\\]');
-      expect(contentWrapper).toBeInTheDocument();
-    });
-
-    it('mobile: full width', () => {
-      mockUseIsMobile.mockReturnValue(true);
-
+  describe('Styling', () => {
+    it('content wrapper has full width', () => {
       const { container } = render(<AssistantMessageBubble {...createProps()} />);
 
       const contentWrapper = container.querySelector('.w-full');
       expect(contentWrapper).toBeInTheDocument();
     });
 
-    it('desktop: text content has gray bubble styling', () => {
-      mockUseIsMobile.mockReturnValue(false);
-
+    it('text content has transparent background (no bubble)', () => {
       const { container } = render(<AssistantMessageBubble {...createProps()} />);
 
-      const bubble = container.querySelector('.bg-gray-100');
-      expect(bubble).toBeInTheDocument();
-      expect(bubble).toHaveClass('rounded-2xl');
-    });
-
-    it('mobile: text content has transparent background', () => {
-      mockUseIsMobile.mockReturnValue(true);
-
-      const { container } = render(<AssistantMessageBubble {...createProps()} />);
-
-      const bubble = container.querySelector('.bg-transparent');
-      expect(bubble).toBeInTheDocument();
-    });
-
-    it('calls useIsMobile hook', () => {
-      render(<AssistantMessageBubble {...createProps()} />);
-      expect(mockUseIsMobile).toHaveBeenCalled();
+      const textContainer = container.querySelector('.bg-transparent');
+      expect(textContainer).toBeInTheDocument();
     });
   });
 });

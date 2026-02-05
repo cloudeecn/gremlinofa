@@ -1,0 +1,18 @@
+{
+  "name": "Gremlin Of The Friday Afternoon",
+  "short_name": "GremlinOFA",
+  "description": "AI chatbot supporting multiple providers with project-based organization",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#111827",
+  "icons": [
+    {
+      "src": "icons/gremlin-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

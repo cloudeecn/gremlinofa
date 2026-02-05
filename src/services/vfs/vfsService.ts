@@ -893,7 +893,7 @@ export async function readDir(
   let children: Record<string, VfsNode>;
 
   if (isRootPath(normalized)) {
-    children = tree.children;
+    children = tree.children ?? {};
   } else {
     const { node } = navigateToNode(tree, normalized);
 
@@ -928,7 +928,7 @@ export async function readDir(
     // For files, try to get content length
     if (child.type === 'file' && child.fileId) {
       const file = await loadFile(child.fileId);
-      if (file) {
+      if (file && file.content) {
         entry.size = file.content.length;
       }
     }

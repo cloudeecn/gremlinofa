@@ -3,12 +3,20 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
 import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
-import type { Project, APIType, ToolOptions } from '../../types';
+import type { Project, APIType, ToolOptions, ModelReference, ToolOptionValue } from '../../types';
+import {
+  isBooleanOption,
+  isLongtextOption,
+  isModelOption,
+  isModelReference,
+  initializeToolOptions,
+} from '../../types';
 import { useAlert } from '../../hooks/useAlert';
 import { clearDraft } from '../../hooks/useDraftPersistence';
 import Spinner from '../ui/Spinner';
 import ModelSelector from './ModelSelector';
 import SystemPromptModal from './SystemPromptModal';
+import LongtextOptionEditor from './LongtextOptionEditor';
 import AnthropicReasoningConfig from './AnthropicReasoningConfig';
 import OpenAIReasoningConfig from './OpenAIReasoningConfig';
 import { toolRegistry } from '../../services/tools/clientSideTools';
@@ -86,6 +94,19 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [selectedModelId, setSelectedModelId] = useState(project?.modelId || null);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Tool option editor modal state
+  const [longtextModal, setLongtextModal] = useState<{
+    toolName: string;
+    optionId: string;
+    title: string;
+    placeholder?: string;
+  } | null>(null);
+  const [modelOptionModal, setModelOptionModal] = useState<{
+    toolName: string;
+    optionId: string;
+    title: string;
+  } | null>(null);
+
   // Update form fields when project loads
   useEffect(() => {
     if (project) {
@@ -141,7 +162,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     : 'Select a model to get started';
 
   // Get all available tools from registry
-  const availableTools = useMemo(() => toolRegistry.getAllTools(), []);
+  const availableTools = useMemo(() => toolRegistry.getVisibleTools(), []);
 
   // Helper functions for tool state management
   const isToolEnabled = useCallback(
@@ -155,15 +176,15 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         // Add to enabled list
         setEnabledTools(prev => [...prev.filter(t => t !== toolName), toolName]);
 
-        // Initialize options with defaults from tool definition
+        // Initialize options with defaults from tool definition using initializeToolOptions
         const tool = availableTools.find(t => t.name === toolName);
         if (tool?.optionDefinitions?.length) {
           setToolOptionsState(prev => {
-            const defaults: ToolOptions = {};
-            for (const opt of tool.optionDefinitions!) {
-              defaults[opt.id] = opt.default;
-            }
-            return { ...prev, [toolName]: { ...defaults, ...prev[toolName] } };
+            const initialized = initializeToolOptions(prev[toolName], tool.optionDefinitions, {
+              apiDefinitionId: selectedApiDefId,
+              modelId: selectedModelId,
+            });
+            return { ...prev, [toolName]: initialized };
           });
         }
       } else {
@@ -171,21 +192,36 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         setEnabledTools(prev => prev.filter(t => t !== toolName));
       }
     },
-    [availableTools]
+    [availableTools, selectedApiDefId, selectedModelId]
   );
 
-  const getToolOption = useCallback(
-    (toolName: string, optionId: string, defaultValue: boolean) =>
-      toolOptionsState[toolName]?.[optionId] ?? defaultValue,
+  const getToolOptionValue = useCallback(
+    <T extends ToolOptionValue>(toolName: string, optionId: string, defaultValue: T): T =>
+      (toolOptionsState[toolName]?.[optionId] as T) ?? defaultValue,
     [toolOptionsState]
   );
 
-  const setToolOption = useCallback((toolName: string, optionId: string, value: boolean) => {
-    setToolOptionsState(prev => ({
-      ...prev,
-      [toolName]: { ...prev[toolName], [optionId]: value },
-    }));
-  }, []);
+  const setToolOptionValue = useCallback(
+    (toolName: string, optionId: string, value: ToolOptionValue) => {
+      setToolOptionsState(prev => ({
+        ...prev,
+        [toolName]: { ...prev[toolName], [optionId]: value },
+      }));
+    },
+    []
+  );
+
+  // Helper to get model display text for a ModelReference
+  const getModelDisplayText = useCallback(
+    (modelRef: ModelReference | undefined): string => {
+      if (!modelRef) return 'Not configured';
+      const def = apiDefinitions.find(d => d.id === modelRef.apiDefinitionId);
+      const icon = def ? getApiDefinitionIcon(def) : '';
+      const name = def?.name || 'Unknown';
+      return `${icon} ${name} • ${modelRef.modelId}`;
+    },
+    [apiDefinitions]
+  );
 
   const handleSave = useCallback(async () => {
     if (!project) return;
@@ -337,6 +373,66 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         }}
         onCancel={() => setShowSystemPromptModal(false)}
       />
+
+      {/* Longtext Tool Option Editor Modal */}
+      {longtextModal && (
+        <LongtextOptionEditor
+          isOpen={true}
+          title={longtextModal.title}
+          value={
+            (typeof toolOptionsState[longtextModal.toolName]?.[longtextModal.optionId] === 'string'
+              ? toolOptionsState[longtextModal.toolName]?.[longtextModal.optionId]
+              : '') as string
+          }
+          placeholder={longtextModal.placeholder}
+          onSave={value => {
+            setToolOptionValue(longtextModal.toolName, longtextModal.optionId, value);
+            setLongtextModal(null);
+          }}
+          onCancel={() => setLongtextModal(null)}
+        />
+      )}
+
+      {/* Model Tool Option Selector Modal */}
+      {modelOptionModal && (
+        <ModelSelector
+          isOpen={true}
+          onClose={() => setModelOptionModal(null)}
+          currentApiDefinitionId={
+            isModelReference(
+              toolOptionsState[modelOptionModal.toolName]?.[modelOptionModal.optionId]
+            )
+              ? (
+                  toolOptionsState[modelOptionModal.toolName]?.[
+                    modelOptionModal.optionId
+                  ] as ModelReference
+                ).apiDefinitionId
+              : selectedApiDefId
+          }
+          currentModelId={
+            isModelReference(
+              toolOptionsState[modelOptionModal.toolName]?.[modelOptionModal.optionId]
+            )
+              ? (
+                  toolOptionsState[modelOptionModal.toolName]?.[
+                    modelOptionModal.optionId
+                  ] as ModelReference
+                ).modelId
+              : null
+          }
+          onSelect={(apiDefId, modelId) => {
+            if (apiDefId && modelId) {
+              setToolOptionValue(modelOptionModal.toolName, modelOptionModal.optionId, {
+                apiDefinitionId: apiDefId,
+                modelId: modelId,
+              });
+            }
+            setModelOptionModal(null);
+          }}
+          title={modelOptionModal.title}
+          showResetOption={false}
+        />
+      )}
 
       {/* Content */}
       <div className="ios-scroll flex-1 overflow-y-auto overscroll-y-contain p-4">
@@ -851,29 +947,136 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       {isToolEnabled(tool.name) &&
                         tool.optionDefinitions &&
                         tool.optionDefinitions.length > 0 && (
-                          <div className="mt-2 ml-4 space-y-2 border-l-2 border-gray-200 pl-4">
-                            {tool.optionDefinitions.map(opt => (
-                              <div key={opt.id} className="flex items-center justify-between">
-                                <div>
-                                  <label
-                                    htmlFor={`tool-${tool.name}-${opt.id}`}
-                                    className="cursor-pointer text-sm font-medium text-gray-900"
-                                  >
-                                    {opt.label}
-                                  </label>
-                                  {opt.subtitle && (
-                                    <p className="text-xs text-gray-500">{opt.subtitle}</p>
-                                  )}
-                                </div>
-                                <input
-                                  id={`tool-${tool.name}-${opt.id}`}
-                                  type="checkbox"
-                                  checked={getToolOption(tool.name, opt.id, opt.default)}
-                                  onChange={e => setToolOption(tool.name, opt.id, e.target.checked)}
-                                  className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
-                                />
-                              </div>
-                            ))}
+                          <div className="mt-2 ml-4 space-y-3 border-l-2 border-gray-200 pl-4">
+                            {tool.optionDefinitions.map(opt => {
+                              // Boolean option - checkbox
+                              if (isBooleanOption(opt)) {
+                                return (
+                                  <div key={opt.id} className="flex items-center justify-between">
+                                    <div>
+                                      <label
+                                        htmlFor={`tool-${tool.name}-${opt.id}`}
+                                        className="cursor-pointer text-sm font-medium text-gray-900"
+                                      >
+                                        {opt.label}
+                                      </label>
+                                      {opt.subtitle && (
+                                        <p className="text-xs text-gray-500">{opt.subtitle}</p>
+                                      )}
+                                    </div>
+                                    <input
+                                      id={`tool-${tool.name}-${opt.id}`}
+                                      type="checkbox"
+                                      checked={Boolean(
+                                        getToolOptionValue(tool.name, opt.id, opt.default)
+                                      )}
+                                      onChange={e =>
+                                        setToolOptionValue(tool.name, opt.id, e.target.checked)
+                                      }
+                                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                                    />
+                                  </div>
+                                );
+                              }
+
+                              // Longtext option - preview with edit button
+                              if (isLongtextOption(opt)) {
+                                const value = getToolOptionValue(tool.name, opt.id, opt.default);
+                                const textValue = typeof value === 'string' ? value : '';
+                                return (
+                                  <div key={opt.id}>
+                                    <div className="mb-1">
+                                      <span className="text-sm font-medium text-gray-900">
+                                        {opt.label}
+                                      </span>
+                                      {opt.subtitle && (
+                                        <p className="text-xs text-gray-500">{opt.subtitle}</p>
+                                      )}
+                                    </div>
+                                    <div
+                                      onClick={() =>
+                                        setLongtextModal({
+                                          toolName: tool.name,
+                                          optionId: opt.id,
+                                          title: opt.label,
+                                          placeholder: opt.placeholder,
+                                        })
+                                      }
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.preventDefault();
+                                          setLongtextModal({
+                                            toolName: tool.name,
+                                            optionId: opt.id,
+                                            title: opt.label,
+                                            placeholder: opt.placeholder,
+                                          });
+                                        }
+                                      }}
+                                      role="button"
+                                      tabIndex={0}
+                                      className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-gray-300 bg-white p-2 text-sm transition-colors hover:border-gray-400"
+                                    >
+                                      <span
+                                        className={`min-w-0 flex-1 truncate ${textValue ? 'text-gray-900' : 'text-gray-500'}`}
+                                      >
+                                        {textValue || opt.placeholder || 'Not configured...'}
+                                      </span>
+                                      <span className="ml-2 flex-shrink-0 text-gray-600">✏️</span>
+                                    </div>
+                                  </div>
+                                );
+                              }
+
+                              // Model option - model selector button
+                              if (isModelOption(opt)) {
+                                const value = toolOptionsState[tool.name]?.[opt.id];
+                                const modelRef = isModelReference(value) ? value : undefined;
+                                return (
+                                  <div key={opt.id}>
+                                    <div className="mb-1">
+                                      <span className="text-sm font-medium text-gray-900">
+                                        {opt.label}
+                                      </span>
+                                      {opt.subtitle && (
+                                        <p className="text-xs text-gray-500">{opt.subtitle}</p>
+                                      )}
+                                    </div>
+                                    <div
+                                      onClick={() =>
+                                        setModelOptionModal({
+                                          toolName: tool.name,
+                                          optionId: opt.id,
+                                          title: opt.label,
+                                        })
+                                      }
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.preventDefault();
+                                          setModelOptionModal({
+                                            toolName: tool.name,
+                                            optionId: opt.id,
+                                            title: opt.label,
+                                          });
+                                        }
+                                      }}
+                                      role="button"
+                                      tabIndex={0}
+                                      className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-gray-300 bg-white p-2 text-sm transition-colors hover:border-gray-400"
+                                    >
+                                      <span
+                                        className={`min-w-0 flex-1 truncate ${modelRef ? 'text-gray-900' : 'text-gray-500'}`}
+                                      >
+                                        {getModelDisplayText(modelRef)}
+                                      </span>
+                                      <span className="ml-2 flex-shrink-0 text-gray-600">▼</span>
+                                    </div>
+                                  </div>
+                                );
+                              }
+
+                              return null;
+                            })}
                           </div>
                         )}
                     </div>

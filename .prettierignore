@@ -31,3 +31,4 @@ coverage
 public/manifest.json
 public/sw.js
 public/workbox-*.js
+/.claude

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { memoryTool } from '../memoryTool';
 import * as vfs from '../../vfs/vfsService';
 import { VfsError } from '../../vfs/vfsService';
-import type { ToolContext, ToolOptions } from '../../../types';
+import type { ToolContext, ToolOptions, ToolResult, BooleanToolOption } from '../../../types';
 
 // Mock vfsService
 vi.mock('../../vfs/vfsService', async importOriginal => {
@@ -36,8 +36,9 @@ describe('memoryTool', () => {
     it('has optionDefinitions with useSystemPrompt', () => {
       expect(memoryTool.optionDefinitions).toBeDefined();
       expect(memoryTool.optionDefinitions?.length).toBe(1);
-      expect(memoryTool.optionDefinitions?.[0].id).toBe('useSystemPrompt');
-      expect(memoryTool.optionDefinitions?.[0].default).toBe(false);
+      const opt = memoryTool.optionDefinitions?.[0] as BooleanToolOption;
+      expect(opt.id).toBe('useSystemPrompt');
+      expect(opt.default).toBe(false);
     });
 
     it('getApiOverride returns native tool for Anthropic without useSystemPrompt', () => {
@@ -531,10 +532,8 @@ describe('memoryTool', () => {
 
   describe('context validation', () => {
     it('returns error when projectId is missing', async () => {
-      const result = await memoryTool.execute(
-        { command: 'view', path: '/memories' },
-        {},
-        { projectId: '' }
+      const result = await collectToolResult(
+        memoryTool.execute({ command: 'view', path: '/memories' }, {}, { projectId: '' })
       );
 
       expect(result.content).toBe('Error: projectId is required in context');
@@ -542,7 +541,9 @@ describe('memoryTool', () => {
     });
 
     it('returns error when context is undefined', async () => {
-      const result = await memoryTool.execute({ command: 'view', path: '/memories' }, {});
+      const result = await collectToolResult(
+        memoryTool.execute({ command: 'view', path: '/memories' }, {})
+      );
 
       expect(result.content).toBe('Error: projectId is required in context');
       expect(result.isError).toBe(true);
@@ -583,6 +584,14 @@ describe('path normalization', () => {
   });
 });
 
+/** Consume an async generator to get the final ToolResult */
+async function collectToolResult(gen: ReturnType<typeof memoryTool.execute>): Promise<ToolResult> {
+  if (gen instanceof Promise) return gen;
+  let result = await gen.next();
+  while (!result.done) result = await gen.next();
+  return result.value;
+}
+
 /** Helper to execute memory tool with context */
 async function executeMemory(
   input: Record<string, unknown>,
@@ -590,5 +599,5 @@ async function executeMemory(
   toolOptions: ToolOptions = {}
 ) {
   const context: ToolContext = { projectId };
-  return memoryTool.execute(input, toolOptions, context);
+  return collectToolResult(memoryTool.execute(input, toolOptions, context));
 }

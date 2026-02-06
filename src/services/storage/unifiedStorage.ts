@@ -10,6 +10,7 @@ import type {
   Chat,
   Message,
   MessageAttachment,
+  MinionChat,
   Model,
   Project,
   ToolOptions,
@@ -486,6 +487,12 @@ export class UnifiedStorage {
   }
 
   async deleteChat(id: string): Promise<void> {
+    // Delete all minion chats associated with this chat
+    const minionChats = await this.getMinionChats(id);
+    for (const minionChat of minionChats) {
+      await this.deleteMinionChat(minionChat.id);
+    }
+
     // Get all messages first to delete their attachments
     const messages = await this.getMessages(id);
     for (const msg of messages) {
@@ -691,6 +698,117 @@ export class UnifiedStorage {
 
   async getMessageCount(chatId: string): Promise<number> {
     return this.adapter.count(Tables.MESSAGES, { parentId: chatId });
+  }
+
+  // ===== Minion Chats =====
+
+  /**
+   * Get all minion chats for a parent chat
+   * Ordered by lastModifiedAt descending (most recent first)
+   */
+  async getMinionChats(parentChatId: string): Promise<MinionChat[]> {
+    const records = await this.adapter.query(Tables.MINION_CHATS, {
+      parentId: parentChatId,
+      orderBy: 'timestamp',
+      orderDirection: 'desc',
+    });
+
+    const minionChats: MinionChat[] = [];
+    for (const record of records) {
+      try {
+        const minionChat = await this.decrypt<MinionChat>(record.encryptedData);
+        minionChats.push({
+          ...minionChat,
+          createdAt: new Date(minionChat.createdAt),
+          lastModifiedAt: new Date(minionChat.lastModifiedAt),
+        });
+      } catch (error) {
+        console.error('Failed to decrypt minion chat:', error);
+      }
+    }
+
+    return minionChats;
+  }
+
+  /**
+   * Get a single minion chat by ID
+   */
+  async getMinionChat(id: string): Promise<MinionChat | null> {
+    const record = await this.adapter.get(Tables.MINION_CHATS, id);
+    if (!record) return null;
+
+    try {
+      const minionChat = await this.decrypt<MinionChat>(record.encryptedData);
+      return {
+        ...minionChat,
+        createdAt: new Date(minionChat.createdAt),
+        lastModifiedAt: new Date(minionChat.lastModifiedAt),
+      };
+    } catch (error) {
+      console.error('Failed to decrypt minion chat:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Save a minion chat
+   */
+  async saveMinionChat(minionChat: MinionChat): Promise<void> {
+    const data = {
+      ...minionChat,
+      createdAt: minionChat.createdAt.toISOString(),
+      lastModifiedAt: minionChat.lastModifiedAt.toISOString(),
+    };
+
+    const encrypted = await this.encrypt(data);
+    await this.adapter.save(Tables.MINION_CHATS, minionChat.id, encrypted, {
+      timestamp: minionChat.lastModifiedAt.toISOString(),
+      parentId: minionChat.parentChatId,
+    });
+  }
+
+  /**
+   * Delete a minion chat and all its messages
+   */
+  async deleteMinionChat(id: string): Promise<void> {
+    // Delete all messages in the minion chat
+    await this.adapter.deleteMany(Tables.MESSAGES, { parentId: id });
+
+    // Delete the minion chat itself
+    await this.adapter.delete(Tables.MINION_CHATS, id);
+  }
+
+  /**
+   * Get messages for a minion chat
+   * Uses the same message table with minionChatId as parentId
+   */
+  async getMinionMessages(minionChatId: string): Promise<Message<unknown>[]> {
+    return this.getMessages(minionChatId);
+  }
+
+  /**
+   * Save a message to a minion chat
+   * Does not update any chat's lastModifiedAt since minion chats track this separately
+   */
+  async saveMinionMessage(minionChatId: string, message: Message<unknown>): Promise<void> {
+    const data = {
+      ...message,
+      timestamp: message.timestamp.toISOString(),
+    };
+
+    // Use compression for all new messages
+    const encrypted = await encryptionService.encryptWithCompression(JSON.stringify(data), true);
+    await this.adapter.save(Tables.MESSAGES, message.id, encrypted, {
+      timestamp: message.timestamp.toISOString(),
+      parentId: minionChatId,
+    });
+
+    // Update minion chat's lastModifiedAt
+    const minionChat = await this.getMinionChat(minionChatId);
+    if (minionChat) {
+      minionChat.lastModifiedAt = new Date();
+      await this.saveMinionChat(minionChat);
+    }
   }
 
   /**

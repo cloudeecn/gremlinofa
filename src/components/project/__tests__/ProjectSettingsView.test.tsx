@@ -40,7 +40,7 @@ vi.mock('../../../hooks/useAlert', () => ({
 // Mock toolRegistry to provide tools for dynamic rendering
 vi.mock('../../../services/tools/clientSideTools', () => ({
   toolRegistry: {
-    getAllTools: () => [
+    getVisibleTools: () => [
       {
         name: 'memory',
         displayName: 'Memory',

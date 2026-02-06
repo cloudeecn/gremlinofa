@@ -9,6 +9,7 @@ import type {
   RenderingContentBlock,
   ToolResultBlock,
   ToolUseBlock,
+  ToolOptions,
 } from '../../types';
 
 import { groupAndConsolidateBlocks } from '../../types';
@@ -123,7 +124,7 @@ export class ResponsesClient implements APIClient {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
-      toolOptions?: Record<string, Record<string, boolean>>;
+      toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.Responses.ResponseInputItem[]>, unknown> {
@@ -689,7 +690,7 @@ export class ResponsesClient implements APIClient {
    */
   protected getClientSideTools(
     enabledTools: string[],
-    toolOptions: Record<string, Record<string, boolean>> = {}
+    toolOptions: Record<string, ToolOptions> = {}
   ): OpenAI.Responses.Tool[] {
     const standardDefs = toolRegistry.getToolDefinitions(enabledTools, toolOptions);
 

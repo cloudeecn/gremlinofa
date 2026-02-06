@@ -9,12 +9,16 @@ import { toolRegistry } from './clientSideTools';
 import { jsTool } from './jsTool';
 import { memoryTool } from './memoryTool';
 import { fsTool } from './fsTool';
+import { returnTool } from './returnTool';
+import { minionTool } from './minionTool';
 
 /**
  * All available client-side tools.
  * Order determines display order in ProjectSettings UI.
+ *
+ * Note: 'return' tool is internal (for minion sub-agents) and not shown in UI.
  */
-const allTools = [memoryTool, jsTool, fsTool];
+const allTools = [memoryTool, jsTool, fsTool, minionTool, returnTool];
 
 /**
  * Register all tools with the global registry.
@@ -25,9 +29,11 @@ export function registerAllTools(): void {
 }
 
 // Re-export registry and tool execution for convenience
-export { toolRegistry, executeClientSideTool } from './clientSideTools';
+export { toolRegistry, executeClientSideTool, executeToolSimple } from './clientSideTools';
 
 // Re-export individual tools for direct access if needed
 export { jsTool } from './jsTool';
 export { memoryTool } from './memoryTool';
 export { fsTool } from './fsTool';
+export { returnTool } from './returnTool';
+export { minionTool } from './minionTool';

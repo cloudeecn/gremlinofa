@@ -191,6 +191,7 @@ export const Tables = {
   MODELS_CACHE: 'models_cache',
   PROJECTS: 'projects',
   CHATS: 'chats',
+  MINION_CHATS: 'minion_chats',
   MESSAGES: 'messages',
   ATTACHMENTS: 'attachments',
   MEMORIES: 'memories',

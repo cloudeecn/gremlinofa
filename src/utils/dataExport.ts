@@ -16,6 +16,7 @@ const EXPORT_TABLES = [
   Tables.API_DEFINITIONS,
   Tables.PROJECTS,
   Tables.CHATS,
+  Tables.MINION_CHATS,
   Tables.MESSAGES,
   Tables.ATTACHMENTS,
   Tables.MEMORIES,

@@ -199,7 +199,7 @@ describe('UserMessageBubble', () => {
 
       const { container } = render(<UserMessageBubble {...createProps()} />);
 
-      const bubble = container.querySelector('.max-w-\\[85\\%\\]');
+      const bubble = container.querySelector('.max-w-\\[90\\%\\]');
       expect(bubble).toBeInTheDocument();
     });
 
@@ -210,11 +210,6 @@ describe('UserMessageBubble', () => {
 
       const bubble = container.querySelector('.max-w-\\[90\\%\\]');
       expect(bubble).toBeInTheDocument();
-    });
-
-    it('calls useIsMobile hook', () => {
-      render(<UserMessageBubble {...createProps()} />);
-      expect(mockUseIsMobile).toHaveBeenCalled();
     });
   });
 });

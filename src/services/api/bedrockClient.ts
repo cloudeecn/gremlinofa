@@ -36,6 +36,7 @@ import type {
   RenderingContentBlock,
   ToolResultBlock,
   ToolUseBlock,
+  ToolOptions,
 } from '../../types';
 
 import { groupAndConsolidateBlocks } from '../../types';
@@ -497,7 +498,7 @@ export class BedrockClient implements APIClient {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
-      toolOptions?: Record<string, Record<string, boolean>>;
+      toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<BedrockFullContent>, unknown> {
@@ -750,7 +751,7 @@ export class BedrockClient implements APIClient {
    */
   private buildToolConfig(
     enabledTools?: string[],
-    toolOptions?: Record<string, Record<string, boolean>>
+    toolOptions?: Record<string, ToolOptions>
   ): ToolConfiguration | undefined {
     if (!enabledTools?.length) return undefined;
 

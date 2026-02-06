@@ -50,6 +50,13 @@ vi.mock('../../streaming/StreamingContentAssembler', () => {
   };
 });
 
+/** Helper to create a mock async generator that returns a ToolResult */
+async function* mockToolGenerator(
+  result: unknown
+): AsyncGenerator<import('../../../types').ToolStreamEvent, import('../../../types').ToolResult> {
+  return result as import('../../../types').ToolResult;
+}
+
 vi.mock('../../tools/clientSideTools', () => ({
   executeClientSideTool: vi.fn(),
   toolRegistry: {
@@ -331,12 +338,14 @@ describe('agenticLoopGenerator', () => {
         timestamp: new Date(),
       });
 
-      // Use breakLoop to exit after tool execution
-      vi.mocked(executeClientSideTool).mockResolvedValue({
-        content: 'Files listed successfully',
-        isError: false,
-        breakLoop: { status: 'complete', returnValue: 'tool executed' },
-      });
+      // Use breakLoop to exit after tool execution - mockImplementation for fresh generator each call
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'Files listed successfully',
+          isError: false,
+          breakLoop: { returnValue: 'tool executed' },
+        })
+      );
 
       const options = createMockOptions({ enabledTools: ['memory'] });
       const context = [createMockUserMessage('List files')];
@@ -353,41 +362,6 @@ describe('agenticLoopGenerator', () => {
       );
       if (result.status === 'complete') {
         expect(result.returnValue).toBe('tool executed');
-      }
-    });
-
-    it('handles tool suspension via breakLoop', async () => {
-      const toolUseResult = {
-        textContent: '',
-        fullContent: [
-          { type: 'tool_use', id: 'toolu_1', name: 'ask_user', input: { question: 'What color?' } },
-        ],
-        stopReason: 'tool_use',
-        inputTokens: 100,
-        outputTokens: 50,
-      };
-
-      const mockStream = createMockStream([{ type: 'content', content: '' }], toolUseResult);
-
-      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
-      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([
-        { type: 'tool_use', id: 'toolu_1', name: 'ask_user', input: { question: 'What color?' } },
-      ]);
-
-      vi.mocked(executeClientSideTool).mockResolvedValue({
-        content: 'Awaiting user input',
-        breakLoop: { status: 'suspended' },
-      });
-
-      const options = createMockOptions({ enabledTools: ['ask_user'] });
-      const context = [createMockUserMessage('Help me choose')];
-
-      const result = await collectAgenticLoop(runAgenticLoop(options, context));
-
-      expect(result.status).toBe('suspended');
-      if (result.status === 'suspended') {
-        expect(result.pendingToolCall.name).toBe('ask_user');
-        expect(result.otherToolResults).toHaveLength(0);
       }
     });
 
@@ -409,10 +383,12 @@ describe('agenticLoopGenerator', () => {
         { type: 'tool_use', id: 'toolu_1', name: 'return', input: { value: 'final answer' } },
       ]);
 
-      vi.mocked(executeClientSideTool).mockResolvedValue({
-        content: 'Returning value',
-        breakLoop: { status: 'complete', returnValue: 'final answer' },
-      });
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'Returning value',
+          breakLoop: { returnValue: 'final answer' },
+        })
+      );
 
       const options = createMockOptions({ enabledTools: ['return'] });
       const context = [createMockUserMessage('Calculate')];
@@ -591,10 +567,12 @@ describe('agenticLoopGenerator', () => {
         timestamp: new Date(),
       });
 
-      vi.mocked(executeClientSideTool).mockResolvedValue({
-        content: 'Files listed successfully',
-        isError: false,
-      });
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'Files listed successfully',
+          isError: false,
+        })
+      );
 
       const options = createMockOptions({ enabledTools: ['memory'] });
       const context = [createMockUserMessage('List files')];
@@ -645,10 +623,12 @@ describe('agenticLoopGenerator', () => {
         timestamp: new Date(),
       });
 
-      vi.mocked(executeClientSideTool).mockResolvedValue({
-        content: 'Done',
-        isError: false,
-      });
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'Done',
+          isError: false,
+        })
+      );
 
       const options = createMockOptions({ enabledTools: ['test'] });
       const context = [createMockUserMessage('Test')];
@@ -714,10 +694,12 @@ describe('agenticLoopGenerator', () => {
         timestamp: new Date(),
       });
 
-      vi.mocked(executeClientSideTool).mockResolvedValue({
-        content: 'Tool executed',
-        isError: false,
-      });
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'Tool executed',
+          isError: false,
+        })
+      );
 
       const options = createMockOptions({ enabledTools: ['read', 'write'] });
       const context = [createMockUserMessage('Do multiple tasks')];

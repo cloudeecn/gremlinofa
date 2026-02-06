@@ -7,6 +7,7 @@ import type {
   RenderingBlockGroup,
   ToolResultBlock,
   ToolUseBlock,
+  ToolOptions,
 } from '../../types';
 import { groupAndConsolidateBlocks } from '../../types';
 import { AnthropicClient } from './anthropicClient';
@@ -153,7 +154,7 @@ class APIService {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
-      toolOptions?: Record<string, Record<string, boolean>>;
+      toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {

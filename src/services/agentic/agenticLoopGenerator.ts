@@ -25,11 +25,11 @@ import type {
   Model,
   RenderingBlockGroup,
   ToolResultBlock,
-  ToolUseBlock,
+  ToolStreamEvent,
   ReasoningEffort,
   ReasoningSummary,
 } from '../../types';
-import type { ToolResultRenderBlock, ToolUseRenderBlock } from '../../types/content';
+import { type ToolResultRenderBlock, type ToolUseRenderBlock } from '../../types/content';
 import { generateUniqueId } from '../../utils/idGenerator';
 
 // ============================================================================
@@ -86,7 +86,13 @@ export type AgenticLoopEvent =
   | { type: 'streaming_end' }
   | { type: 'message_created'; message: Message<unknown> }
   | { type: 'tokens_consumed'; tokens: TokenTotals }
-  | { type: 'first_chunk' };
+  | { type: 'first_chunk' }
+  | { type: 'pending_tool_result'; message: Message<unknown> }
+  | {
+      type: 'tool_block_update';
+      toolUseId: string;
+      block: Partial<ToolResultRenderBlock>;
+    };
 
 /**
  * Final result returned when loop completes.
@@ -97,13 +103,6 @@ export type AgenticLoopResult =
       messages: Message<unknown>[];
       tokens: TokenTotals;
       returnValue?: string;
-    }
-  | {
-      status: 'suspended';
-      messages: Message<unknown>[];
-      tokens: TokenTotals;
-      pendingToolCall: ToolUseBlock;
-      otherToolResults: ToolResultBlock[];
     }
   | {
       status: 'error';
@@ -223,12 +222,14 @@ function populateToolRenderFields(groups: RenderingBlockGroup[]): void {
 
 /**
  * Create a tool_result render block with pre-rendered display fields.
+ * Optionally accepts renderingGroups from tool's internal work.
  */
 function createToolResultRenderBlock(
   toolUseId: string,
   toolName: string,
   content: string,
-  isError?: boolean
+  isError?: boolean,
+  renderingGroups?: RenderingBlockGroup[]
 ): ToolResultRenderBlock {
   const tool = toolRegistry.get(toolName);
   const defaultIcon = isError ? '❌' : '✅';
@@ -241,6 +242,7 @@ function createToolResultRenderBlock(
     name: toolName,
     icon: tool?.iconOutput ?? defaultIcon,
     renderedContent: tool?.renderOutput?.(content, isError) ?? content,
+    renderingGroups,
   };
 }
 
@@ -595,12 +597,43 @@ export async function* runAgenticLoop(
 
       console.debug('[agenticLoopGen] Executing', toolUseBlocks.length, 'tool(s)');
 
+      // Create pending render blocks with status: 'running'
+      const pendingRenderBlocks: ToolResultRenderBlock[] = toolUseBlocks.map(toolUse => ({
+        type: 'tool_result' as const,
+        tool_use_id: toolUse.id,
+        name: toolUse.name,
+        content: '',
+        status: 'pending' as const,
+        icon: toolRegistry.get(toolUse.name)?.iconOutput ?? '⏳',
+      }));
+
+      // Build pending tool_result message and yield for UI display
+      const pendingToolResults: ToolResultBlock[] = toolUseBlocks.map(toolUse => ({
+        type: 'tool_result' as const,
+        tool_use_id: toolUse.id,
+        content: '',
+      }));
+      const pendingMsg = buildToolResultMessage(
+        apiDef.apiType,
+        pendingToolResults,
+        pendingRenderBlocks
+      );
+      yield { type: 'pending_tool_result', message: pendingMsg };
+
+      // Execute each tool, consuming generator events
       const toolResults: ToolResultBlock[] = [];
       const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
 
-      for (const toolUse of toolUseBlocks) {
+      for (let i = 0; i < toolUseBlocks.length; i++) {
+        const toolUse = toolUseBlocks[i];
         console.debug('[agenticLoopGen] Executing tool:', toolUse.name, 'id:', toolUse.id);
-        const toolResult = await executeClientSideTool(
+        yield {
+          type: 'tool_block_update',
+          toolUseId: toolUse.id,
+          block: { status: 'running' as const },
+        };
+
+        const toolGen = executeClientSideTool(
           toolUse.name,
           toolUse.input,
           enabledTools,
@@ -608,19 +641,25 @@ export async function* runAgenticLoop(
           toolContext
         );
 
-        // Check for suspension
-        if (toolResult.breakLoop?.status === 'suspended') {
-          return {
-            status: 'suspended',
-            messages,
-            tokens: totals,
-            pendingToolCall: toolUse,
-            otherToolResults: toolResults,
-          };
+        // Consume the tool generator
+        let toolNext = await toolGen.next();
+        while (!toolNext.done) {
+          const event = toolNext.value as ToolStreamEvent;
+          if (event.type === 'groups_update') {
+            // Forward streaming update for this tool block
+            yield {
+              type: 'tool_block_update',
+              toolUseId: toolUse.id,
+              block: { renderingGroups: event.groups, status: 'running' as const },
+            };
+          }
+          toolNext = await toolGen.next();
         }
 
+        const toolResult = toolNext.value;
+
         // Check for completion (return tool)
-        if (toolResult.breakLoop?.status === 'complete') {
+        if (toolResult.breakLoop) {
           return {
             status: 'complete',
             messages,
@@ -629,30 +668,40 @@ export async function* runAgenticLoop(
           };
         }
 
-        // Normal tool result
+        // Build final render block for this tool
+        const renderBlock = createToolResultRenderBlock(
+          toolUse.id,
+          toolUse.name,
+          toolResult.content,
+          toolResult.isError,
+          toolResult.renderingGroups
+        );
+        renderBlock.status = toolResult.isError ? 'error' : 'complete';
+
         toolResults.push({
           type: 'tool_result',
           tool_use_id: toolUse.id,
           content: toolResult.content,
           is_error: toolResult.isError,
         });
+        toolResultRenderBlocks.push(renderBlock);
 
-        toolResultRenderBlocks.push(
-          createToolResultRenderBlock(
-            toolUse.id,
-            toolUse.name,
-            toolResult.content,
-            toolResult.isError
-          )
-        );
+        // Yield final block update so consumer can update the pending message
+        yield {
+          type: 'tool_block_update',
+          toolUseId: toolUse.id,
+          block: renderBlock,
+        };
       }
 
-      // Build and record tool result message
+      // Build final tool result message and yield as message_created
+      // (consumer replaces the pending message with this — same ID ensures correct replacement)
       const toolResultMsg = buildToolResultMessage(
         apiDef.apiType,
         toolResults,
         toolResultRenderBlocks
       );
+      toolResultMsg.id = pendingMsg.id;
       messages.push(toolResultMsg);
       yield { type: 'message_created', message: toolResultMsg };
 

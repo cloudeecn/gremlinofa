@@ -169,9 +169,11 @@ export default function MessageList({
 
           {/* Loading indicator when no streaming content yet */}
           {isLoading && streamingGroups.length === 0 && (
-            <div className="mb-4 flex justify-start px-4">
-              <div className="rounded-2xl bg-gray-100 px-4 py-3 text-gray-600 shadow-sm">
-                <BouncingDots />
+            <div className="mb-4 px-4">
+              <div className={'w-full'}>
+                <div className="mt-1">
+                  <BouncingDots />
+                </div>
               </div>
             </div>
           )}

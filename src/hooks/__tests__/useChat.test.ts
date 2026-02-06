@@ -806,7 +806,7 @@ describe('useChat', () => {
                 expect.objectContaining({
                   type: 'tool_result',
                   is_error: true,
-                  content: expect.stringContaining('Token limit reached'),
+                  content: expect.stringContaining('Error, ask user to continue'),
                 }),
               ]),
             }),
@@ -994,7 +994,9 @@ describe('useChat', () => {
           renderingContent: [
             {
               category: 'backstage',
-              blocks: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'pong' }],
+              blocks: [
+                { type: 'tool_result', tool_use_id: 'tool_1', content: 'pong', name: 'test' },
+              ],
             },
           ],
         },

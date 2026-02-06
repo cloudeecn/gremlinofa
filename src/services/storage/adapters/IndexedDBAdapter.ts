@@ -61,7 +61,7 @@ function persistStorage() {
 export class IndexedDBAdapter implements StorageAdapter {
   private db: IDBDatabase | null = null;
   private readonly DB_NAME = 'chatbot';
-  private readonly DB_VERSION = 5;
+  private readonly DB_VERSION = 6;
 
   async initialize(): Promise<void> {
     // Open IndexedDB
@@ -86,6 +86,7 @@ export class IndexedDBAdapter implements StorageAdapter {
           Tables.MODELS_CACHE,
           Tables.PROJECTS,
           Tables.CHATS,
+          Tables.MINION_CHATS,
           Tables.MESSAGES,
           Tables.ATTACHMENTS,
           Tables.METADATA,

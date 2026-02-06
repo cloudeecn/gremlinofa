@@ -10,7 +10,13 @@
  * This is a stateless tool - all state is passed via toolOptions and context.
  */
 
-import type { ClientSideTool, ToolContext, ToolOptions, ToolResult } from '../../types';
+import type {
+  ClientSideTool,
+  ToolContext,
+  ToolOptions,
+  ToolResult,
+  ToolStreamEvent,
+} from '../../types';
 import { JsVMContext, type ConsoleEntry } from './jsvm/JsVMContext';
 
 /**
@@ -74,11 +80,12 @@ function formatOutput(
 /**
  * Execute JavaScript code in a fresh QuickJS context.
  */
-async function executeJavaScript(
+// eslint-disable-next-line require-yield -- Simple tool: generator for interface compatibility, no streaming events
+async function* executeJavaScript(
   input: Record<string, unknown>,
   toolOptions?: ToolOptions,
   context?: ToolContext
-): Promise<ToolResult> {
+): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
   const code = input.code;
   if (!code || typeof code !== 'string') {
     return {
@@ -95,7 +102,8 @@ async function executeJavaScript(
   }
 
   // Get loadLib option (UI initializes to true when tool is enabled)
-  const loadLib = toolOptions?.loadLib ?? false;
+  // Cast to boolean since toolOptions values can be boolean | string | ModelReference
+  const loadLib = toolOptions?.loadLib === true;
 
   // Create fresh context for this execution
   const vm = await JsVMContext.create(context.projectId, loadLib);
@@ -142,6 +150,7 @@ export const jsTool: ClientSideTool = {
   displaySubtitle: 'Execute code in a secure sandbox in your browser',
   optionDefinitions: [
     {
+      type: 'boolean',
       id: 'loadLib',
       label: 'Load /lib Scripts',
       subtitle: 'Auto-load .js files from /lib when JS session starts',

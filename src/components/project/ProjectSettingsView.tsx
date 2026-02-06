@@ -522,7 +522,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                 value={temperature}
                 onChange={e => setTemperature(e.target.value)}
                 placeholder="Use model default"
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
               />
             </div>
 
@@ -1144,7 +1144,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       value={maxOutputTokens}
                       onChange={e => setMaxOutputTokens(e.target.value)}
                       placeholder="1536"
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
                   </div>
 

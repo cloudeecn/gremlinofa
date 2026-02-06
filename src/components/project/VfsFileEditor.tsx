@@ -95,7 +95,7 @@ export default function VfsFileEditor({
       {/* Editor area */}
       <div className="flex-1 overflow-hidden bg-gray-50 p-4">
         <textarea
-          className="h-full w-full resize-none rounded border border-gray-300 bg-white p-3 font-mono text-sm text-gray-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+          className="h-full w-full resize-none rounded border border-gray-300 bg-white p-3 font-mono text-base text-gray-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
           value={content}
           onChange={e => setContent(e.target.value)}
           disabled={saving}

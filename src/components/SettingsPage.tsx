@@ -277,7 +277,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         </label>
                         <input
                           type="text"
-                          className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                          className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
                           placeholder="e.g., xAI, OpenRouter, My OpenAI"
                           value={formName}
                           onChange={e => setFormName(e.target.value)}
@@ -300,7 +300,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         </label>
                         <input
                           type="text"
-                          className={`w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${def.apiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
+                          className={`w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${def.apiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
                           placeholder="Leave empty for provider default"
                           value={formBaseUrl}
                           onChange={e => setFormBaseUrl(e.target.value)}
@@ -340,7 +340,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                             </label>
                             <input
                               type="password"
-                              className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                              className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
                               placeholder="Enter your API key"
                               value={formApiKey}
                               onChange={e => setFormApiKey(e.target.value)}
@@ -439,7 +439,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                   <label className="mb-1.5 block text-sm font-medium text-gray-700">Name *</label>
                   <input
                     type="text"
-                    className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                    className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
                     placeholder="e.g., xAI, OpenRouter, My OpenAI"
                     value={formName}
                     onChange={e => setFormName(e.target.value)}
@@ -462,7 +462,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                   </label>
                   <input
                     type="text"
-                    className={`w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formApiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
+                    className={`w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formApiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
                     placeholder="Leave empty for provider default"
                     value={formBaseUrl}
                     onChange={e => setFormBaseUrl(e.target.value)}
@@ -502,7 +502,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                       </label>
                       <input
                         type="password"
-                        className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
                         placeholder="Enter your API key"
                         value={formApiKey}
                         onChange={e => setFormApiKey(e.target.value)}

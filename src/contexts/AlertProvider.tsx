@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { AlertContext } from './AlertContext';
 import type { AlertOptions, ConfirmOptions } from './AlertContext';
@@ -20,7 +20,13 @@ export function AlertProvider({ children }: { children: ReactNode }) {
   const [dialogState, setDialogState] = useState<DialogState>(null);
   const [_queue, setQueue] = useState<DialogState[]>([]);
 
-  const showNext = () => {
+  // Ref tracks current dialogState so stable callbacks can read it
+  const dialogStateRef = useRef<DialogState>(null);
+  useEffect(() => {
+    dialogStateRef.current = dialogState;
+  }, [dialogState]);
+
+  const showNext = useCallback(() => {
     setQueue(prev => {
       if (prev.length > 0) {
         const [next, ...rest] = prev;
@@ -29,84 +35,89 @@ export function AlertProvider({ children }: { children: ReactNode }) {
       }
       return prev;
     });
-  };
+  }, []);
 
-  const showAlert = (title: string, message: string): Promise<void> => {
-    return new Promise(resolve => {
-      const alertState: AlertState = {
-        type: 'alert',
-        title,
-        message,
-        resolve: () => {
-          resolve();
-          setDialogState(null);
-          showNext();
-        },
-      };
+  const showAlert = useCallback(
+    (title: string, message: string): Promise<void> => {
+      return new Promise(resolve => {
+        const alertState: AlertState = {
+          type: 'alert',
+          title,
+          message,
+          resolve: () => {
+            resolve();
+            setDialogState(null);
+            showNext();
+          },
+        };
 
-      if (dialogState === null) {
-        setDialogState(alertState);
-      } else {
-        setQueue(prev => [...prev, alertState]);
-      }
-    });
-  };
+        if (dialogStateRef.current === null) {
+          setDialogState(alertState);
+        } else {
+          setQueue(prev => [...prev, alertState]);
+        }
+      });
+    },
+    [showNext]
+  );
 
-  const showConfirm = (title: string, message: string, confirmLabel?: string): Promise<boolean> => {
-    return new Promise(resolve => {
-      const confirmState: ConfirmState = {
-        type: 'confirm',
-        title,
-        message,
-        confirmLabel,
-        isDestructive: false,
-        resolve: (confirmed: boolean) => {
-          resolve(confirmed);
-          setDialogState(null);
-          showNext();
-        },
-      };
+  const showConfirm = useCallback(
+    (title: string, message: string, confirmLabel?: string): Promise<boolean> => {
+      return new Promise(resolve => {
+        const confirmState: ConfirmState = {
+          type: 'confirm',
+          title,
+          message,
+          confirmLabel,
+          isDestructive: false,
+          resolve: (confirmed: boolean) => {
+            resolve(confirmed);
+            setDialogState(null);
+            showNext();
+          },
+        };
 
-      if (dialogState === null) {
-        setDialogState(confirmState);
-      } else {
-        setQueue(prev => [...prev, confirmState]);
-      }
-    });
-  };
+        if (dialogStateRef.current === null) {
+          setDialogState(confirmState);
+        } else {
+          setQueue(prev => [...prev, confirmState]);
+        }
+      });
+    },
+    [showNext]
+  );
 
-  const showDestructiveConfirm = (
-    title: string,
-    message: string,
-    confirmLabel?: string
-  ): Promise<boolean> => {
-    return new Promise(resolve => {
-      const confirmState: ConfirmState = {
-        type: 'confirm',
-        title,
-        message,
-        confirmLabel,
-        isDestructive: true,
-        resolve: (confirmed: boolean) => {
-          resolve(confirmed);
-          setDialogState(null);
-          showNext();
-        },
-      };
+  const showDestructiveConfirm = useCallback(
+    (title: string, message: string, confirmLabel?: string): Promise<boolean> => {
+      return new Promise(resolve => {
+        const confirmState: ConfirmState = {
+          type: 'confirm',
+          title,
+          message,
+          confirmLabel,
+          isDestructive: true,
+          resolve: (confirmed: boolean) => {
+            resolve(confirmed);
+            setDialogState(null);
+            showNext();
+          },
+        };
 
-      if (dialogState === null) {
-        setDialogState(confirmState);
-      } else {
-        setQueue(prev => [...prev, confirmState]);
-      }
-    });
-  };
+        if (dialogStateRef.current === null) {
+          setDialogState(confirmState);
+        } else {
+          setQueue(prev => [...prev, confirmState]);
+        }
+      });
+    },
+    [showNext]
+  );
 
   // Register alert context globally for utility functions (non-React code)
   useEffect(() => {
     setAlertContext({ showAlert, showConfirm, showDestructiveConfirm });
     return () => setAlertContext(null);
-  }, []);
+  }, [showAlert, showConfirm, showDestructiveConfirm]);
 
   return (
     <AlertContext.Provider value={{ showAlert, showConfirm, showDestructiveConfirm }}>
@@ -115,7 +126,7 @@ export function AlertProvider({ children }: { children: ReactNode }) {
         <>
           {/* Backdrop */}
           <div
-            className="bg-opacity-50 animate-fade-in fixed inset-0 z-50 bg-black"
+            className="animate-fade-in fixed inset-0 z-50 bg-black/50"
             onClick={() => {
               // Clicked backdrop
               if (dialogState.type === 'confirm') {

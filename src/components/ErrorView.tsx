@@ -50,14 +50,11 @@ export function ErrorView({ isOpen, onClose, errors, onRemoveError, onClearAll }
   return (
     <>
       {/* Backdrop */}
-      <div
-        className="bg-opacity-50 animate-fade-in fixed inset-0 z-50 bg-black"
-        onClick={onClose}
-      />
+      <div className="animate-fade-in fixed inset-0 z-50 bg-black/50" onClick={onClose} />
       {/* Modal */}
       <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-4">
         <div
-          className="animate-scale-in pointer-events-auto flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-xl"
+          className="animate-scale-in pointer-events-auto flex max-h-[80dvh] w-full max-w-2xl flex-col rounded-lg bg-white shadow-xl"
           onClick={e => e.stopPropagation()}
         >
           {/* Header */}

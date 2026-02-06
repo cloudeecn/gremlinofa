@@ -93,7 +93,7 @@ export default function VfsFileModal({
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="full" position="bottom">
-      <div className="flex h-[80vh] flex-col overflow-hidden rounded-t-xl bg-white md:h-[70vh] md:rounded-xl">
+      <div className="flex h-[80dvh] flex-col overflow-hidden rounded-t-xl bg-white md:h-[70dvh] md:rounded-xl">
         {mode === 'view' && (
           <VfsFileViewer
             key={`view-${contentVersion}`}

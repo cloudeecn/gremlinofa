@@ -110,7 +110,7 @@ export default function DeleteOlderThanModal({
                   min="1"
                   value={days}
                   onChange={handleDaysChange}
-                  className="w-20 rounded-lg border border-gray-300 px-3 py-2 text-center focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                  className="w-20 rounded-lg border border-gray-300 px-3 py-2 text-center text-base focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
                   disabled={isDeleting}
                 />
                 <span className="text-gray-600">day{days !== 1 ? 's' : ''}</span>

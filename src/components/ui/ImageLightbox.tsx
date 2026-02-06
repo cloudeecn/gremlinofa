@@ -58,11 +58,11 @@ export default function ImageLightbox({ src, alt = 'Image preview', onClose }: I
       </button>
 
       {/* Image container with max dimensions */}
-      <div className="animate-scale-in max-h-[90vh] max-w-[90vw]">
+      <div className="animate-scale-in max-h-[90dvh] max-w-[90vw]">
         <img
           src={src}
           alt={alt}
-          className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
+          className="max-h-[90dvh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
         />
       </div>
     </div>

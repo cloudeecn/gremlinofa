@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 interface ModalProps {
   isOpen: boolean;
@@ -17,6 +17,23 @@ export default function Modal({
   position = 'center',
   className = '',
 }: ModalProps) {
+  const [vpRect, setVpRect] = useState<{ top: number; height: number } | null>(null);
+
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const update = () => setVpRect({ top: vv.offsetTop, height: vv.height });
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    update();
+
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  }, []);
+
   if (!isOpen) return null;
 
   const sizeClasses = {
@@ -33,17 +50,18 @@ export default function Modal({
   };
 
   const contentAnimationClasses = {
-    center: 'animate-in fade-in zoom-in-95 duration-300',
-    bottom: 'animate-in slide-in-from-bottom md:fade-in md:zoom-in-95 duration-300',
+    center: 'animate-scale-in',
+    bottom: 'animate-slide-up md:animate-scale-in',
   };
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex ${positionClasses[position]} animate-in fade-in p-4 duration-300`}
+      className={`animate-fade-in fixed inset-0 z-50 flex ${positionClasses[position]} p-4`}
+      style={vpRect ? { top: vpRect.top, height: vpRect.height, bottom: 'auto' } : undefined}
       onClick={onClose}
     >
       {/* Backdrop */}
-      <div className="bg-opacity-50 absolute inset-0 bg-black" />
+      <div className="absolute inset-0 bg-black/50" />
 
       {/* Modal content */}
       <div

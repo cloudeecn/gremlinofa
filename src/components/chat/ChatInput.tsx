@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useIsMobile } from '../../hooks/useIsMobile';
+import { useIsKeyboardVisible } from '../../hooks/useIsKeyboardVisible';
 import Spinner from '../ui/Spinner';
 import type { ChatInputProps } from './types';
 
@@ -19,6 +20,7 @@ export default function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isMobile = useIsMobile();
+  const keyboardVisible = useIsKeyboardVisible();
   const [validationError, setValidationError] = useState<string>('');
 
   // Auto-resize textarea based on content
@@ -183,7 +185,6 @@ export default function ChatInput({
             placeholder="Type your message..."
             disabled={disabled}
             rows={1}
-            maxLength={10000}
             className="flex-1 resize-none rounded-3xl border border-gray-300 px-4 py-3 pr-12 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none disabled:bg-gray-100 disabled:text-gray-500"
             style={{ minHeight: '48px', maxHeight: '120px' }}
           />
@@ -208,8 +209,8 @@ export default function ChatInput({
           </button>
         </div>
       </div>
-      {/* Safe Area Bottom Spacer - uses env() for iOS home indicator */}
-      <div className="safe-area-inset-bottom bg-white" />
+      {/* Safe Area Bottom Spacer - hidden when keyboard covers home indicator */}
+      {!keyboardVisible && <div className="safe-area-inset-bottom bg-white" />}
     </div>
   );
 }

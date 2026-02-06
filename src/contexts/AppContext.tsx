@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
 import type { APIDefinition, Model, Project } from '../types';
@@ -23,7 +23,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [storageQuota, setStorageQuota] = useState<{ usage: number; quota: number } | null>(null);
 
   // Refresh storage quota
-  const refreshStorageQuota = async () => {
+  const refreshStorageQuota = useCallback(async () => {
     try {
       const quota = await storage.getStorageQuota();
       setStorageQuota(quota);
@@ -31,8 +31,310 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.error('[AppContext] Failed to get storage quota:', error);
       setStorageQuota(null);
     }
-  };
+  }, []);
 
+  const purgeAllData = useCallback(async () => {
+    console.debug('[AppContext] Purging all data...');
+
+    // Purge storage (deletes database)
+    await storage.purgeAllData();
+    console.debug('[AppContext] Storage purged');
+
+    // Clear CEK from localStorage to trigger OOBE on next load
+    await encryptionService.clearCEK();
+    console.debug('[AppContext] CEK cleared');
+
+    // Reload the page to trigger OOBE
+    console.debug('[AppContext] Reloading to trigger OOBE...');
+    window.location.reload();
+  }, []);
+
+  const refreshAPIDefinitions = useCallback(async () => {
+    console.debug('[AppContext] refreshAPIDefinitions: Fetching from storage...');
+    const defs = await storage.getAPIDefinitions();
+    console.debug(
+      `[AppContext] refreshAPIDefinitions: Got ${defs.length} definitions, updating state...`
+    );
+    setAPIDefinitions(defs);
+    console.debug('[AppContext] refreshAPIDefinitions: State updated');
+  }, []);
+
+  const saveAPIDefinitionHandler = useCallback(
+    async (definition: APIDefinition) => {
+      await storage.saveAPIDefinition(definition);
+      await refreshAPIDefinitions();
+    },
+    [refreshAPIDefinitions]
+  );
+
+  const deleteAPIDefinitionHandler = useCallback(
+    async (id: string) => {
+      await storage.deleteAPIDefinition(id);
+      await storage.deleteModels(id);
+      // Remove models from state
+      setModels(prev => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+      await refreshAPIDefinitions();
+    },
+    [refreshAPIDefinitions]
+  );
+
+  const refreshProjects = useCallback(async () => {
+    setIsLoadingProjects(true);
+    try {
+      const projs = await storage.getProjects();
+      setProjects(projs);
+    } finally {
+      setIsLoadingProjects(false);
+    }
+  }, []);
+
+  const saveProjectHandler = useCallback(
+    async (project: Project) => {
+      await storage.saveProject(project);
+      await refreshProjects();
+    },
+    [refreshProjects]
+  );
+
+  const deleteProjectHandler = useCallback(
+    async (id: string) => {
+      await storage.deleteProject(id);
+      await refreshProjects();
+    },
+    [refreshProjects]
+  );
+
+  const refreshModels = useCallback(
+    async (apiDefinitionId: string, forceRefresh = false, skipWaitingModelRefresh = false) => {
+      setIsLoadingModels(true);
+      try {
+        const apiDef = await storage.getAPIDefinition(apiDefinitionId);
+        if (!apiDef) {
+          console.error('API definition not found:', apiDefinitionId);
+          return;
+        }
+
+        // Skip refresh if API key is not configured (except for WebLLM which doesn't need one)
+        // Also skip if provider is marked as local (doesn't need API key)
+        const needsApiKey = apiDef.apiType !== 'webllm' && !apiDef.isLocal;
+        if (needsApiKey && (!apiDef.apiKey || apiDef.apiKey.trim() === '')) {
+          console.debug('Skipping model refresh for', apiDefinitionId, '- no API key configured');
+          return;
+        }
+
+        // Check cache age if not forcing refresh
+        if (!forceRefresh) {
+          const cached = await storage.getModelsWithCache(apiDefinitionId);
+          if (cached.models.length > 0 && cached.cachedAt) {
+            const ageMs = Date.now() - cached.cachedAt.getTime();
+            const maxAgeMs = 24 * 60 * 60 * 1000; // 1 day
+
+            if (ageMs < maxAgeMs) {
+              console.debug(
+                `[AppContext] Using cached models for ${apiDefinitionId} (age: ${Math.round(ageMs / 1000 / 60)} minutes)`
+              );
+              // Load from cache into state
+              setModels(prev => new Map(prev).set(apiDefinitionId, cached.models));
+              setIsLoadingModels(false);
+              return;
+            } else {
+              console.debug(
+                `[AppContext] Cache expired for ${apiDefinitionId} (age: ${Math.round(ageMs / 1000 / 60 / 60)} hours), fetching...`
+              );
+            }
+          }
+        }
+
+        // Fetch from API
+        console.debug(`[AppContext] Fetching models from API for ${apiDefinitionId}...`);
+        const discoverModelsPromise = apiService
+          .discoverModels(apiDef)
+          .then(async discoveredModels => {
+            setModels(prev => new Map(prev).set(apiDefinitionId, discoveredModels));
+            await storage.saveModels(apiDefinitionId, discoveredModels);
+          });
+        if (!skipWaitingModelRefresh) {
+          await discoverModelsPromise;
+        }
+      } catch (error) {
+        console.error('Failed to refresh models:', error);
+      } finally {
+        setIsLoadingModels(false);
+      }
+    },
+    []
+  );
+
+  const handleExport = useCallback(async (onProgress?: ExportProgressCallback) => {
+    console.debug('[AppContext] Starting streaming data export...');
+    try {
+      const adapter = storage.getAdapter();
+
+      // Create blob using streaming chunked assembly (memory-efficient)
+      // Pass encryptionService to include default API definitions with credentials
+      const blob = await createExportBlob(adapter, encryptionService, 100, onProgress);
+
+      // Download the blob
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `gremlinofa-backup-${new Date().toISOString().split('T')[0]}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      console.debug('[AppContext] Data export complete!');
+    } catch (error) {
+      console.error('[AppContext] Export failed:', error);
+      throw error;
+    }
+  }, []);
+
+  const handleImport = useCallback(
+    async (
+      file: File,
+      sourceCEK: string,
+      onProgress?: ImportProgressCallback
+    ): Promise<{ imported: number; skipped: number; errors: string[] }> => {
+      console.debug('[AppContext] Starting streaming data import...');
+      try {
+        // Get adapter and perform streaming import (memory-efficient for large files)
+        const adapter = storage.getAdapter();
+        const result = await importDataFromFile(
+          adapter,
+          file,
+          sourceCEK,
+          encryptionService,
+          onProgress
+        );
+
+        console.debug(
+          `[AppContext] Import complete: ${result.imported} imported, ${result.skipped} skipped, ${result.errors.length} errors`
+        );
+
+        // Refresh all data
+        await refreshAPIDefinitions();
+        await refreshProjects();
+
+        // Reload models for all API definitions
+        const defs = await storage.getAPIDefinitions();
+        for (const def of defs) {
+          // Refresh if has API key OR is WebLLM (which doesn't need one)
+          if ((def.apiKey && def.apiKey.trim() !== '') || def.apiType === 'webllm') {
+            await refreshModels(def.id);
+          }
+        }
+
+        // Refresh storage quota after import
+        await refreshStorageQuota();
+
+        return result;
+      } catch (error) {
+        console.error('[AppContext] Import failed:', error);
+        throw error;
+      }
+    },
+    [refreshAPIDefinitions, refreshProjects, refreshModels, refreshStorageQuota]
+  );
+
+  const handleMigrate = useCallback(
+    async (
+      file: File,
+      sourceCEK: string,
+      onProgress?: ImportProgressCallback
+    ): Promise<{ imported: number; skipped: number; errors: string[] }> => {
+      console.debug('[AppContext] Starting streaming data migration...');
+      try {
+        // Get adapter and perform streaming migration (memory-efficient for large files)
+        const adapter = storage.getAdapter();
+        const result = await migrateDataFromFile(
+          adapter,
+          file,
+          sourceCEK,
+          encryptionService,
+          onProgress
+        );
+
+        console.debug(
+          `[AppContext] Migration complete: ${result.imported} imported, ${result.skipped} skipped, ${result.errors.length} errors`
+        );
+
+        // Update CEK in state (it was changed by migration)
+        const newCEK = encryptionService.getCEK();
+        setCek(newCEK);
+
+        // Refresh all data (migration already loaded everything, but refresh for React state)
+        await refreshAPIDefinitions();
+        await refreshProjects();
+
+        // Reload models for all API definitions
+        const defs = await storage.getAPIDefinitions();
+        for (const def of defs) {
+          // Refresh if has API key OR is WebLLM (which doesn't need one)
+          if ((def.apiKey && def.apiKey.trim() !== '') || def.apiType === 'webllm') {
+            await refreshModels(def.id);
+          }
+        }
+
+        return result;
+      } catch (error) {
+        console.error('[AppContext] Migration failed:', error);
+        throw error;
+      }
+    },
+    [refreshAPIDefinitions, refreshProjects, refreshModels]
+  );
+
+  // Load CEK from encryptionService
+  const [cek, setCek] = useState<string | null>(null);
+  const [isCEKBase32, setIsCEKBase32] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    setCek(encryptionService.getCEK());
+    setIsCEKBase32(encryptionService.isCEKBase32());
+  }, []);
+
+  const convertCEKToBase32 = useCallback((): string | null => {
+    const newCEK = encryptionService.convertCEKToBase32();
+    if (newCEK) {
+      setCek(newCEK);
+      setIsCEKBase32(true);
+    }
+    return newCEK;
+  }, []);
+
+  const handleCompressMessages = useCallback(async (): Promise<{
+    total: number;
+    compressed: number;
+    skipped: number;
+    errors: number;
+  }> => {
+    console.debug('[AppContext] Starting bulk message compression...');
+    try {
+      const result = await storage.compressAllMessages((processed, total, chatName) => {
+        console.debug(`[AppContext] Compression progress: ${processed}/${total} (${chatName})`);
+      });
+
+      console.debug(
+        `[AppContext] Compression complete: ${result.compressed} compressed, ${result.skipped} skipped, ${result.errors} errors`
+      );
+
+      // Refresh storage quota after compression
+      await refreshStorageQuota();
+
+      return result;
+    } catch (error) {
+      console.error('[AppContext] Compression failed:', error);
+      throw error;
+    }
+  }, [refreshStorageQuota]);
+
+  // Initialize app
   const initializeApp = useCallback(async () => {
     try {
       console.debug('[AppContext] Starting app initialization...');
@@ -62,322 +364,65 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsInitializing(false);
     }
-  }, []);
+  }, [refreshAPIDefinitions, refreshProjects, refreshModels, refreshStorageQuota]);
 
-  // Initialize app
   useEffect(() => {
     initializeApp();
   }, [initializeApp]);
 
-  const purgeAllData = async () => {
-    console.debug('[AppContext] Purging all data...');
-
-    // Purge storage (deletes database)
-    await storage.purgeAllData();
-    console.debug('[AppContext] Storage purged');
-
-    // Clear CEK from localStorage to trigger OOBE on next load
-    await encryptionService.clearCEK();
-    console.debug('[AppContext] CEK cleared');
-
-    // Reload the page to trigger OOBE
-    console.debug('[AppContext] Reloading to trigger OOBE...');
-    window.location.reload();
-  };
-
-  const refreshAPIDefinitions = async () => {
-    console.debug('[AppContext] refreshAPIDefinitions: Fetching from storage...');
-    const defs = await storage.getAPIDefinitions();
-    console.debug(
-      `[AppContext] refreshAPIDefinitions: Got ${defs.length} definitions, updating state...`
-    );
-    setAPIDefinitions(defs);
-    console.debug('[AppContext] refreshAPIDefinitions: State updated');
-  };
-
-  const saveAPIDefinitionHandler = async (definition: APIDefinition) => {
-    await storage.saveAPIDefinition(definition);
-    await refreshAPIDefinitions();
-  };
-
-  const deleteAPIDefinitionHandler = async (id: string) => {
-    await storage.deleteAPIDefinition(id);
-    await storage.deleteModels(id);
-    // Remove models from state
-    setModels(prev => {
-      const next = new Map(prev);
-      next.delete(id);
-      return next;
-    });
-    await refreshAPIDefinitions();
-  };
-
-  const refreshProjects = async () => {
-    setIsLoadingProjects(true);
-    try {
-      const projs = await storage.getProjects();
-      setProjects(projs);
-    } finally {
-      setIsLoadingProjects(false);
-    }
-  };
-
-  const saveProjectHandler = async (project: Project) => {
-    await storage.saveProject(project);
-    await refreshProjects();
-  };
-
-  const deleteProjectHandler = async (id: string) => {
-    await storage.deleteProject(id);
-    await refreshProjects();
-  };
-
-  const refreshModels = async (
-    apiDefinitionId: string,
-    forceRefresh = false,
-    skipWaitingModelRefresh = false
-  ) => {
-    setIsLoadingModels(true);
-    try {
-      const apiDef = await storage.getAPIDefinition(apiDefinitionId);
-      if (!apiDef) {
-        console.error('API definition not found:', apiDefinitionId);
-        return;
-      }
-
-      // Skip refresh if API key is not configured (except for WebLLM which doesn't need one)
-      // Also skip if provider is marked as local (doesn't need API key)
-      const needsApiKey = apiDef.apiType !== 'webllm' && !apiDef.isLocal;
-      if (needsApiKey && (!apiDef.apiKey || apiDef.apiKey.trim() === '')) {
-        console.debug('Skipping model refresh for', apiDefinitionId, '- no API key configured');
-        return;
-      }
-
-      // Check cache age if not forcing refresh
-      if (!forceRefresh) {
-        const cached = await storage.getModelsWithCache(apiDefinitionId);
-        if (cached.models.length > 0 && cached.cachedAt) {
-          const ageMs = Date.now() - cached.cachedAt.getTime();
-          const maxAgeMs = 24 * 60 * 60 * 1000; // 1 day
-
-          if (ageMs < maxAgeMs) {
-            console.debug(
-              `[AppContext] Using cached models for ${apiDefinitionId} (age: ${Math.round(ageMs / 1000 / 60)} minutes)`
-            );
-            // Load from cache into state
-            setModels(prev => new Map(prev).set(apiDefinitionId, cached.models));
-            setIsLoadingModels(false);
-            return;
-          } else {
-            console.debug(
-              `[AppContext] Cache expired for ${apiDefinitionId} (age: ${Math.round(ageMs / 1000 / 60 / 60)} hours), fetching...`
-            );
-          }
-        }
-      }
-
-      // Fetch from API
-      console.debug(`[AppContext] Fetching models from API for ${apiDefinitionId}...`);
-      const discoverModelsPromise = apiService
-        .discoverModels(apiDef)
-        .then(async discoveredModels => {
-          setModels(prev => new Map(prev).set(apiDefinitionId, discoveredModels));
-          await storage.saveModels(apiDefinitionId, discoveredModels);
-        });
-      if (!skipWaitingModelRefresh) {
-        await discoverModelsPromise;
-      }
-    } catch (error) {
-      console.error('Failed to refresh models:', error);
-    } finally {
-      setIsLoadingModels(false);
-    }
-  };
-
-  const handleExport = async (onProgress?: ExportProgressCallback) => {
-    console.debug('[AppContext] Starting streaming data export...');
-    try {
-      const adapter = storage.getAdapter();
-
-      // Create blob using streaming chunked assembly (memory-efficient)
-      // Pass encryptionService to include default API definitions with credentials
-      const blob = await createExportBlob(adapter, encryptionService, 100, onProgress);
-
-      // Download the blob
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `gremlinofa-backup-${new Date().toISOString().split('T')[0]}.csv`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      console.debug('[AppContext] Data export complete!');
-    } catch (error) {
-      console.error('[AppContext] Export failed:', error);
-      throw error;
-    }
-  };
-
-  const handleImport = async (
-    file: File,
-    sourceCEK: string,
-    onProgress?: ImportProgressCallback
-  ): Promise<{ imported: number; skipped: number; errors: string[] }> => {
-    console.debug('[AppContext] Starting streaming data import...');
-    try {
-      // Get adapter and perform streaming import (memory-efficient for large files)
-      const adapter = storage.getAdapter();
-      const result = await importDataFromFile(
-        adapter,
-        file,
-        sourceCEK,
-        encryptionService,
-        onProgress
-      );
-
-      console.debug(
-        `[AppContext] Import complete: ${result.imported} imported, ${result.skipped} skipped, ${result.errors.length} errors`
-      );
-
-      // Refresh all data
-      await refreshAPIDefinitions();
-      await refreshProjects();
-
-      // Reload models for all API definitions
-      const defs = await storage.getAPIDefinitions();
-      for (const def of defs) {
-        // Refresh if has API key OR is WebLLM (which doesn't need one)
-        if ((def.apiKey && def.apiKey.trim() !== '') || def.apiType === 'webllm') {
-          await refreshModels(def.id);
-        }
-      }
-
-      // Refresh storage quota after import
-      await refreshStorageQuota();
-
-      return result;
-    } catch (error) {
-      console.error('[AppContext] Import failed:', error);
-      throw error;
-    }
-  };
-
-  const handleMigrate = async (
-    file: File,
-    sourceCEK: string,
-    onProgress?: ImportProgressCallback
-  ): Promise<{ imported: number; skipped: number; errors: string[] }> => {
-    console.debug('[AppContext] Starting streaming data migration...');
-    try {
-      // Get adapter and perform streaming migration (memory-efficient for large files)
-      const adapter = storage.getAdapter();
-      const result = await migrateDataFromFile(
-        adapter,
-        file,
-        sourceCEK,
-        encryptionService,
-        onProgress
-      );
-
-      console.debug(
-        `[AppContext] Migration complete: ${result.imported} imported, ${result.skipped} skipped, ${result.errors.length} errors`
-      );
-
-      // Update CEK in state (it was changed by migration)
-      const newCEK = encryptionService.getCEK();
-      setCek(newCEK);
-
-      // Refresh all data (migration already loaded everything, but refresh for React state)
-      await refreshAPIDefinitions();
-      await refreshProjects();
-
-      // Reload models for all API definitions
-      const defs = await storage.getAPIDefinitions();
-      for (const def of defs) {
-        // Refresh if has API key OR is WebLLM (which doesn't need one)
-        if ((def.apiKey && def.apiKey.trim() !== '') || def.apiType === 'webllm') {
-          await refreshModels(def.id);
-        }
-      }
-
-      return result;
-    } catch (error) {
-      console.error('[AppContext] Migration failed:', error);
-      throw error;
-    }
-  };
-
-  // Load CEK from encryptionService
-  const [cek, setCek] = useState<string | null>(null);
-  const [isCEKBase32, setIsCEKBase32] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    setCek(encryptionService.getCEK());
-    setIsCEKBase32(encryptionService.isCEKBase32());
-  }, []);
-
-  const convertCEKToBase32 = (): string | null => {
-    const newCEK = encryptionService.convertCEKToBase32();
-    if (newCEK) {
-      setCek(newCEK);
-      setIsCEKBase32(true);
-    }
-    return newCEK;
-  };
-
-  const handleCompressMessages = async (): Promise<{
-    total: number;
-    compressed: number;
-    skipped: number;
-    errors: number;
-  }> => {
-    console.debug('[AppContext] Starting bulk message compression...');
-    try {
-      const result = await storage.compressAllMessages((processed, total, chatName) => {
-        console.debug(`[AppContext] Compression progress: ${processed}/${total} (${chatName})`);
-      });
-
-      console.debug(
-        `[AppContext] Compression complete: ${result.compressed} compressed, ${result.skipped} skipped, ${result.errors} errors`
-      );
-
-      // Refresh storage quota after compression
-      await refreshStorageQuota();
-
-      return result;
-    } catch (error) {
-      console.error('[AppContext] Compression failed:', error);
-      throw error;
-    }
-  };
-
-  const value: AppContextType = {
-    apiDefinitions,
-    refreshAPIDefinitions,
-    saveAPIDefinition: saveAPIDefinitionHandler,
-    deleteAPIDefinition: deleteAPIDefinitionHandler,
-    projects,
-    refreshProjects,
-    saveProject: saveProjectHandler,
-    deleteProject: deleteProjectHandler,
-    models,
-    refreshModels,
-    purgeAllData,
-    handleExport,
-    handleImport,
-    handleMigrate,
-    cek,
-    isCEKBase32,
-    convertCEKToBase32,
-    handleCompressMessages,
-    storageQuota,
-    refreshStorageQuota,
-    isInitializing,
-    isLoadingProjects,
-    isLoadingModels,
-  };
+  // Memoize context value to prevent unnecessary re-renders of consumers.
+  const value = useMemo<AppContextType>(
+    () => ({
+      apiDefinitions,
+      refreshAPIDefinitions,
+      saveAPIDefinition: saveAPIDefinitionHandler,
+      deleteAPIDefinition: deleteAPIDefinitionHandler,
+      projects,
+      refreshProjects,
+      saveProject: saveProjectHandler,
+      deleteProject: deleteProjectHandler,
+      models,
+      refreshModels,
+      purgeAllData,
+      handleExport,
+      handleImport,
+      handleMigrate,
+      cek,
+      isCEKBase32,
+      convertCEKToBase32,
+      handleCompressMessages,
+      storageQuota,
+      refreshStorageQuota,
+      isInitializing,
+      isLoadingProjects,
+      isLoadingModels,
+    }),
+    [
+      apiDefinitions,
+      refreshAPIDefinitions,
+      saveAPIDefinitionHandler,
+      deleteAPIDefinitionHandler,
+      projects,
+      refreshProjects,
+      saveProjectHandler,
+      deleteProjectHandler,
+      models,
+      refreshModels,
+      purgeAllData,
+      handleExport,
+      handleImport,
+      handleMigrate,
+      cek,
+      isCEKBase32,
+      convertCEKToBase32,
+      handleCompressMessages,
+      storageQuota,
+      refreshStorageQuota,
+      isInitializing,
+      isLoadingProjects,
+      isLoadingModels,
+    ]
+  );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

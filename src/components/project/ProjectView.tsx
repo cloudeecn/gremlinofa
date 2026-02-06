@@ -1,16 +1,65 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Spinner from '../ui/Spinner';
 import { useApp } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
 import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
-import type { MessageAttachment, Project } from '../../types';
+import type { Chat, MessageAttachment, Project } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 import { processImages } from '../../utils/imageProcessor';
 import ModelSelector from './ModelSelector';
 import ProjectNameIconModal from './ProjectNameIconModal';
 import SystemPromptModal from './SystemPromptModal';
+
+// Memoized chat list item to prevent re-renders when parent state changes
+const ChatListItem = React.memo(function ChatListItem({
+  chat,
+  onNavigate,
+  onDelete,
+}: {
+  chat: Chat;
+  onNavigate: (chatId: string) => void;
+  onDelete: (chatId: string, chatName: string) => void;
+}) {
+  return (
+    <div className="flex gap-3 rounded-lg border border-gray-200 bg-white p-4 transition-colors hover:border-gray-300">
+      <div
+        onClick={() => onNavigate(chat.id)}
+        onKeyDown={e => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onNavigate(chat.id);
+          }
+        }}
+        role="button"
+        tabIndex={0}
+        className="flex-1 cursor-pointer text-left"
+      >
+        <h3 className="mb-1 line-clamp-1 font-semibold text-gray-900">{chat.name}</h3>
+        <p className="text-xs text-gray-600">
+          {chat.lastModifiedAt.toLocaleDateString()}
+          {' • '}
+          {chat.messageCount || 0} msgs
+          {' • '}
+          ctx: {chat.contextWindowUsage || 0}
+          {' • '}${(chat.totalCost || 0).toFixed(4)}
+          {chat.costUnreliable && (
+            <span className="ml-1 text-yellow-600" title="Cost calculation may be inaccurate">
+              (unreliable)
+            </span>
+          )}
+        </p>
+      </div>
+      <button
+        onClick={() => onDelete(chat.id, chat.name)}
+        className="p-2 text-gray-600 transition-colors hover:text-red-600"
+      >
+        <span className="text-lg">🗑️</span>
+      </button>
+    </div>
+  );
+});
 
 interface ProjectViewProps {
   projectId: string;
@@ -116,6 +165,29 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showSettingsDropdown]);
 
+  // Stable callbacks for memoized ChatListItem
+  const handleNavigateToChat = useCallback(
+    (chatId: string) => {
+      navigate(`/chat/${chatId}`);
+    },
+    [navigate]
+  );
+
+  const handleDeleteChat = useCallback(
+    async (chatId: string, chatName: string) => {
+      const confirmed = await showDestructiveConfirm(
+        'Delete Chat',
+        `Delete "${chatName}"?`,
+        'Delete'
+      );
+
+      if (confirmed) {
+        await deleteProjectChat(chatId);
+      }
+    },
+    [showDestructiveConfirm, deleteProjectChat]
+  );
+
   if (!project) return null;
 
   // If in settings mode, navigate to settings route
@@ -198,18 +270,6 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
       setNewChatModelId(null);
       // Navigate to chat view - useChat will auto-send the pending message
       void navigate(`/chat/${newChat.id}`);
-    }
-  };
-
-  const handleDeleteChat = async (chatId: string, chatName: string) => {
-    const confirmed = await showDestructiveConfirm(
-      'Delete Chat',
-      `Delete "${chatName}"?`,
-      'Delete'
-    );
-
-    if (confirmed) {
-      await deleteProjectChat(chatId);
     }
   };
 
@@ -471,47 +531,12 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
         ) : (
           <div className="space-y-3">
             {chats.map(chat => (
-              <div
+              <ChatListItem
                 key={chat.id}
-                className="flex gap-3 rounded-lg border border-gray-200 bg-white p-4 transition-colors hover:border-gray-300"
-              >
-                <div
-                  onClick={() => navigate(`/chat/${chat.id}`)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      navigate(`/chat/${chat.id}`);
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
-                  className="flex-1 cursor-pointer text-left"
-                >
-                  <h3 className="mb-1 line-clamp-1 font-semibold text-gray-900">{chat.name}</h3>
-                  <p className="text-xs text-gray-600">
-                    {chat.lastModifiedAt.toLocaleDateString()}
-                    {' • '}
-                    {chat.messageCount || 0} msgs
-                    {' • '}
-                    ctx: {chat.contextWindowUsage || 0}
-                    {' • '}${(chat.totalCost || 0).toFixed(4)}
-                    {chat.costUnreliable && (
-                      <span
-                        className="ml-1 text-yellow-600"
-                        title="Cost calculation may be inaccurate"
-                      >
-                        (unreliable)
-                      </span>
-                    )}
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleDeleteChat(chat.id, chat.name)}
-                  className="p-2 text-gray-600 transition-colors hover:text-red-600"
-                >
-                  <span className="text-lg">🗑️</span>
-                </button>
-              </div>
+                chat={chat}
+                onNavigate={handleNavigateToChat}
+                onDelete={handleDeleteChat}
+              />
             ))}
           </div>
         )}

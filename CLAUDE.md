@@ -1,3 +1,46 @@
+# Overview
+
+This is a general-purpose AI chatbot built with React (Vite).
+
+# Rules
+
+- Don't start development server. Ask user to start one if needed.
+- In the beginning of any task, open `/development.md` for the development notes.
+- After any task, use `npm run verify` to test compile and use `npm run test:silent` to run tests with minimal output to save tokens. The console output will only be output for failed tests.
+- **Always update `development.md`** periodically when working on any task. Keep the task lists current by marking completed tasks and adding new ones as they're discovered.
+- After your fix a bug, add an item in your task check list to explictly check if similar bugs existing in the files you have already known the content. This makes the best use of your token cache.
+- Use `console.debug` to print debug message instead of `console.log`. Don't concat strings in debug message for performance considerations.
+- ALWAYS keep your todo/task_progress list when condensing the conversation. The TODO list does not take much tokens and is essential to preserve the context. Even the completed item ensures you have the full picture.
+- NEVER use `sed -i` to modify file. It corrupts file and make you lose situational awareness.
+- Before completing a task, run following checklist:
+  - Look for any slop in modified file base on anti-slop rules, fix them.
+  - Run `npm run format:silent && npm run verify` to format and test compile, then `npm run test:silent` to make sure unit tests pass.
+  - Add unit tests to new features. Update unit tests to updated code.
+  - Check if `development.md` or `README.md` contains obsolete information, update if necessery.
+- DON'T TOUCH THE CONTENT BEFORE `## Overview` when updating `README.md`. Make sure any new document follows `documentation-tone`
+- Use design & planing document in `/plans` for complex tasks
+  - If user tells you to dump your plan to ##-something.md, You create a design & planning document with: The problem / request, the design with justification, and plan with phased checklist and stop. The user will create tasks to implement it phase by phase.
+  - If user tells to you to implement something, check for unresolved design & planning in /plans. If the relevant document is marked as completed, stop and tell the user. Else implement the mentioned phases (or all phases if not mentioned). After implementing them, mark the completed phases as done. If any deviate is needed when implenting (for example, implementation need to change to comply with a library, to make test pass or for any reason), document them.
+  - If all phases of a plan is finished, Add "This plan has been completed" to the first line of the document, and rename the ##-something.md to ##-completed-something.md.
+
+## standalone packages
+
+There are some standalone packages in this project's root.
+
+- storage-backend
+
+In order to test compile and unit test these packages, you need to `cd <standalone-package-path>`, than run `npm run verify` and `npm run test:silent` accordingly.
+
+They have their own package.json and config files.
+
+### storage-backend
+
+- It's API definition is in `storage-backend/storage-api.yaml`. Use it as source of truth.
+  - Any update to the API must start with updating this file.
+  - The reverse proxy may prepend a baseUrl, for example, when the main app access `{baseUrl}/api/{api}`, it is actually accessing `/api/{api}` in the storage backend.
+
+# Anti slop
+
 <anti-slop>
 <anti_slop_awareness>
 Claude actively avoids "AI slop" patterns - telltale signs of generic, low-quality AI-generated content. These patterns include overused phrases, excessive buzzwords, unnecessary meta-commentary, and generic structures that signal inauthentic content.
@@ -181,3 +224,28 @@ File creation triggers remain:
 
 </file_creation_advice>
 </anti-slop>
+
+# Documentation tone
+
+<documentation-tone>
+Applies to all documents except `.clinerules/*`, `/development.md`.
+
+Self-aware, a bit smug, but informative - we're proud this vibe-coded thing actually works.
+
+## Do
+
+- **Own the vibe-coding**: "Vibe-coded, but it works." (not defensive "Don't question it")
+- **Playful warnings that inform**: "Nuclear option", "yolo mode", "no footguns here"
+- **Light ribbing that has a point**: "like a civilized person"
+- **Honest about future work**: "validation planned for future control plane"
+
+## Don't
+
+- **Punch down at the reader**: "like savages", "Your secrets are your problem"
+- **Be vague for comedic effect**: "Something went wrong and we're not sure what"
+- **Enterprise marketing**: "leverage synergies", "best-in-class solution"
+
+## The Vibe
+
+Proudly amateur but actually competent. The reader should think "these nerds had fun" not "these jerks think I'm dumb."
+</documentation-tone>

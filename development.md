@@ -26,7 +26,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 - [x] Project & chat management with cascading deletion
 - [x] Project settings (system prompt, pre-fill, model, temperature, reasoning, web search, message format)
-- [x] Chat with streaming responses, message editing, forking, and cost tracking
+- [x] Chat with streaming responses, message editing, forking, resend, and cost tracking
 - [x] Message rendering (Markdown, syntax highlighting, LaTeX math with horizontal scroll, thinking blocks, citations, code block copy)
 - [x] Image attachments (resize, compress, multi-select, preview, lightbox)
 - [x] Virtual scrolling for long message histories with scroll-to-bottom button
@@ -111,7 +111,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 - [x] Core services tested (encryption, compression, storage, CSV helper, data export/import, markdownRenderer)
 - [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager, usePreferences)
-- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, LegacyAssistantBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView)
+- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, LegacyAssistantBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView)
 - [x] Error components tested (ErrorView, ErrorFloatingButton)
 - [x] OOBE components tested (OOBEScreen, OOBEComplete)
 - [x] Integration tests (import/export roundtrip with 210+ records, duplicate handling, CSV special characters)
@@ -446,10 +446,11 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 - `ClientSideTool` interface:
   - `displayName?: string` - Display name for UI (falls back to `name`)
   - `displaySubtitle?: string` - Description shown below toggle in ProjectSettings
+  - `internal?: boolean` - Internal tools not shown in ProjectSettings UI (e.g., `return` for minions)
   - `optionDefinitions?: ToolOptionDefinition[]` - Tool-specific boolean options configurable per-project
   - `description: string | ((opts) => string)` - Static or dynamic description based on toolOptions
   - `inputSchema: ToolInputSchema | ((opts) => ToolInputSchema)` - Static or dynamic input schema
-  - `execute(input, toolOptions, context)` - Stateless execution with toolOptions and context (required)
+  - `execute(input, toolOptions, context): AsyncGenerator<ToolStreamEvent, ToolResult>` - All tools are async generators. Simple tools return without yielding; streaming tools (e.g., minion) yield `groups_update` events.
   - `getApiOverride?(apiType, toolOptions)` - Returns provider-specific tool definition or undefined
   - `systemPrompt?: string | ((ctx, opts) => Promise<string> | string)` - Static or dynamic system prompt
   - `renderInput?: (input) => string` - Transform tool input for display in BackstageView (default: JSON.stringify)
@@ -458,7 +459,15 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   - `iconOutput?: string` - Emoji/unicode icon for tool_result blocks (default: ✅/❌)
 - **Tool Options System** (Project schema):
   - `enabledTools?: string[]` - List of enabled tool names (e.g., `['memory', 'javascript', 'filesystem']`)
-  - `toolOptions?: Record<string, ToolOptions>` - Per-tool boolean options (e.g., `{ memory: { useSystemPrompt: true } }`)
+  - `toolOptions?: Record<string, ToolOptions>` - Per-tool options keyed by tool name
+  - `ToolOptions = Record<string, ToolOptionValue>` where `ToolOptionValue = boolean | string | ModelReference`
+  - `ModelReference = { apiDefinitionId: string; modelId: string }` for model selection options
+  - `ToolOptionDefinition` is a discriminated union with three types:
+    - `BooleanToolOption`: `{ type: 'boolean'; id; label; subtitle?; default: boolean }`
+    - `LongtextToolOption`: `{ type: 'longtext'; id; label; subtitle?; default: string; placeholder? }`
+    - `ModelToolOption`: `{ type: 'model'; id; label; subtitle? }` (no default, prepopulated from project)
+  - Type guards: `isBooleanOption()`, `isLongtextOption()`, `isModelOption()`, `isModelReference()`
+  - `initializeToolOptions(existing, optionDefs, projectContext)` - Initializes options with defaults, preserves existing values
   - Migration: Storage layer auto-migrates old boolean flags on project load (see `migrateProjectToolSettings()` in `unifiedStorage.ts`)
   - Legacy fields (`memoryEnabled`, `jsExecutionEnabled`, etc.) cleared after migration
 - **Persisted rendering**: Tool render functions are called at message save time, not render time:
@@ -510,7 +519,9 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 **Content Types** (`src/types/content.ts`):
 
 - `RenderingBlockGroup` with category (backstage/text/error)
-- Block types: `ThinkingRenderBlock`, `TextRenderBlock`, `WebSearchRenderBlock`, `WebFetchRenderBlock`, `ToolUseRenderBlock`, `ToolResultRenderBlock`, `ErrorRenderBlock`
+- Block types: `ThinkingRenderBlock`, `TextRenderBlock`, `WebSearchRenderBlock`, `WebFetchRenderBlock`, `ToolUseRenderBlock`, `ToolResultRenderBlock`, `ToolInfoRenderBlock`, `ErrorRenderBlock`
+- `RenderingBlockGroup.isToolGenerated?: boolean` — marks tool-generated content for distinct styling
+- `ToolResultRenderBlock.renderingGroups?: RenderingBlockGroup[]` — nested content from tool's internal work (e.g., minion sub-agent)
 - Citations pre-rendered as `<a class="citation-link" data-cited="...">` tags
 
 **Design Principles:**
@@ -1046,6 +1057,99 @@ Library output is always shown (no first-call tracking). The `loadLib` option co
 - `disposeJsTool()` - **Deprecated** no-op
 - `configureJsTool(projectId, loadLib)` - **Deprecated** no-op (library loading now via `toolOptions.loadLib`)
 
+### Minion Tool
+
+**Overview:**
+
+Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its own agentic loop with scoped tools, persists its conversation history, and returns results to the caller. Enables parallel task execution and delegation of specific work.
+
+**Files:**
+
+- `src/services/tools/minionTool.ts` - Tool implementation with model configuration
+- `src/services/storage/unifiedStorage.ts` - MinionChat and message storage
+
+**Input Parameters:**
+
+| Parameter      | Type     | Required | Description                                      |
+| -------------- | -------- | -------- | ------------------------------------------------ |
+| `message`      | string   | Yes      | Task to send to minion                           |
+| `minionChatId` | string   | No       | Existing minion chat ID to continue conversation |
+| `enableWeb`    | boolean  | No       | Enable web search for minion                     |
+| `enabledTools` | string[] | No       | Scoped tools (intersected with project tools)    |
+
+**Tool Options:**
+
+- `systemPrompt` (longtext) - Instructions for minion sub-agents
+- `model` (ModelReference) - Model for delegated tasks (can use cheaper model)
+
+**Tool Scoping:**
+
+Minion's available tools are computed as: `(requestedTools ∩ projectTools) - minion + return`
+
+- Can't spawn nested minions (self-exclusion)
+- `return` tool always available for explicit result signaling
+- Uses intersection with project tools (can't access tools not enabled for project)
+
+**MinionChat Storage:**
+
+Minion conversations stored separately for debugging visibility:
+
+- `getMinionChat(id)` / `getMinionChats(parentChatId)` / `saveMinionChat()`
+- `getMinionMessages(minionChatId)` / `saveMinionMessage()`
+- Cascade deletion when parent chat is deleted
+- `checkpoint?: string` field stores last message ID before minion run (for future rollback)
+
+**Result Handling:**
+
+- If minion uses `return` tool → return value used as result
+- Otherwise → last assistant message text used as result
+- Return JSON content: `{ result, minionChatId }` so LLM can continue conversation
+- `renderingGroups` on ToolResult carries nested display content:
+  - First group: `ToolInfoRenderBlock` with task description (`input`) and sub-chat reference (`chatId`)
+  - Remaining groups: accumulated rendering from sub-agent messages (marked `isToolGenerated: true`)
+  - Transferred to `ToolResultRenderBlock.renderingGroups` by `createToolResultRenderBlock`
+
+**Return Tool Resumption:**
+
+- When continuing a minion chat that ended with `return` tool call:
+  - Detects pending return tool in last assistant message's fullContent
+  - Builds tool_result message instead of user message
+  - User's message becomes the return tool's result content
+- Enables proper API conversation flow after explicit return signaling
+
+**Minion Chat Display:**
+
+- `ToolResultView` renders minion results (and any tool result with `renderingGroups`)
+- Always collapsed by default, shows last activity line as preview when collapsed
+- Blue box for task input (from `ToolInfoRenderBlock`), green/red box for final result
+- Activity groups (backstage/text) rendered with `isToolGenerated` styling
+- "Copy All" button fetches sub-chat messages (when `chatId` present), "Copy JSON" for debugging
+- Integrated into `ToolResultBubble` (complex results) and `BackstageView.ToolResultSegment`
+- Real-time streaming via pending-message pattern (see Minion Streaming UI below)
+
+**Generator-Based Streaming:**
+
+- Minion tool is an async generator that yields `{ type: 'groups_update', groups }` events
+- The agentic loop consumes these via `tool_block_update` events, forwarding to the consumer
+- No separate streaming state map — streaming updates flow through the pending tool_result message
+
+**Minion Streaming UI:**
+
+Minion streaming uses the pending-message pattern instead of a separate streaming state map:
+
+1. Agentic loop yields `pending_tool_result` → consumer adds temporary message to React state
+2. Tool yields `groups_update` → agentic loop yields `tool_block_update` → consumer updates `renderingGroups` on the matching block
+3. Tool completes → `message_created` replaces the pending message with the final persisted one
+
+**Return Tool:**
+
+Internal tool available only to minions for explicit result signaling:
+
+- `returnTool` in `src/services/tools/returnTool.ts`
+- `internal: true` flag hides from ProjectSettings UI
+- Returns `breakLoop: { returnValue }` to stop agentic loop
+- Used by minions to signal task completion with specific result
+
 ### Agentic Loop
 
 **Architecture:**
@@ -1077,7 +1181,9 @@ type AgenticLoopEvent =
   | { type: 'streaming_end' }
   | { type: 'message_created'; message: Message<unknown> }
   | { type: 'tokens_consumed'; tokens: TokenTotals }
-  | { type: 'first_chunk' };
+  | { type: 'first_chunk' }
+  | { type: 'pending_tool_result'; message: Message<unknown> }
+  | { type: 'tool_block_update'; toolUseId: string; block: Partial<ToolResultRenderBlock> };
 ```
 
 **Result Types:**
@@ -1085,7 +1191,6 @@ type AgenticLoopEvent =
 ```typescript
 type AgenticLoopResult =
   | { status: 'complete'; messages; tokens; returnValue? }
-  | { status: 'suspended'; messages; tokens; pendingToolCall; otherToolResults }
   | { status: 'error'; messages; tokens; error }
   | { status: 'max_iterations'; messages; tokens };
 ```

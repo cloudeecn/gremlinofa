@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { toolRegistry, executeClientSideTool } from '../clientSideTools';
+import { toolRegistry, executeToolSimple } from '../clientSideTools';
 import { type ClientSideTool, type ToolResult, type SystemPromptContext } from '../../../types';
 
 describe('clientSideTools', () => {
@@ -33,11 +33,11 @@ describe('clientSideTools', () => {
     });
   });
 
-  describe('executeClientSideTool', () => {
+  describe('executeToolSimple', () => {
     const context = { projectId: 'test-project' };
 
     it('should return error for unknown tool', async () => {
-      const result = await executeClientSideTool('nonexistent_tool', {}, [], {}, context);
+      const result = await executeToolSimple('nonexistent_tool', {}, [], {}, context);
       expect(result.content).toContain('Unknown tool');
       expect(result.isError).toBe(true);
     });
@@ -52,7 +52,7 @@ describe('clientSideTools', () => {
       toolRegistry.registerAll([tool]);
 
       // Tool exists but not in enabledToolNames
-      const result = await executeClientSideTool('disabled_tool', {}, [], {}, context);
+      const result = await executeToolSimple('disabled_tool', {}, [], {}, context);
       expect(result.content).toContain('Unknown tool');
       expect(result.isError).toBe(true);
     });
@@ -68,7 +68,7 @@ describe('clientSideTools', () => {
       };
       toolRegistry.registerAll([errorTool]);
 
-      const result = await executeClientSideTool('error_tool', {}, ['error_tool'], {}, context);
+      const result = await executeToolSimple('error_tool', {}, ['error_tool'], {}, context);
       expect(result.content).toContain('Tool execution failed');
       expect(result.content).toContain('Intentional test error');
       expect(result.isError).toBe(true);
@@ -89,7 +89,7 @@ describe('clientSideTools', () => {
       };
       toolRegistry.registerAll([tool]);
 
-      await executeClientSideTool(
+      await executeToolSimple(
         'echo_tool',
         { data: 'test' },
         ['echo_tool'],

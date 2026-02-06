@@ -17,6 +17,7 @@ import type {
   ToolUseBlock,
   WebFetchRenderBlock,
   WebSearchRenderBlock,
+  ToolOptions,
 } from '../../types';
 
 import { groupAndConsolidateBlocks } from '../../types';
@@ -199,7 +200,7 @@ export class AnthropicClient implements APIClient {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
-      toolOptions?: Record<string, Record<string, boolean>>;
+      toolOptions?: Record<string, ToolOptions>;
     }
   ): AsyncGenerator<
     StreamChunk,

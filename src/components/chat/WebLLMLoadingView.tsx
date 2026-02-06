@@ -44,7 +44,7 @@ export default function WebLLMLoadingView({ modelName, progress }: WebLLMLoading
 
   return (
     <div className="mb-4 px-4">
-      <div className={`${isMobile ? 'w-full' : 'max-w-[85%]'}`}>
+      <div className={'w-full'}>
         <div
           className={
             isMobile

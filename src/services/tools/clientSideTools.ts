@@ -7,6 +7,7 @@ import type {
   ToolInputSchema,
   ToolOptions,
   ToolResult,
+  ToolStreamEvent,
 } from '../../types';
 
 /**
@@ -55,10 +56,18 @@ class ClientSideToolRegistry {
   }
 
   /**
-   * Get all registered tools (for ProjectSettings UI).
+   * Get all registered tools (including internal ones).
    */
   getAllTools(): ClientSideTool[] {
     return Array.from(this.tools.values());
+  }
+
+  /**
+   * Get tools visible to users (excludes internal tools like 'return').
+   * Use this for ProjectSettings UI.
+   */
+  getVisibleTools(): ClientSideTool[] {
+    return Array.from(this.tools.values()).filter(t => !t.internal);
   }
 
   /**
@@ -159,10 +168,25 @@ class ClientSideToolRegistry {
 export const toolRegistry = new ClientSideToolRegistry();
 
 /**
- * Execute a client-side tool by name.
+ * Check if a value is an AsyncGenerator (has next/return/throw and Symbol.asyncIterator).
+ */
+function isAsyncGenerator(
+  value: unknown
+): value is AsyncGenerator<ToolStreamEvent, ToolResult, void> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as AsyncGenerator).next === 'function' &&
+    typeof (value as AsyncGenerator)[Symbol.asyncIterator] === 'function'
+  );
+}
+
+/**
+ * Execute a client-side tool by name, returning an async generator.
  *
- * - Checks if tool is in enabledToolNames (disabled tools return "Unknown tool" error)
- * - Passes toolOptions and context to execute()
+ * Normalizes both Promise-based and generator-based tool returns into a single
+ * AsyncGenerator interface. The consumer can iterate events and get the final
+ * ToolResult from the generator's return value.
  *
  * @param toolName - Name of the tool to execute
  * @param input - Tool input parameters
@@ -170,13 +194,13 @@ export const toolRegistry = new ClientSideToolRegistry();
  * @param toolOptions - Per-tool options
  * @param context - Execution context
  */
-export async function executeClientSideTool(
+export async function* executeClientSideTool(
   toolName: string,
   input: Record<string, unknown>,
   enabledToolNames: string[],
   toolOptions: Record<string, ToolOptions>,
   context: ToolContext
-): Promise<ToolResult> {
+): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
   // Check if tool is enabled
   if (!enabledToolNames.includes(toolName)) {
     return {
@@ -196,12 +220,40 @@ export async function executeClientSideTool(
 
   try {
     const opts = toolOptions[toolName] ?? {};
-    return await tool.execute(input, opts, context);
+    const executeResult = tool.execute(input, opts, context);
+
+    if (isAsyncGenerator(executeResult)) {
+      // Generator-based tool: re-yield all events, return final result
+      return yield* executeResult;
+    } else {
+      // Promise-based tool: await and return (no events to yield)
+      return await executeResult;
+    }
   } catch (error) {
+    console.error('[clientSideTools] Tool execution failed:', toolName, error);
     const message = error instanceof Error ? error.message : String(error);
     return {
       content: `Tool execution failed: ${message}`,
       isError: true,
     };
   }
+}
+
+/**
+ * Execute a tool and collect the final result, discarding streaming events.
+ * Convenience wrapper for callers that don't need streaming updates.
+ */
+export async function executeToolSimple(
+  toolName: string,
+  input: Record<string, unknown>,
+  enabledToolNames: string[],
+  toolOptions: Record<string, ToolOptions>,
+  context: ToolContext
+): Promise<ToolResult> {
+  const gen = executeClientSideTool(toolName, input, enabledToolNames, toolOptions, context);
+  let result = await gen.next();
+  while (!result.done) {
+    result = await gen.next();
+  }
+  return result.value;
 }

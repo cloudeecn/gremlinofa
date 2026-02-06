@@ -54,7 +54,7 @@ export default function LegacyAssistantBubble({ message }: LegacyAssistantBubble
         className={
           isMobile
             ? 'w-full bg-transparent py-2 text-gray-900'
-            : 'max-w-[85%] rounded-2xl bg-gray-100 px-4 py-3 text-gray-900 shadow-sm'
+            : 'w-full rounded-2xl bg-gray-100 px-4 py-3 text-gray-900 shadow-sm'
         }
       >
         <div
@@ -65,9 +65,7 @@ export default function LegacyAssistantBubble({ message }: LegacyAssistantBubble
 
       {/* Assistant metadata line */}
       <div
-        className={`mt-1 flex items-center justify-start gap-2 text-[10px] text-gray-500 ${
-          isMobile ? 'w-full' : 'max-w-[85%]'
-        }`}
+        className={`mt-1 flex w-full items-center justify-start gap-2 text-[10px] text-gray-500`}
       >
         <span>{formatTimestamp(message.timestamp)}</span>
         <button

@@ -38,6 +38,7 @@ function TextBlock({ block }: TextBlockProps) {
     case 'web_search':
     case 'web_fetch':
     case 'tool_use':
+    case 'tool_info':
     case 'tool_result':
     default:
       return null;

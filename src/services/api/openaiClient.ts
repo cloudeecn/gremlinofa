@@ -9,6 +9,7 @@ import type {
   RenderingBlockGroup,
   ToolResultBlock,
   ToolUseBlock,
+  ToolOptions,
 } from '../../types';
 
 import { groupAndConsolidateBlocks } from '../../types';
@@ -127,7 +128,7 @@ export class OpenAIClient implements APIClient {
       preFillResponse?: string;
       webSearchEnabled?: boolean;
       enabledTools?: string[];
-      toolOptions?: Record<string, Record<string, boolean>>;
+      toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<CompletionMessage>, unknown> {
@@ -616,7 +617,7 @@ export class OpenAIClient implements APIClient {
    */
   protected getClientSideTools(
     enabledTools: string[],
-    toolOptions: Record<string, Record<string, boolean>> = {}
+    toolOptions: Record<string, ToolOptions> = {}
   ): ChatCompletionTool[] {
     const standardDefs = toolRegistry.getToolDefinitions(enabledTools, toolOptions);
 

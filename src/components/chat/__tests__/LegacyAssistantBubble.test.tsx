@@ -247,7 +247,7 @@ describe('LegacyAssistantBubble', () => {
 
       const { container } = render(<LegacyAssistantBubble {...createProps()} />);
 
-      const bubble = container.querySelector('.max-w-\\[85\\%\\].bg-gray-100');
+      const bubble = container.querySelector('.w-full.bg-gray-100');
       expect(bubble).toBeInTheDocument();
       expect(bubble).toHaveClass('rounded-2xl');
     });

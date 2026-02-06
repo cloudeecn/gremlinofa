@@ -9,7 +9,10 @@ export type {
   WebSearchRenderBlock,
   WebSearchResult,
   WebFetchRenderBlock,
+  ToolInfoRenderBlock,
   ErrorRenderBlock,
+  ToolResultStatus,
+  ToolResultRenderBlock,
 } from './content';
 export { categorizeBlock, groupAndConsolidateBlocks } from './content';
 import type { RenderingBlockGroup, MessageStopReason } from './content';
@@ -358,23 +361,135 @@ export interface ToolResult {
   isError?: boolean;
   /** Signal to break the agentic loop */
   breakLoop?: {
-    /** 'suspended' = await external input, 'complete' = return value */
-    status: 'suspended' | 'complete';
-    /** For 'complete' status - value to return from the loop */
     returnValue?: string;
   };
+  /** Nested rendering groups from tool's internal work (transferred to ToolResultRenderBlock) */
+  renderingGroups?: RenderingBlockGroup[];
 }
 
-/** Per-tool options - keyed by option ID, boolean values only */
-export type ToolOptions = Record<string, boolean>;
+/** Event yielded by tool generators during execution */
+export type ToolStreamEvent = { type: 'groups_update'; groups: RenderingBlockGroup[] };
 
-/** Definition for a configurable tool option */
-export interface ToolOptionDefinition {
-  id: string; // e.g., "loadLib"
-  label: string; // e.g., "Load /lib Scripts"
-  description?: string; // Shown below the toggle in ProjectSettings (deprecated, use subtitle)
-  subtitle?: string; // Short UI description shown below the toggle
+/**
+ * Return type for ClientSideTool.execute.
+ * Tools can return a simple Promise (no streaming) or an AsyncGenerator (with streaming updates).
+ * Phase 3 will convert all tools to generators; during transition both are supported.
+ */
+export type ToolExecuteReturn =
+  | Promise<ToolResult>
+  | AsyncGenerator<ToolStreamEvent, ToolResult, void>;
+
+// === Tool Option Types ===
+
+/** Reference to a specific API definition and model */
+export interface ModelReference {
+  apiDefinitionId: string;
+  modelId: string;
+}
+
+/** Tool option value types - boolean, string, or model reference */
+export type ToolOptionValue = boolean | string | ModelReference;
+
+/** Per-tool options - keyed by option ID */
+export type ToolOptions = Record<string, ToolOptionValue>;
+
+/** Base interface for all tool option definitions */
+interface BaseToolOption {
+  id: string;
+  label: string;
+  subtitle?: string;
+  /** @deprecated Use subtitle instead */
+  description?: string;
+}
+
+/** Boolean toggle option (existing behavior) */
+export interface BooleanToolOption extends BaseToolOption {
+  type: 'boolean';
   default: boolean;
+}
+
+/** Long text option (textarea with modal editor) */
+export interface LongtextToolOption extends BaseToolOption {
+  type: 'longtext';
+  default: string;
+  placeholder?: string;
+}
+
+/** Model selector option (API definition + model picker) */
+export interface ModelToolOption extends BaseToolOption {
+  type: 'model';
+  // No default - prepopulated from project when tool first enabled
+}
+
+/** Discriminated union of all tool option types */
+export type ToolOptionDefinition = BooleanToolOption | LongtextToolOption | ModelToolOption;
+
+/**
+ * Type guard: check if option is a boolean option
+ */
+export function isBooleanOption(opt: ToolOptionDefinition): opt is BooleanToolOption {
+  return opt.type === 'boolean';
+}
+
+/**
+ * Type guard: check if option is a longtext option
+ */
+export function isLongtextOption(opt: ToolOptionDefinition): opt is LongtextToolOption {
+  return opt.type === 'longtext';
+}
+
+/**
+ * Type guard: check if option is a model option
+ */
+export function isModelOption(opt: ToolOptionDefinition): opt is ModelToolOption {
+  return opt.type === 'model';
+}
+
+/**
+ * Type guard: check if a value is a ModelReference
+ */
+export function isModelReference(value: ToolOptionValue): value is ModelReference {
+  return (
+    typeof value === 'object' && value !== null && 'apiDefinitionId' in value && 'modelId' in value
+  );
+}
+
+/**
+ * Initialize tool options with defaults, prepopulating model options from project.
+ * Call this when a tool is first enabled or when accessing options.
+ *
+ * @param existing - Existing tool options (may be partial)
+ * @param optionDefs - Tool's option definitions
+ * @param project - Project for model option defaults
+ * @returns Complete tool options with all defaults applied
+ */
+export function initializeToolOptions(
+  existing: ToolOptions | undefined,
+  optionDefs: ToolOptionDefinition[] | undefined,
+  project: { apiDefinitionId: string | null; modelId: string | null }
+): ToolOptions {
+  if (!optionDefs?.length) return existing ?? {};
+
+  const result: ToolOptions = { ...(existing ?? {}) };
+
+  for (const opt of optionDefs) {
+    if (result[opt.id] !== undefined) continue; // Already has value
+
+    if (opt.type === 'model') {
+      // Prepopulate from project (only if project has a model configured)
+      if (project.apiDefinitionId && project.modelId) {
+        result[opt.id] = {
+          apiDefinitionId: project.apiDefinitionId,
+          modelId: project.modelId,
+        };
+      }
+      // If project has no model, leave undefined - UI will require selection
+    } else {
+      result[opt.id] = opt.default;
+    }
+  }
+
+  return result;
 }
 
 /** Context passed to tool execute function */
@@ -418,6 +533,8 @@ export interface ClientSideTool {
   displayName?: string;
   /** Short UI description shown below the tool toggle in ProjectSettings */
   displaySubtitle?: string;
+  /** Internal tools are not shown in ProjectSettings UI (e.g., 'return' for minions) */
+  internal?: boolean;
   /** Tool description - can be static string or function for dynamic content */
   description: string | ((options: ToolOptions) => string);
   /** Input schema - can be static or function for dynamic content */
@@ -425,16 +542,15 @@ export interface ClientSideTool {
   /** Tool-specific boolean options the user can configure per-project */
   optionDefinitions?: ToolOptionDefinition[];
   /**
-   * Execute the tool. New signature receives toolOptions and context.
-   * @param input - The tool input parameters
-   * @param toolOptions - Tool-specific options (optional for backward compat)
-   * @param context - Execution context with projectId, chatId (optional for backward compat)
+   * Execute the tool.
+   * Returns Promise<ToolResult> for simple tools, or AsyncGenerator for streaming tools.
+   * The generator yields ToolStreamEvent during execution and returns ToolResult on completion.
    */
   execute(
     input: Record<string, unknown>,
     toolOptions?: ToolOptions,
     context?: ToolContext
-  ): Promise<ToolResult>;
+  ): ToolExecuteReturn;
   /**
    * Dynamic API overrides - returns provider-specific tool definition.
    * Return undefined to use standard definition (with resolved description/inputSchema).
@@ -465,6 +581,25 @@ export interface ClientSideTool {
   apiOverrides?: Partial<APIToolOverrides>;
   /** @deprecated No longer used - tools are included based on enabledTools list */
   alwaysEnabled?: boolean;
+}
+
+// Minion Chat types
+export interface MinionChat {
+  id: string;
+  parentChatId: string; // The main chat that spawned this minion
+  projectId: string;
+  createdAt: Date;
+  lastModifiedAt: Date;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalReasoningTokens?: number;
+  totalCacheCreationTokens?: number;
+  totalCacheReadTokens?: number;
+  totalCost?: number;
+  contextWindowUsage?: number;
+  costUnreliable?: boolean;
+  /** Last message ID before this minion run started (for future rollback) */
+  checkpoint?: string;
 }
 
 // Virtual Filesystem (VFS) types

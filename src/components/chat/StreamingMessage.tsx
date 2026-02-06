@@ -11,12 +11,8 @@ export default function StreamingMessage({ groups }: StreamingMessageProps) {
   if (groups.length === 0) {
     return (
       <div className="mb-4 px-4">
-        <div className={`${isMobile ? 'w-full' : 'max-w-[85%]'}`}>
-          <div
-            className={`${
-              isMobile ? 'py-2' : 'rounded-2xl bg-gray-50 px-4 py-3'
-            } flex items-center`}
-          >
+        <div className={'w-full'}>
+          <div className="mt-1">
             <BouncingDots />
           </div>
         </div>
@@ -26,7 +22,7 @@ export default function StreamingMessage({ groups }: StreamingMessageProps) {
 
   return (
     <div className="mb-4 px-4">
-      <div className={`${isMobile ? 'w-full' : 'max-w-[85%]'}`}>
+      <div className={'w-full'}>
         {/* Render each group */}
         {groups.map((group, groupIndex) => (
           <div key={groupIndex} className="mb-2 last:mb-0">

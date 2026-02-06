@@ -3,7 +3,6 @@ import type { MessageAttachment, RenderingBlockGroup } from '../../types';
 import type { TextRenderBlock } from '../../types/content';
 import { stripMetadata, formatTimestamp } from '../../utils/messageFormatters';
 import { showAlert } from '../../utils/alerts';
-import { useIsMobile } from '../../hooks/useIsMobile';
 import ImageLightbox from '../ui/ImageLightbox';
 import type { UserMessageBubbleProps } from './types';
 
@@ -12,7 +11,6 @@ export default function UserMessageBubble({
   attachments,
   onAction,
 }: UserMessageBubbleProps) {
-  const isMobile = useIsMobile();
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
 
   // Extract display content from renderingContent if available, fall back to stripMetadata
@@ -51,14 +49,14 @@ export default function UserMessageBubble({
     onAction('edit', message.id);
   };
 
+  const handleResend = () => {
+    onAction('resend', message.id);
+  };
+
   return (
     <div className="flex flex-col items-end">
       {/* User message bubble */}
-      <div
-        className={`max-w-[85%] ${
-          isMobile ? 'max-w-[90%]' : ''
-        } rounded-2xl bg-blue-600 px-4 py-3 text-white shadow-sm`}
-      >
+      <div className={'max-w-[90%] rounded-2xl bg-blue-600 px-4 py-3 text-white shadow-sm'}>
         {/* Image thumbnails with click-to-preview */}
         {attachments.length > 0 && (
           <div className="mb-2 grid grid-cols-3 gap-2">
@@ -99,6 +97,13 @@ export default function UserMessageBubble({
           title="Fork chat from here"
         >
           🔀 Fork
+        </button>
+        <button
+          onClick={handleResend}
+          className="transition-colors hover:text-blue-600"
+          title="Resend from here"
+        >
+          🔄 Resend
         </button>
         <button
           onClick={handleCopy}

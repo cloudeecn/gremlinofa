@@ -24,31 +24,20 @@ describe('StreamingMessage', () => {
       expect(dots.length).toBe(3);
     });
 
-    it('applies mobile styles when isMobile is true', () => {
+    it('renders same layout for mobile and desktop in waiting state', () => {
+      // Waiting state (empty groups) uses a simple layout without mobile/desktop differentiation
       vi.mocked(useIsMobile).mockReturnValue(true);
-      const { container } = render(<StreamingMessage groups={[]} />);
+      const { container, rerender } = render(<StreamingMessage groups={[]} />);
 
-      // Find the wrapper div with bouncing dots
-      const dots = container.querySelectorAll('.bouncing-dot');
-      expect(dots.length).toBe(3);
+      const mobileContainer = container.querySelector('.mb-4.px-4');
+      expect(mobileContainer).toBeInTheDocument();
 
-      // Check mobile styling (no rounded corners, different padding)
-      const wrapper = dots[0].closest('div[class*="py-2"]');
-      expect(wrapper).toBeInTheDocument();
-      expect(wrapper).not.toHaveClass('rounded-2xl');
-    });
-
-    it('applies desktop styles when isMobile is false', () => {
+      // Same layout for desktop
       vi.mocked(useIsMobile).mockReturnValue(false);
-      const { container } = render(<StreamingMessage groups={[]} />);
+      rerender(<StreamingMessage groups={[]} />);
 
-      // Find the wrapper div with bouncing dots
-      const dots = container.querySelectorAll('.bouncing-dot');
-      expect(dots.length).toBe(3);
-
-      // Check desktop styling (rounded corners, bg color)
-      const wrapper = dots[0].closest('div[class*="rounded-2xl"]');
-      expect(wrapper).toHaveClass('bg-gray-50');
+      const desktopContainer = container.querySelector('.mb-4.px-4');
+      expect(desktopContainer).toBeInTheDocument();
     });
   });
 

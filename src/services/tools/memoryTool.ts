@@ -19,6 +19,7 @@ import type {
   ToolContext,
   ToolOptions,
   ToolResult,
+  ToolStreamEvent,
 } from '../../types';
 import * as vfs from '../vfs/vfsService';
 import { VfsError } from '../vfs/vfsService';
@@ -563,11 +564,12 @@ async function handleRename(
 }
 
 /** Execute a memory command */
-async function executeMemoryCommand(
+// eslint-disable-next-line require-yield -- Simple tool: generator for interface compatibility, no streaming events
+async function* executeMemoryCommand(
   input: Record<string, unknown>,
   _toolOptions?: ToolOptions,
   context?: ToolContext
-): Promise<ToolResult> {
+): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
   if (!context?.projectId) {
     return {
       content: 'Error: projectId is required in context',
@@ -825,6 +827,7 @@ export const memoryTool: ClientSideTool = {
   displaySubtitle: 'Use a virtual FS to remember across conversations (Optimized for Anthropic)',
   optionDefinitions: [
     {
+      type: 'boolean',
       id: 'useSystemPrompt',
       label: '(Anthropic) Use System Prompt Mode',
       subtitle:

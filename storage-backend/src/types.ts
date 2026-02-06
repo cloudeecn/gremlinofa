@@ -125,6 +125,7 @@ export const VALID_TABLES = [
   'models_cache',
   'projects',
   'chats',
+  'minion_chats',
   'messages',
   'attachments',
   'memories',

@@ -154,6 +154,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     overrideModel,
     updateChatName,
     resolvePendingToolCalls,
+    resendFromMessage,
   } = useChat({
     chatId: chatId,
     callbacks,
@@ -161,11 +162,21 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
   // Handle message actions
   const handleMessageAction = async (
-    action: 'copy' | 'fork' | 'edit' | 'delete',
+    action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend',
     messageId: string
   ) => {
     if (action === 'copy') {
       await copyMessage(chatId, messageId);
+    } else if (action === 'resend') {
+      // Show confirmation dialog
+      const confirmed = await showDestructiveConfirm(
+        'Resend Message',
+        'This will delete all messages after this one and resend. Continue?',
+        'Resend'
+      );
+      if (confirmed) {
+        await resendFromMessage(messageId);
+      }
     } else if (action === 'fork') {
       const forkedChat = await forkChat(chatId, messageId);
       if (forkedChat) {

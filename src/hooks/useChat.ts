@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react';
 import Mustache from 'mustache';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
-import { toolRegistry, executeClientSideTool } from '../services/tools/clientSideTools';
+import { toolRegistry, executeToolSimple } from '../services/tools/clientSideTools';
 import {
   runAgenticLoop,
   createTokenTotals,
@@ -272,6 +272,8 @@ interface LoopEventHandlers {
   onFirstChunk: () => void;
   onChatUpdated: (chat: Chat) => void;
   onProjectUpdated: (project: Project) => void;
+  onPendingToolResult: (message: Message<unknown>) => void;
+  onToolBlockUpdate: (toolUseId: string, block: Partial<ToolResultRenderBlock>) => void;
 }
 
 /**
@@ -344,6 +346,14 @@ async function consumeAgenticLoop(
           case 'tokens_consumed':
             addTokens(totals, event.tokens);
             break;
+
+          case 'pending_tool_result':
+            handlers.onPendingToolResult(event.message);
+            break;
+
+          case 'tool_block_update':
+            handlers.onToolBlockUpdate(event.toolUseId, event.block);
+            break;
         }
       }
     } while (!result.done);
@@ -355,11 +365,6 @@ async function consumeAgenticLoop(
       console.error('[useChat] Agentic loop error:', finalResult.error.message);
     } else if (finalResult.status === 'max_iterations') {
       console.warn('[useChat] Agentic loop reached max iterations');
-    } else if (finalResult.status === 'suspended') {
-      console.debug(
-        '[useChat] Agentic loop suspended, pending tool call:',
-        finalResult.pendingToolCall.name
-      );
     }
 
     // Build and save final Chat object with accumulated totals
@@ -566,6 +571,8 @@ export interface UseChatReturn {
     userMessage?: string,
     attachments?: MessageAttachment[]
   ) => Promise<void>;
+  /** Resend from a message - delete messages after and re-run agentic loop */
+  resendFromMessage: (messageId: string) => Promise<void>;
 }
 
 export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
@@ -592,6 +599,109 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     }
     return true;
   };
+
+  /**
+   * Build event handlers for consuming the agentic loop generator.
+   * Defined before useEffect so it can be used in pending state resolution.
+   */
+  const buildEventHandlers = useCallback(
+    (): LoopEventHandlers => ({
+      onMessageSaved: (msg: Message<unknown>) => {
+        // Replace pending message if same ID exists, otherwise append.
+        // Only search last 10 messages - replacements always target recent messages.
+        setMessages(prev => {
+          const searchStart = Math.max(0, prev.length - 10);
+          for (let i = prev.length - 1; i >= searchStart; i--) {
+            if (prev[i].id === msg.id) {
+              const updated = [...prev];
+              updated[i] = msg;
+              return updated;
+            }
+          }
+          return [...prev, msg];
+        });
+        callbacks.onMessageAppended(chatId, msg);
+      },
+      onStreamingStart: () => {
+        setIsLoading(true);
+        setHasReceivedFirstChunk(false);
+        callbacks.onStreamingStart(chatId, 'Thinking...');
+      },
+      onStreamingUpdate: (groups: RenderingBlockGroup[]) => {
+        setStreamingGroups(groups);
+      },
+      onStreamingEnd: () => {
+        setIsLoading(false);
+        setStreamingGroups([]);
+        callbacks.onStreamingEnd(chatId);
+      },
+      onFirstChunk: () => setHasReceivedFirstChunk(true),
+      onChatUpdated: (updatedChat: Chat) => {
+        setChat(updatedChat);
+        callbacks.onChatMetadataChanged?.(chatId, updatedChat);
+      },
+      onProjectUpdated: (updatedProject: Project) => {
+        setProject(updatedProject);
+      },
+      onPendingToolResult: (msg: Message<unknown>) => {
+        setMessages(prev => {
+          // Guard: skip if a message with this ID already exists (defensive against
+          // StrictMode double-invocation edge cases). Only check last 10 messages.
+          const searchStart = Math.max(0, prev.length - 10);
+          for (let i = prev.length - 1; i >= searchStart; i--) {
+            if (prev[i].id === msg.id) return prev;
+          }
+          return [...prev, msg];
+        });
+      },
+      onToolBlockUpdate: (toolUseId: string, blockUpdate: Partial<ToolResultRenderBlock>) => {
+        // Update renderingGroups on the matching block in the pending tool result message
+        // Search backward in last 10 messages to find the pending tool result
+        setMessages(prev => {
+          const searchStart = Math.max(0, prev.length - 10);
+          let targetIdx = -1;
+          for (let i = prev.length - 1; i >= searchStart; i--) {
+            if (prev[i].role === 'user' && prev[i].content.renderingContent) {
+              targetIdx = i;
+              break;
+            }
+          }
+
+          if (targetIdx < 0) return prev;
+
+          const targetMsg = prev[targetIdx];
+          const groups = targetMsg.content.renderingContent;
+          if (!groups) return prev;
+
+          // Find and update the matching tool_result block
+          let found = false;
+          const updatedGroups = groups.map(group => {
+            if (group.category !== 'backstage' || found) return group;
+            const updatedBlocks = group.blocks.map(block => {
+              if (
+                block.type === 'tool_result' &&
+                (block as ToolResultRenderBlock).tool_use_id === toolUseId
+              ) {
+                found = true;
+                return { ...block, ...blockUpdate };
+              }
+              return block;
+            });
+            return { ...group, blocks: updatedBlocks };
+          });
+
+          if (!found) return prev;
+
+          const updatedMsg = {
+            ...targetMsg,
+            content: { ...targetMsg.content, renderingContent: updatedGroups },
+          };
+          return [...prev.slice(0, targetIdx), updatedMsg, ...prev.slice(targetIdx + 1)];
+        });
+      },
+    }),
+    [chatId, callbacks]
+  );
 
   // Single sequential loading effect to avoid race conditions
   useEffect(() => {
@@ -775,35 +885,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
                 return;
               }
 
-              // Build event handlers that update React state
-              const eventHandlers: LoopEventHandlers = {
-                onMessageSaved: (msg: Message<unknown>) => {
-                  setMessages(prev => [...prev, msg]);
-                  callbacks.onMessageAppended(chatId, msg);
-                },
-                onStreamingStart: () => {
-                  setIsLoading(true);
-                  setHasReceivedFirstChunk(false);
-                  callbacks.onStreamingStart(chatId, 'Thinking...');
-                },
-                onStreamingUpdate: (groups: RenderingBlockGroup[]) => {
-                  setStreamingGroups(groups);
-                },
-                onStreamingEnd: () => {
-                  setIsLoading(false);
-                  setStreamingGroups([]);
-                  callbacks.onStreamingEnd(chatId);
-                },
-                onFirstChunk: () => setHasReceivedFirstChunk(true),
-                onChatUpdated: (chat: Chat) => {
-                  setChat(chat);
-                  callbacks.onChatMetadataChanged?.(chatId, chat);
-                },
-                onProjectUpdated: (project: Project) => {
-                  setProject(project);
-                },
-              };
-
               // Create and save user message
               const firstMessageTimestamp =
                 loadedMessages.length > 0 ? loadedMessages[0].timestamp : undefined;
@@ -834,7 +915,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
               );
 
               // Consume the agentic loop generator (fire and forget, no await to avoid blocking)
-              consumeAgenticLoop(options, context, updatedChat, loadedProject, eventHandlers);
+              consumeAgenticLoop(
+                options,
+                context,
+                updatedChat,
+                loadedProject,
+                buildEventHandlers()
+              );
             }
           }
         } else if (loadedChat.pendingState.type === 'forkMessage') {
@@ -854,7 +941,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     return () => {
       isCancelled = true;
     };
-  }, [chatId, callbacks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, callbacks, buildEventHandlers]);
 
   // Token usage derived from chat-level totals
   const tokenUsage: TokenUsage = useMemo(() => {
@@ -889,40 +977,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       });
     }
   }, [chat?.apiDefinitionId, project?.apiDefinitionId, apiDefinition?.id]);
-
-  /**
-   * Build event handlers for consuming the agentic loop generator.
-   */
-  const buildEventHandlers = useCallback(
-    (): LoopEventHandlers => ({
-      onMessageSaved: (msg: Message<unknown>) => {
-        setMessages(prev => [...prev, msg]);
-        callbacks.onMessageAppended(chatId, msg);
-      },
-      onStreamingStart: () => {
-        setIsLoading(true);
-        setHasReceivedFirstChunk(false);
-        callbacks.onStreamingStart(chatId, 'Thinking...');
-      },
-      onStreamingUpdate: (groups: RenderingBlockGroup[]) => {
-        setStreamingGroups(groups);
-      },
-      onStreamingEnd: () => {
-        setIsLoading(false);
-        setStreamingGroups([]);
-        callbacks.onStreamingEnd(chatId);
-      },
-      onFirstChunk: () => setHasReceivedFirstChunk(true),
-      onChatUpdated: (updatedChat: Chat) => {
-        setChat(updatedChat);
-        callbacks.onChatMetadataChanged?.(chatId, updatedChat);
-      },
-      onProjectUpdated: (updatedProject: Project) => {
-        setProject(updatedProject);
-      },
-    }),
-    [chatId, callbacks]
-  );
 
   const sendMessage = async (
     incomingChatId: string,
@@ -1114,7 +1168,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     for (const toolUse of unresolvedToolCalls) {
       if (mode === 'stop') {
         // Error response for stop mode
-        const errorMessage = 'Token limit reached, ask user to continue';
+        const errorMessage = 'Error, ask user to continue';
         toolResults.push({
           type: 'tool_result',
           tool_use_id: toolUse.id,
@@ -1126,7 +1180,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         );
       } else {
         // Execute tool for continue mode
-        const toolResult = await executeClientSideTool(
+        const toolResult = await executeToolSimple(
           toolUse.name,
           toolUse.input,
           project.enabledTools || [],
@@ -1202,6 +1256,79 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     await consumeAgenticLoop(options, context, chat, project, buildEventHandlers());
   };
 
+  /**
+   * Resend from a message - delete messages after and re-run agentic loop.
+   * Useful when a costly tool call succeeded but the following API call failed.
+   */
+  const resendFromMessage = async (messageId: string) => {
+    if (!chat || !project || !apiDefinition) return;
+
+    const msgIndex = messages.findIndex(m => m.id === messageId);
+    if (msgIndex === -1) return;
+
+    const targetMessage = messages[msgIndex];
+    console.debug(
+      '[useChat] resendFromMessage called, messageId:',
+      messageId,
+      'role:',
+      targetMessage.role
+    );
+
+    const effectiveModelId = chat.modelId ?? project.modelId;
+    if (!effectiveModelId) {
+      showAlert('Configuration Required', 'Please configure a model for this chat or project.');
+      return;
+    }
+
+    const model = await storage.getModel(apiDefinition.id, effectiveModelId);
+    if (!model) {
+      showAlert('Model Not Found', `Model ${effectiveModelId} not found in ${apiDefinition.name}.`);
+      return;
+    }
+
+    // Delete messages AFTER the target (keep the target message)
+    if (msgIndex + 1 < messages.length) {
+      const nextMessageId = messages[msgIndex + 1].id;
+      await storage.deleteMessageAndAfter(chat.id, nextMessageId);
+      callbacks.onMessagesRemovedOnAndAfter(chat.id, nextMessageId);
+    }
+
+    // Update state to keep only messages up to and including target
+    const context = messages.slice(0, msgIndex + 1);
+    setMessages(context);
+
+    // Recalculate context window from remaining messages
+    let contextWindowUsage = 0;
+    for (let i = context.length - 1; i >= 0; i--) {
+      const msg = context[i];
+      if (msg.role === 'assistant' && msg.metadata?.contextWindowUsage !== undefined) {
+        contextWindowUsage = msg.metadata.contextWindowUsage;
+        break;
+      }
+    }
+
+    // Update chat context window usage
+    const updatedChat = {
+      ...chat,
+      contextWindowUsage,
+      lastModifiedAt: new Date(),
+    };
+    await storage.saveChat(updatedChat);
+    setChat(updatedChat);
+    callbacks.onChatMetadataChanged?.(chat.id, updatedChat);
+
+    // Build loop options and re-run agentic loop from this context
+    const options = await buildAgenticLoopOptions(
+      updatedChat,
+      project,
+      apiDefinition,
+      model,
+      effectiveModelId
+    );
+
+    await consumeAgenticLoop(options, context, updatedChat, project, buildEventHandlers());
+  };
+
   return {
     chat,
     messages,
@@ -1221,5 +1348,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     overrideModel,
     updateChatName,
     resolvePendingToolCalls,
+    resendFromMessage,
   };
 }

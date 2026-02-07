@@ -276,9 +276,8 @@ describe('VfsFileEditor', () => {
 
       render(<VfsFileEditor {...defaultProps} initialContent="Original content" />);
 
-      expect(
-        screen.getByText('Unsaved draft restored. Changes differ from saved version.')
-      ).toBeInTheDocument();
+      expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
+      expect(screen.getByText('Revert')).toBeInTheDocument();
     });
 
     it('does not show draft warning when draft matches initial', () => {
@@ -288,9 +287,7 @@ describe('VfsFileEditor', () => {
 
       render(<VfsFileEditor {...defaultProps} initialContent="Same content" />);
 
-      expect(
-        screen.queryByText('Unsaved draft restored. Changes differ from saved version.')
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument();
     });
 
     it('clears draft on successful save', async () => {

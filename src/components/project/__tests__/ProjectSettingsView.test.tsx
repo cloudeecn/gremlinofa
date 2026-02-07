@@ -119,9 +119,8 @@ vi.mock('../../../hooks/useProject', () => ({
 }));
 
 vi.mock('../../../hooks/useDraftPersistence', () => ({
-  useDraftPersistence: () => ({ hasDraftDifference: false }),
+  useDraftPersistence: vi.fn(),
   clearDraft: vi.fn(),
-  clearDraftDifference: vi.fn(),
 }));
 
 vi.mock('../../../services/api/apiService', () => ({

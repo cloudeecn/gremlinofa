@@ -377,6 +377,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       {/* Longtext Tool Option Editor Modal */}
       {longtextModal && (
         <LongtextOptionEditor
+          key={`${projectId}|${longtextModal.toolName}|${longtextModal.optionId}`}
           isOpen={true}
           title={longtextModal.title}
           value={
@@ -385,6 +386,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
               : '') as string
           }
           placeholder={longtextModal.placeholder}
+          projectId={projectId}
+          toolName={longtextModal.toolName}
+          optionId={longtextModal.optionId}
           onSave={value => {
             setToolOptionValue(longtextModal.toolName, longtextModal.optionId, value);
             setLongtextModal(null);

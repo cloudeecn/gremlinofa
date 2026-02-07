@@ -1,11 +1,7 @@
 import { useState, useCallback } from 'react';
 import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
-import {
-  clearDraft,
-  clearDraftDifference,
-  useDraftPersistence,
-} from '../../hooks/useDraftPersistence';
+import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 
 interface SystemPromptModalProps {
   isOpen: boolean;
@@ -31,21 +27,20 @@ export default function SystemPromptModal({
   const [systemPrompt, setSystemPrompt] = useState(initialValue);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Draft persistence with difference detection
-  const { hasDraftDifference } = useDraftPersistence({
+  const isDirty = systemPrompt !== initialValue;
+
+  useDraftPersistence({
     place: 'system-prompt-modal',
     contextId: projectId,
     value: systemPrompt,
     onChange: setSystemPrompt,
     enabled: isOpen,
-    initialDbValue: initialValue,
   });
 
   const handleSave = useCallback(async () => {
     setIsSaving(true);
     try {
       clearDraft('system-prompt-modal', projectId);
-      clearDraftDifference('system-prompt-modal', projectId);
       await onSave(systemPrompt);
     } finally {
       setIsSaving(false);
@@ -57,9 +52,8 @@ export default function SystemPromptModal({
     onCancel();
   }, [onCancel]);
 
-  const handleDiscardDraft = useCallback(() => {
+  const handleRevert = useCallback(() => {
     clearDraft('system-prompt-modal', projectId);
-    clearDraftDifference('system-prompt-modal', projectId);
     setSystemPrompt(initialValue);
   }, [projectId, initialValue]);
 
@@ -78,14 +72,14 @@ export default function SystemPromptModal({
         </div>
 
         {/* Draft Warning Banner */}
-        {hasDraftDifference && (
+        {isDirty && (
           <div className="flex items-center justify-between border-b border-yellow-200 bg-yellow-50 px-4 py-2">
-            <span className="text-sm text-yellow-800">📝 Draft loaded (differs from saved)</span>
+            <span className="text-sm text-yellow-800">Unsaved changes</span>
             <button
-              onClick={handleDiscardDraft}
+              onClick={handleRevert}
               className="text-sm font-medium text-yellow-700 hover:text-yellow-900"
             >
-              Discard
+              Revert
             </button>
           </div>
         )}

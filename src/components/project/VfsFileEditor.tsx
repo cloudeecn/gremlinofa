@@ -26,12 +26,13 @@ export default function VfsFileEditor({
   // Draft context ID: projectId_encodedPath to handle "/" in paths
   const draftContextId = `${projectId}_${encodeURIComponent(path)}`;
 
-  const { hasDraftDifference } = useDraftPersistence({
+  const isDirty = content !== initialContent;
+
+  useDraftPersistence({
     place: 'vfs-editor',
     contextId: draftContextId,
     value: content,
     onChange: setContent,
-    initialDbValue: initialContent,
   });
 
   const handleSave = useCallback(async () => {
@@ -67,12 +68,19 @@ export default function VfsFileEditor({
       </div>
 
       {/* Draft warning banner */}
-      {hasDraftDifference && (
-        <div className="flex items-center gap-2 border-b border-yellow-200 bg-yellow-50 px-4 py-2">
-          <span className="text-yellow-600">⚠️</span>
-          <span className="text-sm text-yellow-800">
-            Unsaved draft restored. Changes differ from saved version.
-          </span>
+      {isDirty && (
+        <div className="flex items-center justify-between border-b border-yellow-200 bg-yellow-50 px-4 py-2">
+          <span className="text-sm text-yellow-800">Unsaved changes</span>
+          <button
+            type="button"
+            onClick={() => {
+              clearDraft('vfs-editor', draftContextId);
+              setContent(initialContent);
+            }}
+            className="text-sm font-medium text-yellow-700 hover:text-yellow-900"
+          >
+            Revert
+          </button>
         </div>
       )}
 

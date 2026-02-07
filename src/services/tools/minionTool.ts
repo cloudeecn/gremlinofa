@@ -31,12 +31,11 @@ import { generateUniqueId } from '../../utils/idGenerator';
 import { storage } from '../storage';
 import {
   runAgenticLoop,
-  createTokenTotals,
-  addTokens,
   createToolResultRenderBlock,
   type AgenticLoopOptions,
   type AgenticLoopEvent,
 } from '../agentic/agenticLoopGenerator';
+import { createTokenTotals, addTokens } from '../../utils/tokenTotals';
 import { toolRegistry } from './clientSideTools';
 import { apiService } from '../api/apiService';
 
@@ -430,12 +429,14 @@ async function* executeMinion(
         content: `Minion error: ${finalResult.error.message}`,
         isError: true,
         renderingGroups: [infoGroup, ...accumulatedGroups],
+        tokenTotals: totals,
       };
     } else if (finalResult.status === 'max_iterations') {
       return {
         content: `Minion reached maximum iterations (${MAX_ITERATIONS})`,
         isError: true,
         renderingGroups: [infoGroup, ...accumulatedGroups],
+        tokenTotals: totals,
       };
     }
 
@@ -458,6 +459,7 @@ async function* executeMinion(
         minionChatId: minionChat.id,
       }),
       renderingGroups: [infoGroup, ...accumulatedGroups],
+      tokenTotals: totals,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -465,6 +467,7 @@ async function* executeMinion(
       content: `Minion execution failed: ${message}`,
       isError: true,
       renderingGroups: [infoGroup, ...accumulatedGroups],
+      tokenTotals: totals,
     };
   }
 }

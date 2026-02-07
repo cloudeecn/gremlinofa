@@ -100,6 +100,8 @@ export interface ToolResultRenderBlock {
 
   /** Nested rendering groups from tool's internal work (e.g., minion sub-agent) */
   renderingGroups?: RenderingBlockGroup[];
+  /** Token/cost totals incurred by this tool call (e.g., minion sub-agent API costs) */
+  tokenTotals?: TokenTotals;
 }
 
 /** Info block for tool context (input description, sub-chat references) */
@@ -109,6 +111,22 @@ export interface ToolInfoRenderBlock {
   input?: string;
   /** Sub-chat ID for "Copy All" functionality */
   chatId?: string;
+}
+
+/**
+ * Accumulated token/cost totals across iterations.
+ * Used to track costs from tool calls (e.g., minion sub-agent).
+ * Adding this here (content.ts has no imports) avoids circular deps.
+ */
+export interface TokenTotals {
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  webSearchCount: number;
+  cost: number;
+  costUnreliable: boolean;
 }
 
 /** Error block */

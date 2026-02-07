@@ -94,6 +94,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Context window usage (recalculated)
 - [x] Real-time token usage in chat header
 - [x] Fork tracking and cost analysis
+- [x] Tool call cost tracking (minion sub-agent costs flow into chat totals)
 
 **Documentation**
 
@@ -111,7 +112,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 - [x] Core services tested (encryption, compression, storage, CSV helper, data export/import, markdownRenderer)
 - [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager, usePreferences)
-- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, LegacyAssistantBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView)
+- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, LegacyAssistantBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, ToolResultBubble, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView)
 - [x] Error components tested (ErrorView, ErrorFloatingButton)
 - [x] OOBE components tested (OOBEScreen, OOBEComplete)
 - [x] Integration tests (import/export roundtrip with 210+ records, duplicate handling, CSV special characters)
@@ -1111,6 +1112,10 @@ Minion conversations stored separately for debugging visibility:
   - First group: `ToolInfoRenderBlock` with task description (`input`) and sub-chat reference (`chatId`)
   - Remaining groups: accumulated rendering from sub-agent messages (marked `isToolGenerated: true`)
   - Transferred to `ToolResultRenderBlock.renderingGroups` by `createToolResultRenderBlock`
+- `tokenTotals` on ToolResult carries accumulated API costs from sub-agent loop
+  - Transferred to `ToolResultRenderBlock.tokenTotals` for per-block cost display
+  - Accumulated by outer agentic loop into tool result message metadata and chat totals
+  - Displayed in `ToolResultView` header (compact `$X.XXX`) and `ToolResultBubble` footer
 
 **Return Tool Resumption:**
 
@@ -1164,16 +1169,24 @@ The agentic loop is implemented as an async generator in `src/services/agentic/a
 - Nested agent calls via `collectAgenticLoop()` helper
 - Single context array (no separate message buffer)
 - Token accumulation across iterations via `TokenTotals` type
+- Tool cost propagation: tools returning `tokenTotals` get accumulated into loop totals and chat totals
 
 **Key Exports** (`agenticLoopGenerator.ts`):
 
 - `runAgenticLoop(options, context)` - Main async generator function
 - `collectAgenticLoop(gen)` - Helper to consume generator and get final result
-- `createTokenTotals()` - Create zero-initialized token totals
-- `addTokens(target, source)` - Accumulate tokens (mutates target)
+- `createTokenTotals()` - Re-exported from `src/utils/tokenTotals.ts`
+- `addTokens(target, source)` - Re-exported from `src/utils/tokenTotals.ts`
 - `populateToolRenderFields(groups)` - Add rendered display fields to tool blocks
 - `createToolResultRenderBlock(...)` - Create tool result render block with display fields
 - `loadAttachmentsForMessages(messages)` - Load attachments and handle missing attachment notes
+
+**Token Totals** (`src/utils/tokenTotals.ts`):
+
+- `TokenTotals` interface defined in `src/types/content.ts` (no-import file, avoids circular deps)
+- `createTokenTotals()` - Zero-initialized totals
+- `addTokens(target, source)` - Accumulate (mutates target)
+- `hasTokenUsage(totals)` - True if any non-zero usage
 
 **Event Types:**
 

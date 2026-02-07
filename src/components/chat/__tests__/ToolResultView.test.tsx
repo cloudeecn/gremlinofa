@@ -316,5 +316,46 @@ describe('ToolResultView', () => {
       // Default icon for complex results is 🤖
       expect(screen.getByText('🤖')).toBeInTheDocument();
     });
+
+    it('shows cost in header when tokenTotals has non-zero cost', () => {
+      const costBlock: ToolResultRenderBlock = {
+        ...complexBlock,
+        tokenTotals: {
+          inputTokens: 5000,
+          outputTokens: 2000,
+          reasoningTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          webSearchCount: 0,
+          cost: 0.042,
+          costUnreliable: false,
+        },
+      };
+      render(<ToolResultView block={costBlock} />);
+      expect(screen.getByText('$0.042')).toBeInTheDocument();
+    });
+
+    it('hides cost when tokenTotals has zero cost', () => {
+      const zeroCostBlock: ToolResultRenderBlock = {
+        ...complexBlock,
+        tokenTotals: {
+          inputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          webSearchCount: 0,
+          cost: 0,
+          costUnreliable: false,
+        },
+      };
+      render(<ToolResultView block={zeroCostBlock} />);
+      expect(screen.queryByText('$0.000')).not.toBeInTheDocument();
+    });
+
+    it('hides cost when no tokenTotals', () => {
+      render(<ToolResultView block={complexBlock} />);
+      expect(screen.queryByText(/\$\d/)).not.toBeInTheDocument();
+    });
   });
 });

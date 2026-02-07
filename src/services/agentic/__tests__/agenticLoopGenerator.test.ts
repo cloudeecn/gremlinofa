@@ -731,5 +731,97 @@ describe('agenticLoopGenerator', () => {
       // user + (assistant + tool_result) × 2 + assistant = 6 messages
       expect(result.messages).toHaveLength(6);
     });
+
+    it('accumulates tool-incurred costs and yields tokens_consumed for them', async () => {
+      const toolUseBlocks = [
+        { type: 'tool_use' as const, id: 'toolu_1', name: 'minion', input: { message: 'task' } },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      const finalResult = {
+        textContent: 'Done!',
+        fullContent: [{ type: 'text', text: 'Done!' }],
+        stopReason: 'end_turn',
+        inputTokens: 120,
+        outputTokens: 60,
+      };
+
+      setupMultiIterationMock(
+        [createMockStream([], toolUseResult), createMockStream([], finalResult)],
+        [toolUseBlocks, toolUseBlocks, [], []]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      // Tool returns with tokenTotals (simulating a minion sub-agent)
+      const minionTotals = {
+        inputTokens: 500,
+        outputTokens: 200,
+        reasoningTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        webSearchCount: 0,
+        cost: 0.042,
+        costUnreliable: false,
+      };
+
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'Task done',
+          isError: false,
+          tokenTotals: minionTotals,
+        })
+      );
+
+      const options = createMockOptions({ enabledTools: ['minion'] });
+      const context = [createMockUserMessage('Delegate task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      // tokens_consumed should be yielded twice: once for the API call, once for tool costs
+      const tokenEvents = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'tokens_consumed' }> =>
+          e.type === 'tokens_consumed'
+      );
+      expect(tokenEvents.length).toBeGreaterThanOrEqual(2);
+
+      // The tool cost event should contain the minion's totals
+      const toolCostEvent = tokenEvents.find(e => e.tokens.cost === 0.042);
+      expect(toolCostEvent).toBeDefined();
+      expect(toolCostEvent!.tokens.inputTokens).toBe(500);
+      expect(toolCostEvent!.tokens.outputTokens).toBe(200);
+
+      // Overall totals should include both API and tool costs
+      const finalValue = result.value;
+      expect(finalValue.tokens.inputTokens).toBe(100 + 500 + 120); // api1 + tool + api2
+      expect(finalValue.tokens.outputTokens).toBe(50 + 200 + 60);
+      expect(finalValue.tokens.cost).toBeCloseTo(0.001 + 0.042 + 0.001, 6); // mock calculateCost returns 0.001
+
+      // Tool result message should have metadata with tool costs
+      const toolResultMsg = finalValue.messages.find(
+        m => m.role === 'user' && m.metadata?.messageCost
+      );
+      expect(toolResultMsg).toBeDefined();
+      expect(toolResultMsg!.metadata!.messageCost).toBe(0.042);
+      expect(toolResultMsg!.metadata!.inputTokens).toBe(500);
+    });
   });
 });

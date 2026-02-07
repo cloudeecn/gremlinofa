@@ -24,13 +24,16 @@ import type {
   MessageAttachment,
   Model,
   RenderingBlockGroup,
+  ToolOptions,
   ToolResultBlock,
   ToolStreamEvent,
   ReasoningEffort,
   ReasoningSummary,
+  TokenTotals,
 } from '../../types';
 import { type ToolResultRenderBlock, type ToolUseRenderBlock } from '../../types/content';
 import { generateUniqueId } from '../../utils/idGenerator';
+import { createTokenTotals, addTokens, hasTokenUsage } from '../../utils/tokenTotals';
 
 // ============================================================================
 // Constants
@@ -41,8 +44,6 @@ const MAX_ITERATIONS = 50;
 // ============================================================================
 // Types
 // ============================================================================
-
-import type { ToolOptions } from '../../types';
 
 /**
  * Flat configuration for the agentic loop.
@@ -116,53 +117,9 @@ export type AgenticLoopResult =
       tokens: TokenTotals;
     };
 
-/**
- * Accumulated token/cost totals across iterations.
- */
-export interface TokenTotals {
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
-  webSearchCount: number;
-  cost: number;
-  costUnreliable: boolean;
-}
-
-// ============================================================================
-// Token Accumulator
-// ============================================================================
-
-/**
- * Create a zero-initialized TokenTotals object.
- */
-export function createTokenTotals(): TokenTotals {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    cacheCreationTokens: 0,
-    cacheReadTokens: 0,
-    webSearchCount: 0,
-    cost: 0,
-    costUnreliable: false,
-  };
-}
-
-/**
- * Add iteration tokens to accumulator (mutates target).
- */
-export function addTokens(target: TokenTotals, source: TokenTotals): void {
-  target.inputTokens += source.inputTokens;
-  target.outputTokens += source.outputTokens;
-  target.reasoningTokens += source.reasoningTokens;
-  target.cacheCreationTokens += source.cacheCreationTokens;
-  target.cacheReadTokens += source.cacheReadTokens;
-  target.webSearchCount += source.webSearchCount;
-  target.cost += source.cost;
-  target.costUnreliable = target.costUnreliable || source.costUnreliable;
-}
+// Re-export for backward compatibility
+export { createTokenTotals, addTokens } from '../../utils/tokenTotals';
+export type { TokenTotals } from '../../types/content';
 
 // ============================================================================
 // Helper Functions
@@ -229,7 +186,8 @@ function createToolResultRenderBlock(
   toolName: string,
   content: string,
   isError?: boolean,
-  renderingGroups?: RenderingBlockGroup[]
+  renderingGroups?: RenderingBlockGroup[],
+  tokenTotals?: TokenTotals
 ): ToolResultRenderBlock {
   const tool = toolRegistry.get(toolName);
   const defaultIcon = isError ? '❌' : '✅';
@@ -243,6 +201,7 @@ function createToolResultRenderBlock(
     icon: tool?.iconOutput ?? defaultIcon,
     renderedContent: tool?.renderOutput?.(content, isError) ?? content,
     renderingGroups,
+    tokenTotals,
   };
 }
 
@@ -674,7 +633,8 @@ export async function* runAgenticLoop(
           toolUse.name,
           toolResult.content,
           toolResult.isError,
-          toolResult.renderingGroups
+          toolResult.renderingGroups,
+          toolResult.tokenTotals
         );
         renderBlock.status = toolResult.isError ? 'error' : 'complete';
 
@@ -694,6 +654,14 @@ export async function* runAgenticLoop(
         };
       }
 
+      // Accumulate tool-incurred costs (e.g., minion sub-agent API calls)
+      const toolTotals = createTokenTotals();
+      for (const rb of toolResultRenderBlocks) {
+        if (rb.tokenTotals) {
+          addTokens(toolTotals, rb.tokenTotals);
+        }
+      }
+
       // Build final tool result message and yield as message_created
       // (consumer replaces the pending message with this — same ID ensures correct replacement)
       const toolResultMsg = buildToolResultMessage(
@@ -702,6 +670,22 @@ export async function* runAgenticLoop(
         toolResultRenderBlocks
       );
       toolResultMsg.id = pendingMsg.id;
+
+      // If tools incurred costs, attach metadata and propagate to loop totals
+      if (hasTokenUsage(toolTotals)) {
+        toolResultMsg.metadata = {
+          inputTokens: toolTotals.inputTokens,
+          outputTokens: toolTotals.outputTokens,
+          reasoningTokens: toolTotals.reasoningTokens > 0 ? toolTotals.reasoningTokens : undefined,
+          cacheCreationTokens: toolTotals.cacheCreationTokens,
+          cacheReadTokens: toolTotals.cacheReadTokens,
+          messageCost: toolTotals.cost,
+          costUnreliable: toolTotals.costUnreliable || undefined,
+        };
+        addTokens(totals, toolTotals);
+        yield { type: 'tokens_consumed', tokens: toolTotals };
+      }
+
       messages.push(toolResultMsg);
       yield { type: 'message_created', message: toolResultMsg };
 

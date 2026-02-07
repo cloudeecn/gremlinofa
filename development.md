@@ -759,11 +759,11 @@ This design eliminates the need for separate reasoning UI per provider, simplify
 
 - localStorage with multi-key format: `draft_<place>_<contextId>` → `{ content, createdAt }`
 - Auto-save (500ms debounce), auto-restore on mount, auto-clear on context change
-- Places: `chatview`, `project-chat`, `system-prompt-modal`
-- Returns `{ hasDraftDifference }` - true when restored draft differs from `initialDbValue`
+- Places: `chatview`, `project-chat`, `system-prompt-modal`, `vfs-editor`, `tool-option-longtext`
+- `tool-option-longtext` uses composite contextId: `projectId|toolName|optionId`
+- Editors compare current value vs initial prop to show "Unsaved changes" banner with Revert
 - Helper functions:
   - `clearDraft(place, contextId)` - clears specific draft
-  - `clearDraftDifference(place, contextId)` - clears difference flag
   - `clearAllDrafts()` - removes all drafts (called on purgeAllData/detach)
   - `cleanupExpiredDrafts()` - removes drafts older than `DRAFT_MAX_AGE_MS` (24 hours), called on app init
 

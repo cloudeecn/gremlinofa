@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearAllDrafts,
   clearDraft,
-  clearDraftDifference,
   cleanupExpiredDrafts,
   DRAFT_EXPIRY_MS,
   useDraftPersistence,
@@ -244,87 +243,6 @@ describe('useDraftPersistence', () => {
 
       expect(onChange).not.toHaveBeenCalled();
       expect(localStorage.getItem('draft_chatview_chat1')).toBeNull();
-    });
-  });
-
-  describe('hook - draft difference detection', () => {
-    it('should detect when restored draft differs from DB value', () => {
-      const draftData = { content: 'draft content', createdAt: Date.now() };
-      localStorage.setItem('draft_system-prompt-modal_proj1', JSON.stringify(draftData));
-
-      const onChange = vi.fn();
-      const { result } = renderHook(() =>
-        useDraftPersistence({
-          place: 'system-prompt-modal',
-          contextId: 'proj1',
-          value: '',
-          onChange,
-          initialDbValue: 'different db value',
-        })
-      );
-
-      expect(result.current.hasDraftDifference).toBe(true);
-    });
-
-    it('should not flag difference when draft matches DB value', () => {
-      const draftData = { content: 'same value', createdAt: Date.now() };
-      localStorage.setItem('draft_system-prompt-modal_proj1', JSON.stringify(draftData));
-
-      const onChange = vi.fn();
-      const { result } = renderHook(() =>
-        useDraftPersistence({
-          place: 'system-prompt-modal',
-          contextId: 'proj1',
-          value: '',
-          onChange,
-          initialDbValue: 'same value',
-        })
-      );
-
-      expect(result.current.hasDraftDifference).toBe(false);
-    });
-
-    it('should not flag difference when no draft exists', () => {
-      const onChange = vi.fn();
-      const { result } = renderHook(() =>
-        useDraftPersistence({
-          place: 'system-prompt-modal',
-          contextId: 'proj1',
-          value: '',
-          onChange,
-          initialDbValue: 'db value',
-        })
-      );
-
-      expect(result.current.hasDraftDifference).toBe(false);
-    });
-  });
-
-  describe('clearDraftDifference', () => {
-    it('should clear draft difference flag', () => {
-      const draftData = { content: 'draft', createdAt: Date.now() };
-      localStorage.setItem('draft_system-prompt-modal_proj1', JSON.stringify(draftData));
-
-      const onChange = vi.fn();
-      const { result } = renderHook(() =>
-        useDraftPersistence({
-          place: 'system-prompt-modal',
-          contextId: 'proj1',
-          value: '',
-          onChange,
-          initialDbValue: 'different',
-        })
-      );
-
-      expect(result.current.hasDraftDifference).toBe(true);
-
-      // Clear the difference flag
-      act(() => {
-        clearDraftDifference('system-prompt-modal', 'proj1');
-      });
-
-      // useSyncExternalStore re-renders synchronously when store updates
-      expect(result.current.hasDraftDifference).toBe(false);
     });
   });
 

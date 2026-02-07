@@ -478,10 +478,10 @@ describe('Minion Integration', () => {
         chatId: 'chat_test',
       };
 
-      // Request minion with specific tools (includes minion which should be filtered)
+      // Request minion with specific project tools
       await collectToolResult(
         minionTool.execute(
-          { message: 'Test', enabledTools: ['memory', 'javascript', 'minion'] },
+          { message: 'Test', enabledTools: ['memory', 'javascript'] },
           toolOptions,
           context
         )
@@ -934,7 +934,26 @@ describe('Minion Integration', () => {
       expect(streamOptions.systemPrompt).toContain('You are a specialized coding minion.');
     });
 
-    it('uses web search when enableWeb is true', async () => {
+    it('returns error when enableWeb is true but allowWebSearch is not enabled', async () => {
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+        // allowWebSearch not set (defaults to false)
+      };
+
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute({ message: 'Search test', enableWeb: true }, toolOptions, context)
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('Web search is not allowed');
+    });
+
+    it('uses web search when enableWeb is true and allowWebSearch is enabled', async () => {
       const mockResult = {
         textContent: 'Search results',
         fullContent: [{ type: 'text', text: 'Search results' }],
@@ -950,6 +969,7 @@ describe('Minion Integration', () => {
 
       const toolOptions: ToolOptions = {
         model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+        allowWebSearch: true,
       };
 
       const context: ToolContext = {
@@ -966,6 +986,102 @@ describe('Minion Integration', () => {
       const streamOptions = callArgs[3];
 
       expect(streamOptions.webSearchEnabled).toBe(true);
+    });
+  });
+
+  describe('tool scoping defaults and validation', () => {
+    it('defaults to only return tool when enabledTools omitted', async () => {
+      const mockResult = {
+        textContent: 'Done',
+        fullContent: [{ type: 'text', text: 'Done' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      const mockStream = createMockStream([], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+      };
+
+      // No enabledTools specified
+      await collectToolResult(minionTool.execute({ message: 'Test' }, toolOptions, context));
+
+      const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const streamOptions = callArgs[3];
+
+      // Only 'return' should be available
+      expect(streamOptions.enabledTools).toEqual(['return']);
+    });
+
+    it('returns error when enabledTools contains tools not in project', async () => {
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'Test', enabledTools: ['memory', 'nonexistent'] },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('Tools not available in project: nonexistent');
+      expect(result.content).toContain('Available tools: memory, javascript');
+    });
+
+    it('does not trigger validation error when return is in enabledTools', async () => {
+      const mockResult = {
+        textContent: 'Done',
+        fullContent: [{ type: 'text', text: 'Done' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      const mockStream = createMockStream([], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+      };
+
+      // 'return' is always available, shouldn't trigger validation
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'Test', enabledTools: ['memory', 'return'] },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+
+      const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const streamOptions = callArgs[3];
+      expect(streamOptions.enabledTools).toContain('memory');
+      expect(streamOptions.enabledTools).toContain('return');
     });
   });
 });

@@ -1070,24 +1070,27 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 
 **Input Parameters:**
 
-| Parameter      | Type     | Required | Description                                      |
-| -------------- | -------- | -------- | ------------------------------------------------ |
-| `message`      | string   | Yes      | Task to send to minion                           |
-| `minionChatId` | string   | No       | Existing minion chat ID to continue conversation |
-| `enableWeb`    | boolean  | No       | Enable web search for minion                     |
-| `enabledTools` | string[] | No       | Scoped tools (intersected with project tools)    |
+| Parameter      | Type     | Required | Description                                                                      |
+| -------------- | -------- | -------- | -------------------------------------------------------------------------------- |
+| `message`      | string   | Yes      | Task to send to minion                                                           |
+| `minionChatId` | string   | No       | Existing minion chat ID to continue conversation                                 |
+| `enableWeb`    | boolean  | No       | Enable web search for minion (only exposed when `allowWebSearch` option is true) |
+| `enabledTools` | string[] | No       | Tools for minion (validated against project tools, defaults to none)             |
 
 **Tool Options:**
 
 - `systemPrompt` (longtext) - Instructions for minion sub-agents
 - `model` (ModelReference) - Model for delegated tasks (can use cheaper model)
+- `allowWebSearch` (boolean, default: false) - Project-level gate for minion web search. Must be enabled for `enableWeb` to work. When disabled, `enableWeb` parameter and web search mention are omitted from the schema/description sent to the LLM.
 
 **Tool Scoping:**
 
 Minion's available tools are computed as: `(requestedTools ∩ projectTools) - minion + return`
 
+- Defaults to `['return']` when `enabledTools` is omitted (caller must explicitly grant tools)
 - Can't spawn nested minions (self-exclusion)
 - `return` tool always available for explicit result signaling
+- Requested tools validated against project tools — error returned if any tool is not available
 - Uses intersection with project tools (can't access tools not enabled for project)
 
 **MinionChat Storage:**

@@ -19,6 +19,7 @@ import type {
   MinionChat,
   RenderingBlockGroup,
   ToolContext,
+  ToolInputSchema,
   ToolOptions,
   ToolResult,
   ToolResultBlock,
@@ -73,8 +74,8 @@ function buildMinionTools(requestedTools: string[] | undefined, projectTools: st
     const projectToolSet = new Set(projectTools);
     tools = requestedTools.filter(t => projectToolSet.has(t));
   } else {
-    // Use all project tools
-    tools = [...projectTools];
+    // No tools by default — caller must explicitly specify
+    tools = [];
   }
 
   // Remove excluded tools (minion can't spawn minions)
@@ -123,6 +124,16 @@ async function* executeMinion(
     };
   }
 
+  // Check web search permission
+  const allowWebSearch = toolOptions?.allowWebSearch === true;
+  if (minionInput.enableWeb && !allowWebSearch) {
+    return {
+      content:
+        'Error: Web search is not allowed for minions. Enable "Allow Web Search" in minion tool options.',
+      isError: true,
+    };
+  }
+
   // Get minion model configuration from toolOptions
   const minionToolOptions = toolOptions ?? {};
   const modelRef = minionToolOptions.model;
@@ -163,6 +174,21 @@ async function* executeMinion(
 
   // Build minion tools (scoped from project tools)
   const projectTools = project.enabledTools ?? [];
+
+  // Validate requested tools exist in project
+  if (minionInput.enabledTools && minionInput.enabledTools.length > 0) {
+    const projectToolSet = new Set(projectTools);
+    const invalidTools = minionInput.enabledTools.filter(
+      t => t !== 'return' && !projectToolSet.has(t)
+    );
+    if (invalidTools.length > 0) {
+      return {
+        content: `Error: Tools not available in project: ${invalidTools.join(', ')}. Available tools: ${projectTools.join(', ') || '(none)'}`,
+        isError: true,
+      };
+    }
+  }
+
   const minionTools = buildMinionTools(minionInput.enabledTools, projectTools);
 
   // Create or load minion chat
@@ -300,7 +326,7 @@ async function* executeMinion(
     maxTokens: project.maxOutputTokens,
     systemPrompt: combinedSystemPrompt || undefined,
     preFillResponse: undefined, // Minions don't use prefill
-    webSearchEnabled: minionInput.enableWeb ?? false,
+    webSearchEnabled: allowWebSearch && (minionInput.enableWeb ?? false),
     enabledTools: minionTools,
     toolOptions: project.toolOptions ?? {},
     disableStream: project.disableStream ?? false,
@@ -500,20 +526,31 @@ function renderMinionOutput(output: string, isError?: boolean): string {
   }
 }
 
-// Minion tool description
-const MINION_DESCRIPTION = `Delegate a task to a minion sub-agent. The minion runs independently with its own agentic loop and can use a subset of available tools. Use this to parallelize work or delegate specific tasks.
+/** Build minion tool description, conditionally including web search bullet. */
+function getMinionDescription(opts: ToolOptions): string {
+  const lines = [
+    'Delegate a task to a minion sub-agent. The minion runs independently with its own agentic loop and can use a subset of available tools. Use this to parallelize work or delegate specific tasks.',
+    '',
+    'The minion will execute the task and return the result. You can optionally:',
+    '- Continue a previous minion conversation by providing minionChatId',
+  ];
 
-The minion will execute the task and return the result. You can optionally:
-- Continue a previous minion conversation by providing minionChatId
-- Enable/disable web search for the minion
-- Specify which tools the minion can use (defaults to all project tools except 'minion')
+  if (opts.allowWebSearch === true) {
+    lines.push('- Enable web search for the minion via enableWeb');
+  }
 
-The minion has access to a 'return' tool to explicitly signal completion with a result.`;
+  lines.push(
+    '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)',
+    '',
+    "The minion always has access to a 'return' tool to explicitly signal completion with a result."
+  );
 
-// Minion input schema
-const MINION_INPUT_SCHEMA = {
-  type: 'object' as const,
-  properties: {
+  return lines.join('\n');
+}
+
+/** Build minion input schema, conditionally including enableWeb property. */
+function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
+  const properties: Record<string, unknown> = {
     minionChatId: {
       type: 'string',
       description: 'Optional: ID of an existing minion chat to continue the conversation',
@@ -522,19 +559,27 @@ const MINION_INPUT_SCHEMA = {
       type: 'string',
       description: 'The task or message to send to the minion',
     },
-    enableWeb: {
-      type: 'boolean',
-      description: 'Enable web search for the minion (default: false)',
-    },
     enabledTools: {
       type: 'array',
       items: { type: 'string' },
       description:
-        "Tools to enable for the minion (intersected with project tools, 'minion' excluded)",
+        "Tools to enable for the minion (must be subset of project tools, 'minion' excluded). Defaults to none — specify tools explicitly.",
     },
-  },
-  required: ['message'],
-};
+  };
+
+  if (opts.allowWebSearch === true) {
+    properties.enableWeb = {
+      type: 'boolean',
+      description: 'Enable web search for the minion (default: false)',
+    };
+  }
+
+  return {
+    type: 'object',
+    properties,
+    required: ['message'],
+  };
+}
 
 /**
  * Minion tool definition.
@@ -546,8 +591,8 @@ export const minionTool: ClientSideTool = {
   name: 'minion',
   displayName: 'Minion',
   displaySubtitle: 'Delegate tasks to a sub-agent',
-  description: MINION_DESCRIPTION,
-  inputSchema: MINION_INPUT_SCHEMA,
+  description: getMinionDescription,
+  inputSchema: getMinionInputSchema,
 
   iconInput: '🤖',
   iconOutput: '🤖',
@@ -566,6 +611,13 @@ export const minionTool: ClientSideTool = {
       id: 'model',
       label: 'Minion Model',
       subtitle: 'Model for delegated tasks (can use cheaper model)',
+    },
+    {
+      type: 'boolean',
+      id: 'allowWebSearch',
+      label: 'Allow Web Search',
+      subtitle: 'Let minions use web search when requested',
+      default: false,
     },
   ],
 

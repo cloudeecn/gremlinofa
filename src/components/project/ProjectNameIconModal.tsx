@@ -64,7 +64,7 @@ export default function ProjectNameIconModal({
 
   return (
     <Modal isOpen={isOpen} onClose={onCancel} size="lg" position="bottom">
-      <div className="flex max-h-[75vh] flex-col rounded-t-2xl bg-white md:max-h-[600px] md:rounded-2xl">
+      <div className="flex max-h-[75dvh] flex-col rounded-t-2xl bg-white md:max-h-[600px] md:rounded-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-200 p-4">
           <h2 className="text-lg font-semibold text-gray-900">Edit Project</h2>

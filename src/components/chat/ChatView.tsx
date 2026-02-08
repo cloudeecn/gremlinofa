@@ -433,7 +433,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
       {/* Rename Chat Modal */}
       {isRenamingChat && (
         <div
-          className="bg-opacity-50 fixed inset-0 z-50 flex items-center justify-center bg-black p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={handleCancelRename}
         >
           <div
@@ -447,7 +447,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
               onChange={e => setRenameChatText(e.target.value)}
               placeholder="Enter chat name"
               autoFocus
-              className="mb-4 w-full rounded-lg border border-gray-300 px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              className="mb-4 w-full rounded-lg border border-gray-300 px-4 py-2 text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
               onKeyDown={e => {
                 if (e.key === 'Enter') {
                   handleSaveRename();

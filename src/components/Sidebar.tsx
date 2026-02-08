@@ -135,7 +135,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
         <div className="border-t border-gray-700 bg-gray-800 p-3">
           <input
             type="text"
-            className="mb-2 w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-white placeholder-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+            className="mb-2 w-full rounded-lg border border-gray-600 bg-gray-700 px-3 py-2 text-base text-white placeholder-gray-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
             placeholder="Project name"
             value={newProjectName}
             onChange={e => setNewProjectName(e.target.value)}

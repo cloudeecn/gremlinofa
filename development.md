@@ -111,7 +111,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 ### Testing Status
 
 - [x] Core services tested (encryption, compression, storage, CSV helper, data export/import, markdownRenderer)
-- [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager, usePreferences)
+- [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useIsKeyboardVisible, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager, usePreferences)
 - [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, LegacyAssistantBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, ToolResultBubble, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView)
 - [x] Error components tested (ErrorView, ErrorFloatingButton)
 - [x] OOBE components tested (OOBEScreen, OOBEComplete)
@@ -1331,7 +1331,7 @@ Parent flex containers need `min-h-0` for proper shrinking.
 
 Viewport uses `viewport-fit=cover` to extend into unsafe areas.
 
-**Viewport Height:** Use `h-dvh` (Tailwind's dynamic viewport height) instead of `h-screen`. iOS Safari's `100vh` includes the area behind browser chrome and safe areas, making pages taller than the visible viewport. `dvh` units account for this and give the actual visible height.
+**Viewport Height:** Use `h-dvh` (Tailwind's dynamic viewport height) instead of `h-screen`. iOS Safari's `100vh` includes the area behind browser chrome and safe areas, making pages taller than the visible viewport. `dvh` units account for this and give the actual visible height. This applies to modal `max-h-[*]` constraints too — use `dvh` not `vh` (e.g., `max-h-[85dvh]`).
 
 CSS utility classes defined in `index.css`:
 

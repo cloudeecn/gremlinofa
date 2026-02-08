@@ -78,7 +78,7 @@ export default function LongtextOptionEditor({
 
   return (
     <Modal isOpen={isOpen} onClose={onCancel} size="xl" position="bottom">
-      <div className="flex max-h-[85vh] flex-col rounded-t-2xl bg-white md:max-h-[700px] md:rounded-2xl">
+      <div className="flex max-h-[85dvh] flex-col rounded-t-2xl bg-white md:max-h-[700px] md:rounded-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-200 p-4">
           <h2 className="text-lg font-semibold text-gray-900">{title}</h2>

@@ -297,6 +297,19 @@ Implements Anthropic's memory tool spec, so Claude already knows how to use it. 
 
 All tools persist data in the project's encrypted VFS. **Filesystem Manager** lets you peek behind the curtain — view files, diff versions, or wipe the slate clean.
 
+### Minion Sub-Agents 🤖
+
+Your AI can spawn other AIs. The minion system lets your primary model delegate tasks to sub-agents that run their own agentic loops — with their own tools, their own conversation history, and their own streaming output.
+
+- **Pick a cheaper model** — Delegate research to Haiku while Opus handles the thinking. Your wallet will thank you.
+- **Scoped tool access** — Minions inherit the project's client-side tools. The main model can narrow it down per-task, and minions can't spawn other minions (we learned that lesson so you don't have to)
+- **Conversation control** — The main model decides: start a fresh minion or pick up an existing one. Minion chats persist, so multi-turn delegation just works.
+- **Real-time streaming** — Watch sub-agents work in a collapsible view, or collapse and check back when they're done
+- **Cost tracking** — Sub-agent costs roll up into your chat totals. No hidden bills.
+- **Optional web search** — Gate web access per-project. When enabled, the primary model can grant minions web search on a per-task basis.
+
+**Use cases:** Have Opus delegate web research to a Haiku minion and synthesize the results. Run parallel searches from different angles. Let a cheap model handle memory file housekeeping. Or just enjoy watching LLMs talk to each other — we don't judge.
+
 ### Remote Storage 🔄
 
 Want to sync across devices without relying on someone else's cloud? There's a self-hostable storage backend for that.

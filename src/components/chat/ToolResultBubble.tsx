@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { RenderingBlockGroup, ToolResultRenderBlock } from '../../types/content';
 import type { Message } from '../../types';
-import { formatTimestamp } from '../../utils/messageFormatters';
+import { formatTimestamp, formatTokens } from '../../utils/messageFormatters';
 import { usePreferences } from '../../hooks/usePreferences';
 import ToolResultView from './ToolResultView';
 
@@ -148,9 +148,18 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
         </div>
       ))}
 
-      {/* Timestamp and actions */}
+      {/* Timestamp, cost, and actions */}
       <div className="mt-1 flex items-center gap-2">
         <span className="text-[10px] text-gray-500">{formatTimestamp(message.timestamp)}</span>
+        {(message.metadata?.messageCost ?? 0) > 0 && message.metadata && (
+          <span className="text-[10px] text-gray-500">
+            <span className="text-gray-400">|</span>{' '}
+            {formatTokens('↑', message.metadata.inputTokens)}
+            {message.metadata.inputTokens ? ' ' : ''}
+            {formatTokens('↓', message.metadata.outputTokens)} $
+            {message.metadata.messageCost!.toFixed(3)}
+          </span>
+        )}
         {onAction && (
           <>
             <button

@@ -130,6 +130,7 @@ function ComplexToolResult({
 
   const defaultIcon = block.icon ?? '🤖';
   const previewText = !isExpanded ? getLastActivityPreview(activityGroups) : '';
+  const toolCost = block.tokenTotals?.cost;
 
   return (
     <div className="overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50">
@@ -161,6 +162,11 @@ function ComplexToolResult({
               </span>
             ) : (
               <span className="min-w-0 flex-1 overflow-hidden"></span>
+            )}
+            {toolCost != null && toolCost > 0 && (
+              <span className="shrink-0 text-xs font-normal text-purple-500">
+                ${toolCost.toFixed(3)}
+              </span>
             )}
             {iconOnRight && <span className="mr-2 shrink-0">{defaultIcon}</span>}
           </>

@@ -31,7 +31,6 @@ describe('minionTool', () => {
     });
 
     it('has required input schema properties', () => {
-      // inputSchema is a static object for minionTool, not a function
       const schema =
         typeof minionTool.inputSchema === 'function'
           ? minionTool.inputSchema({})
@@ -40,13 +39,51 @@ describe('minionTool', () => {
       expect(schema.required).toContain('message');
       expect(schema.properties).toHaveProperty('message');
       expect(schema.properties).toHaveProperty('minionChatId');
-      expect(schema.properties).toHaveProperty('enableWeb');
       expect(schema.properties).toHaveProperty('enabledTools');
     });
 
-    it('has option definitions for model and system prompt', () => {
+    it('schema includes enableWeb when allowWebSearch is true', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ allowWebSearch: true })
+          : minionTool.inputSchema;
+      expect(schema.properties).toHaveProperty('enableWeb');
+    });
+
+    it('schema excludes enableWeb when allowWebSearch is false', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ allowWebSearch: false })
+          : minionTool.inputSchema;
+      expect(schema.properties).not.toHaveProperty('enableWeb');
+    });
+
+    it('schema excludes enableWeb when allowWebSearch is missing', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({})
+          : minionTool.inputSchema;
+      expect(schema.properties).not.toHaveProperty('enableWeb');
+    });
+
+    it('description mentions web search only when allowWebSearch is true', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') {
+        throw new Error('Expected description to be a function');
+      }
+
+      const withWeb = descFn({ allowWebSearch: true });
+      const withoutWeb = descFn({ allowWebSearch: false });
+      const noOpts = descFn({});
+
+      expect(withWeb).toContain('web search');
+      expect(withoutWeb).not.toContain('web search');
+      expect(noOpts).not.toContain('web search');
+    });
+
+    it('has option definitions for model, system prompt, and allowWebSearch', () => {
       expect(minionTool.optionDefinitions).toBeDefined();
-      expect(minionTool.optionDefinitions).toHaveLength(2);
+      expect(minionTool.optionDefinitions).toHaveLength(3);
 
       const systemPromptOpt = minionTool.optionDefinitions?.find(o => o.id === 'systemPrompt');
       expect(systemPromptOpt).toBeDefined();
@@ -55,6 +92,13 @@ describe('minionTool', () => {
       const modelOpt = minionTool.optionDefinitions?.find(o => o.id === 'model');
       expect(modelOpt).toBeDefined();
       expect(modelOpt?.type).toBe('model');
+
+      const webSearchOpt = minionTool.optionDefinitions?.find(o => o.id === 'allowWebSearch');
+      expect(webSearchOpt).toBeDefined();
+      expect(webSearchOpt?.type).toBe('boolean');
+      if (webSearchOpt?.type === 'boolean') {
+        expect(webSearchOpt.default).toBe(false);
+      }
     });
   });
 

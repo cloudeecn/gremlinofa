@@ -13,6 +13,7 @@ export type {
   ErrorRenderBlock,
   ToolResultStatus,
   ToolResultRenderBlock,
+  TokenTotals,
 } from './content';
 export { categorizeBlock, groupAndConsolidateBlocks } from './content';
 import type { RenderingBlockGroup, MessageStopReason } from './content';
@@ -365,6 +366,8 @@ export interface ToolResult {
   };
   /** Nested rendering groups from tool's internal work (transferred to ToolResultRenderBlock) */
   renderingGroups?: RenderingBlockGroup[];
+  /** Token/cost totals incurred by this tool (e.g., minion sub-agent API costs) */
+  tokenTotals?: import('./content').TokenTotals;
 }
 
 /** Event yielded by tool generators during execution */

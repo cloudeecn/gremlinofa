@@ -124,7 +124,7 @@ export default function VfsFileViewer({
 
   if (state.loading) {
     return (
-      <div className="flex h-full flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <Header
           filename={filename}
           version={null}
@@ -143,7 +143,7 @@ export default function VfsFileViewer({
 
   if (state.error) {
     return (
-      <div className="flex h-full flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <Header
           filename={filename}
           version={null}
@@ -169,7 +169,7 @@ export default function VfsFileViewer({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <Header
         filename={filename}
         version={state.version}
@@ -185,7 +185,7 @@ export default function VfsFileViewer({
       />
 
       {/* Content area */}
-      <div className="flex-1 overflow-auto bg-gray-50 p-4">
+      <div className="flex-1 overflow-auto overscroll-y-contain bg-gray-50 p-4">
         {state.isBinary ? (
           <BinaryFileView
             mime={state.mime}

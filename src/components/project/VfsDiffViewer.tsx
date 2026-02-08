@@ -189,7 +189,7 @@ export default function VfsDiffViewer({
 
   if (state.loading) {
     return (
-      <div className="flex h-full flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <Header filename={filename} onClose={onClose} />
         <div className="flex flex-1 items-center justify-center">
           <span className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
@@ -200,7 +200,7 @@ export default function VfsDiffViewer({
 
   if (state.error) {
     return (
-      <div className="flex h-full flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <Header filename={filename} onClose={onClose} />
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4">
           <span className="text-red-500">⚠️</span>
@@ -218,7 +218,7 @@ export default function VfsDiffViewer({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <Header filename={filename} onClose={onClose} />
 
       {/* Version selector - simplified single version navigation */}

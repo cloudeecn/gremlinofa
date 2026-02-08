@@ -223,7 +223,7 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
                 accept=".csv"
                 onChange={handleFileChange}
                 disabled={isImporting}
-                className="flex-1 text-sm text-gray-600 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex-1 text-base text-gray-600 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
               />
             </div>
             {file && (

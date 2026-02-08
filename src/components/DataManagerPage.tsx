@@ -174,7 +174,7 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
                 type="text"
                 value={displayCEK || 'Loading...'}
                 readOnly
-                className="flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 font-mono text-sm"
+                className="flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 font-mono text-base"
               />
               <button
                 onClick={copyCEK}

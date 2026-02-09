@@ -1105,9 +1105,11 @@ Minion conversations stored separately for debugging visibility:
 
 **Result Handling:**
 
-- If minion uses `return` tool → return value used as result
-- Otherwise → last assistant message text used as result
-- Return JSON content: `{ result, minionChatId }` so LLM can continue conversation
+- Return JSON content: `{ text, stopReason, minionChatId, result? }`
+  - `text` — concatenated text from ALL assistant messages in the turn (joined by `\n\n`)
+  - `stopReason` — last assistant message's stop reason (`tool_use` mapped to `end_turn` when return tool triggered completion)
+  - `minionChatId` — for continuing the conversation
+  - `result` — only present when return tool was used (explicit return value)
 - `renderingGroups` on ToolResult carries nested display content:
   - First group: `ToolInfoRenderBlock` with task description (`input`) and sub-chat reference (`chatId`)
   - Remaining groups: accumulated rendering from sub-agent messages (marked `isToolGenerated: true`)

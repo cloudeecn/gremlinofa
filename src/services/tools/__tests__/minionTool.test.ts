@@ -150,23 +150,52 @@ describe('minionTool', () => {
       expect(result).toBe(output);
     });
 
-    it('returns short output as-is', () => {
+    it('returns non-JSON output as-is', () => {
       const output = 'Task completed successfully';
       const result = minionTool.renderOutput!(output, false);
       expect(result).toBe(output);
     });
 
-    it('truncates long output', () => {
-      const longOutput = 'A'.repeat(600);
-      const result = minionTool.renderOutput!(longOutput, false);
-      expect(result.length).toBeLessThan(longOutput.length);
-      expect(result.endsWith('...')).toBe(true);
+    it('shows text captured, result, and chatId when all present', () => {
+      const output = JSON.stringify({
+        text: 'Some intermediate output',
+        result: 'Final answer',
+        stopReason: 'end_turn',
+        minionChatId: 'minion_abc',
+      });
+      const rendered = minionTool.renderOutput!(output, false);
+      expect(rendered).toBe('Text output captured.\n\nFinal answer\n\n[minionChatId: minion_abc]');
     });
 
-    it('does not truncate error output even if long', () => {
-      const longError = 'Error: ' + 'A'.repeat(600);
-      const result = minionTool.renderOutput!(longError, true);
-      expect(result).toBe(longError);
+    it('shows text captured and chatId when no result (no return tool)', () => {
+      const output = JSON.stringify({
+        text: 'Task completed successfully',
+        stopReason: 'end_turn',
+        minionChatId: 'minion_abc',
+      });
+      const rendered = minionTool.renderOutput!(output, false);
+      expect(rendered).toBe('Text output captured.\n\n[minionChatId: minion_abc]');
+    });
+
+    it('omits text captured line when text is empty', () => {
+      const output = JSON.stringify({
+        text: '',
+        result: 'Return value',
+        stopReason: 'end_turn',
+        minionChatId: 'minion_abc',
+      });
+      const rendered = minionTool.renderOutput!(output, false);
+      expect(rendered).toBe('Return value\n\n[minionChatId: minion_abc]');
+    });
+
+    it('does not truncate long text', () => {
+      const output = JSON.stringify({
+        text: 'A'.repeat(600),
+        stopReason: 'end_turn',
+        minionChatId: 'minion_abc',
+      });
+      const rendered = minionTool.renderOutput!(output, false);
+      expect(rendered).toBe('Text output captured.\n\n[minionChatId: minion_abc]');
     });
   });
 

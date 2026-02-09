@@ -421,7 +421,10 @@ describe('agenticLoopGenerator', () => {
 
       const result = await collectAgenticLoop(runAgenticLoop(options, context));
 
-      expect(result.status).toBe('complete');
+      expect(result.status).toBe('error');
+      if (result.status === 'error') {
+        expect(result.error.message).toBe('API rate limit exceeded');
+      }
       // Error message should be created with error rendering content
       const assistantMsg = result.messages.find(m => m.role === 'assistant');
       expect(assistantMsg?.content.stopReason).toBe('error');

@@ -47,15 +47,12 @@ export class OpenAIClient implements APIClient {
     const modelsResponse = await client.models.list();
     console.debug(`Models for ${apiDefinition.name}:`, modelsResponse);
 
-    // Filter for chat completion models
-    // Only filter for OpenAI (no custom baseUrl) to show gpt-* and o* models
-    // For custom providers (xAI, etc.), show all models
+    // Only filter for OpenAI (no custom baseUrl); custom providers keep all models
     const chatModels = apiDefinition.baseUrl
       ? modelsResponse.data // Custom provider: keep all models
       : modelsResponse.data.filter(model => {
-          // OpenAI: filter for gpt-* and o* models only
           const id = model.id.toLowerCase();
-          return id.startsWith('gpt-') || id.match(/^o\d/);
+          return id.startsWith('gpt-') || id.startsWith('chatgpt-') || id.match(/^o\d/);
         });
 
     // Sort models: gpt-5, gpt-4, o-series, then legacy

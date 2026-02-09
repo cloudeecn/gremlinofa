@@ -341,6 +341,8 @@ async function* executeMinion(
   const totals = createTokenTotals();
   // Accumulated finalized blocks from all minion messages (marked as tool-generated)
   const accumulatedGroups: RenderingBlockGroup[] = [];
+  // Text content from all assistant messages in this turn
+  const accumulatedText: string[] = [];
   let usedReturnTool = false;
   let returnValue: string | undefined;
 
@@ -380,6 +382,10 @@ async function* executeMinion(
                 isToolGenerated: true,
               }));
               accumulatedGroups.push(...markedGroups);
+            }
+            // Accumulate text from assistant messages
+            if (event.message.role === 'assistant' && event.message.content.content) {
+              accumulatedText.push(event.message.content.content as string);
             }
             // Yield updated finalized content
             yield {
@@ -440,24 +446,31 @@ async function* executeMinion(
       };
     }
 
-    // Extract text response from last assistant message
-    let textResponse = '';
+    // Determine stop reason from last assistant message
+    let stopReason = 'end_turn';
     if (finalResult.messages.length > 0) {
       const lastMsg = finalResult.messages[finalResult.messages.length - 1];
       if (lastMsg.role === 'assistant') {
-        textResponse = lastMsg.content.content ?? '';
+        stopReason = (lastMsg.content.stopReason as string) ?? 'end_turn';
       }
     }
+    // Map tool_use → end_turn when return tool triggered completion
+    if (usedReturnTool && stopReason === 'tool_use') {
+      stopReason = 'end_turn';
+    }
 
-    // Build final response
-    const finalResponse = usedReturnTool && returnValue !== undefined ? returnValue : textResponse;
+    // Build result JSON: `result` only present when return tool was used
+    const resultJson: Record<string, unknown> = {
+      text: accumulatedText.join('\n\n'),
+      stopReason,
+      minionChatId: minionChat.id,
+    };
+    if (usedReturnTool && returnValue !== undefined) {
+      resultJson.result = returnValue;
+    }
 
-    // Return result with renderingGroups for nested display
     return {
-      content: JSON.stringify({
-        result: finalResponse,
-        minionChatId: minionChat.id,
-      }),
+      content: JSON.stringify(resultJson),
       renderingGroups: [infoGroup, ...accumulatedGroups],
       tokenTotals: totals,
     };
@@ -505,26 +518,22 @@ function renderMinionOutput(output: string, isError?: boolean): string {
     return output;
   }
 
-  // Output is JSON with { result, minionChatId }
   try {
     const parsed = JSON.parse(output);
-    const result = parsed.result ?? output;
-    const chatId = parsed.minionChatId;
+    const lines: string[] = [];
 
-    // Format for display
-    let display = result;
-    if (display.length > 500) {
-      display = display.slice(0, 500) + '...';
+    if (parsed.text) {
+      lines.push('Text output captured.');
     }
-    if (chatId) {
-      display += `\n\n[minionChatId: ${chatId}]`;
+    if (parsed.result !== undefined) {
+      lines.push(parsed.result);
     }
-    return display;
+    if (parsed.minionChatId) {
+      lines.push(`[minionChatId: ${parsed.minionChatId}]`);
+    }
+
+    return lines.join('\n\n');
   } catch {
-    // Fallback for non-JSON output (backward compat)
-    if (output.length > 500) {
-      return output.slice(0, 500) + '...';
-    }
     return output;
   }
 }

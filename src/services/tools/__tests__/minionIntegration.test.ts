@@ -237,10 +237,12 @@ describe('Minion Integration', () => {
         minionTool.execute({ message: 'Do a simple task' }, toolOptions, context)
       );
 
-      // Result JSON contains the response text and minionChatId
+      // Result JSON contains text output, stopReason, and minionChatId
       expect(result.isError).toBeUndefined();
       const parsedContent = JSON.parse(result.content);
-      expect(parsedContent.result).toBe('Task completed successfully!');
+      expect(parsedContent.text).toBe('Task completed successfully!');
+      expect(parsedContent.stopReason).toBe('end_turn');
+      expect(parsedContent.result).toBeUndefined(); // No return tool used
       expect(parsedContent.minionChatId).toBeDefined();
 
       // renderingGroups starts with ToolInfoRenderBlock
@@ -315,10 +317,12 @@ describe('Minion Integration', () => {
         minionTool.execute({ message: 'Return something' }, toolOptions, context)
       );
 
-      // Content JSON has the return value and minionChatId
+      // Content JSON has the return value, text output, stopReason, and minionChatId
       expect(result.isError).toBeUndefined();
       const parsedContent = JSON.parse(result.content);
       expect(parsedContent.result).toBe('Explicitly returned value');
+      expect(parsedContent.text).toBe(''); // Assistant text empty when only tool_use
+      expect(parsedContent.stopReason).toBe('end_turn'); // tool_use mapped to end_turn for return tool
       expect(parsedContent.minionChatId).toBeDefined();
 
       // renderingGroups present with ToolInfoRenderBlock
@@ -438,8 +442,11 @@ describe('Minion Integration', () => {
         )
       );
 
-      // Result references the existing chat
+      // Result references the existing chat with text from this turn only
       const parsedContent = JSON.parse(result.content);
+      expect(parsedContent.text).toBe('Continued conversation!');
+      expect(parsedContent.stopReason).toBe('end_turn');
+      expect(parsedContent.result).toBeUndefined(); // No return tool used
       expect(parsedContent.minionChatId).toBe('minion_existing');
 
       // ToolInfoRenderBlock chatId matches

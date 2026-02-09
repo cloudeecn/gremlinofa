@@ -541,6 +541,16 @@ export async function* runAgenticLoop(
       messages.push(assistantMessage);
       yield { type: 'message_created', message: assistantMessage };
 
+      // Check for API error (result.error is set but stopReason is undefined)
+      if (result.error) {
+        return {
+          status: 'error',
+          messages,
+          tokens: totals,
+          error: new Error(result.error.message),
+        };
+      }
+
       // Check stop reason
       if (result.stopReason !== 'tool_use') {
         return { status: 'complete', messages, tokens: totals };

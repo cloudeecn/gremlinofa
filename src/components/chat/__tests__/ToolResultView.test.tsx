@@ -38,10 +38,10 @@ describe('ToolResultView', () => {
       icon: '🧠',
     };
 
-    it('renders tool name and icon', () => {
+    it('renders tool icon without name text', () => {
       render(<ToolResultView block={simpleBlock} />);
-      expect(screen.getByText('memory')).toBeInTheDocument();
       expect(screen.getByText('🧠')).toBeInTheDocument();
+      expect(screen.queryByText('memory')).not.toBeInTheDocument();
     });
 
     it('starts collapsed', () => {
@@ -132,10 +132,10 @@ describe('ToolResultView', () => {
       renderingGroups: [infoGroup, backstageGroup, textGroup],
     };
 
-    it('renders collapsible header with tool name', () => {
+    it('renders collapsible header with icon only', () => {
       render(<ToolResultView block={complexBlock} />);
-      expect(screen.getByText('minion')).toBeInTheDocument();
       expect(screen.getByText('🤖')).toBeInTheDocument();
+      expect(screen.queryByText('minion')).not.toBeInTheDocument();
     });
 
     it('starts collapsed when status is complete', () => {
@@ -174,17 +174,17 @@ describe('ToolResultView', () => {
       expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
 
       // Click to expand
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
       expect(screen.getByTestId('backstage-view')).toBeInTheDocument();
 
       // Click to collapse
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
       expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
     });
 
     it('shows tool_info input in blue box when expanded', () => {
       const { container } = render(<ToolResultView block={complexBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       const blueBox = container.querySelector('.border-blue-300');
       expect(blueBox).toBeInTheDocument();
@@ -193,7 +193,7 @@ describe('ToolResultView', () => {
 
     it('shows green result box when complete and not error', () => {
       const { container } = render(<ToolResultView block={complexBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       const greenBox = container.querySelector('.border-green-300');
       expect(greenBox).toBeInTheDocument();
@@ -207,7 +207,7 @@ describe('ToolResultView', () => {
         content: 'Minion failed',
       };
       const { container } = render(<ToolResultView block={errorBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       const redBox = container.querySelector('.border-red-300');
       expect(redBox).toBeInTheDocument();
@@ -231,7 +231,7 @@ describe('ToolResultView', () => {
 
     it('renders activity groups (backstage and text)', () => {
       render(<ToolResultView block={complexBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(screen.getByTestId('backstage-view')).toBeInTheDocument();
       expect(screen.getByTestId('text-group-view')).toBeInTheDocument();
@@ -239,14 +239,14 @@ describe('ToolResultView', () => {
 
     it('shows Copy All button when chatId is present', () => {
       render(<ToolResultView block={complexBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(screen.getByText('📋 Copy All')).toBeInTheDocument();
     });
 
     it('shows Copy JSON button', () => {
       render(<ToolResultView block={complexBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(screen.getByText('📋 Copy JSON')).toBeInTheDocument();
     });
@@ -256,7 +256,7 @@ describe('ToolResultView', () => {
       Object.assign(navigator, { clipboard: mockClipboard });
 
       render(<ToolResultView block={complexBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
       fireEvent.click(screen.getByText('📋 Copy JSON'));
 
       expect(mockClipboard.writeText).toHaveBeenCalledWith(JSON.stringify(complexBlock, null, 2));
@@ -269,7 +269,7 @@ describe('ToolResultView', () => {
       Object.assign(navigator, { clipboard: mockClipboard });
 
       render(<ToolResultView block={complexBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(() => fireEvent.click(screen.getByText('📋 Copy JSON'))).not.toThrow();
     });
@@ -285,7 +285,7 @@ describe('ToolResultView', () => {
         ],
       };
       render(<ToolResultView block={noChatIdBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(screen.queryByText('📋 Copy All')).not.toBeInTheDocument();
       expect(screen.getByText('📋 Copy JSON')).toBeInTheDocument();
@@ -297,7 +297,7 @@ describe('ToolResultView', () => {
         renderingGroups: [backstageGroup, textGroup],
       };
       const { container } = render(<ToolResultView block={noInfoBlock} />);
-      fireEvent.click(screen.getByRole('button', { name: /minion/i }));
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       // No blue box
       const blueBox = container.querySelector('.border-blue-300');

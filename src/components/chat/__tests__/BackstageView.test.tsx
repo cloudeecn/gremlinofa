@@ -19,15 +19,13 @@ describe('BackstageView', () => {
       expect(container.firstChild).toBeNull();
     });
 
-    it('renders collapsible header with Think label', () => {
+    it('renders collapsible header with thinking icon', () => {
       const blocks: RenderingContentBlock[] = [
         { type: 'thinking', thinking: 'Test thinking content' },
       ];
       render(<BackstageView blocks={blocks} />);
 
-      // With iconOnRight: true, icon is on the right, label on left
-      expect(screen.getByText('Think')).toBeInTheDocument();
-      // Icon appears on right side
+      // Icon appears on right side (iconOnRight: true by default)
       expect(screen.getByText('💭')).toBeInTheDocument();
     });
 

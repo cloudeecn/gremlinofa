@@ -129,8 +129,7 @@ describe('StreamingMessage', () => {
 
       render(<StreamingMessage groups={groups} />);
 
-      // With iconOnRight: true, label on left, icon on right
-      expect(screen.getByText('Think')).toBeInTheDocument();
+      // With iconOnRight: true, icon on right (no state text label)
       expect(screen.getByText('💭')).toBeInTheDocument();
     });
 
@@ -321,8 +320,7 @@ describe('StreamingMessage', () => {
       expect(screen.getByText('First thinking preview')).toBeInTheDocument(); // Preview
       expect(screen.getByText('First text')).toBeInTheDocument();
       expect(screen.getByText('Second thinking preview')).toBeInTheDocument(); // Preview
-      // Both backstage headers should be rendered (with iconOnRight: true, label and icon separate)
-      expect(screen.getAllByText('Think')).toHaveLength(2);
+      // Both backstage headers should be rendered (with iconOnRight: true, icon on right)
       expect(screen.getAllByText('💭')).toHaveLength(2);
     });
 
@@ -381,8 +379,7 @@ describe('StreamingMessage', () => {
       expect(screen.getByText('Processing results')).toBeInTheDocument();
       expect(screen.getByText('Final answer')).toBeInTheDocument();
 
-      // Two backstage headers (collapsed) - with iconOnRight: true, label and icon separate
-      expect(screen.getAllByText('Think')).toHaveLength(2);
+      // Two backstage headers (collapsed) - with iconOnRight: true, icon on right
       expect(screen.getAllByText('💭')).toHaveLength(2);
 
       // Should show bouncing dots (not status text)

@@ -1382,12 +1382,12 @@ Headers use `h-14` (56px) for content, but adding `safe-area-inset-top` as paddi
 
 `usePreferences()` hook provides UI preferences with hardcoded defaults (extensible for future preferences page/storage):
 
-- `iconOnRight: boolean` - Move tool icons to right side in `BackstageView` and `ToolResultBubble` collapsed headers (default: `true`)
+- `iconOnRight: boolean` - Move tool icons to right side in `BackstageView`, `ToolResultView`, and `ToolResultBubble` headers (default: `true`)
 
 When `iconOnRight` is `true`:
 
-- Status text appears on left without icon prefix
 - All icons displayed on right side (previous icons faded, last icon full opacity)
+- No state text labels in headers — icons alone identify activity type
 
 ## Known Issues 🐛
 

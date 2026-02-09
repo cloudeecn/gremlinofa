@@ -42,7 +42,6 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
   // For simple results header display
   const lastSimple = simpleResults[simpleResults.length - 1];
   const simpleIcon = lastSimple?.icon ?? (hasError ? '❌' : '✅');
-  const simpleStatusText = lastSimple?.name ?? 'Result';
   const simplePreviewText = lastSimple?.renderedContent ?? lastSimple?.content ?? '';
 
   // Status-aware summary for multiple results
@@ -73,9 +72,7 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
             className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm font-medium text-purple-800 transition-colors hover:bg-purple-100"
           >
             <span className="flex shrink-0 items-center gap-1">
-              <span>
-                {!iconOnRight && simpleIcon} {simpleStatusText}
-              </span>
+              <span>{!iconOnRight && simpleIcon}</span>
               <span className="text-purple-600">{isExpanded ? '▼' : '▶'}</span>
             </span>
             {!isExpanded && (
@@ -124,7 +121,6 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
                     }`}
                   >
                     <span>{result.icon ?? (result.is_error ? '❌' : '✅')}</span>
-                    <span>{result.name ?? 'Result'}</span>
                     {simpleResults.length > 1 && (
                       <span className="text-purple-500">
                         ({index + 1}/{simpleResults.length})

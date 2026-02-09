@@ -42,14 +42,64 @@ import { apiService } from '../api/apiService';
 // Tool names that minions cannot use
 const MINION_EXCLUDED_TOOLS = ['minion'];
 
+/** Stashed fullContent from a rolled-back message for re-use during retry */
+interface StashedRetryContent {
+  modelFamily?: string;
+  fullContent: unknown;
+  renderingContent?: RenderingBlockGroup[];
+}
+
+/**
+ * Extract text from a tool_result message's fullContent.
+ * buildToolResultMessage sets content.content = '' — the actual payload is in fullContent.
+ */
+function extractToolResultText(fullContent: unknown): string | undefined {
+  if (!Array.isArray(fullContent) || fullContent.length === 0) return undefined;
+
+  const first = fullContent[0];
+  if (!first || typeof first !== 'object') return undefined;
+
+  // Anthropic: { type: 'tool_result', content: string }
+  if ('type' in first && first.type === 'tool_result' && 'content' in first) {
+    return typeof first.content === 'string' ? first.content : undefined;
+  }
+
+  // Responses API: { type: 'function_call_output', output: string }
+  if ('type' in first && first.type === 'function_call_output' && 'output' in first) {
+    return typeof first.output === 'string' ? first.output : undefined;
+  }
+
+  // OpenAI Chat Completions: { type: 'tool_result', tool_call_id, content }
+  // (same shape as Anthropic above — already handled)
+
+  // Bedrock: { toolResult: { content: [{ text: string }] } }
+  if ('toolResult' in first && first.toolResult && typeof first.toolResult === 'object') {
+    const tr = first.toolResult as { content?: Array<{ text?: string }> };
+    if (
+      Array.isArray(tr.content) &&
+      tr.content.length > 0 &&
+      typeof tr.content[0].text === 'string'
+    ) {
+      return tr.content[0].text;
+    }
+  }
+
+  return undefined;
+}
+
 // Maximum iterations for minion agentic loop (same as main loop)
 const MAX_ITERATIONS = 50;
 
+// Sentinel checkpoint value meaning "before any messages" (enables first-run retry)
+export const CHECKPOINT_START = '_start';
+
 /** Input parameters for minion tool */
 interface MinionInput {
+  /** Action: 'message' (default) sends a new message, 'retry' rolls back to checkpoint and re-executes */
+  action?: 'message' | 'retry';
   /** Optional: existing minion chat ID to continue a conversation */
   minionChatId?: string;
-  /** Task/message to send to the minion */
+  /** Task/message to send to the minion. Required for 'message' action, optional for 'retry'. */
   message: string;
   /** Enable web search for the minion */
   enableWeb?: boolean;
@@ -65,7 +115,11 @@ interface MinionInput {
  * @param projectTools - Tools enabled for the project
  * @returns Final list of tools available to the minion
  */
-function buildMinionTools(requestedTools: string[] | undefined, projectTools: string[]): string[] {
+function buildMinionTools(
+  requestedTools: string[] | undefined,
+  projectTools: string[],
+  includeReturn: boolean
+): string[] {
   // Start with intersection
   let tools: string[];
   if (requestedTools && requestedTools.length > 0) {
@@ -80,8 +134,7 @@ function buildMinionTools(requestedTools: string[] | undefined, projectTools: st
   // Remove excluded tools (minion can't spawn minions)
   tools = tools.filter(t => !MINION_EXCLUDED_TOOLS.includes(t));
 
-  // Add return tool (always available to minions)
-  if (!tools.includes('return')) {
+  if (includeReturn && !tools.includes('return')) {
     tools.push('return');
   }
 
@@ -114,67 +167,218 @@ async function* executeMinion(
   context?: ToolContext
 ): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
   const minionInput = input as unknown as MinionInput;
+  const action = minionInput.action ?? 'message';
 
-  // Validate context
-  if (!context?.projectId) {
+  // Stashed fullContent from a rolled-back tool_result message for re-use during retry.
+  // When the stashed modelFamily matches the current apiDef.apiType, we can re-use the
+  // original fullContent directly instead of reconstructing from extracted text.
+  let stashedRetryContent: StashedRetryContent | undefined;
+
+  // ── Phase 1: Validate inputs + load/create chat + checkpoint ──
+  // Errors here indicate no state change; caller can resend to reattempt.
+
+  if (action === 'message' && !minionInput.message) {
     return {
-      content: 'Error: projectId is required in context',
+      content:
+        'Error: "message" is required when action is "message" (or omitted). Resend to reattempt.',
+      isError: true,
+    };
+  }
+  if (action === 'retry' && !minionInput.minionChatId) {
+    return {
+      content: 'Error: "minionChatId" is required when action is "retry". Resend to reattempt.',
       isError: true,
     };
   }
 
-  // Check web search permission
+  if (!context?.projectId) {
+    return {
+      content: 'Error: projectId is required in context. Resend to reattempt.',
+      isError: true,
+    };
+  }
+
+  // Load or create minion chat + handle retry rollback + save checkpoint
+  let minionChat: MinionChat;
+  let existingMessages: Message<unknown>[] = [];
+
+  if (minionInput.minionChatId) {
+    const existing = await storage.getMinionChat(minionInput.minionChatId);
+    if (!existing) {
+      return {
+        content: `Error: Minion chat not found: ${minionInput.minionChatId}. Resend to reattempt.`,
+        isError: true,
+      };
+    }
+    minionChat = existing;
+    existingMessages = await storage.getMinionMessages(minionInput.minionChatId);
+
+    if (action === 'retry') {
+      // Retry: roll back to checkpoint before proceeding
+      if (minionChat.checkpoint === undefined) {
+        return {
+          content: 'Error: Cannot retry — no checkpoint on this minion chat. Resend to reattempt.',
+          isError: true,
+        };
+      }
+
+      let rolledBack: Message<unknown>[];
+
+      if (minionChat.checkpoint === CHECKPOINT_START) {
+        // First-run retry: roll back all messages
+        rolledBack = existingMessages;
+      } else {
+        const checkpointIdx = existingMessages.findIndex(m => m.id === minionChat.checkpoint);
+        if (checkpointIdx === -1) {
+          return {
+            content: `Error: Checkpoint message ${minionChat.checkpoint} not found in chat history. Resend to reattempt.`,
+            isError: true,
+          };
+        }
+        rolledBack = existingMessages.slice(checkpointIdx + 1);
+      }
+
+      if (rolledBack.length === 0) {
+        return {
+          content: 'Error: No messages after checkpoint to retry. Resend to reattempt.',
+          isError: true,
+        };
+      }
+
+      // Stash fullContent from the first rolled-back message for potential re-use in Phase 3.
+      // Tool_result messages (from buildToolResultMessage) have content.content = '' and the
+      // actual payload in fullContent — stashing lets us re-use it when API types match.
+      if (rolledBack[0].content.fullContent) {
+        stashedRetryContent = {
+          modelFamily: rolledBack[0].content.modelFamily as string | undefined,
+          fullContent: rolledBack[0].content.fullContent,
+          renderingContent: rolledBack[0].content.renderingContent as
+            | RenderingBlockGroup[]
+            | undefined,
+        };
+      }
+
+      // Recover original message when caller didn't provide one
+      if (!minionInput.message) {
+        const firstAfter = rolledBack[0];
+        const textContent = firstAfter.content.content as string;
+        if (textContent) {
+          minionInput.message = textContent;
+        } else {
+          // Tool_result messages have empty content.content — extract from fullContent
+          minionInput.message = extractToolResultText(firstAfter.content.fullContent) ?? '';
+        }
+      }
+
+      // Subtract rolled-back token metadata from chat totals
+      for (const msg of rolledBack) {
+        const meta = msg.metadata;
+        if (meta) {
+          minionChat.totalInputTokens = Math.max(
+            0,
+            (minionChat.totalInputTokens ?? 0) - (meta.inputTokens ?? 0)
+          );
+          minionChat.totalOutputTokens = Math.max(
+            0,
+            (minionChat.totalOutputTokens ?? 0) - (meta.outputTokens ?? 0)
+          );
+          minionChat.totalReasoningTokens = Math.max(
+            0,
+            (minionChat.totalReasoningTokens ?? 0) - (meta.reasoningTokens ?? 0)
+          );
+          minionChat.totalCacheCreationTokens = Math.max(
+            0,
+            (minionChat.totalCacheCreationTokens ?? 0) - (meta.cacheCreationTokens ?? 0)
+          );
+          minionChat.totalCacheReadTokens = Math.max(
+            0,
+            (minionChat.totalCacheReadTokens ?? 0) - (meta.cacheReadTokens ?? 0)
+          );
+          minionChat.totalCost = Math.max(0, (minionChat.totalCost ?? 0) - (meta.messageCost ?? 0));
+        }
+      }
+
+      // Delete rolled-back messages
+      if (minionChat.checkpoint === CHECKPOINT_START) {
+        await storage.deleteMessageAndAfter(minionChat.id, rolledBack[0].id);
+      } else {
+        await storage.deleteMessagesAfter(minionChat.id, minionChat.checkpoint!);
+      }
+      existingMessages = await storage.getMinionMessages(minionChat.id);
+
+      // Checkpoint stays unchanged — it already points to the right position
+      await storage.saveMinionChat(minionChat);
+    } else {
+      // Normal continuation: advance checkpoint to last message before this run
+      minionChat.checkpoint =
+        existingMessages.length > 0
+          ? existingMessages[existingMessages.length - 1].id
+          : CHECKPOINT_START;
+      await storage.saveMinionChat(minionChat);
+    }
+  } else {
+    // Create new minion chat with initial checkpoint
+    const parentChatId = context.chatId ?? 'standalone';
+    minionChat = {
+      id: generateUniqueId('minion'),
+      parentChatId,
+      projectId: context.projectId,
+      checkpoint: CHECKPOINT_START,
+      createdAt: new Date(),
+      lastModifiedAt: new Date(),
+    };
+    await storage.saveMinionChat(minionChat);
+  }
+
+  // ── Phase 2: Validation + setup ──
+  // Checkpoint is saved. Errors here mean caller should resend with the message.
+
   const allowWebSearch = toolOptions?.allowWebSearch === true;
   if (minionInput.enableWeb && !allowWebSearch) {
     return {
       content:
-        'Error: Web search is not allowed for minions. Enable "Allow Web Search" in minion tool options.',
+        'Error: Web search is not allowed for minions. Enable "Allow Web Search" in minion tool options. Resend with the message to reattempt.',
       isError: true,
     };
   }
 
-  // Get minion model configuration from toolOptions
   const minionToolOptions = toolOptions ?? {};
   const modelRef = minionToolOptions.model;
 
   if (!modelRef || !isModelReference(modelRef)) {
     return {
-      content: 'Error: Minion model not configured. Please configure a model in project settings.',
+      content:
+        'Error: Minion model not configured. Please configure a model in project settings. Resend with the message to reattempt.',
       isError: true,
     };
   }
 
-  // Load project for tool configuration
   const project = await storage.getProject(context.projectId);
   if (!project) {
     return {
-      content: `Error: Project not found: ${context.projectId}`,
+      content: `Error: Project not found: ${context.projectId}. Resend with the message to reattempt.`,
       isError: true,
     };
   }
 
-  // Load API definition
   const apiDef = await storage.getAPIDefinition(modelRef.apiDefinitionId);
   if (!apiDef) {
     return {
-      content: `Error: API definition not found: ${modelRef.apiDefinitionId}`,
+      content: `Error: API definition not found: ${modelRef.apiDefinitionId}. Resend with the message to reattempt.`,
       isError: true,
     };
   }
 
-  // Load model
   const model = await storage.getModel(modelRef.apiDefinitionId, modelRef.modelId);
   if (!model) {
     return {
-      content: `Error: Model not found: ${modelRef.modelId}`,
+      content: `Error: Model not found: ${modelRef.modelId}. Resend with the message to reattempt.`,
       isError: true,
     };
   }
 
-  // Build minion tools (scoped from project tools)
   const projectTools = project.enabledTools ?? [];
 
-  // Validate requested tools exist in project
   if (minionInput.enabledTools && minionInput.enabledTools.length > 0) {
     const projectToolSet = new Set(projectTools);
     const invalidTools = minionInput.enabledTools.filter(
@@ -182,70 +386,58 @@ async function* executeMinion(
     );
     if (invalidTools.length > 0) {
       return {
-        content: `Error: Tools not available in project: ${invalidTools.join(', ')}. Available tools: ${projectTools.join(', ') || '(none)'}`,
+        content: `Error: Tools not available in project: ${invalidTools.join(', ')}. Available tools: ${projectTools.join(', ') || '(none)'}. Resend with the message to reattempt.`,
         isError: true,
       };
     }
   }
 
-  const minionTools = buildMinionTools(minionInput.enabledTools, projectTools);
+  const includeReturn = minionToolOptions.noReturnTool !== true;
+  const minionTools = buildMinionTools(minionInput.enabledTools, projectTools, includeReturn);
 
-  // Create or load minion chat
-  let minionChat: MinionChat;
-  let existingMessages: Message<unknown>[] = [];
+  // ── Phase 3: Message + execution ──
+  // User message will be saved. Errors here can be retried via action: 'retry'.
+
+  // Check if last message is assistant with pending return tool (needs apiDef.apiType)
   let pendingReturnToolUse: { id: string; name: string } | undefined;
-
-  if (minionInput.minionChatId) {
-    // Continue existing minion chat
-    const existing = await storage.getMinionChat(minionInput.minionChatId);
-    if (!existing) {
-      return {
-        content: `Error: Minion chat not found: ${minionInput.minionChatId}`,
-        isError: true,
-      };
-    }
-    minionChat = existing;
-    existingMessages = await storage.getMinionMessages(minionInput.minionChatId);
-
-    // Check if last message is assistant with pending return tool
-    if (existingMessages.length > 0) {
-      const lastMsg = existingMessages[existingMessages.length - 1];
-      if (lastMsg.role === 'assistant' && lastMsg.content.fullContent) {
-        const toolUseBlocks = apiService.extractToolUseBlocks(
-          apiDef.apiType,
-          lastMsg.content.fullContent
-        );
-        const returnToolUse = toolUseBlocks.find(t => t.name === 'return');
-        if (returnToolUse) {
-          pendingReturnToolUse = { id: returnToolUse.id, name: returnToolUse.name };
-        }
+  if (existingMessages.length > 0) {
+    const lastMsg = existingMessages[existingMessages.length - 1];
+    if (lastMsg.role === 'assistant' && lastMsg.content.fullContent) {
+      const toolUseBlocks = apiService.extractToolUseBlocks(
+        apiDef.apiType,
+        lastMsg.content.fullContent
+      );
+      const returnToolUse = toolUseBlocks.find(t => t.name === 'return');
+      if (returnToolUse) {
+        pendingReturnToolUse = { id: returnToolUse.id, name: returnToolUse.name };
       }
     }
-
-    // Set checkpoint to last message ID before this minion run
-    minionChat.checkpoint =
-      existingMessages.length > 0 ? existingMessages[existingMessages.length - 1].id : undefined;
-    await storage.saveMinionChat(minionChat);
-  } else {
-    // Create new minion chat (no checkpoint - first run)
-    const parentChatId = context.chatId ?? 'standalone';
-    minionChat = {
-      id: generateUniqueId('minion'),
-      parentChatId,
-      projectId: context.projectId,
-      createdAt: new Date(),
-      lastModifiedAt: new Date(),
-    };
-    await storage.saveMinionChat(minionChat);
   }
 
   // Build info group for streaming display
   const infoGroup = buildInfoGroup(minionInput.message, minionChat.id);
 
-  // Build context for minion based on whether we're resuming after a return tool
+  // Build context for minion based on retry re-use, return tool resumption, or normal message
   let minionContext: Message<unknown>[];
 
-  if (pendingReturnToolUse) {
+  if (stashedRetryContent && stashedRetryContent.modelFamily === apiDef.apiType) {
+    // Re-use original message with its fullContent (compatible API type).
+    // This preserves the exact tool_result payload without lossy text extraction + reconstruction.
+    const reusedMessage: Message<unknown> = {
+      id: generateUniqueId('msg_user'),
+      role: 'user',
+      content: {
+        type: 'text',
+        content: minionInput.message,
+        modelFamily: stashedRetryContent.modelFamily,
+        fullContent: stashedRetryContent.fullContent,
+        renderingContent: stashedRetryContent.renderingContent,
+      },
+      timestamp: new Date(),
+    };
+    await storage.saveMinionMessage(minionChat.id, reusedMessage);
+    minionContext = [...existingMessages, reusedMessage];
+  } else if (pendingReturnToolUse) {
     // Resume after return tool: send tool_result instead of user message
     const toolResultBlock: ToolResultBlock = {
       type: 'tool_result',
@@ -492,6 +684,10 @@ function renderMinionInput(input: Record<string, unknown>): string {
   const minionInput = input as unknown as MinionInput;
   const lines: string[] = [];
 
+  if (minionInput.action === 'retry') {
+    lines.push('Action: retry');
+  }
+
   if (minionInput.minionChatId) {
     lines.push(`Continue: ${minionInput.minionChatId}`);
   }
@@ -504,8 +700,10 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push('Web: enabled');
   }
 
-  lines.push('');
-  lines.push(minionInput.message);
+  if (minionInput.message) {
+    lines.push('');
+    lines.push(minionInput.message);
+  }
 
   return lines.join('\n');
 }
@@ -545,6 +743,7 @@ function getMinionDescription(opts: ToolOptions): string {
     '',
     'The minion will execute the task and return the result. You can optionally:',
     '- Continue a previous minion conversation by providing minionChatId',
+    '- Retry the last run by setting action to "retry" with the same minionChatId. Omit message to re-send the original, or provide a new message to replace it.',
   ];
 
   if (opts.allowWebSearch === true) {
@@ -552,10 +751,15 @@ function getMinionDescription(opts: ToolOptions): string {
   }
 
   lines.push(
-    '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)',
-    '',
-    "The minion always has access to a 'return' tool to explicitly signal completion with a result."
+    '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)'
   );
+
+  if (opts.noReturnTool !== true) {
+    lines.push(
+      '',
+      "The minion always has access to a 'return' tool to explicitly signal completion with a result."
+    );
+  }
 
   return lines.join('\n');
 }
@@ -563,13 +767,20 @@ function getMinionDescription(opts: ToolOptions): string {
 /** Build minion input schema, conditionally including enableWeb property. */
 function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
   const properties: Record<string, unknown> = {
+    action: {
+      type: 'string',
+      enum: ['message', 'retry'],
+      description:
+        'Action to perform. "message" (default) sends a new message. "retry" rolls back the minion chat to the last checkpoint and re-executes.',
+    },
     minionChatId: {
       type: 'string',
       description: 'Optional: ID of an existing minion chat to continue the conversation',
     },
     message: {
       type: 'string',
-      description: 'The task or message to send to the minion',
+      description:
+        'The task or message to send to the minion. Required for "message" action. For "retry": omit to re-send the original, or provide a new message to replace it.',
     },
     enabledTools: {
       type: 'array',
@@ -589,7 +800,7 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
   return {
     type: 'object',
     properties,
-    required: ['message'],
+    required: [],
   };
 }
 
@@ -629,6 +840,13 @@ export const minionTool: ClientSideTool = {
       id: 'allowWebSearch',
       label: 'Allow Web Search',
       subtitle: 'Let minions use web search when requested',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'noReturnTool',
+      label: 'No Return Tool',
+      subtitle: 'Remove the return tool from minion toolset',
       default: false,
     },
   ],

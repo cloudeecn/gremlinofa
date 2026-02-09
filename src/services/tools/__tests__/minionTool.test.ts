@@ -5,9 +5,16 @@
  * Full integration tests would require mocking the entire agentic loop.
  */
 
-import { describe, it, expect } from 'vitest';
-import { minionTool } from '../minionTool';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { minionTool, CHECKPOINT_START } from '../minionTool';
 import type { ToolResult, ToolExecuteReturn } from '../../../types';
+
+// Minimal storage mock for execute tests that now reach storage (Phase 2 errors)
+vi.mock('../../storage', () => ({
+  storage: {
+    saveMinionChat: vi.fn(() => Promise.resolve()),
+  },
+}));
 
 /** Consume an async generator to get the final ToolResult */
 async function collectToolResult(gen: ToolExecuteReturn): Promise<ToolResult> {
@@ -36,10 +43,28 @@ describe('minionTool', () => {
           ? minionTool.inputSchema({})
           : minionTool.inputSchema;
       expect(schema.type).toBe('object');
-      expect(schema.required).toContain('message');
+      expect(schema.required).toEqual([]);
+      expect(schema.properties).toHaveProperty('action');
       expect(schema.properties).toHaveProperty('message');
       expect(schema.properties).toHaveProperty('minionChatId');
       expect(schema.properties).toHaveProperty('enabledTools');
+    });
+
+    it('schema action property has correct enum values', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({})
+          : minionTool.inputSchema;
+      const actionProp = schema.properties!.action as { enum: string[] };
+      expect(actionProp.enum).toEqual(['message', 'retry']);
+    });
+
+    it('description mentions retry capability', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') throw new Error('Expected description to be a function');
+      const desc = descFn({});
+      expect(desc).toContain('Retry the last run');
+      expect(desc).toContain('minionChatId');
     });
 
     it('schema includes enableWeb when allowWebSearch is true', () => {
@@ -81,9 +106,9 @@ describe('minionTool', () => {
       expect(noOpts).not.toContain('web search');
     });
 
-    it('has option definitions for model, system prompt, and allowWebSearch', () => {
+    it('has option definitions for model, system prompt, allowWebSearch, and noReturnTool', () => {
       expect(minionTool.optionDefinitions).toBeDefined();
-      expect(minionTool.optionDefinitions).toHaveLength(3);
+      expect(minionTool.optionDefinitions).toHaveLength(4);
 
       const systemPromptOpt = minionTool.optionDefinitions?.find(o => o.id === 'systemPrompt');
       expect(systemPromptOpt).toBeDefined();
@@ -98,6 +123,13 @@ describe('minionTool', () => {
       expect(webSearchOpt?.type).toBe('boolean');
       if (webSearchOpt?.type === 'boolean') {
         expect(webSearchOpt.default).toBe(false);
+      }
+
+      const noReturnOpt = minionTool.optionDefinitions?.find(o => o.id === 'noReturnTool');
+      expect(noReturnOpt).toBeDefined();
+      expect(noReturnOpt?.type).toBe('boolean');
+      if (noReturnOpt?.type === 'boolean') {
+        expect(noReturnOpt.default).toBe(false);
       }
     });
   });
@@ -140,6 +172,20 @@ describe('minionTool', () => {
       expect(result).toContain('Tools: memory, js');
       expect(result).toContain('Web: enabled');
       expect(result).toContain('Complex task');
+    });
+
+    it('renders retry action', () => {
+      const input = { action: 'retry', minionChatId: 'minion_abc' };
+      const result = minionTool.renderInput!(input);
+      expect(result).toContain('Action: retry');
+      expect(result).toContain('Continue: minion_abc');
+    });
+
+    it('renders retry with replacement message', () => {
+      const input = { action: 'retry', minionChatId: 'minion_abc', message: 'New instruction' };
+      const result = minionTool.renderInput!(input);
+      expect(result).toContain('Action: retry');
+      expect(result).toContain('New instruction');
     });
   });
 
@@ -200,15 +246,38 @@ describe('minionTool', () => {
   });
 
   describe('execute', () => {
-    it('returns error when projectId is missing', async () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('returns Phase 1 error when message action has no message', async () => {
+      const result = await collectToolResult(
+        minionTool.execute({}, undefined, { projectId: 'proj_123' })
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('"message" is required');
+      expect(result.content).toContain('Resend to reattempt.');
+    });
+
+    it('returns Phase 1 error when retry action has no minionChatId', async () => {
+      const result = await collectToolResult(
+        minionTool.execute({ action: 'retry' }, undefined, { projectId: 'proj_123' })
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('"minionChatId" is required');
+      expect(result.content).toContain('Resend to reattempt.');
+    });
+
+    it('returns Phase 1 error when projectId is missing', async () => {
       const result = await collectToolResult(
         minionTool.execute({ message: 'test' }, undefined, undefined)
       );
       expect(result.isError).toBe(true);
       expect(result.content).toContain('projectId is required');
+      expect(result.content).toContain('Resend to reattempt.');
     });
 
-    it('returns error when model is not configured', async () => {
+    it('returns Phase 2 error when model is not configured (after chat creation)', async () => {
       const result = await collectToolResult(
         minionTool.execute(
           { message: 'test' },
@@ -218,6 +287,11 @@ describe('minionTool', () => {
       );
       expect(result.isError).toBe(true);
       expect(result.content).toContain('Minion model not configured');
+      expect(result.content).toContain('Resend with the message to reattempt.');
+    });
+
+    it('exports CHECKPOINT_START sentinel', () => {
+      expect(CHECKPOINT_START).toBe('_start');
     });
   });
 });

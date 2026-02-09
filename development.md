@@ -1071,12 +1071,13 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 
 **Input Parameters:**
 
-| Parameter      | Type     | Required | Description                                                                      |
-| -------------- | -------- | -------- | -------------------------------------------------------------------------------- |
-| `message`      | string   | Yes      | Task to send to minion                                                           |
-| `minionChatId` | string   | No       | Existing minion chat ID to continue conversation                                 |
-| `enableWeb`    | boolean  | No       | Enable web search for minion (only exposed when `allowWebSearch` option is true) |
-| `enabledTools` | string[] | No       | Tools for minion (validated against project tools, defaults to none)             |
+| Parameter      | Type     | Required             | Description                                                                            |
+| -------------- | -------- | -------------------- | -------------------------------------------------------------------------------------- |
+| `action`       | string   | No                   | `'message'` (default) or `'retry'`. Retry rolls back to checkpoint and re-executes.    |
+| `message`      | string   | For `message` action | Task to send to minion. For `retry`: omit to re-send original, or provide replacement. |
+| `minionChatId` | string   | For `retry` action   | Existing minion chat ID to continue or retry                                           |
+| `enableWeb`    | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)       |
+| `enabledTools` | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                   |
 
 **Tool Options:**
 
@@ -1101,7 +1102,7 @@ Minion conversations stored separately for debugging visibility:
 - `getMinionChat(id)` / `getMinionChats(parentChatId)` / `saveMinionChat()`
 - `getMinionMessages(minionChatId)` / `saveMinionMessage()`
 - Cascade deletion when parent chat is deleted
-- `checkpoint?: string` field stores last message ID before minion run (for future rollback)
+- `checkpoint?: string` field stores last message ID before minion run (used by retry action for rollback). New chats start with `CHECKPOINT_START` sentinel (`'_start'`) to enable first-run retry.
 
 **Result Handling:**
 
@@ -1118,6 +1119,14 @@ Minion conversations stored separately for debugging visibility:
   - Transferred to `ToolResultRenderBlock.tokenTotals` for per-block cost display
   - Accumulated by outer agentic loop into tool result message metadata and chat totals
   - Displayed in `ToolResultView` header (compact `$X.XXX`) and `ToolResultBubble` footer
+
+**Execution Phases:**
+
+The `executeMinion` function has three ordered phases with distinct error recovery guidance:
+
+1. **Phase 1** (load + checkpoint): Validate inputs, load/create chat, retry rollback, save checkpoint. Errors append "Resend to reattempt." — no meaningful state change occurred.
+2. **Phase 2** (validation): Check web search, model, project, API def, tools. Errors append "Resend with the message to reattempt." — checkpoint is saved but no user message yet.
+3. **Phase 3** (execution): Check pendingReturnToolUse, build/save user message, run agentic loop. Errors here can be retried via `action: 'retry'`.
 
 **Return Tool Resumption:**
 

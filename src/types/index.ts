@@ -499,6 +499,7 @@ export function initializeToolOptions(
 export interface ToolContext {
   projectId: string;
   chatId?: string;
+  namespace?: string;
 }
 
 /** Context passed to system prompt functions for dynamic generation */
@@ -510,6 +511,8 @@ export interface SystemPromptContext {
   modelId: string;
   /** API type of the current API definition (optional for backward compat) */
   apiType?: APIType;
+  /** VFS namespace for isolated minion personas */
+  namespace?: string;
 }
 
 /** Input schema type for tool definitions - includes index signature for SDK compatibility */

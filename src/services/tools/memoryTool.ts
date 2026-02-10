@@ -169,11 +169,15 @@ interface ListingEntry {
 /**
  * List directory contents up to 2 levels deep
  */
-async function listTwoLevels(projectId: string, basePath: string): Promise<ListingEntry[]> {
+async function listTwoLevels(
+  projectId: string,
+  basePath: string,
+  namespace?: string
+): Promise<ListingEntry[]> {
   const entries: ListingEntry[] = [];
 
   // Level 1: direct children
-  const level1 = await vfs.readDir(projectId, basePath);
+  const level1 = await vfs.readDir(projectId, basePath, false, namespace);
 
   for (const entry of level1) {
     const entryPath = `${basePath}/${entry.name}`;
@@ -182,7 +186,7 @@ async function listTwoLevels(projectId: string, basePath: string): Promise<Listi
     // Level 2: children of directories
     if (entry.type === 'dir') {
       try {
-        const level2 = await vfs.readDir(projectId, entryPath);
+        const level2 = await vfs.readDir(projectId, entryPath, false, namespace);
         for (const child of level2) {
           entries.push({
             path: `${entryPath}/${child.name}`,
@@ -206,7 +210,8 @@ async function listTwoLevels(projectId: string, basePath: string): Promise<Listi
 async function handleView(
   projectId: string,
   path: string,
-  viewRange?: [number, number]
+  viewRange?: [number, number],
+  namespace?: string
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
@@ -214,14 +219,14 @@ async function handleView(
   if (vfsPath === MEMORIES_ROOT) {
     try {
       // Ensure the /memories directory exists
-      const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT);
+      const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
       if (!memoriesExists) {
         return {
           content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
         };
       }
 
-      const entries = await listTwoLevels(projectId, MEMORIES_ROOT);
+      const entries = await listTwoLevels(projectId, MEMORIES_ROOT, namespace);
 
       if (entries.length === 0) {
         return {
@@ -251,7 +256,7 @@ async function handleView(
 
   // File content
   try {
-    const content = await vfs.readFile(projectId, vfsPath);
+    const content = await vfs.readFile(projectId, vfsPath, namespace);
     const lines = content.split('\n');
 
     if (lines.length > MAX_LINE_COUNT) {
@@ -288,7 +293,7 @@ async function handleView(
       }
       if (error.code === 'NOT_A_FILE') {
         // It's a directory, list its contents (2 levels deep)
-        const entries = await listTwoLevels(projectId, vfsPath);
+        const entries = await listTwoLevels(projectId, vfsPath, namespace);
         const listing = entries
           .map(entry => {
             const size = entry.size !== undefined ? formatSize(entry.size) : '0';
@@ -309,7 +314,8 @@ async function handleView(
 async function handleCreate(
   projectId: string,
   path: string,
-  fileText: string
+  fileText: string,
+  namespace?: string
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
@@ -322,12 +328,12 @@ async function handleCreate(
 
   try {
     // Ensure /memories directory exists
-    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT);
+    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
     if (!memoriesExists) {
-      await vfs.mkdir(projectId, MEMORIES_ROOT);
+      await vfs.mkdir(projectId, MEMORIES_ROOT, namespace);
     }
 
-    await vfs.createFile(projectId, vfsPath, fileText);
+    await vfs.createFile(projectId, vfsPath, fileText, namespace);
 
     return {
       content: `File created successfully at: ${vfsPath}`,
@@ -348,7 +354,8 @@ async function handleStrReplace(
   projectId: string,
   path: string,
   oldStr: string,
-  newStr: string
+  newStr: string,
+  namespace?: string
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
@@ -360,7 +367,7 @@ async function handleStrReplace(
   }
 
   try {
-    const content = await vfs.readFile(projectId, vfsPath);
+    const content = await vfs.readFile(projectId, vfsPath, namespace);
 
     const occurrences = countOccurrences(content, oldStr);
 
@@ -385,7 +392,7 @@ async function handleStrReplace(
 
     // Replace first (and only) occurrence
     const newContent = content.replace(oldStr, newStr);
-    await vfs.updateFile(projectId, vfsPath, newContent);
+    await vfs.updateFile(projectId, vfsPath, newContent, namespace);
 
     const snippet = formatEditSnippet(newContent, editLine);
 
@@ -414,7 +421,8 @@ async function handleInsert(
   projectId: string,
   path: string,
   insertLine: number,
-  insertText: string
+  insertText: string,
+  namespace?: string
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
@@ -426,7 +434,7 @@ async function handleInsert(
   }
 
   try {
-    const content = await vfs.readFile(projectId, vfsPath);
+    const content = await vfs.readFile(projectId, vfsPath, namespace);
     const lines = content.split('\n');
     const nLines = lines.length;
 
@@ -443,7 +451,7 @@ async function handleInsert(
     lines.splice(insertLine, 0, ...textLines);
     const newContent = lines.join('\n');
 
-    await vfs.updateFile(projectId, vfsPath, newContent);
+    await vfs.updateFile(projectId, vfsPath, newContent, namespace);
 
     return {
       content: `The file ${vfsPath} has been edited.`,
@@ -466,7 +474,11 @@ async function handleInsert(
 }
 
 /** Handle delete command */
-async function handleDelete(projectId: string, path: string): Promise<ToolResult> {
+async function handleDelete(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
   if (vfsPath === MEMORIES_ROOT) {
@@ -477,7 +489,7 @@ async function handleDelete(projectId: string, path: string): Promise<ToolResult
   }
 
   try {
-    await vfs.deleteFile(projectId, vfsPath);
+    await vfs.deleteFile(projectId, vfsPath, namespace);
 
     return {
       content: `Successfully deleted ${vfsPath}`,
@@ -493,7 +505,7 @@ async function handleDelete(projectId: string, path: string): Promise<ToolResult
       if (error.code === 'NOT_A_FILE') {
         // Try deleting as a directory
         try {
-          await vfs.rmdir(projectId, vfsPath, true);
+          await vfs.rmdir(projectId, vfsPath, true, namespace);
           return {
             content: `Successfully deleted ${vfsPath}`,
           };
@@ -513,7 +525,8 @@ async function handleDelete(projectId: string, path: string): Promise<ToolResult
 async function handleRename(
   projectId: string,
   oldPath: string,
-  newPath: string
+  newPath: string,
+  namespace?: string
 ): Promise<ToolResult> {
   const oldVfsPath = normalizeToVfsPath(oldPath);
   const newVfsPath = normalizeToVfsPath(newPath);
@@ -533,7 +546,7 @@ async function handleRename(
   }
 
   try {
-    await vfs.rename(projectId, oldVfsPath, newVfsPath);
+    await vfs.rename(projectId, oldVfsPath, newVfsPath, namespace);
 
     return {
       content: `Successfully renamed ${oldVfsPath} to ${newVfsPath}`,
@@ -578,31 +591,34 @@ async function* executeMemoryCommand(
   }
 
   const projectId = context.projectId;
+  const namespace = context.namespace;
   const memoryInput = input as unknown as MemoryInput;
 
   switch (memoryInput.command) {
     case 'view':
-      return handleView(projectId, memoryInput.path, memoryInput.view_range);
+      return handleView(projectId, memoryInput.path, memoryInput.view_range, namespace);
     case 'create':
-      return handleCreate(projectId, memoryInput.path, memoryInput.file_text);
+      return handleCreate(projectId, memoryInput.path, memoryInput.file_text, namespace);
     case 'str_replace':
       return handleStrReplace(
         projectId,
         memoryInput.path,
         memoryInput.old_str,
-        memoryInput.new_str
+        memoryInput.new_str,
+        namespace
       );
     case 'insert':
       return handleInsert(
         projectId,
         memoryInput.path,
         memoryInput.insert_line,
-        memoryInput.insert_text
+        memoryInput.insert_text,
+        namespace
       );
     case 'delete':
-      return handleDelete(projectId, memoryInput.path);
+      return handleDelete(projectId, memoryInput.path, namespace);
     case 'rename':
-      return handleRename(projectId, memoryInput.old_path, memoryInput.new_path);
+      return handleRename(projectId, memoryInput.old_path, memoryInput.new_path, namespace);
     default:
       return {
         content: `Unknown memory command: ${(memoryInput as { command: string }).command}`,
@@ -638,7 +654,7 @@ async function getMemorySystemPrompt(
   context: SystemPromptContext,
   toolOptions: ToolOptions
 ): Promise<string> {
-  const { projectId, apiType } = context;
+  const { projectId, apiType, namespace } = context;
 
   // System prompt injection rules:
   // - Anthropic with useSystemPrompt=false: NO injection (native tool handles it)
@@ -656,9 +672,9 @@ async function getMemorySystemPrompt(
 Unless asked otherwise, as you make progress, record status / progress / thoughts etc in your memory and use README.md as an index.`;
 
   try {
-    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT);
+    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
     if (memoriesExists) {
-      const entries = await listTwoLevels(projectId, MEMORIES_ROOT);
+      const entries = await listTwoLevels(projectId, MEMORIES_ROOT, namespace);
 
       if (entries.length > 0) {
         const listing = entries.map(entry => `\t${entry.path}`).join('\n');
@@ -698,9 +714,9 @@ The /memories directory is empty.`);
   // Part 2: Read /memories/README.md if it exists
   const readmePath = `${MEMORIES_ROOT}/README.md`;
   try {
-    const readmeExists = await vfs.exists(projectId, readmePath);
+    const readmeExists = await vfs.exists(projectId, readmePath, namespace);
     if (readmeExists) {
-      const content = await vfs.readFile(projectId, readmePath);
+      const content = await vfs.readFile(projectId, readmePath, namespace);
       const lines = content.split('\n');
       const totalLines = lines.length;
 

@@ -106,7 +106,7 @@ async function* executeJavaScript(
   const loadLib = toolOptions?.loadLib === true;
 
   // Create fresh context for this execution
-  const vm = await JsVMContext.create(context.projectId, loadLib);
+  const vm = await JsVMContext.create(context.projectId, loadLib, context.namespace);
 
   try {
     // Wrap code in async IIFE so await works at top level and return value is captured

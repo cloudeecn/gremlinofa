@@ -133,7 +133,7 @@ describe('memoryTool', () => {
 
       expect(result.content).toContain("Here's the content of /memories/test.md");
       expect(result.isError).toBeFalsy();
-      expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
+      expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md', undefined);
     });
 
     it('returns error when file exceeds 999,999 line limit', async () => {
@@ -162,7 +162,12 @@ describe('memoryTool', () => {
 
       expect(result.content).toBe('File created successfully at: /memories/new.md');
       expect(result.isError).toBeFalsy();
-      expect(vfs.createFile).toHaveBeenCalledWith(projectId, '/memories/new.md', 'New content');
+      expect(vfs.createFile).toHaveBeenCalledWith(
+        projectId,
+        '/memories/new.md',
+        'New content',
+        undefined
+      );
     });
 
     it('creates /memories directory if it does not exist', async () => {
@@ -177,7 +182,7 @@ describe('memoryTool', () => {
       });
 
       expect(result.content).toBe('File created successfully at: /memories/new.md');
-      expect(vfs.mkdir).toHaveBeenCalledWith(projectId, '/memories');
+      expect(vfs.mkdir).toHaveBeenCalledWith(projectId, '/memories', undefined);
     });
 
     it('returns error when file exists', async () => {
@@ -217,7 +222,12 @@ describe('memoryTool', () => {
       expect(result.content).toContain('The memory file has been edited.');
       expect(result.content).toContain('Hello universe');
       expect(result.isError).toBeFalsy();
-      expect(vfs.updateFile).toHaveBeenCalledWith(projectId, '/memories/test.md', 'Hello universe');
+      expect(vfs.updateFile).toHaveBeenCalledWith(
+        projectId,
+        '/memories/test.md',
+        'Hello universe',
+        undefined
+      );
     });
 
     it('returns error when old_str not found', async () => {
@@ -283,7 +293,8 @@ describe('memoryTool', () => {
       expect(vfs.updateFile).toHaveBeenCalledWith(
         projectId,
         '/memories/test.md',
-        'New first line\nLine 1\nLine 2'
+        'New first line\nLine 1\nLine 2',
+        undefined
       );
     });
 
@@ -302,7 +313,8 @@ describe('memoryTool', () => {
       expect(vfs.updateFile).toHaveBeenCalledWith(
         projectId,
         '/memories/test.md',
-        'Line 1\nLine 2\nInserted line\nLine 3'
+        'Line 1\nLine 2\nInserted line\nLine 3',
+        undefined
       );
     });
 
@@ -321,7 +333,8 @@ describe('memoryTool', () => {
       expect(vfs.updateFile).toHaveBeenCalledWith(
         projectId,
         '/memories/test.md',
-        'Line 1\nLine 2\nLast line'
+        'Line 1\nLine 2\nLast line',
+        undefined
       );
     });
 
@@ -340,7 +353,8 @@ describe('memoryTool', () => {
       expect(vfs.updateFile).toHaveBeenCalledWith(
         projectId,
         '/memories/test.md',
-        'Line 1\nLine 2a\nLine 2b\nLine 3'
+        'Line 1\nLine 2a\nLine 2b\nLine 3',
+        undefined
       );
     });
 
@@ -412,7 +426,7 @@ describe('memoryTool', () => {
 
       expect(result.content).toBe('Successfully deleted /memories/test.md');
       expect(result.isError).toBeFalsy();
-      expect(vfs.deleteFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
+      expect(vfs.deleteFile).toHaveBeenCalledWith(projectId, '/memories/test.md', undefined);
     });
 
     it('returns error for non-existent file', async () => {
@@ -448,7 +462,7 @@ describe('memoryTool', () => {
 
       expect(result.content).toBe('Successfully deleted /memories/subdir');
       expect(result.isError).toBeFalsy();
-      expect(vfs.rmdir).toHaveBeenCalledWith(projectId, '/memories/subdir', true);
+      expect(vfs.rmdir).toHaveBeenCalledWith(projectId, '/memories/subdir', true, undefined);
     });
   });
 
@@ -464,7 +478,12 @@ describe('memoryTool', () => {
 
       expect(result.content).toBe('Successfully renamed /memories/old.md to /memories/new.md');
       expect(result.isError).toBeFalsy();
-      expect(vfs.rename).toHaveBeenCalledWith(projectId, '/memories/old.md', '/memories/new.md');
+      expect(vfs.rename).toHaveBeenCalledWith(
+        projectId,
+        '/memories/old.md',
+        '/memories/new.md',
+        undefined
+      );
     });
 
     it('returns error when source does not exist', async () => {
@@ -562,25 +581,25 @@ describe('path normalization', () => {
   it('handles /memories/file.md', async () => {
     const result = await executeMemory({ command: 'view', path: '/memories/test.md' });
     expect(result.isError).toBeFalsy();
-    expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
+    expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md', undefined);
   });
 
   it('handles file.md (no prefix)', async () => {
     const result = await executeMemory({ command: 'view', path: 'test.md' });
     expect(result.isError).toBeFalsy();
-    expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
+    expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md', undefined);
   });
 
   it('handles /file.md (leading slash)', async () => {
     const result = await executeMemory({ command: 'view', path: '/test.md' });
     expect(result.isError).toBeFalsy();
-    expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
+    expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md', undefined);
   });
 
   it('handles paths with whitespace', async () => {
     const result = await executeMemory({ command: 'view', path: '  /memories/test.md  ' });
     expect(result.isError).toBeFalsy();
-    expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md');
+    expect(vfs.readFile).toHaveBeenCalledWith(projectId, '/memories/test.md', undefined);
   });
 });
 

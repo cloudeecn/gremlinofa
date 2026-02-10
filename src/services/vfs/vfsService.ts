@@ -88,6 +88,26 @@ export function isRootPath(path: string): boolean {
   return normalizePath(path) === '/';
 }
 
+/**
+ * Resolve a path within a namespace.
+ * - No namespace → returns normalizePath(path)
+ * - /share paths → bypass namespace, return normalizePath(path)
+ * - Otherwise → normalizePath(namespace) + normalizePath(path)
+ *
+ * Path traversal is mitigated: both path and namespace are normalized
+ * (which strips ..) before concatenation.
+ */
+export function resolveNamespacedPath(path: string, namespace?: string): string {
+  const normalized = normalizePath(path);
+  if (!namespace) return normalized;
+  if (normalized === '/share' || normalized.startsWith('/share/')) return normalized;
+  const normalizedNs = normalizePath(namespace);
+  if (normalizedNs === '/') return normalized;
+  // When path normalizes to '/', just return the namespace path
+  if (normalized === '/') return normalizedNs;
+  return normalizedNs + normalized;
+}
+
 // ============================================================================
 // Tree Navigation Helpers
 // ============================================================================
@@ -454,9 +474,14 @@ export function base64ToBuffer(base64: string): ArrayBuffer {
  * Create a new file
  * @throws VfsError if file exists or parent is not a directory
  */
-export async function createFile(projectId: string, path: string, content: string): Promise<void> {
+export async function createFile(
+  projectId: string,
+  path: string,
+  content: string,
+  namespace?: string
+): Promise<void> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const basename = getBasename(normalized);
 
   if (!basename) {
@@ -508,9 +533,13 @@ export async function createFile(projectId: string, path: string, content: strin
  * Read file content
  * @throws VfsError if file not found or is deleted
  */
-export async function readFile(projectId: string, path: string): Promise<string> {
+export async function readFile(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<string> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const { node } = navigateToNode(tree, normalized);
 
   if (!node) {
@@ -537,9 +566,14 @@ export async function readFile(projectId: string, path: string): Promise<string>
  * Update file content (creates a new version)
  * @throws VfsError if file not found or is deleted
  */
-export async function updateFile(projectId: string, path: string, content: string): Promise<void> {
+export async function updateFile(
+  projectId: string,
+  path: string,
+  content: string,
+  namespace?: string
+): Promise<void> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const { node } = navigateToNode(tree, normalized);
 
   if (!node) {
@@ -592,10 +626,11 @@ export async function updateFile(projectId: string, path: string, content: strin
 export async function writeFile(
   projectId: string,
   path: string,
-  content: FileContent
+  content: FileContent,
+  namespace?: string
 ): Promise<void> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const basename = getBasename(normalized);
 
   if (!basename) {
@@ -707,9 +742,13 @@ export async function writeFile(
  * For binary files, returns base64 content and ArrayBuffer.
  * @throws VfsError if file not found or is deleted
  */
-export async function readFileWithMeta(projectId: string, path: string): Promise<ReadFileResult> {
+export async function readFileWithMeta(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<ReadFileResult> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const { node } = navigateToNode(tree, normalized);
 
   if (!node) {
@@ -752,9 +791,13 @@ export async function readFileWithMeta(projectId: string, path: string): Promise
  * Soft-delete a file (marks as deleted, content preserved)
  * @throws VfsError if file not found
  */
-export async function deleteFile(projectId: string, path: string): Promise<void> {
+export async function deleteFile(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<void> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const { node } = navigateToNode(tree, normalized);
 
   if (!node) {
@@ -784,9 +827,9 @@ export async function deleteFile(projectId: string, path: string): Promise<void>
  * Create a directory
  * @throws VfsError if path exists
  */
-export async function mkdir(projectId: string, path: string): Promise<void> {
+export async function mkdir(projectId: string, path: string, namespace?: string): Promise<void> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const basename = getBasename(normalized);
 
   if (!basename) {
@@ -831,9 +874,14 @@ export async function mkdir(projectId: string, path: string): Promise<void> {
  * @param recursive If true, delete all contents. If false, error if not empty.
  * @throws VfsError if not a directory or (if not recursive) not empty
  */
-export async function rmdir(projectId: string, path: string, recursive = false): Promise<void> {
+export async function rmdir(
+  projectId: string,
+  path: string,
+  recursive = false,
+  namespace?: string
+): Promise<void> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
 
   if (isRootPath(normalized)) {
     throw new VfsError('Cannot delete root directory', 'INVALID_PATH');
@@ -885,10 +933,11 @@ export async function rmdir(projectId: string, path: string, recursive = false):
 export async function readDir(
   projectId: string,
   path: string,
-  includeDeleted = false
+  includeDeleted = false,
+  namespace?: string
 ): Promise<DirEntry[]> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
 
   let children: Record<string, VfsNode>;
 
@@ -956,10 +1005,15 @@ export async function readDir(
  * Handles orphan creation when displacing a soft-deleted node
  * @throws VfsError if source not found or destination exists (and not deleted)
  */
-export async function rename(projectId: string, oldPath: string, newPath: string): Promise<void> {
+export async function rename(
+  projectId: string,
+  oldPath: string,
+  newPath: string,
+  namespace?: string
+): Promise<void> {
   const tree = await loadTree(projectId);
-  const oldNormalized = normalizePath(oldPath);
-  const newNormalized = normalizePath(newPath);
+  const oldNormalized = resolveNamespacedPath(oldPath, namespace);
+  const newNormalized = resolveNamespacedPath(newPath, namespace);
 
   if (oldNormalized === newNormalized) return; // No-op
 
@@ -1046,9 +1100,13 @@ export async function rename(projectId: string, oldPath: string, newPath: string
 /**
  * Check if a path exists (and is not deleted)
  */
-export async function exists(projectId: string, path: string): Promise<boolean> {
+export async function exists(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<boolean> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
 
   if (isRootPath(normalized)) return true;
 
@@ -1059,9 +1117,13 @@ export async function exists(projectId: string, path: string): Promise<boolean> 
 /**
  * Check if path is a file
  */
-export async function isFile(projectId: string, path: string): Promise<boolean> {
+export async function isFile(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<boolean> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const { node } = navigateToNode(tree, normalized);
   return node !== null && node.type === 'file' && !node.deleted;
 }
@@ -1069,9 +1131,13 @@ export async function isFile(projectId: string, path: string): Promise<boolean> 
 /**
  * Check if path is a directory
  */
-export async function isDirectory(projectId: string, path: string): Promise<boolean> {
+export async function isDirectory(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<boolean> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
 
   if (isRootPath(normalized)) return true;
 
@@ -1087,9 +1153,9 @@ export async function isDirectory(projectId: string, path: string): Promise<bool
  * Restore a soft-deleted file or directory
  * @throws VfsError if path not found or not deleted
  */
-export async function restore(projectId: string, path: string): Promise<void> {
+export async function restore(projectId: string, path: string, namespace?: string): Promise<void> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const { node } = navigateToNode(tree, normalized);
 
   if (!node) {
@@ -1119,9 +1185,9 @@ export async function restore(projectId: string, path: string): Promise<void> {
  * Only works on soft-deleted items
  * @throws VfsError if not deleted
  */
-export async function purge(projectId: string, path: string): Promise<void> {
+export async function purge(projectId: string, path: string, namespace?: string): Promise<void> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
   const { node, parent, name } = navigateToNode(tree, normalized);
 
   if (!node) {
@@ -1213,9 +1279,9 @@ export interface VfsStat {
  * Get stat information for a path
  * @throws VfsError if path not found or is deleted
  */
-export async function stat(projectId: string, path: string): Promise<VfsStat> {
+export async function stat(projectId: string, path: string, namespace?: string): Promise<VfsStat> {
   const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
+  const normalized = resolveNamespacedPath(path, namespace);
 
   // Handle root directory
   if (isRootPath(normalized)) {
@@ -1628,10 +1694,11 @@ export async function strReplace(
   projectId: string,
   path: string,
   oldStr: string,
-  newStr: string
+  newStr: string,
+  namespace?: string
 ): Promise<StrReplaceResult> {
-  const content = await readFile(projectId, path);
-  const normalized = normalizePath(path);
+  const content = await readFile(projectId, path, namespace);
+  const normalized = resolveNamespacedPath(path, namespace);
 
   const occurrences = countOccurrences(content, oldStr);
 
@@ -1658,7 +1725,7 @@ export async function strReplace(
   const newContent = content.replace(oldStr, newStr);
 
   // Update file (triggers versioning)
-  await updateFile(projectId, path, newContent);
+  await updateFile(projectId, path, newContent, namespace);
 
   return {
     editLine,
@@ -1683,10 +1750,11 @@ export async function insert(
   projectId: string,
   path: string,
   insertLine: number,
-  insertText: string
+  insertText: string,
+  namespace?: string
 ): Promise<InsertResult> {
-  const content = await readFile(projectId, path);
-  const normalized = normalizePath(path);
+  const content = await readFile(projectId, path, namespace);
+  const normalized = resolveNamespacedPath(path, namespace);
 
   const lines = content.split('\n');
   const nLines = lines.length;
@@ -1705,7 +1773,7 @@ export async function insert(
   const newContent = lines.join('\n');
 
   // Update file (triggers versioning)
-  await updateFile(projectId, path, newContent);
+  await updateFile(projectId, path, newContent, namespace);
 
   return {
     insertedAt: insertLine,

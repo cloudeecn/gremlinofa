@@ -74,8 +74,13 @@ export class JsVMContext {
    * Create a new JsVMContext with polyfills injected.
    * @param projectId - Optional project ID to enable fs operations
    * @param loadLib - Whether to load /lib scripts on session start (default: true)
+   * @param namespace - Optional VFS namespace for isolated minion personas
    */
-  static async create(projectId?: string, loadLib = true): Promise<JsVMContext> {
+  static async create(
+    projectId?: string,
+    loadLib = true,
+    namespace?: string
+  ): Promise<JsVMContext> {
     const module = await getModule();
     const context = module.newContext();
     const vm = new JsVMContext(context);
@@ -86,12 +91,12 @@ export class JsVMContext {
 
     // Set up fs bridge if projectId provided
     if (projectId) {
-      vm.fsBridge = new FsBridge(projectId, context);
+      vm.fsBridge = new FsBridge(projectId, context, namespace);
       vm.fsBridge.injectFs();
 
       // Load and execute /lib scripts if enabled and the directory exists
       if (loadLib) {
-        await vm.loadLibScripts(projectId);
+        await vm.loadLibScripts(projectId, namespace);
       }
     }
 
@@ -103,18 +108,18 @@ export class JsVMContext {
    * Scripts are executed with their filename for better stack traces.
    * Console output during library loading is captured in libraryConsoleOutput.
    */
-  private async loadLibScripts(projectId: string): Promise<void> {
+  private async loadLibScripts(projectId: string, namespace?: string): Promise<void> {
     const libPath = '/lib';
 
     try {
       // Check if /lib directory exists
-      const libExists = await vfs.isDirectory(projectId, libPath);
+      const libExists = await vfs.isDirectory(projectId, libPath, namespace);
       if (!libExists) {
         return;
       }
 
       // List files in /lib (non-recursive)
-      const entries = await vfs.readDir(projectId, libPath);
+      const entries = await vfs.readDir(projectId, libPath, false, namespace);
 
       // Filter for .js files and sort alphabetically for deterministic order
       const jsFiles = entries
@@ -143,7 +148,7 @@ export class JsVMContext {
           this.consoleOutput = libraryOutput;
 
           try {
-            const content = await vfs.readFile(projectId, filePath);
+            const content = await vfs.readFile(projectId, filePath, namespace);
 
             // Use evalCode directly (not evaluate) to avoid resetting consoleOutput
             // and to have simpler error handling during init

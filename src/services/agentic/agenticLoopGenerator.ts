@@ -69,6 +69,9 @@ export interface AgenticLoopOptions {
   toolOptions: Record<string, ToolOptions>;
   disableStream: boolean;
 
+  // VFS namespace for isolated minion personas
+  namespace?: string;
+
   // Anthropic reasoning
   enableReasoning: boolean;
   reasoningBudgetTokens: number;
@@ -556,7 +559,7 @@ export async function* runAgenticLoop(
   const { apiDef, model, projectId, chatId, enabledTools, toolOptions } = options;
 
   // Build tool execution context
-  const toolContext = { projectId, chatId };
+  const toolContext = { projectId, chatId, namespace: options.namespace };
 
   // Copy to avoid mutating caller's array (React state safety)
   const messages = [...context];

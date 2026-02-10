@@ -18,6 +18,7 @@ import type {
   Message,
   MinionChat,
   RenderingBlockGroup,
+  SystemPromptContext,
   ToolContext,
   ToolInputSchema,
   ToolOptions,
@@ -38,6 +39,7 @@ import {
 import { createTokenTotals, addTokens } from '../../utils/tokenTotals';
 import { toolRegistry } from './clientSideTools';
 import { apiService } from '../api/apiService';
+import * as vfs from '../vfs/vfsService';
 
 // Tool names that minions cannot use
 const MINION_EXCLUDED_TOOLS = ['minion'];
@@ -105,6 +107,8 @@ interface MinionInput {
   enableWeb?: boolean;
   /** Scoped tools for the minion (intersected with project tools) */
   enabledTools?: string[];
+  /** Persona name (matches /minions/<name>.md). Only used when namespacedMinion is enabled. */
+  persona?: string;
 }
 
 /**
@@ -482,9 +486,44 @@ async function* executeMinion(
     minionContext = [...existingMessages, userMessage];
   }
 
-  // Get minion system prompt from toolOptions
-  const minionSystemPrompt =
-    typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+  // Resolve persona and namespace when namespacedMinion is enabled
+  const namespacedMinion = minionToolOptions.namespacedMinion === true;
+  let minionNamespace: string | undefined;
+  let minionSystemPrompt: string;
+
+  if (namespacedMinion) {
+    const persona = minionInput.persona ?? 'default';
+    minionNamespace = `/minions/${persona}`;
+
+    // Read global prompt shared across all personas
+    let globalPrompt = '';
+    try {
+      globalPrompt = await vfs.readFile(context.projectId, '/minions/_global.md');
+    } catch {
+      // No global prompt — that's fine
+    }
+
+    if (persona !== 'default') {
+      // Read persona prompt from /minions/<persona>.md (root VFS, no namespace)
+      try {
+        const personaPrompt = await vfs.readFile(context.projectId, `/minions/${persona}.md`);
+        minionSystemPrompt = [globalPrompt, personaPrompt].filter(Boolean).join('\n\n');
+      } catch {
+        return {
+          content: `Error: Persona file /minions/${persona}.md not found. Create the file or use a different persona. Resend with the message to reattempt.`,
+          isError: true,
+        };
+      }
+    } else {
+      // Default persona uses configured system prompt
+      const configuredPrompt =
+        typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+      minionSystemPrompt = [globalPrompt, configuredPrompt].filter(Boolean).join('\n\n');
+    }
+  } else {
+    minionSystemPrompt =
+      typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+  }
 
   // Build system prompts from enabled tools
   const systemPromptContext = {
@@ -493,6 +532,7 @@ async function* executeMinion(
     apiDefinitionId: apiDef.id,
     modelId: model.id,
     apiType: apiDef.apiType,
+    namespace: minionNamespace,
   };
 
   const toolSystemPrompts = await toolRegistry.getSystemPrompts(
@@ -521,6 +561,7 @@ async function* executeMinion(
     enabledTools: minionTools,
     toolOptions: project.toolOptions ?? {},
     disableStream: project.disableStream ?? false,
+    namespace: minionNamespace,
     // Reasoning settings from project
     enableReasoning: project.enableReasoning,
     reasoningBudgetTokens: project.reasoningBudgetTokens,
@@ -736,6 +777,52 @@ function renderMinionOutput(output: string, isError?: boolean): string {
   }
 }
 
+/**
+ * System prompt for persona discovery.
+ * Lists available persona files from /minions/ when namespacedMinion is enabled.
+ */
+async function getMinionSystemPromptInjection(
+  context: SystemPromptContext,
+  opts: ToolOptions
+): Promise<string> {
+  if (opts.namespacedMinion !== true) return '';
+
+  try {
+    const dirExists = await vfs.isDirectory(context.projectId, '/minions');
+    if (!dirExists) return '';
+
+    const entries = await vfs.readDir(context.projectId, '/minions');
+    const personaFiles = entries
+      .filter(e => e.type === 'file' && e.name.endsWith('.md'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    if (personaFiles.length === 0) return '';
+
+    const lines = ['## Available Minion Personas', ''];
+    for (const file of personaFiles) {
+      const name = file.name.replace(/\.md$/, '');
+      try {
+        const content = await vfs.readFile(context.projectId, `/minions/${file.name}`);
+        const firstLine = content
+          .split('\n')[0]
+          .replace(/^#+\s*/, '')
+          .trim();
+        lines.push(`- **${name}**: ${firstLine}`);
+      } catch {
+        lines.push(`- **${name}**`);
+      }
+    }
+    lines.push(
+      '',
+      'Use the `persona` parameter when calling the minion tool to select one.',
+      'Omit persona for the default minion (uses configured system prompt).'
+    );
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
 /** Build minion tool description, conditionally including web search bullet. */
 function getMinionDescription(opts: ToolOptions): string {
   const lines = [
@@ -753,6 +840,12 @@ function getMinionDescription(opts: ToolOptions): string {
   lines.push(
     '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)'
   );
+
+  if (opts.namespacedMinion === true) {
+    lines.push(
+      '- Select a persona via the persona parameter. Each persona gets its own isolated VFS namespace and system prompt from /minions/<name>.md'
+    );
+  }
 
   if (opts.noReturnTool !== true) {
     lines.push(
@@ -797,6 +890,14 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     };
   }
 
+  if (opts.namespacedMinion === true) {
+    properties.persona = {
+      type: 'string',
+      description:
+        'Persona name for the minion (matches a file in /minions/). Omit for default persona.',
+    };
+  }
+
   return {
     type: 'object',
     properties,
@@ -816,6 +917,7 @@ export const minionTool: ClientSideTool = {
   displaySubtitle: 'Delegate tasks to a sub-agent',
   description: getMinionDescription,
   inputSchema: getMinionInputSchema,
+  systemPrompt: getMinionSystemPromptInjection,
 
   iconInput: '🤖',
   iconOutput: '🤖',
@@ -847,6 +949,13 @@ export const minionTool: ClientSideTool = {
       id: 'noReturnTool',
       label: 'No Return Tool',
       subtitle: 'Remove the return tool from minion toolset',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'namespacedMinion',
+      label: 'Namespaced Minion',
+      subtitle: 'Isolate each persona into its own VFS namespace',
       default: false,
     },
   ],

@@ -806,6 +806,7 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 - Per-file versioning in `vfs_versions` table (auto-versioned on every update)
 - Soft-delete with orphan tracking for displaced files during renames
 - 999,999 line limit per file (returns error if exceeded)
+- **Namespace isolation**: All public VFS functions accept an optional `namespace` parameter. When set, paths are resolved through the namespace (e.g., `/minions/coder` + `/memories/note.md` → `/minions/coder/memories/note.md`). Paths starting with `/share` bypass namespace prefixing for cross-namespace file sharing. `resolveNamespacedPath()` handles resolution with path traversal mitigation.
 
 **Storage Tables:**
 
@@ -1079,12 +1080,27 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 | `minionChatId` | string   | For `retry` action   | Existing minion chat ID to continue or retry                                           |
 | `enableWeb`    | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)       |
 | `enabledTools` | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                   |
+| `persona`      | string   | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is enabled.  |
 
 **Tool Options:**
 
 - `systemPrompt` (longtext) - Instructions for minion sub-agents
 - `model` (ModelReference) - Model for delegated tasks (can use cheaper model)
 - `allowWebSearch` (boolean, default: false) - Project-level gate for minion web search. Must be enabled for `enableWeb` to work. When disabled, `enableWeb` parameter and web search mention are omitted from the schema/description sent to the LLM.
+- `noReturnTool` (boolean, default: false) - Remove the return tool from minion toolset
+- `namespacedMinion` (boolean, default: false) - Isolate each persona into its own VFS namespace. When enabled, adds `persona` input parameter and system prompt with available personas list.
+
+**Persona System (namespacedMinion):**
+
+When `namespacedMinion` is enabled, each minion gets VFS namespace isolation based on its persona:
+
+- Persona files stored at `/minions/<name>.md` in root VFS. Content becomes the minion's system prompt.
+- `/minions/_global.md` (optional) — content prepended to the system prompt for all personas (including default). Read from root VFS before persona-specific prompt.
+- `persona` input parameter selects a persona (omit for `default`). Each persona maps to namespace `/minions/<persona>`.
+- Namespace flows through the agentic loop: `AgenticLoopOptions.namespace` → `ToolContext.namespace` → all VFS calls in memory, filesystem, and JavaScript tools.
+- A persona's `/memories/README.md` resolves to `/minions/<persona>/memories/README.md` in VFS storage.
+- `/share` paths bypass namespace prefixing, enabling cross-persona file sharing.
+- System prompt injection lists available personas from `/minions/*.md` with their first lines.
 
 **Tool Scoping:**
 

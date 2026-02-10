@@ -91,6 +91,44 @@ describe('minionTool', () => {
       expect(schema.properties).not.toHaveProperty('enableWeb');
     });
 
+    it('schema includes persona when namespacedMinion is true', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ namespacedMinion: true })
+          : minionTool.inputSchema;
+      expect(schema.properties).toHaveProperty('persona');
+    });
+
+    it('schema excludes persona when namespacedMinion is false', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ namespacedMinion: false })
+          : minionTool.inputSchema;
+      expect(schema.properties).not.toHaveProperty('persona');
+    });
+
+    it('schema excludes persona when namespacedMinion is missing', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({})
+          : minionTool.inputSchema;
+      expect(schema.properties).not.toHaveProperty('persona');
+    });
+
+    it('description mentions persona when namespacedMinion is true', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') throw new Error('Expected description to be a function');
+      const desc = descFn({ namespacedMinion: true });
+      expect(desc).toContain('persona');
+    });
+
+    it('description omits persona when namespacedMinion is false', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') throw new Error('Expected description to be a function');
+      const desc = descFn({});
+      expect(desc).not.toContain('persona');
+    });
+
     it('description mentions web search only when allowWebSearch is true', () => {
       const descFn = minionTool.description;
       if (typeof descFn !== 'function') {
@@ -106,9 +144,9 @@ describe('minionTool', () => {
       expect(noOpts).not.toContain('web search');
     });
 
-    it('has option definitions for model, system prompt, allowWebSearch, and noReturnTool', () => {
+    it('has option definitions for model, system prompt, allowWebSearch, noReturnTool, and namespacedMinion', () => {
       expect(minionTool.optionDefinitions).toBeDefined();
-      expect(minionTool.optionDefinitions).toHaveLength(4);
+      expect(minionTool.optionDefinitions).toHaveLength(5);
 
       const systemPromptOpt = minionTool.optionDefinitions?.find(o => o.id === 'systemPrompt');
       expect(systemPromptOpt).toBeDefined();
@@ -130,6 +168,13 @@ describe('minionTool', () => {
       expect(noReturnOpt?.type).toBe('boolean');
       if (noReturnOpt?.type === 'boolean') {
         expect(noReturnOpt.default).toBe(false);
+      }
+
+      const namespacedOpt = minionTool.optionDefinitions?.find(o => o.id === 'namespacedMinion');
+      expect(namespacedOpt).toBeDefined();
+      expect(namespacedOpt?.type).toBe('boolean');
+      if (namespacedOpt?.type === 'boolean') {
+        expect(namespacedOpt.default).toBe(false);
       }
     });
   });

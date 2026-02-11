@@ -796,6 +796,8 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 | `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (0-indexed)                                      |
 | `delete`      | `path`                               | Delete file or directory (soft delete)                                        |
 | `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                                |
+| `mkdir`       | `path`                               | Create a new directory                                                        |
+| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists                    |
 
 **VFS Architecture:**
 
@@ -870,12 +872,14 @@ Client-side tool that provides LLM access to the project's virtual filesystem. S
 | `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (text files only)                    |
 | `delete`      | `path`                               | Delete file or directory (soft delete)                            |
 | `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                    |
+| `mkdir`       | `path`                               | Create a new directory                                            |
+| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists        |
 
 **Binary File Support:**
 
 - **Create binary files**: Pass dataUrl format (`data:<mime>;base64,<data>`) as `file_text`
 - **View binary files**: Returns `Binary file {path} ({mime}):\n{dataUrl}` format
-- **Text operations blocked**: `str_replace` and `insert` return error on binary files
+- **Text operations blocked**: `str_replace`, `insert`, and `append` return error on binary files
 - MIME detection via magic bytes (JPEG, PNG, GIF, WebP, PDF, ZIP)
 - File type change (text↔binary or MIME change) orphans old file, creates new
 

@@ -537,6 +537,146 @@ describe('memoryTool', () => {
     });
   });
 
+  describe('mkdir command', () => {
+    it('creates directory successfully', async () => {
+      (vfs.exists as Mock).mockResolvedValue(true); // /memories exists
+      (vfs.mkdir as Mock).mockResolvedValue(undefined);
+
+      const result = await executeMemory({ command: 'mkdir', path: '/memories/subdir' });
+
+      expect(result.content).toBe('Directory created successfully at: /memories/subdir');
+      expect(result.isError).toBeFalsy();
+      expect(vfs.mkdir).toHaveBeenCalledWith(projectId, '/memories/subdir', undefined);
+    });
+
+    it('ensures /memories directory exists before creating subdirectory', async () => {
+      (vfs.exists as Mock).mockResolvedValue(false);
+      (vfs.mkdir as Mock).mockResolvedValue(undefined);
+
+      await executeMemory({ command: 'mkdir', path: '/memories/subdir' });
+
+      expect(vfs.mkdir).toHaveBeenCalledWith(projectId, '/memories', undefined);
+      expect(vfs.mkdir).toHaveBeenCalledWith(projectId, '/memories/subdir', undefined);
+    });
+
+    it('returns error when directory already exists', async () => {
+      (vfs.exists as Mock).mockResolvedValue(true);
+      (vfs.mkdir as Mock).mockRejectedValue(new VfsError('Dir exists', 'DIR_EXISTS'));
+
+      const result = await executeMemory({ command: 'mkdir', path: '/memories/subdir' });
+
+      expect(result.content).toBe('Error: Directory /memories/subdir already exists');
+      expect(result.isError).toBe(true);
+    });
+
+    it('returns error when file exists at path', async () => {
+      (vfs.exists as Mock).mockResolvedValue(true);
+      (vfs.mkdir as Mock).mockRejectedValue(new VfsError('File exists', 'FILE_EXISTS'));
+
+      const result = await executeMemory({ command: 'mkdir', path: '/memories/subdir' });
+
+      expect(result.content).toBe('Error: A file already exists at /memories/subdir');
+      expect(result.isError).toBe(true);
+    });
+
+    it('returns error when creating at root path', async () => {
+      const result = await executeMemory({ command: 'mkdir', path: '/memories' });
+
+      expect(result.content).toContain('Cannot create directory at the root path');
+      expect(result.isError).toBe(true);
+    });
+  });
+
+  describe('append command', () => {
+    it('appends to existing file', async () => {
+      (vfs.exists as Mock)
+        .mockResolvedValueOnce(true) // /memories exists
+        .mockResolvedValueOnce(true); // file exists
+      (vfs.readFile as Mock).mockResolvedValue('existing content');
+      (vfs.updateFile as Mock).mockResolvedValue(undefined);
+
+      const result = await executeMemory({
+        command: 'append',
+        path: '/memories/log.md',
+        file_text: '\nnew line',
+      });
+
+      expect(result.content).toBe('Content appended to /memories/log.md');
+      expect(result.isError).toBeFalsy();
+      expect(vfs.updateFile).toHaveBeenCalledWith(
+        projectId,
+        '/memories/log.md',
+        'existing content\nnew line',
+        undefined
+      );
+    });
+
+    it('creates file when it does not exist', async () => {
+      (vfs.exists as Mock)
+        .mockResolvedValueOnce(true) // /memories exists
+        .mockResolvedValueOnce(false); // file does not exist
+      (vfs.createFile as Mock).mockResolvedValue(undefined);
+
+      const result = await executeMemory({
+        command: 'append',
+        path: '/memories/new.md',
+        file_text: 'initial content',
+      });
+
+      expect(result.content).toBe('File created successfully at: /memories/new.md');
+      expect(result.isError).toBeFalsy();
+      expect(vfs.createFile).toHaveBeenCalledWith(
+        projectId,
+        '/memories/new.md',
+        'initial content',
+        undefined
+      );
+    });
+
+    it('ensures /memories directory exists', async () => {
+      (vfs.exists as Mock)
+        .mockResolvedValueOnce(false) // /memories does not exist
+        .mockResolvedValueOnce(false); // file does not exist
+      (vfs.mkdir as Mock).mockResolvedValue(undefined);
+      (vfs.createFile as Mock).mockResolvedValue(undefined);
+
+      await executeMemory({
+        command: 'append',
+        path: '/memories/new.md',
+        file_text: 'content',
+      });
+
+      expect(vfs.mkdir).toHaveBeenCalledWith(projectId, '/memories', undefined);
+    });
+
+    it('returns error when path is a directory', async () => {
+      (vfs.exists as Mock)
+        .mockResolvedValueOnce(true) // /memories exists
+        .mockResolvedValueOnce(true); // path exists
+      (vfs.readFile as Mock).mockRejectedValue(new VfsError('Not a file', 'NOT_A_FILE'));
+
+      const result = await executeMemory({
+        command: 'append',
+        path: '/memories/subdir',
+        file_text: 'content',
+      });
+
+      expect(result.content).toBe('Error: /memories/subdir is a directory, not a file.');
+      expect(result.isError).toBe(true);
+    });
+
+    it('returns error when appending at root path', async () => {
+      const result = await executeMemory({
+        command: 'append',
+        path: '/memories',
+        file_text: 'content',
+      });
+
+      expect(result.content).toContain('Cannot append to the root path');
+      expect(result.isError).toBe(true);
+    });
+  });
+
   describe('unknown command', () => {
     it('returns error for unknown command', async () => {
       const result = await executeMemory({

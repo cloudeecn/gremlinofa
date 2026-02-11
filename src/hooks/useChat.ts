@@ -292,6 +292,7 @@ async function consumeAgenticLoop(
   handlers: LoopEventHandlers
 ): Promise<TokenTotals> {
   const totals = createTokenTotals();
+  let currentChat = chat;
   let lastContextWindowUsage = 0;
   let hasUnreliableCost = false;
 
@@ -347,9 +348,28 @@ async function consumeAgenticLoop(
             }
             break;
 
-          case 'tokens_consumed':
+          case 'tokens_consumed': {
             addTokens(totals, event.tokens);
+            // Incrementally update chat so UI shows real-time cost and data survives crashes
+            const tokenChat: Chat = {
+              ...currentChat,
+              totalInputTokens: (currentChat.totalInputTokens ?? 0) + event.tokens.inputTokens,
+              totalOutputTokens: (currentChat.totalOutputTokens ?? 0) + event.tokens.outputTokens,
+              totalReasoningTokens:
+                (currentChat.totalReasoningTokens ?? 0) + event.tokens.reasoningTokens,
+              totalCacheCreationTokens:
+                (currentChat.totalCacheCreationTokens ?? 0) + event.tokens.cacheCreationTokens,
+              totalCacheReadTokens:
+                (currentChat.totalCacheReadTokens ?? 0) + event.tokens.cacheReadTokens,
+              totalCost: (currentChat.totalCost ?? 0) + event.tokens.cost,
+              costUnreliable:
+                event.tokens.costUnreliable || currentChat.costUnreliable || undefined,
+            };
+            currentChat = tokenChat;
+            await storage.saveChat(tokenChat);
+            handlers.onChatUpdated(tokenChat);
             break;
+          }
 
           case 'pending_tool_result':
             handlers.onPendingToolResult(event.message);
@@ -371,20 +391,14 @@ async function consumeAgenticLoop(
       console.warn('[useChat] Agentic loop reached max iterations');
     }
 
-    // Build and save final Chat object with accumulated totals
+    // Final save: tokens already accumulated incrementally via tokens_consumed events,
+    // just add the fields that are only available after the loop completes
     const updatedChat: Chat = {
-      ...chat,
-      totalInputTokens: (chat.totalInputTokens ?? 0) + totals.inputTokens,
-      totalOutputTokens: (chat.totalOutputTokens ?? 0) + totals.outputTokens,
-      totalReasoningTokens: (chat.totalReasoningTokens ?? 0) + totals.reasoningTokens,
-      totalCacheCreationTokens: (chat.totalCacheCreationTokens ?? 0) + totals.cacheCreationTokens,
-      totalCacheReadTokens: (chat.totalCacheReadTokens ?? 0) + totals.cacheReadTokens,
-      totalCost: (chat.totalCost ?? 0) + totals.cost,
+      ...currentChat,
       contextWindowUsage: lastContextWindowUsage,
       messageCount: (chat.messageCount ?? 0) + finalResult.messages.length - context.length,
       lastModifiedAt: new Date(),
-      costUnreliable:
-        hasUnreliableCost || totals.costUnreliable || chat.costUnreliable || undefined,
+      costUnreliable: hasUnreliableCost || currentChat.costUnreliable || undefined,
     };
     await storage.saveChat(updatedChat);
     handlers.onChatUpdated(updatedChat);

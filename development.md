@@ -93,6 +93,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Chat-level token totals (cumulative)
 - [x] Context window usage (recalculated)
 - [x] Real-time token usage in chat header
+- [x] Incremental cost/token persistence during agent loop (crash-resilient)
 - [x] Fork tracking and cost analysis
 - [x] Tool call cost tracking (minion sub-agent costs flow into chat totals)
 

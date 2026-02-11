@@ -735,6 +735,300 @@ describe('agenticLoopGenerator', () => {
       expect(result.messages).toHaveLength(6);
     });
 
+    it('executes multiple tools in parallel and collects results in order', async () => {
+      const toolUseBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_1',
+          name: 'memory',
+          input: { command: 'view', path: '/a' },
+        },
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_2',
+          name: 'javascript',
+          input: { code: '1+1' },
+        },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      const finalResult = {
+        textContent: 'Done!',
+        fullContent: [{ type: 'text', text: 'Done!' }],
+        stopReason: 'end_turn',
+        inputTokens: 120,
+        outputTokens: 60,
+      };
+
+      setupMultiIterationMock(
+        [createMockStream([], toolUseResult), createMockStream([], finalResult)],
+        [toolUseBlocks, toolUseBlocks, [], []]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      // Track call order to verify both tools are called
+      const callOrder: string[] = [];
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        callOrder.push(name);
+        return mockToolGenerator({
+          content: `Result from ${name}`,
+          isError: false,
+        });
+      });
+
+      const options = createMockOptions({ enabledTools: ['memory', 'javascript'] });
+      const context = [createMockUserMessage('Do both')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      // Both tools should have been called
+      expect(executeClientSideTool).toHaveBeenCalledTimes(2);
+      expect(callOrder).toContain('memory');
+      expect(callOrder).toContain('javascript');
+
+      // All tools should get 'running' status before any completion
+      const blockUpdates = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'tool_block_update' }> =>
+          e.type === 'tool_block_update'
+      );
+      const runningUpdates = blockUpdates.filter(e => e.block.status === 'running');
+      expect(runningUpdates.length).toBeGreaterThanOrEqual(2);
+
+      // Both tool IDs should have running status
+      const runningIds = runningUpdates.map(e => e.toolUseId);
+      expect(runningIds).toContain('toolu_1');
+      expect(runningIds).toContain('toolu_2');
+
+      expect(result.value.status).toBe('complete');
+    });
+
+    it('handles breakLoop with parallel tools — all tools complete, break honored', async () => {
+      const toolUseBlocks = [
+        { type: 'tool_use' as const, id: 'toolu_1', name: 'return', input: { value: 'done' } },
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_2',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], toolUseResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue(toolUseBlocks);
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'Returning',
+            breakLoop: { returnValue: 'final' },
+          });
+        }
+        return mockToolGenerator({ content: 'Files listed', isError: false });
+      });
+
+      const options = createMockOptions({ enabledTools: ['return', 'memory'] });
+      const context = [createMockUserMessage('Do both')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      // Both tools executed
+      expect(executeClientSideTool).toHaveBeenCalledTimes(2);
+      // breakLoop honored
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBe('final');
+      }
+    });
+
+    it('handles one tool error alongside a successful tool', async () => {
+      const toolUseBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_1',
+          name: 'memory',
+          input: { command: 'view', path: '/a' },
+        },
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_2',
+          name: 'javascript',
+          input: { code: 'throw new Error("boom")' },
+        },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      const finalResult = {
+        textContent: 'Handled',
+        fullContent: [{ type: 'text', text: 'Handled' }],
+        stopReason: 'end_turn',
+        inputTokens: 120,
+        outputTokens: 60,
+      };
+
+      setupMultiIterationMock(
+        [createMockStream([], toolUseResult), createMockStream([], finalResult)],
+        [toolUseBlocks, toolUseBlocks, [], []]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'javascript') {
+          return mockToolGenerator({ content: 'Error: boom', isError: true });
+        }
+        return mockToolGenerator({ content: 'Files listed', isError: false });
+      });
+
+      const options = createMockOptions({ enabledTools: ['memory', 'javascript'] });
+      const context = [createMockUserMessage('Do both')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      // Both tools executed
+      expect(executeClientSideTool).toHaveBeenCalledTimes(2);
+
+      // Both tools should have completion block updates
+      const blockUpdates = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'tool_block_update' }> =>
+          e.type === 'tool_block_update'
+      );
+
+      // Find completion blocks (not 'running' status)
+      const completionBlocks = blockUpdates.filter(
+        e => e.block.status === 'complete' || e.block.status === 'error'
+      );
+      expect(completionBlocks).toHaveLength(2);
+
+      const errorBlock = completionBlocks.find(e => e.block.status === 'error');
+      const successBlock = completionBlocks.find(e => e.block.status === 'complete');
+      expect(errorBlock?.toolUseId).toBe('toolu_2');
+      expect(successBlock?.toolUseId).toBe('toolu_1');
+
+      // Loop continues after tool error
+      expect(result.value.status).toBe('complete');
+    });
+
+    it('interleaves streaming events from parallel tools', async () => {
+      const toolUseBlocks = [
+        { type: 'tool_use' as const, id: 'toolu_1', name: 'minion_a', input: { message: 'a' } },
+        { type: 'tool_use' as const, id: 'toolu_2', name: 'minion_b', input: { message: 'b' } },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], toolUseResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue(toolUseBlocks);
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      // Create generators that yield streaming events before completing
+      const streamingGroups = [
+        { category: 'text' as const, blocks: [{ type: 'text' as const, text: 'progress' }] },
+      ];
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        async function* gen(): AsyncGenerator<
+          import('../../../types').ToolStreamEvent,
+          import('../../../types').ToolResult
+        > {
+          yield { type: 'groups_update', groups: streamingGroups };
+          return { content: `Done ${name}`, isError: false, breakLoop: { returnValue: 'stop' } };
+        }
+        return gen();
+      });
+
+      const options = createMockOptions({ enabledTools: ['minion_a', 'minion_b'] });
+      const context = [createMockUserMessage('Do both')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      const blockUpdates = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'tool_block_update' }> =>
+          e.type === 'tool_block_update'
+      );
+
+      // Should have: 2 running + 2 streaming (groups_update) + 2 completion = 6 block updates
+      expect(blockUpdates.length).toBe(6);
+
+      // Streaming events should carry renderingGroups
+      const streamingUpdates = blockUpdates.filter(
+        e => e.block.renderingGroups && e.block.status === 'running'
+      );
+      expect(streamingUpdates).toHaveLength(2);
+      expect(streamingUpdates.map(e => e.toolUseId).sort()).toEqual(['toolu_1', 'toolu_2']);
+    });
+
     it('accumulates tool-incurred costs and yields tokens_consumed for them', async () => {
       const toolUseBlocks = [
         { type: 'tool_use' as const, id: 'toolu_1', name: 'minion', input: { message: 'task' } },

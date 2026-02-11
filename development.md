@@ -1271,6 +1271,8 @@ type AgenticLoopResult =
 1. Pre-loop: executing `pendingToolUseBlocks` before the first API call
 2. In-loop: after `stop_reason === 'tool_use'`
 
+**Parallel tool execution:** When multiple tool_use blocks arrive in a single assistant response, all tool generators start simultaneously. Events are multiplexed via `Promise.race` — `tool_block_update` events from different tools interleave as they arrive. All tools are marked `running` upfront. Results are collected in original order. If any tool returns `breakLoop`, remaining tools still run to completion before the break is honored.
+
 **Pending Tool Resolution (`AgenticLoopOptions`):**
 
 - `pendingToolUseBlocks?: ToolUseBlock[]` — pre-existing tool_use blocks to execute before the first API call (used by `resolvePendingToolCalls` continue mode)

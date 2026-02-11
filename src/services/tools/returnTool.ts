@@ -16,7 +16,8 @@ export const returnTool: ClientSideTool = {
   displaySubtitle: 'Return a result and stop execution',
   internal: true, // Not shown in ProjectSettings UI - only available to minion agents
 
-  description: 'Return a result from the current task and stop execution.',
+  description:
+    'Return a result from the current task and stop execution. IMPORTANT: Do not call this tool in parallel with other tools — it suspends the agentic loop, so results from other parallel tools will not be reported back.',
 
   inputSchema: {
     type: 'object',

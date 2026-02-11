@@ -91,7 +91,7 @@ export function isRootPath(path: string): boolean {
 /**
  * Resolve a path within a namespace.
  * - No namespace → returns normalizePath(path)
- * - /share paths → bypass namespace, return normalizePath(path)
+ * - /share and /sharerw paths → bypass namespace, return normalizePath(path)
  * - Otherwise → normalizePath(namespace) + normalizePath(path)
  *
  * Path traversal is mitigated: both path and namespace are normalized
@@ -101,11 +101,50 @@ export function resolveNamespacedPath(path: string, namespace?: string): string 
   const normalized = normalizePath(path);
   if (!namespace) return normalized;
   if (normalized === '/share' || normalized.startsWith('/share/')) return normalized;
+  if (normalized === '/sharerw' || normalized.startsWith('/sharerw/')) return normalized;
   const normalizedNs = normalizePath(namespace);
   if (normalizedNs === '/') return normalized;
   // When path normalizes to '/', just return the namespace path
   if (normalized === '/') return normalizedNs;
   return normalizedNs + normalized;
+}
+
+/**
+ * Check if a path is read-only due to namespace isolation.
+ * /share paths are read-only when accessed from a namespace.
+ */
+export function isNamespacedReadonly(path: string, namespace?: string): boolean {
+  if (!namespace) return false;
+  const normalized = normalizePath(path);
+  return normalized === '/share' || normalized.startsWith('/share/');
+}
+
+/** Mount roots that cannot be deleted or renamed */
+const MOUNT_ROOTS = ['/share'];
+
+/**
+ * Throw if trying to write to a namespace-readonly path.
+ * /share is read-only for namespaced callers; /sharerw is not.
+ */
+function assertWritable(path: string, namespace?: string): void {
+  if (!namespace) return;
+  const normalized = normalizePath(path);
+  if (normalized === '/share' || normalized.startsWith('/share/')) {
+    throw new VfsError(
+      `Cannot write to ${normalized}: /share is read-only in namespaced context`,
+      'READONLY'
+    );
+  }
+}
+
+/**
+ * Throw if trying to delete or rename a structural mount root.
+ * Expects a resolved (post-namespace) path.
+ */
+function assertNotMountRoot(resolvedPath: string): void {
+  if (MOUNT_ROOTS.includes(resolvedPath)) {
+    throw new VfsError(`Cannot delete or move mount root ${resolvedPath}`, 'INVALID_PATH');
+  }
 }
 
 // ============================================================================
@@ -366,7 +405,8 @@ export type VfsErrorCode =
   | 'STRING_NOT_FOUND'
   | 'STRING_NOT_UNIQUE'
   | 'INVALID_LINE'
-  | 'BINARY_FILE';
+  | 'BINARY_FILE'
+  | 'READONLY';
 
 export class VfsError extends Error {
   code: VfsErrorCode;
@@ -480,6 +520,7 @@ export async function createFile(
   content: string,
   namespace?: string
 ): Promise<void> {
+  assertWritable(path, namespace);
   const tree = await loadTree(projectId);
   const normalized = resolveNamespacedPath(path, namespace);
   const basename = getBasename(normalized);
@@ -572,6 +613,7 @@ export async function updateFile(
   content: string,
   namespace?: string
 ): Promise<void> {
+  assertWritable(path, namespace);
   const tree = await loadTree(projectId);
   const normalized = resolveNamespacedPath(path, namespace);
   const { node } = navigateToNode(tree, normalized);
@@ -629,6 +671,7 @@ export async function writeFile(
   content: FileContent,
   namespace?: string
 ): Promise<void> {
+  assertWritable(path, namespace);
   const tree = await loadTree(projectId);
   const normalized = resolveNamespacedPath(path, namespace);
   const basename = getBasename(normalized);
@@ -796,8 +839,10 @@ export async function deleteFile(
   path: string,
   namespace?: string
 ): Promise<void> {
+  assertWritable(path, namespace);
   const tree = await loadTree(projectId);
   const normalized = resolveNamespacedPath(path, namespace);
+  assertNotMountRoot(normalized);
   const { node } = navigateToNode(tree, normalized);
 
   if (!node) {
@@ -828,6 +873,7 @@ export async function deleteFile(
  * @throws VfsError if path exists
  */
 export async function mkdir(projectId: string, path: string, namespace?: string): Promise<void> {
+  assertWritable(path, namespace);
   const tree = await loadTree(projectId);
   const normalized = resolveNamespacedPath(path, namespace);
   const basename = getBasename(normalized);
@@ -880,8 +926,10 @@ export async function rmdir(
   recursive = false,
   namespace?: string
 ): Promise<void> {
+  assertWritable(path, namespace);
   const tree = await loadTree(projectId);
   const normalized = resolveNamespacedPath(path, namespace);
+  assertNotMountRoot(normalized);
 
   if (isRootPath(normalized)) {
     throw new VfsError('Cannot delete root directory', 'INVALID_PATH');
@@ -1011,9 +1059,13 @@ export async function rename(
   newPath: string,
   namespace?: string
 ): Promise<void> {
+  assertWritable(oldPath, namespace);
+  assertWritable(newPath, namespace);
   const tree = await loadTree(projectId);
   const oldNormalized = resolveNamespacedPath(oldPath, namespace);
   const newNormalized = resolveNamespacedPath(newPath, namespace);
+  assertNotMountRoot(oldNormalized);
+  assertNotMountRoot(newNormalized);
 
   if (oldNormalized === newNormalized) return; // No-op
 
@@ -1154,6 +1206,7 @@ export async function isDirectory(
  * @throws VfsError if path not found or not deleted
  */
 export async function restore(projectId: string, path: string, namespace?: string): Promise<void> {
+  assertWritable(path, namespace);
   const tree = await loadTree(projectId);
   const normalized = resolveNamespacedPath(path, namespace);
   const { node } = navigateToNode(tree, normalized);
@@ -1186,6 +1239,7 @@ export async function restore(projectId: string, path: string, namespace?: strin
  * @throws VfsError if not deleted
  */
 export async function purge(projectId: string, path: string, namespace?: string): Promise<void> {
+  assertWritable(path, namespace);
   const tree = await loadTree(projectId);
   const normalized = resolveNamespacedPath(path, namespace);
   const { node, parent, name } = navigateToNode(tree, normalized);
@@ -1697,6 +1751,7 @@ export async function strReplace(
   newStr: string,
   namespace?: string
 ): Promise<StrReplaceResult> {
+  assertWritable(path, namespace);
   const content = await readFile(projectId, path, namespace);
   const normalized = resolveNamespacedPath(path, namespace);
 
@@ -1753,6 +1808,7 @@ export async function insert(
   insertText: string,
   namespace?: string
 ): Promise<InsertResult> {
+  assertWritable(path, namespace);
   const content = await readFile(projectId, path, namespace);
   const normalized = resolveNamespacedPath(path, namespace);
 

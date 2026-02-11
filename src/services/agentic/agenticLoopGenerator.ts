@@ -27,6 +27,7 @@ import type {
   ToolOptions,
   ToolResultBlock,
   ToolStreamEvent,
+  ToolUseBlock,
   ReasoningEffort,
   ReasoningSummary,
   TokenTotals,
@@ -76,6 +77,13 @@ export interface AgenticLoopOptions {
   // OpenAI/Responses reasoning
   reasoningEffort?: ReasoningEffort;
   reasoningSummary?: ReasoningSummary;
+
+  // Pre-existing tool_use blocks to execute before the first API call
+  // (used by resolvePendingToolCalls to delegate tool execution with streaming)
+  pendingToolUseBlocks?: ToolUseBlock[];
+  // Already-saved messages to inject into context after pending tool results
+  // (e.g., a user follow-up message saved by the caller)
+  pendingTrailingContext?: Message<unknown>[];
 }
 
 /**
@@ -381,6 +389,155 @@ function buildToolResultMessage(
 }
 
 // ============================================================================
+// Tool Execution Helper
+// ============================================================================
+
+interface ToolContext {
+  projectId: string;
+  chatId?: string;
+  namespace?: string;
+}
+
+/**
+ * Execute tool_use blocks with full streaming support.
+ * Yields pending/running/complete events and pushes the final tool result message to `messages`.
+ * Returns breakLoop info if a return tool was invoked, undefined otherwise.
+ */
+async function* executeToolUseBlocks(
+  toolUseBlocks: ToolUseBlock[],
+  apiType: APIType,
+  enabledTools: string[],
+  toolOptions: Record<string, ToolOptions>,
+  toolContext: ToolContext,
+  messages: Message<unknown>[],
+  totals: TokenTotals
+): AsyncGenerator<AgenticLoopEvent, { breakLoop: { returnValue?: string } } | undefined, void> {
+  console.debug('[agenticLoopGen] Executing', toolUseBlocks.length, 'tool(s)');
+
+  // Create pending render blocks
+  const pendingRenderBlocks: ToolResultRenderBlock[] = toolUseBlocks.map(toolUse => ({
+    type: 'tool_result' as const,
+    tool_use_id: toolUse.id,
+    name: toolUse.name,
+    content: '',
+    status: 'pending' as const,
+    icon: toolRegistry.get(toolUse.name)?.iconOutput ?? '⏳',
+  }));
+
+  // Build pending tool_result message and yield for UI display
+  const pendingToolResults: ToolResultBlock[] = toolUseBlocks.map(toolUse => ({
+    type: 'tool_result' as const,
+    tool_use_id: toolUse.id,
+    content: '',
+  }));
+  const pendingMsg = buildToolResultMessage(apiType, pendingToolResults, pendingRenderBlocks);
+  yield { type: 'pending_tool_result', message: pendingMsg };
+
+  // Execute each tool, consuming generator events
+  const toolResults: ToolResultBlock[] = [];
+  const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+
+  for (let i = 0; i < toolUseBlocks.length; i++) {
+    const toolUse = toolUseBlocks[i];
+    console.debug('[agenticLoopGen] Executing tool:', toolUse.name, 'id:', toolUse.id);
+    yield {
+      type: 'tool_block_update',
+      toolUseId: toolUse.id,
+      block: { status: 'running' as const },
+    };
+
+    const toolGen = executeClientSideTool(
+      toolUse.name,
+      toolUse.input,
+      enabledTools,
+      toolOptions,
+      toolContext
+    );
+
+    // Consume the tool generator
+    let toolNext = await toolGen.next();
+    while (!toolNext.done) {
+      const event = toolNext.value as ToolStreamEvent;
+      if (event.type === 'groups_update') {
+        // Forward streaming update for this tool block
+        yield {
+          type: 'tool_block_update',
+          toolUseId: toolUse.id,
+          block: { renderingGroups: event.groups, status: 'running' as const },
+        };
+      }
+      toolNext = await toolGen.next();
+    }
+
+    const toolResult = toolNext.value;
+
+    // Check for completion (return tool)
+    if (toolResult.breakLoop) {
+      return { breakLoop: toolResult.breakLoop };
+    }
+
+    // Build final render block for this tool
+    const renderBlock = createToolResultRenderBlock(
+      toolUse.id,
+      toolUse.name,
+      toolResult.content,
+      toolResult.isError,
+      toolResult.renderingGroups,
+      toolResult.tokenTotals
+    );
+    renderBlock.status = toolResult.isError ? 'error' : 'complete';
+
+    toolResults.push({
+      type: 'tool_result',
+      tool_use_id: toolUse.id,
+      content: toolResult.content,
+      is_error: toolResult.isError,
+    });
+    toolResultRenderBlocks.push(renderBlock);
+
+    // Yield final block update so consumer can update the pending message
+    yield {
+      type: 'tool_block_update',
+      toolUseId: toolUse.id,
+      block: renderBlock,
+    };
+  }
+
+  // Accumulate tool-incurred costs (e.g., minion sub-agent API calls)
+  const toolTotals = createTokenTotals();
+  for (const rb of toolResultRenderBlocks) {
+    if (rb.tokenTotals) {
+      addTokens(toolTotals, rb.tokenTotals);
+    }
+  }
+
+  // Build final tool result message and yield as message_created
+  // (consumer replaces the pending message with this — same ID ensures correct replacement)
+  const toolResultMsg = buildToolResultMessage(apiType, toolResults, toolResultRenderBlocks);
+  toolResultMsg.id = pendingMsg.id;
+
+  // If tools incurred costs, attach metadata and propagate to loop totals
+  if (hasTokenUsage(toolTotals)) {
+    toolResultMsg.metadata = {
+      inputTokens: toolTotals.inputTokens,
+      outputTokens: toolTotals.outputTokens,
+      reasoningTokens: toolTotals.reasoningTokens > 0 ? toolTotals.reasoningTokens : undefined,
+      cacheCreationTokens: toolTotals.cacheCreationTokens,
+      cacheReadTokens: toolTotals.cacheReadTokens,
+      messageCost: toolTotals.cost,
+      costUnreliable: toolTotals.costUnreliable || undefined,
+    };
+    addTokens(totals, toolTotals);
+    yield { type: 'tokens_consumed', tokens: toolTotals };
+  }
+
+  messages.push(toolResultMsg);
+  yield { type: 'message_created', message: toolResultMsg };
+
+  return undefined;
+}
+
+// ============================================================================
 // Main Generator
 // ============================================================================
 
@@ -407,6 +564,40 @@ export async function* runAgenticLoop(
   let iteration = 0;
 
   try {
+    // Handle pre-existing tool_use blocks before the first API call
+    if (options.pendingToolUseBlocks?.length) {
+      console.debug(
+        '[agenticLoopGen] Executing pending tool blocks:',
+        options.pendingToolUseBlocks.length
+      );
+      const breakResult = yield* executeToolUseBlocks(
+        options.pendingToolUseBlocks,
+        apiDef.apiType,
+        enabledTools,
+        toolOptions,
+        toolContext,
+        messages,
+        totals
+      );
+
+      if (breakResult?.breakLoop) {
+        return {
+          status: 'complete',
+          messages,
+          tokens: totals,
+          returnValue: breakResult.breakLoop.returnValue,
+        };
+      }
+
+      // Inject trailing context (e.g., user follow-up message pre-saved by caller)
+      if (options.pendingTrailingContext?.length) {
+        for (const msg of options.pendingTrailingContext) {
+          messages.push(msg);
+          yield { type: 'message_created', message: msg };
+        }
+      }
+    }
+
     while (iteration < MAX_ITERATIONS) {
       iteration++;
       console.debug('[agenticLoopGen] Iteration:', iteration);
@@ -564,140 +755,24 @@ export async function* runAgenticLoop(
         return { status: 'complete', messages, tokens: totals };
       }
 
-      console.debug('[agenticLoopGen] Executing', toolUseBlocks.length, 'tool(s)');
-
-      // Create pending render blocks with status: 'running'
-      const pendingRenderBlocks: ToolResultRenderBlock[] = toolUseBlocks.map(toolUse => ({
-        type: 'tool_result' as const,
-        tool_use_id: toolUse.id,
-        name: toolUse.name,
-        content: '',
-        status: 'pending' as const,
-        icon: toolRegistry.get(toolUse.name)?.iconOutput ?? '⏳',
-      }));
-
-      // Build pending tool_result message and yield for UI display
-      const pendingToolResults: ToolResultBlock[] = toolUseBlocks.map(toolUse => ({
-        type: 'tool_result' as const,
-        tool_use_id: toolUse.id,
-        content: '',
-      }));
-      const pendingMsg = buildToolResultMessage(
+      const breakResult = yield* executeToolUseBlocks(
+        toolUseBlocks,
         apiDef.apiType,
-        pendingToolResults,
-        pendingRenderBlocks
+        enabledTools,
+        toolOptions,
+        toolContext,
+        messages,
+        totals
       );
-      yield { type: 'pending_tool_result', message: pendingMsg };
 
-      // Execute each tool, consuming generator events
-      const toolResults: ToolResultBlock[] = [];
-      const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
-
-      for (let i = 0; i < toolUseBlocks.length; i++) {
-        const toolUse = toolUseBlocks[i];
-        console.debug('[agenticLoopGen] Executing tool:', toolUse.name, 'id:', toolUse.id);
-        yield {
-          type: 'tool_block_update',
-          toolUseId: toolUse.id,
-          block: { status: 'running' as const },
-        };
-
-        const toolGen = executeClientSideTool(
-          toolUse.name,
-          toolUse.input,
-          enabledTools,
-          toolOptions,
-          toolContext
-        );
-
-        // Consume the tool generator
-        let toolNext = await toolGen.next();
-        while (!toolNext.done) {
-          const event = toolNext.value as ToolStreamEvent;
-          if (event.type === 'groups_update') {
-            // Forward streaming update for this tool block
-            yield {
-              type: 'tool_block_update',
-              toolUseId: toolUse.id,
-              block: { renderingGroups: event.groups, status: 'running' as const },
-            };
-          }
-          toolNext = await toolGen.next();
-        }
-
-        const toolResult = toolNext.value;
-
-        // Check for completion (return tool)
-        if (toolResult.breakLoop) {
-          return {
-            status: 'complete',
-            messages,
-            tokens: totals,
-            returnValue: toolResult.breakLoop.returnValue,
-          };
-        }
-
-        // Build final render block for this tool
-        const renderBlock = createToolResultRenderBlock(
-          toolUse.id,
-          toolUse.name,
-          toolResult.content,
-          toolResult.isError,
-          toolResult.renderingGroups,
-          toolResult.tokenTotals
-        );
-        renderBlock.status = toolResult.isError ? 'error' : 'complete';
-
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: toolUse.id,
-          content: toolResult.content,
-          is_error: toolResult.isError,
-        });
-        toolResultRenderBlocks.push(renderBlock);
-
-        // Yield final block update so consumer can update the pending message
-        yield {
-          type: 'tool_block_update',
-          toolUseId: toolUse.id,
-          block: renderBlock,
+      if (breakResult?.breakLoop) {
+        return {
+          status: 'complete',
+          messages,
+          tokens: totals,
+          returnValue: breakResult.breakLoop.returnValue,
         };
       }
-
-      // Accumulate tool-incurred costs (e.g., minion sub-agent API calls)
-      const toolTotals = createTokenTotals();
-      for (const rb of toolResultRenderBlocks) {
-        if (rb.tokenTotals) {
-          addTokens(toolTotals, rb.tokenTotals);
-        }
-      }
-
-      // Build final tool result message and yield as message_created
-      // (consumer replaces the pending message with this — same ID ensures correct replacement)
-      const toolResultMsg = buildToolResultMessage(
-        apiDef.apiType,
-        toolResults,
-        toolResultRenderBlocks
-      );
-      toolResultMsg.id = pendingMsg.id;
-
-      // If tools incurred costs, attach metadata and propagate to loop totals
-      if (hasTokenUsage(toolTotals)) {
-        toolResultMsg.metadata = {
-          inputTokens: toolTotals.inputTokens,
-          outputTokens: toolTotals.outputTokens,
-          reasoningTokens: toolTotals.reasoningTokens > 0 ? toolTotals.reasoningTokens : undefined,
-          cacheCreationTokens: toolTotals.cacheCreationTokens,
-          cacheReadTokens: toolTotals.cacheReadTokens,
-          messageCost: toolTotals.cost,
-          costUnreliable: toolTotals.costUnreliable || undefined,
-        };
-        addTokens(totals, toolTotals);
-        yield { type: 'tokens_consumed', tokens: toolTotals };
-      }
-
-      messages.push(toolResultMsg);
-      yield { type: 'message_created', message: toolResultMsg };
 
       // Continue loop with updated context
     }

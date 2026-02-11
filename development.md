@@ -497,7 +497,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   2. `PendingToolCallsBanner` shows in MessageList with Reject/Accept buttons
   3. User actions:
      - **Reject button**: Sends error "Token limit reached, ask user to continue"
-     - **Accept button**: Executes tools and sends continuation to API
+     - **Accept button**: Delegates tool execution to the agentic loop (`pendingToolUseBlocks`) for streamed execution with live status updates
      - **User sends message**: Sends reject response along with user's message
   4. ChatInput send button enabled even with empty input when pending tools exist
 - Intermediate messages persisted with proper `renderingContent`:
@@ -1256,11 +1256,23 @@ type AgenticLoopResult =
 - Read-only storage access (reads attachments, consumer handles persistence)
 - Error handling with cleanup
 
+**Tool Execution Helper:**
+
+`executeToolUseBlocks()` is an extracted async generator that handles tool execution with full streaming support (pending → running → streaming updates → complete). Used via `yield*` from two call sites:
+
+1. Pre-loop: executing `pendingToolUseBlocks` before the first API call
+2. In-loop: after `stop_reason === 'tool_use'`
+
+**Pending Tool Resolution (`AgenticLoopOptions`):**
+
+- `pendingToolUseBlocks?: ToolUseBlock[]` — pre-existing tool_use blocks to execute before the first API call (used by `resolvePendingToolCalls` continue mode)
+- `pendingTrailingContext?: Message<unknown>[]` — already-saved messages injected after tool results (e.g., user follow-up message)
+
 **Integration with useChat.ts:**
 
 - `sendMessage` - Thin wrapper: reads state → builds context → calls `runAgenticLoop`
-- `resolvePendingToolCalls` - Thin wrapper: builds tool results → optional user message → calls `runAgenticLoop`
-- Both 'stop' and 'continue' modes use the agentic loop (stop sends error responses to API)
+- `resolvePendingToolCalls` stop mode: builds error tool results immediately → calls `runAgenticLoop`
+- `resolvePendingToolCalls` continue mode: passes `pendingToolUseBlocks` to loop for streamed execution
 - Consumer handles `storage.saveChat` and `storage.saveProject` after loop completes
 
 **Project Setting:**

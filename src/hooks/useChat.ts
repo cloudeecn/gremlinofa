@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react';
 import Mustache from 'mustache';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
-import { toolRegistry, executeToolSimple } from '../services/tools/clientSideTools';
+import { toolRegistry } from '../services/tools/clientSideTools';
 import {
   runAgenticLoop,
   createTokenTotals,
@@ -1144,6 +1144,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   /**
    * Resolve pending tool calls by either stopping (error response) or continuing (execute tools).
    * Both modes send to API via runAgenticLoop. Optionally appends a user message after the tool results.
+   *
+   * Stop mode: builds error tool results immediately, then sends to API.
+   * Continue mode: delegates tool execution to the agentic loop for full streaming support.
    */
   const resolvePendingToolCalls = async (
     mode: 'stop' | 'continue',
@@ -1161,13 +1164,47 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     const model = await storage.getModel(apiDefinition.id, effectiveModelId);
     if (!model) return;
 
-    // Build tool result message based on mode
-    const toolResults: ToolResultBlock[] = [];
-    const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+    // Build loop options (shared by both modes)
+    const options = await buildAgenticLoopOptions(
+      chat,
+      project,
+      apiDefinition,
+      model,
+      effectiveModelId
+    );
 
-    for (const toolUse of unresolvedToolCalls) {
-      if (mode === 'stop') {
-        // Error response for stop mode
+    if (mode === 'continue') {
+      // Continue mode: delegate tool execution to the agentic loop for streaming
+      options.pendingToolUseBlocks = unresolvedToolCalls;
+
+      const context = [...messages];
+
+      // If user message provided, save it and pass as trailing context
+      // (injected after tool results by the loop for correct API ordering)
+      if (userMessage?.trim() || attachments?.length) {
+        const messageText = userMessage?.trim() || '';
+        const firstMessageTimestamp = messages.length > 0 ? messages[0].timestamp : undefined;
+
+        const userMsg = await createAndSaveUserMessage(
+          chat.id,
+          messageText,
+          project,
+          chat,
+          effectiveModelId,
+          firstMessageTimestamp,
+          attachments
+        );
+
+        options.pendingTrailingContext = [userMsg];
+      }
+
+      await consumeAgenticLoop(options, context, chat, project, buildEventHandlers());
+    } else {
+      // Stop mode: build error tool results immediately (no streaming needed)
+      const toolResults: ToolResultBlock[] = [];
+      const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+
+      for (const toolUse of unresolvedToolCalls) {
         const errorMessage = 'Error, ask user to continue';
         toolResults.push({
           type: 'tool_result',
@@ -1178,82 +1215,47 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         toolResultRenderBlocks.push(
           createToolResultRenderBlock(toolUse.id, toolUse.name, errorMessage, true)
         );
-      } else {
-        // Execute tool for continue mode
-        const toolResult = await executeToolSimple(
-          toolUse.name,
-          toolUse.input,
-          project.enabledTools || [],
-          project.toolOptions || {},
-          { projectId: project.id }
-        );
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: toolUse.id,
-          content: toolResult.content,
-          is_error: toolResult.isError,
-        });
-        toolResultRenderBlocks.push(
-          createToolResultRenderBlock(
-            toolUse.id,
-            toolUse.name,
-            toolResult.content,
-            toolResult.isError
-          )
-        );
       }
-    }
 
-    const toolResultMessage = buildToolResultMessage(
-      apiDefinition.apiType,
-      toolResults,
-      toolResultRenderBlocks
-    );
-
-    // Save tool result message to storage
-    await storage.saveMessage(chat.id, toolResultMessage);
-
-    // Update React state with tool result message and notify UI
-    setMessages(prev => [...prev, toolResultMessage]);
-    callbacks.onMessageAppended(chatId, toolResultMessage);
-
-    // Build context with tool result message
-    let context = [...messages, toolResultMessage];
-
-    // If user message provided, add it to context
-    if (userMessage?.trim() || attachments?.length) {
-      const messageText = userMessage?.trim() || '';
-      const firstMessageTimestamp = messages.length > 0 ? messages[0].timestamp : undefined;
-
-      // Create and save user message
-      const userMsg = await createAndSaveUserMessage(
-        chat.id,
-        messageText,
-        project,
-        chat,
-        effectiveModelId,
-        firstMessageTimestamp,
-        attachments
+      const toolResultMessage = buildToolResultMessage(
+        apiDefinition.apiType,
+        toolResults,
+        toolResultRenderBlocks
       );
 
-      // Update React state with user message and notify UI
-      setMessages(prev => [...prev, userMsg]);
-      callbacks.onMessageAppended(chatId, userMsg);
+      // Save tool result message to storage
+      await storage.saveMessage(chat.id, toolResultMessage);
 
-      context = [...context, userMsg];
+      // Update React state with tool result message and notify UI
+      setMessages(prev => [...prev, toolResultMessage]);
+      callbacks.onMessageAppended(chatId, toolResultMessage);
+
+      // Build context with tool result message
+      let context = [...messages, toolResultMessage];
+
+      // If user message provided, add it to context
+      if (userMessage?.trim() || attachments?.length) {
+        const messageText = userMessage?.trim() || '';
+        const firstMessageTimestamp = messages.length > 0 ? messages[0].timestamp : undefined;
+
+        const userMsg = await createAndSaveUserMessage(
+          chat.id,
+          messageText,
+          project,
+          chat,
+          effectiveModelId,
+          firstMessageTimestamp,
+          attachments
+        );
+
+        setMessages(prev => [...prev, userMsg]);
+        callbacks.onMessageAppended(chatId, userMsg);
+
+        context = [...context, userMsg];
+      }
+
+      await consumeAgenticLoop(options, context, chat, project, buildEventHandlers());
     }
-
-    // Build loop options
-    const options = await buildAgenticLoopOptions(
-      chat,
-      project,
-      apiDefinition,
-      model,
-      effectiveModelId
-    );
-
-    // Consume the agentic loop generator
-    await consumeAgenticLoop(options, context, chat, project, buildEventHandlers());
   };
 
   /**

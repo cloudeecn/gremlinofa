@@ -322,11 +322,13 @@ async function handleCreate(
       content: `File created successfully at: ${vfsPath}`,
     };
   } catch (error) {
-    if (error instanceof VfsError && error.code === 'FILE_EXISTS') {
-      return {
-        content: `Error: File ${vfsPath} already exists`,
-        isError: true,
-      };
+    if (error instanceof VfsError) {
+      if (error.code === 'FILE_EXISTS') {
+        return { content: `Error: File ${vfsPath} already exists`, isError: true };
+      }
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
     }
     throw error;
   }
@@ -401,6 +403,9 @@ async function handleStrReplace(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (
         error.code === 'PATH_NOT_FOUND' ||
         error.code === 'IS_DELETED' ||
@@ -475,6 +480,9 @@ async function handleInsert(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (
         error.code === 'PATH_NOT_FOUND' ||
         error.code === 'IS_DELETED' ||
@@ -521,6 +529,9 @@ async function handleDelete(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
         return {
           content: `Error: The path ${vfsPath} does not exist`,
@@ -585,6 +596,9 @@ async function handleRename(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
         return {
           content: `Error: The path ${oldVfsPath} does not exist`,
@@ -633,6 +647,9 @@ async function handleMkdir(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (error.code === 'DIR_EXISTS') {
         return {
           content: `Error: Directory ${vfsPath} already exists`,
@@ -700,6 +717,9 @@ async function handleAppend(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (error.code === 'NOT_A_FILE') {
         return {
           content: `Error: ${vfsPath} is a directory, not a file.`,

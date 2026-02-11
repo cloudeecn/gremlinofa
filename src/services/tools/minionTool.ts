@@ -149,11 +149,16 @@ function buildMinionTools(
  * Build the ToolInfoRenderBlock group for a minion execution.
  * Placed at the start of renderingGroups to show task description and chat reference.
  */
-function buildInfoGroup(taskMessage: string, chatId: string): RenderingBlockGroup {
+function buildInfoGroup(
+  taskMessage: string,
+  chatId: string,
+  persona?: string
+): RenderingBlockGroup {
   const infoBlock: ToolInfoRenderBlock = {
     type: 'tool_info',
     input: taskMessage,
     chatId,
+    persona,
   };
   return { category: 'backstage', blocks: [infoBlock] };
 }
@@ -418,8 +423,14 @@ async function* executeMinion(
     }
   }
 
-  // Build info group for streaming display
-  const infoGroup = buildInfoGroup(minionInput.message, minionChat.id);
+  // Build info group for streaming display (include persona name for non-default personas)
+  const personaLabel =
+    minionToolOptions.namespacedMinion === true &&
+    minionInput.persona &&
+    minionInput.persona !== 'default'
+      ? minionInput.persona
+      : undefined;
+  const infoGroup = buildInfoGroup(minionInput.message, minionChat.id, personaLabel);
 
   // Build context for minion based on retry re-use, return tool resumption, or normal message
   let minionContext: Message<unknown>[];
@@ -693,8 +704,12 @@ async function* executeMinion(
     }
 
     // Build result JSON: `result` only present when return tool was used
+    const joinedText = accumulatedText.join('\n\n');
+    const returnOnly = minionToolOptions.returnOnly === true;
+    const suppressText = returnOnly && usedReturnTool && returnValue !== undefined && joinedText;
+
     const resultJson: Record<string, unknown> = {
-      text: accumulatedText.join('\n\n'),
+      text: suppressText ? '' : joinedText,
       stopReason,
       minionChatId: minionChat.id,
     };
@@ -942,6 +957,13 @@ export const minionTool: ClientSideTool = {
       id: 'allowWebSearch',
       label: 'Allow Web Search',
       subtitle: 'Let minions use web search when requested',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'returnOnly',
+      label: 'Return Only',
+      subtitle: 'Suppress accumulated text when return tool provides a result',
       default: false,
     },
     {

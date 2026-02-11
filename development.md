@@ -1087,6 +1087,7 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 - `systemPrompt` (longtext) - Instructions for minion sub-agents
 - `model` (ModelReference) - Model for delegated tasks (can use cheaper model)
 - `allowWebSearch` (boolean, default: false) - Project-level gate for minion web search. Must be enabled for `enableWeb` to work. When disabled, `enableWeb` parameter and web search mention are omitted from the schema/description sent to the LLM.
+- `returnOnly` (boolean, default: false) - When return tool provides a result and accumulated text exists, suppress text from the result JSON (only return the explicit result)
 - `noReturnTool` (boolean, default: false) - Remove the return tool from minion toolset
 - `namespacedMinion` (boolean, default: false) - Isolate each persona into its own VFS namespace. When enabled, adds `persona` input parameter and system prompt with available personas list.
 
@@ -1129,7 +1130,7 @@ Minion conversations stored separately for debugging visibility:
   - `minionChatId` — for continuing the conversation
   - `result` — only present when return tool was used (explicit return value)
 - `renderingGroups` on ToolResult carries nested display content:
-  - First group: `ToolInfoRenderBlock` with task description (`input`) and sub-chat reference (`chatId`)
+  - First group: `ToolInfoRenderBlock` with task description (`input`), sub-chat reference (`chatId`), and optional `persona` name
   - Remaining groups: accumulated rendering from sub-agent messages (marked `isToolGenerated: true`)
   - Transferred to `ToolResultRenderBlock.renderingGroups` by `createToolResultRenderBlock`
 - `tokenTotals` on ToolResult carries accumulated API costs from sub-agent loop
@@ -1157,9 +1158,11 @@ The `executeMinion` function has three ordered phases with distinct error recove
 
 - `ToolResultView` renders minion results (and any tool result with `renderingGroups`)
 - Always collapsed by default, shows last activity line as preview when collapsed
+- Header shows: persona name (if non-default) before expand icon, last-block activity icon (💭/🔧/💬/etc.) after expand icon
 - Blue box for task input (from `ToolInfoRenderBlock`), green/red box for final result
 - Activity groups (backstage/text) rendered with `isToolGenerated` styling
 - "Copy All" button fetches sub-chat messages (when `chatId` present), "Copy JSON" for debugging
+- `ToolResultBubble` hides timestamp/cost/actions line while any tool result is still pending/running
 - Integrated into `ToolResultBubble` (complex results) and `BackstageView.ToolResultSegment`
 - Real-time streaming via pending-message pattern (see Minion Streaming UI below)
 

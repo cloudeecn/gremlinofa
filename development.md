@@ -1278,7 +1278,9 @@ type AgenticLoopResult =
 1. Pre-loop: executing `pendingToolUseBlocks` before the first API call
 2. In-loop: after `stop_reason === 'tool_use'`
 
-**Parallel tool execution:** When multiple tool_use blocks arrive in a single assistant response, all tool generators start simultaneously. Events are multiplexed via `Promise.race` — `tool_block_update` events from different tools interleave as they arrive. All tools are marked `running` upfront. Results are collected in original order. If any tool returns `breakLoop`, remaining tools still run to completion before the break is honored.
+**Parallel tool execution:** When multiple tool_use blocks arrive in a single assistant response, all tool generators start simultaneously. Events are multiplexed via `Promise.race` — `tool_block_update` events from different tools interleave as they arrive. All tools are marked `running` upfront. Results are collected in original order.
+
+**Return tool isolation:** If the `return` tool appears in a parallel batch, only the return tool executes — other tools are skipped. No `tool_result` message is saved (breakLoop returns early). When the minion chat is continued, `minionTool.ts` detects unresolved tool_use blocks and lazily reconstructs error `tool_result` entries for skipped tools before sending the next message.
 
 **Pending Tool Resolution (`AgenticLoopOptions`):**
 

@@ -813,6 +813,7 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
   - `/share` — read-only for namespaced callers (main agent has write access). Enforced via `assertWritable()` in VFS core, throws `VfsError('READONLY')`.
   - `/sharerw` — read-write for all, including namespaced callers. Enables minion-to-minion collaboration.
 - **Mount root protection**: `/share` directory root cannot be deleted or renamed (throws `INVALID_PATH`). `/sharerw` has no root protection — the main agent can delete it if needed.
+- **Concurrency control**: Per-project async mutex (`treeLock.ts`) serializes all tree-mutating operations (`createFile`, `updateFile`, `writeFile`, `deleteFile`, `mkdir`, `rmdir`, `rename`, `restore`, `purge`, `restoreOrphan`, `purgeOrphan`, `clearVfs`). Read-only functions and delegating functions (`strReplace`, `insert`) are not locked. Prevents lost-update race conditions when parallel tool calls modify the same project's tree.
 
 **Storage Tables:**
 

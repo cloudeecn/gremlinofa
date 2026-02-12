@@ -407,8 +407,11 @@ async function* executeMinion(
   // ── Phase 3: Message + execution ──
   // User message will be saved. Errors here can be retried via action: 'retry'.
 
-  // Check if last message is assistant with pending return tool (needs apiDef.apiType)
+  // Check if last message is assistant with unresolved tool_use blocks (needs apiDef.apiType).
+  // This happens when the return tool was called (possibly in parallel with other tools),
+  // breaking the agentic loop before a tool_result message could be saved.
   let pendingReturnToolUse: { id: string; name: string } | undefined;
+  let unresolvedNonReturnTools: { id: string; name: string }[] = [];
   if (existingMessages.length > 0) {
     const lastMsg = existingMessages[existingMessages.length - 1];
     if (lastMsg.role === 'assistant' && lastMsg.content.fullContent) {
@@ -416,9 +419,14 @@ async function* executeMinion(
         apiDef.apiType,
         lastMsg.content.fullContent
       );
-      const returnToolUse = toolUseBlocks.find(t => t.name === 'return');
-      if (returnToolUse) {
-        pendingReturnToolUse = { id: returnToolUse.id, name: returnToolUse.name };
+      if (toolUseBlocks.length > 0) {
+        const returnToolUse = toolUseBlocks.find(t => t.name === 'return');
+        if (returnToolUse) {
+          pendingReturnToolUse = { id: returnToolUse.id, name: returnToolUse.name };
+          unresolvedNonReturnTools = toolUseBlocks
+            .filter(t => t.name !== 'return')
+            .map(t => ({ id: t.id, name: t.name }));
+        }
       }
     }
   }
@@ -453,26 +461,46 @@ async function* executeMinion(
     await storage.saveMinionMessage(minionChat.id, reusedMessage);
     minionContext = [...existingMessages, reusedMessage];
   } else if (pendingReturnToolUse) {
-    // Resume after return tool: send tool_result instead of user message
-    const toolResultBlock: ToolResultBlock = {
+    // Resume after return tool: build tool_result for the return tool + error results
+    // for any other tools that were called in parallel and skipped.
+    const toolResultBlocks: ToolResultBlock[] = [];
+    const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+
+    // Error results for tools that were skipped due to parallel return call
+    for (const skipped of unresolvedNonReturnTools) {
+      const errContent =
+        'Tool call skipped: the return tool was called in parallel, which breaks the agentic loop. Other parallel tool calls cannot be executed.';
+      toolResultBlocks.push({
+        type: 'tool_result',
+        tool_use_id: skipped.id,
+        content: errContent,
+        is_error: true,
+      });
+      toolResultRenderBlocks.push(
+        createToolResultRenderBlock(skipped.id, skipped.name, errContent, true)
+      );
+    }
+
+    // Return tool result: user's continuation message
+    toolResultBlocks.push({
       type: 'tool_result',
       tool_use_id: pendingReturnToolUse.id,
       content: minionInput.message,
-    };
-
-    const toolResultRenderBlock: ToolResultRenderBlock = createToolResultRenderBlock(
-      pendingReturnToolUse.id,
-      pendingReturnToolUse.name,
-      minionInput.message,
-      false
+    });
+    toolResultRenderBlocks.push(
+      createToolResultRenderBlock(
+        pendingReturnToolUse.id,
+        pendingReturnToolUse.name,
+        minionInput.message,
+        false
+      )
     );
 
-    const toolResultMessage = apiService.buildToolResultMessage(apiDef.apiType, [toolResultBlock]);
+    const toolResultMessage = apiService.buildToolResultMessage(apiDef.apiType, toolResultBlocks);
     toolResultMessage.content.renderingContent = [
-      { category: 'backstage' as const, blocks: [toolResultRenderBlock] },
+      { category: 'backstage' as const, blocks: toolResultRenderBlocks },
     ];
 
-    // Save tool result message to minion chat
     await storage.saveMinionMessage(minionChat.id, toolResultMessage);
 
     minionContext = [...existingMessages, toolResultMessage];

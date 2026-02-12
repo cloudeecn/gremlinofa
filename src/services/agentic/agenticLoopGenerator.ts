@@ -41,7 +41,7 @@ import { createTokenTotals, addTokens, hasTokenUsage } from '../../utils/tokenTo
 // Constants
 // ============================================================================
 
-const MAX_ITERATIONS = 50;
+const MAX_ITERATIONS = 999;
 
 // ============================================================================
 // Types
@@ -448,6 +448,30 @@ async function* executeToolUseBlocks(
   totals: TokenTotals
 ): AsyncGenerator<AgenticLoopEvent, { breakLoop: { returnValue?: string } } | undefined, void> {
   console.debug('[agenticLoopGen] Executing', toolUseBlocks.length, 'tool(s)');
+
+  // Pre-scan: if a return tool is present among parallel calls, only execute it.
+  // The return tool breaks the loop, so other tools would run for nothing.
+  // No tool_result message is saved here — the caller reconstructs error results
+  // for skipped tools lazily when the conversation is next continued.
+  const returnToolIndex = toolUseBlocks.findIndex(b => b.name === 'return');
+  if (returnToolIndex !== -1 && toolUseBlocks.length > 1) {
+    console.debug('[agenticLoopGen] Return tool found in parallel batch, isolating it');
+    const returnBlock = toolUseBlocks[returnToolIndex];
+
+    const gen = executeClientSideTool(
+      returnBlock.name,
+      returnBlock.input,
+      enabledTools,
+      toolOptions,
+      toolContext
+    );
+    // Return tool completes immediately (no streaming), drain to get result
+    let iterResult = await gen.next();
+    while (!iterResult.done) iterResult = await gen.next();
+    const toolResult = iterResult.value;
+
+    return { breakLoop: toolResult.breakLoop ?? { returnValue: toolResult.content } };
+  }
 
   // Create pending render blocks
   const pendingRenderBlocks: ToolResultRenderBlock[] = toolUseBlocks.map(toolUse => ({

@@ -462,13 +462,14 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 - **Tool Options System** (Project schema):
   - `enabledTools?: string[]` - List of enabled tool names (e.g., `['memory', 'javascript', 'filesystem']`)
   - `toolOptions?: Record<string, ToolOptions>` - Per-tool options keyed by tool name
-  - `ToolOptions = Record<string, ToolOptionValue>` where `ToolOptionValue = boolean | string | ModelReference`
+  - `ToolOptions = Record<string, ToolOptionValue>` where `ToolOptionValue = boolean | string | ModelReference | ModelReference[]`
   - `ModelReference = { apiDefinitionId: string; modelId: string }` for model selection options
-  - `ToolOptionDefinition` is a discriminated union with three types:
+  - `ToolOptionDefinition` is a discriminated union with four types:
     - `BooleanToolOption`: `{ type: 'boolean'; id; label; subtitle?; default: boolean }`
     - `LongtextToolOption`: `{ type: 'longtext'; id; label; subtitle?; default: string; placeholder? }`
     - `ModelToolOption`: `{ type: 'model'; id; label; subtitle? }` (no default, prepopulated from project)
-  - Type guards: `isBooleanOption()`, `isLongtextOption()`, `isModelOption()`, `isModelReference()`
+    - `ModelListToolOption`: `{ type: 'modellist'; id; label; subtitle? }` (initialized to `[]`)
+  - Type guards: `isBooleanOption()`, `isLongtextOption()`, `isModelOption()`, `isModelListOption()`, `isModelReference()`, `isModelReferenceArray()`
   - `initializeToolOptions(existing, optionDefs, projectContext)` - Initializes options with defaults, preserves existing values
   - Migration: Storage layer auto-migrates old boolean flags on project load (see `migrateProjectToolSettings()` in `unifiedStorage.ts`)
   - Legacy fields (`memoryEnabled`, `jsExecutionEnabled`, etc.) cleared after migration
@@ -1091,11 +1092,13 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 | `enableWeb`    | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)       |
 | `enabledTools` | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                   |
 | `persona`      | string   | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is enabled.  |
+| `model`        | string   | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` + `models` configured. |
 
 **Tool Options:**
 
 - `systemPrompt` (longtext) - Instructions for minion sub-agents
 - `model` (ModelReference) - Model for delegated tasks (can use cheaper model)
+- `models` (ModelReference[]) - Models the LLM can choose from when calling minions. When non-empty and `namespacedMinion` is enabled, adds `model` input parameter with enum of `apiDefId:modelId` strings. LLM omitting `model` falls back to default `model` option.
 - `allowWebSearch` (boolean, default: false) - Project-level gate for minion web search. Must be enabled for `enableWeb` to work. When disabled, `enableWeb` parameter and web search mention are omitted from the schema/description sent to the LLM.
 - `returnOnly` (boolean, default: false) - When return tool provides a result and accumulated text exists, suppress text from the result JSON (only return the explicit result)
 - `noReturnTool` (boolean, default: false) - Remove the return tool from minion toolset

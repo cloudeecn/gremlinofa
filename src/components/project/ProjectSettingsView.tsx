@@ -8,7 +8,9 @@ import {
   isBooleanOption,
   isLongtextOption,
   isModelOption,
+  isModelListOption,
   isModelReference,
+  isModelReferenceArray,
   initializeToolOptions,
 } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
@@ -102,6 +104,11 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     placeholder?: string;
   } | null>(null);
   const [modelOptionModal, setModelOptionModal] = useState<{
+    toolName: string;
+    optionId: string;
+    title: string;
+  } | null>(null);
+  const [modelListAddModal, setModelListAddModal] = useState<{
     toolName: string;
     optionId: string;
     title: string;
@@ -434,6 +441,36 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
             setModelOptionModal(null);
           }}
           title={modelOptionModal.title}
+          showResetOption={false}
+        />
+      )}
+
+      {/* Model List Add Modal */}
+      {modelListAddModal && (
+        <ModelSelector
+          isOpen={true}
+          onClose={() => setModelListAddModal(null)}
+          currentApiDefinitionId={selectedApiDefId}
+          currentModelId={null}
+          onSelect={(apiDefId, modelId) => {
+            if (apiDefId && modelId) {
+              const currentList =
+                toolOptionsState[modelListAddModal.toolName]?.[modelListAddModal.optionId];
+              const list: ModelReference[] = isModelReferenceArray(currentList) ? currentList : [];
+              // Duplicate check
+              const alreadyExists = list.some(
+                ref => ref.apiDefinitionId === apiDefId && ref.modelId === modelId
+              );
+              if (!alreadyExists) {
+                setToolOptionValue(modelListAddModal.toolName, modelListAddModal.optionId, [
+                  ...list,
+                  { apiDefinitionId: apiDefId, modelId },
+                ]);
+              }
+            }
+            setModelListAddModal(null);
+          }}
+          title={modelListAddModal.title}
           showResetOption={false}
         />
       )}
@@ -1074,6 +1111,61 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                                         {getModelDisplayText(modelRef)}
                                       </span>
                                       <span className="ml-2 flex-shrink-0 text-gray-600">▼</span>
+                                    </div>
+                                  </div>
+                                );
+                              }
+
+                              // Model list option - list with add/remove
+                              if (isModelListOption(opt)) {
+                                const value = toolOptionsState[tool.name]?.[opt.id];
+                                const modelList: ModelReference[] = isModelReferenceArray(value)
+                                  ? value
+                                  : [];
+                                return (
+                                  <div key={opt.id}>
+                                    <div className="mb-1">
+                                      <span className="text-sm font-medium text-gray-900">
+                                        {opt.label}
+                                      </span>
+                                      {opt.subtitle && (
+                                        <p className="text-xs text-gray-500">{opt.subtitle}</p>
+                                      )}
+                                    </div>
+                                    {/* Model rows */}
+                                    <div className="space-y-1">
+                                      {modelList.map((ref, idx) => (
+                                        <div
+                                          key={`${ref.apiDefinitionId}:${ref.modelId}`}
+                                          className="flex items-center justify-between rounded-lg border border-gray-200 bg-white p-2 text-sm"
+                                        >
+                                          <span className="min-w-0 flex-1 truncate text-gray-900">
+                                            {getModelDisplayText(ref)}
+                                          </span>
+                                          <button
+                                            onClick={() => {
+                                              const updated = modelList.filter((_, i) => i !== idx);
+                                              setToolOptionValue(tool.name, opt.id, updated);
+                                            }}
+                                            className="ml-2 flex-shrink-0 text-gray-400 hover:text-red-500"
+                                          >
+                                            ✕
+                                          </button>
+                                        </div>
+                                      ))}
+                                      {/* Add button */}
+                                      <button
+                                        onClick={() =>
+                                          setModelListAddModal({
+                                            toolName: tool.name,
+                                            optionId: opt.id,
+                                            title: `Add ${opt.label}`,
+                                          })
+                                        }
+                                        className="flex w-full items-center justify-center rounded-lg border-2 border-dashed border-gray-300 p-2 text-sm text-gray-500 transition-colors hover:border-gray-400 hover:text-gray-700"
+                                      >
+                                        ＋ Add Model
+                                      </button>
                                     </div>
                                   </div>
                                 );

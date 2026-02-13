@@ -144,9 +144,9 @@ describe('minionTool', () => {
       expect(noOpts).not.toContain('web search');
     });
 
-    it('has option definitions for model, models, system prompt, allowWebSearch, returnOnly, noReturnTool, and namespacedMinion', () => {
+    it('has option definitions for model, models, system prompt, allowWebSearch, returnOnly, noReturnTool, disableReasoning, and namespacedMinion', () => {
       expect(minionTool.optionDefinitions).toBeDefined();
-      expect(minionTool.optionDefinitions).toHaveLength(7);
+      expect(minionTool.optionDefinitions).toHaveLength(8);
 
       const systemPromptOpt = minionTool.optionDefinitions?.find(o => o.id === 'systemPrompt');
       expect(systemPromptOpt).toBeDefined();
@@ -175,6 +175,15 @@ describe('minionTool', () => {
       expect(noReturnOpt?.type).toBe('boolean');
       if (noReturnOpt?.type === 'boolean') {
         expect(noReturnOpt.default).toBe(false);
+      }
+
+      const disableReasoningOpt = minionTool.optionDefinitions?.find(
+        o => o.id === 'disableReasoning'
+      );
+      expect(disableReasoningOpt).toBeDefined();
+      expect(disableReasoningOpt?.type).toBe('boolean');
+      if (disableReasoningOpt?.type === 'boolean') {
+        expect(disableReasoningOpt.default).toBe(false);
       }
 
       const namespacedOpt = minionTool.optionDefinitions?.find(o => o.id === 'namespacedMinion');

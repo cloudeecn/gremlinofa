@@ -7,8 +7,12 @@ import { registerAllTools } from './services/tools';
 // Register all client-side tools at startup
 registerAllTools();
 
-createRoot(document.getElementById('root')!).render(
+const app = import.meta.env.DEV ? (
   <StrictMode>
     <App />
   </StrictMode>
+) : (
+  <App />
 );
+
+createRoot(document.getElementById('root')!).render(app);

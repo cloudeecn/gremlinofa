@@ -1262,6 +1262,10 @@ type AgenticLoopResult =
 - Tool result messages saved before calling generator
 - Assistant messages saved via `message_created` events from generator
 
+**Streaming Render Throttle:**
+
+`onStreamingUpdate` and `onToolBlockUpdate` in `buildEventHandlers()` are throttled at 200ms intervals (`STREAMING_THROTTLE_MS`). Multiple parallel minions on fast models can produce hundreds of state updates per second — the throttle batches these into ~5 React renders/second. `onStreamingUpdate` uses latest-wins semantics (intermediate chunks dropped). `onToolBlockUpdate` accumulates a `Map<toolUseId, update>` and flushes all accumulated updates in a single `setMessages` call. Both timers are flushed synchronously in `onStreamingEnd` and cleaned up on unmount.
+
 **Features:**
 
 - Unified loop handles all cases (normal send, continue, stop)

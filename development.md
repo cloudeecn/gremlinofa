@@ -153,7 +153,7 @@ Projects organize chats with shared settings:
 - **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
 - **Message format**: three modes (user message / with metadata / use template)
-- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem
+- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook
 - **Advanced** (collapsed): temperature, max output tokens (default: 1536)
 
 ### Chats
@@ -443,7 +443,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 
 - `src/services/tools/clientSideTools.ts` - Tool registry and execution
 - Static registration at startup: `registerAllTools()` called in `main.tsx` before React renders
-- Available tools: `memory`, `javascript`, `filesystem`
+- Available tools: `memory`, `javascript`, `filesystem`, `sketchbook`
 - Tool definitions sent to API via `getToolDefinitionsForAPI(apiType, enabledToolNames, toolOptions)`
 - Execution via `executeClientSideTool(toolName, input, enabledToolNames, toolOptions, context)`
 - `ClientSideTool` interface:

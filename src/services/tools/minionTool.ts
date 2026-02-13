@@ -17,6 +17,7 @@ import type {
   ClientSideTool,
   Message,
   MinionChat,
+  ModelReference,
   RenderingBlockGroup,
   SystemPromptContext,
   ToolContext,
@@ -27,7 +28,7 @@ import type {
   ToolStreamEvent,
 } from '../../types';
 import type { ToolInfoRenderBlock, ToolResultRenderBlock } from '../../types/content';
-import { isModelReference } from '../../types';
+import { isModelReference, isModelReferenceArray } from '../../types';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { storage } from '../storage';
 import {
@@ -43,6 +44,18 @@ import * as vfs from '../vfs/vfsService';
 
 // Tool names that minions cannot use
 const MINION_EXCLUDED_TOOLS = ['minion'];
+
+/** Format a ModelReference as "apiDefinitionId:modelId" for schema enum values */
+export function formatModelString(ref: ModelReference): string {
+  return `${ref.apiDefinitionId}:${ref.modelId}`;
+}
+
+/** Parse "apiDefinitionId:modelId" back to a ModelReference. First colon only — modelId can contain colons (Bedrock ARNs). */
+export function parseModelString(str: string): ModelReference | undefined {
+  const idx = str.indexOf(':');
+  if (idx === -1) return undefined;
+  return { apiDefinitionId: str.substring(0, idx), modelId: str.substring(idx + 1) };
+}
 
 /** Stashed fullContent from a rolled-back message for re-use during retry */
 interface StashedRetryContent {
@@ -109,6 +122,8 @@ interface MinionInput {
   enabledTools?: string[];
   /** Persona name (matches /minions/<name>.md). Only used when namespacedMinion is enabled. */
   persona?: string;
+  /** Model to use (formatted as "apiDefinitionId:modelId"). Only when namespacedMinion + models configured. */
+  model?: string;
 }
 
 /**
@@ -352,9 +367,50 @@ async function* executeMinion(
   }
 
   const minionToolOptions = toolOptions ?? {};
-  const modelRef = minionToolOptions.model;
 
-  if (!modelRef || !isModelReference(modelRef)) {
+  // Resolve effective model: input.model (from LLM) > toolOptions.model (default)
+  let effectiveModelRef: ModelReference | undefined;
+
+  if (minionInput.model) {
+    // LLM specified a model — validate against configured models list
+    const modelsList = minionToolOptions.models;
+    if (!isModelReferenceArray(modelsList) || modelsList.length === 0) {
+      return {
+        content:
+          'Error: model parameter provided but no models list configured. Resend with the message to reattempt.',
+        isError: true,
+      };
+    }
+
+    const parsed = parseModelString(minionInput.model);
+    if (!parsed) {
+      return {
+        content: `Error: Invalid model format: "${minionInput.model}". Expected "apiDefinitionId:modelId". Resend with the message to reattempt.`,
+        isError: true,
+      };
+    }
+
+    const isInList = modelsList.some(
+      ref => ref.apiDefinitionId === parsed.apiDefinitionId && ref.modelId === parsed.modelId
+    );
+    if (!isInList) {
+      const available = modelsList.map(formatModelString).join(', ');
+      return {
+        content: `Error: Model "${minionInput.model}" is not in the configured models list. Available: ${available}. Resend with the message to reattempt.`,
+        isError: true,
+      };
+    }
+
+    effectiveModelRef = parsed;
+  } else {
+    // Fall back to default model option
+    const defaultRef = minionToolOptions.model;
+    if (defaultRef && isModelReference(defaultRef)) {
+      effectiveModelRef = defaultRef;
+    }
+  }
+
+  if (!effectiveModelRef) {
     return {
       content:
         'Error: Minion model not configured. Please configure a model in project settings. Resend with the message to reattempt.',
@@ -370,18 +426,21 @@ async function* executeMinion(
     };
   }
 
-  const apiDef = await storage.getAPIDefinition(modelRef.apiDefinitionId);
+  const apiDef = await storage.getAPIDefinition(effectiveModelRef.apiDefinitionId);
   if (!apiDef) {
     return {
-      content: `Error: API definition not found: ${modelRef.apiDefinitionId}. Resend with the message to reattempt.`,
+      content: `Error: API definition not found: ${effectiveModelRef.apiDefinitionId}. Resend with the message to reattempt.`,
       isError: true,
     };
   }
 
-  const model = await storage.getModel(modelRef.apiDefinitionId, modelRef.modelId);
+  const model = await storage.getModel(
+    effectiveModelRef.apiDefinitionId,
+    effectiveModelRef.modelId
+  );
   if (!model) {
     return {
-      content: `Error: Model not found: ${modelRef.modelId}. Resend with the message to reattempt.`,
+      content: `Error: Model not found: ${effectiveModelRef.modelId}. Resend with the message to reattempt.`,
       isError: true,
     };
   }
@@ -784,6 +843,10 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push('Web: enabled');
   }
 
+  if (minionInput.model) {
+    lines.push(`Model: ${minionInput.model}`);
+  }
+
   if (minionInput.message) {
     lines.push('');
     lines.push(minionInput.message);
@@ -888,6 +951,14 @@ function getMinionDescription(opts: ToolOptions): string {
     lines.push(
       '- Select a persona via the persona parameter. Each persona gets its own isolated VFS namespace and system prompt from /minions/<name>.md'
     );
+
+    // Check if models list is configured
+    const modelsList = opts.models;
+    if (isModelReferenceArray(modelsList) && modelsList.length > 0) {
+      lines.push(
+        '- Select a model via the model parameter. Available models are listed in the schema enum.'
+      );
+    }
   }
 
   if (opts.noReturnTool !== true) {
@@ -939,6 +1010,17 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
       description:
         'Persona name for the minion (matches a file in /minions/). Omit for default persona.',
     };
+
+    // Add model enum when models list is configured
+    const modelsList = opts.models;
+    if (isModelReferenceArray(modelsList) && modelsList.length > 0) {
+      const modelStrings = modelsList.map(formatModelString);
+      properties.model = {
+        type: 'string',
+        enum: modelStrings,
+        description: 'Model to use for this minion call. Omit to use the default minion model.',
+      };
+    }
   }
 
   return {
@@ -979,6 +1061,12 @@ export const minionTool: ClientSideTool = {
       id: 'model',
       label: 'Minion Model',
       subtitle: 'Model for delegated tasks (can use cheaper model)',
+    },
+    {
+      type: 'modellist',
+      id: 'models',
+      label: 'Available Models',
+      subtitle: 'Models the LLM can choose from when calling minions (namespaced mode)',
     },
     {
       type: 'boolean',

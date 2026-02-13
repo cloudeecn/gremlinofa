@@ -11,6 +11,7 @@ import { memoryTool } from './memoryTool';
 import { fsTool } from './fsTool';
 import { returnTool } from './returnTool';
 import { minionTool } from './minionTool';
+import { sketchbookTool } from './sketchbookTool';
 
 /**
  * All available client-side tools.
@@ -18,7 +19,7 @@ import { minionTool } from './minionTool';
  *
  * Note: 'return' tool is internal (for minion sub-agents) and not shown in UI.
  */
-const allTools = [memoryTool, jsTool, fsTool, minionTool, returnTool];
+const allTools = [memoryTool, jsTool, fsTool, minionTool, sketchbookTool, returnTool];
 
 /**
  * Register all tools with the global registry.
@@ -37,3 +38,4 @@ export { memoryTool } from './memoryTool';
 export { fsTool } from './fsTool';
 export { returnTool } from './returnTool';
 export { minionTool } from './minionTool';
+export { sketchbookTool } from './sketchbookTool';

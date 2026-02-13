@@ -461,6 +461,7 @@ async function* executeMinion(
   }
 
   const includeReturn = minionToolOptions.noReturnTool !== true;
+  const disableReasoning = minionToolOptions.disableReasoning === true;
   const minionTools = buildMinionTools(minionInput.enabledTools, projectTools, includeReturn);
 
   // ── Phase 3: Message + execution ──
@@ -661,7 +662,7 @@ async function* executeMinion(
     disableStream: project.disableStream ?? false,
     namespace: minionNamespace,
     // Reasoning settings from project
-    enableReasoning: project.enableReasoning,
+    enableReasoning: disableReasoning ? false : project.enableReasoning,
     reasoningBudgetTokens: project.reasoningBudgetTokens,
     thinkingKeepTurns: project.thinkingKeepTurns,
     reasoningEffort: project.reasoningEffort,
@@ -1087,6 +1088,13 @@ export const minionTool: ClientSideTool = {
       id: 'noReturnTool',
       label: 'No Return Tool',
       subtitle: 'Remove the return tool from minion toolset',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'disableReasoning',
+      label: 'Disable Reasoning',
+      subtitle: 'Turn off reasoning/thinking for minion calls regardless of project settings',
       default: false,
     },
     {

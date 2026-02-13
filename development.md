@@ -1102,6 +1102,7 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 - `allowWebSearch` (boolean, default: false) - Project-level gate for minion web search. Must be enabled for `enableWeb` to work. When disabled, `enableWeb` parameter and web search mention are omitted from the schema/description sent to the LLM.
 - `returnOnly` (boolean, default: false) - When return tool provides a result and accumulated text exists, suppress text from the result JSON (only return the explicit result)
 - `noReturnTool` (boolean, default: false) - Remove the return tool from minion toolset
+- `disableReasoning` (boolean, default: false) - Turn off reasoning/thinking for minion calls regardless of project settings
 - `namespacedMinion` (boolean, default: false) - Isolate each persona into its own VFS namespace. When enabled, adds `persona` input parameter and system prompt with available personas list.
 
 **Persona System (namespacedMinion):**

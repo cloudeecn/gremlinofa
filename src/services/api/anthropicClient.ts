@@ -32,6 +32,40 @@ import { toolRegistry } from '../tools/clientSideTools';
 import { getModelMetadataFor } from './modelMetadata';
 
 /**
+ * Add cache_control breakpoints to the last 2 eligible messages (walking backwards).
+ * Skips thinking/redacted_thinking blocks (they don't support cache_control in the SDK).
+ * Skips messages that already have a block with cache_control.
+ */
+export function applyCacheBreakpoints(messages: Anthropic.Beta.BetaMessageParam[]): void {
+  let placed = 0;
+  for (let i = messages.length - 1; i >= 0 && placed < 2; i--) {
+    const content = messages[i].content;
+    if (typeof content === 'string' || !Array.isArray(content)) continue;
+
+    // Skip if any block already has cache_control
+    if (content.some(b => typeof b === 'object' && 'cache_control' in b && b.cache_control))
+      continue;
+
+    // Find last non-thinking, non-empty block
+    let targetIdx = -1;
+    for (let j = content.length - 1; j >= 0; j--) {
+      const block = content[j] as { type: string; text?: string };
+      if (block.type === 'thinking' || block.type === 'redacted_thinking') continue;
+      if (block.type === 'text' && !block.text?.trim()) continue;
+      targetIdx = j;
+      break;
+    }
+    if (targetIdx === -1) continue;
+
+    content[targetIdx] = {
+      ...(content[targetIdx] as unknown as Record<string, unknown>),
+      cache_control: { type: 'ephemeral' as const },
+    } as (typeof content)[number];
+    placed++;
+  }
+}
+
+/**
  * Parse baseUrl to detect Bedrock endpoints.
  * Supports shorthand format "bedrock:us-east-2" and full URL.
  */
@@ -240,57 +274,32 @@ export class AnthropicClient implements APIClient {
         // Use fullContent if available and from Anthropic (better caching)
         if (msg.content.modelFamily === 'anthropic' && msg.content.fullContent) {
           // Use the stored fullContent blocks, but add cache_control dynamically
-          // Filter out empty text blocks (Anthropic doesn't support them)
           const content = Array.isArray(msg.content.fullContent)
-            ? msg.content.fullContent
-                .filter((block: Anthropic.Beta.BetaContentBlock) => {
-                  // Filter out empty text blocks
-                  if (block.type === 'text' && !block.text?.trim()) {
-                    return false;
-                  }
-                  return true;
-                })
-                .map(
-                  (
-                    block: Anthropic.Beta.BetaContentBlock,
-                    blockIdx: number,
-                    blockArr: Anthropic.Beta.BetaContentBlock[]
-                  ) => {
-                    // Destructure to exclude 'parsed' property (SDK adds it, but API rejects it)
-                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                    const { parsed, ...blockWithoutParsed } =
-                      block as Anthropic.Beta.BetaContentBlock & { parsed?: unknown };
-                    // Strip 'citations' if previous message was tool_result (document indices may be invalid)
-                    // See Known Issues in development.md for details
-                    let cleanBlock: Anthropic.Beta.BetaContentBlockParam = blockWithoutParsed;
-                    if (prevHasToolResult && 'citations' in blockWithoutParsed) {
-                      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                      const { citations, ...rest } =
-                        blockWithoutParsed as typeof blockWithoutParsed & {
-                          citations?: unknown;
-                        };
-                      cleanBlock = rest as Anthropic.Beta.BetaContentBlockParam;
-                    }
-                    // Add cache_control to last block of last 2 messages
-                    if (idx >= arr.length - 2 && blockIdx === blockArr.length - 1) {
-                      return {
-                        ...cleanBlock,
-                        cache_control: { type: 'ephemeral' } as const,
-                      };
-                    }
-                    return cleanBlock;
-                  }
-                )
+            ? msg.content.fullContent.map((block: Anthropic.Beta.BetaContentBlock) => {
+                // Destructure to exclude 'parsed' property (SDK adds it, but API rejects it)
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                const { parsed, ...blockWithoutParsed } =
+                  block as Anthropic.Beta.BetaContentBlock & { parsed?: unknown };
+                // Strip 'citations' if previous message was tool_result (document indices may be invalid)
+                // See Known Issues in development.md for details
+                let cleanBlock: Anthropic.Beta.BetaContentBlockParam = blockWithoutParsed;
+                if (prevHasToolResult && 'citations' in blockWithoutParsed) {
+                  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                  const { citations, ...rest } = blockWithoutParsed as typeof blockWithoutParsed & {
+                    citations?: unknown;
+                  };
+                  cleanBlock = rest as Anthropic.Beta.BetaContentBlockParam;
+                }
+                // Replace empty text blocks with a space (API rejects empty text)
+                if (cleanBlock.type === 'text' && !(cleanBlock as { text?: string }).text?.trim()) {
+                  return { ...cleanBlock, text: ' ' };
+                }
+                return cleanBlock;
+              })
             : [
                 {
                   type: 'text' as const,
                   text: msg.content.fullContent,
-                  cache_control:
-                    idx >= arr.length - 2
-                      ? ({
-                          type: 'ephemeral',
-                        } as const)
-                      : undefined,
                 },
               ];
 
@@ -319,14 +328,10 @@ export class AnthropicClient implements APIClient {
           }
 
           // Add text content (only if non-empty)
-          // Anthropic doesn't support cache_control on empty text blocks
           if (msg.content.content.trim()) {
             contentBlocks.push({
               type: 'text',
               text: msg.content.content,
-              ...(idx >= arr.length - 2 && {
-                cache_control: { type: 'ephemeral' as const },
-              }),
             });
           }
 
@@ -336,6 +341,9 @@ export class AnthropicClient implements APIClient {
           };
         }
       });
+
+      // Add cache breakpoints to last 2 eligible messages (before pre-fill)
+      applyCacheBreakpoints(anthropicMessages);
 
       // Add pre-fill response if provided. Cannot pre-fill in reasoning mode.
       if (options.preFillResponse && !options.enableReasoning) {

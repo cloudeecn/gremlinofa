@@ -8,10 +8,12 @@ import Sidebar from './components/Sidebar';
 import SettingsPage from './components/SettingsPage';
 import DataManagerPage from './components/DataManagerPage';
 import { useApp } from './hooks/useApp';
+import { useIsMobile } from './hooks/useIsMobile';
 import ProjectView from './components/project/ProjectView';
 import ProjectSettingsView from './components/project/ProjectSettingsView';
 import VfsManagerView from './components/project/VfsManagerView';
 import ChatView from './components/chat/ChatView';
+import MinionChatView from './components/chat/MinionChatView';
 import { AttachmentManagerView } from './components/AttachmentManagerView';
 import { OOBEScreen } from './components/OOBEScreen';
 import { OOBEComplete } from './components/OOBEComplete';
@@ -98,6 +100,10 @@ function AppContent() {
           <Route
             path="/chat/:chatId"
             element={<ChatViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
+          />
+          <Route
+            path="/minion-chat/:minionChatId"
+            element={<MinionChatViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
           />
           <Route
             path="/attachments"
@@ -217,6 +223,20 @@ function ChatViewRoute({ onMenuPress }: { onMenuPress?: () => void }) {
   if (!chatId) return null;
   // key={chatId} forces remount when switching chats, preventing stale state issues
   return <ChatView key={chatId} chatId={chatId} onMenuPress={onMenuPress} />;
+}
+
+function MinionChatViewRoute({ onMenuPress }: { onMenuPress?: () => void }) {
+  const { minionChatId } = useParams<{ minionChatId: string }>();
+  const isMobile = useIsMobile();
+  if (!minionChatId) return null;
+  // On mobile, no hamburger menu — just back button
+  return (
+    <MinionChatView
+      key={minionChatId}
+      minionChatId={minionChatId}
+      onMenuPress={isMobile ? undefined : onMenuPress}
+    />
+  );
 }
 
 function App() {

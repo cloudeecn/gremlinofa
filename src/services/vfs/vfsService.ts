@@ -582,28 +582,30 @@ export async function readFile(
   path: string,
   namespace?: string
 ): Promise<string> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node } = navigateToNode(tree, normalized);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  if (node.type !== 'file') {
-    throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
-  }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
 
-  if (node.deleted) {
-    throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
-  }
+    if (node.deleted) {
+      throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
+    }
 
-  const file = await loadFile(node.fileId!);
-  if (!file) {
-    throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    const file = await loadFile(node.fileId!);
+    if (!file) {
+      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  return file.content;
+    return file.content;
+  });
 }
 
 /**
@@ -797,44 +799,46 @@ export async function readFileWithMeta(
   path: string,
   namespace?: string
 ): Promise<ReadFileResult> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node } = navigateToNode(tree, normalized);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  if (node.type !== 'file') {
-    throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
-  }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
 
-  if (node.deleted) {
-    throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
-  }
+    if (node.deleted) {
+      throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
+    }
 
-  const file = await loadFile(node.fileId!);
-  if (!file) {
-    throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    const file = await loadFile(node.fileId!);
+    if (!file) {
+      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  const isBinary = node.isBinary ?? false;
-  const mime = node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain');
+    const isBinary = node.isBinary ?? false;
+    const mime = node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain');
 
-  if (isBinary) {
+    if (isBinary) {
+      return {
+        content: file.content, // base64
+        isBinary: true,
+        mime,
+        buffer: base64ToBuffer(file.content),
+      };
+    }
+
     return {
-      content: file.content, // base64
-      isBinary: true,
+      content: file.content,
+      isBinary: false,
       mime,
-      buffer: base64ToBuffer(file.content),
     };
-  }
-
-  return {
-    content: file.content,
-    isBinary: false,
-    mime,
-  };
+  });
 }
 
 /**
@@ -997,64 +1001,66 @@ export async function readDir(
   includeDeleted = false,
   namespace?: string
 ): Promise<DirEntry[]> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
 
-  let children: Record<string, VfsNode>;
+    let children: Record<string, VfsNode>;
 
-  if (isRootPath(normalized)) {
-    children = tree.children ?? {};
-  } else {
-    const { node } = navigateToNode(tree, normalized);
+    if (isRootPath(normalized)) {
+      children = tree.children ?? {};
+    } else {
+      const { node } = navigateToNode(tree, normalized);
 
-    if (!node) {
-      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-    }
-
-    if (node.type !== 'dir') {
-      throw new VfsError(`Not a directory: ${normalized}`, 'NOT_A_DIRECTORY');
-    }
-
-    if (node.deleted) {
-      throw new VfsError(`Directory is deleted: ${normalized}`, 'IS_DELETED');
-    }
-
-    children = node.children || {};
-  }
-
-  const entries: DirEntry[] = [];
-
-  for (const [name, child] of Object.entries(children)) {
-    if (!includeDeleted && child.deleted) continue;
-
-    const entry: DirEntry = {
-      name,
-      type: child.type,
-      deleted: child.deleted,
-      createdAt: child.createdAt,
-      updatedAt: child.updatedAt,
-    };
-
-    // For files, try to get content length
-    if (child.type === 'file' && child.fileId) {
-      const file = await loadFile(child.fileId);
-      if (file && file.content) {
-        entry.size = file.content.length;
+      if (!node) {
+        throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
       }
+
+      if (node.type !== 'dir') {
+        throw new VfsError(`Not a directory: ${normalized}`, 'NOT_A_DIRECTORY');
+      }
+
+      if (node.deleted) {
+        throw new VfsError(`Directory is deleted: ${normalized}`, 'IS_DELETED');
+      }
+
+      children = node.children || {};
     }
 
-    entries.push(entry);
-  }
+    const entries: DirEntry[] = [];
 
-  // Sort: directories first, then by name
-  entries.sort((a, b) => {
-    if (a.type !== b.type) {
-      return a.type === 'dir' ? -1 : 1;
+    for (const [name, child] of Object.entries(children)) {
+      if (!includeDeleted && child.deleted) continue;
+
+      const entry: DirEntry = {
+        name,
+        type: child.type,
+        deleted: child.deleted,
+        createdAt: child.createdAt,
+        updatedAt: child.updatedAt,
+      };
+
+      // For files, try to get content length
+      if (child.type === 'file' && child.fileId) {
+        const file = await loadFile(child.fileId);
+        if (file && file.content) {
+          entry.size = file.content.length;
+        }
+      }
+
+      entries.push(entry);
     }
-    return a.name.localeCompare(b.name);
+
+    // Sort: directories first, then by name
+    entries.sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === 'dir' ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    return entries;
   });
-
-  return entries;
 }
 
 // ============================================================================
@@ -1172,13 +1178,15 @@ export async function exists(
   path: string,
   namespace?: string
 ): Promise<boolean> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
 
-  if (isRootPath(normalized)) return true;
+    if (isRootPath(normalized)) return true;
 
-  const { node } = navigateToNode(tree, normalized);
-  return node !== null && !node.deleted;
+    const { node } = navigateToNode(tree, normalized);
+    return node !== null && !node.deleted;
+  });
 }
 
 /**
@@ -1189,10 +1197,12 @@ export async function isFile(
   path: string,
   namespace?: string
 ): Promise<boolean> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node } = navigateToNode(tree, normalized);
-  return node !== null && node.type === 'file' && !node.deleted;
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
+    return node !== null && node.type === 'file' && !node.deleted;
+  });
 }
 
 /**
@@ -1203,13 +1213,15 @@ export async function isDirectory(
   path: string,
   namespace?: string
 ): Promise<boolean> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
 
-  if (isRootPath(normalized)) return true;
+    if (isRootPath(normalized)) return true;
 
-  const { node } = navigateToNode(tree, normalized);
-  return node !== null && node.type === 'dir' && !node.deleted;
+    const { node } = navigateToNode(tree, normalized);
+    return node !== null && node.type === 'dir' && !node.deleted;
+  });
 }
 
 // ============================================================================
@@ -1330,10 +1342,12 @@ export async function clearVfs(projectId: string): Promise<void> {
  * Check if a project has any VFS data
  */
 export async function hasVfs(projectId: string): Promise<boolean> {
-  const adapter = storage.getAdapter();
-  const metaId = `vfs_meta_${projectId}`;
-  const record = await adapter.get(Tables.VFS_META, metaId);
-  return record !== null;
+  return withTreeLock(projectId, async () => {
+    const adapter = storage.getAdapter();
+    const metaId = `vfs_meta_${projectId}`;
+    const record = await adapter.get(Tables.VFS_META, metaId);
+    return record !== null;
+  });
 }
 
 // ============================================================================
@@ -1355,57 +1369,59 @@ export interface VfsStat {
  * @throws VfsError if path not found or is deleted
  */
 export async function stat(projectId: string, path: string, namespace?: string): Promise<VfsStat> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
 
-  // Handle root directory
-  if (isRootPath(normalized)) {
-    return {
-      isFile: false,
-      isDirectory: true,
-      size: 0,
-      createdAt: 0,
-      updatedAt: 0,
-      isBinary: false,
-      mime: 'application/x-directory',
-    };
-  }
-
-  const { node } = navigateToNode(tree, normalized);
-
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
-
-  if (node.deleted) {
-    throw new VfsError(`Path is deleted: ${normalized}`, 'IS_DELETED');
-  }
-
-  const isFileNode = node.type === 'file';
-  const isDirectoryNode = node.type === 'dir';
-
-  let size = 0;
-  if (isFileNode && node.fileId) {
-    const file = await loadFile(node.fileId);
-    if (file) {
-      size = file.content.length;
+    // Handle root directory
+    if (isRootPath(normalized)) {
+      return {
+        isFile: false,
+        isDirectory: true,
+        size: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        isBinary: false,
+        mime: 'application/x-directory',
+      };
     }
-  }
 
-  const isBinary = isFileNode ? (node.isBinary ?? false) : false;
-  const mime = isFileNode
-    ? (node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain'))
-    : 'application/x-directory';
+    const { node } = navigateToNode(tree, normalized);
 
-  return {
-    isFile: isFileNode,
-    isDirectory: isDirectoryNode,
-    size,
-    createdAt: node.createdAt,
-    updatedAt: node.updatedAt,
-    isBinary,
-    mime,
-  };
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
+
+    if (node.deleted) {
+      throw new VfsError(`Path is deleted: ${normalized}`, 'IS_DELETED');
+    }
+
+    const isFileNode = node.type === 'file';
+    const isDirectoryNode = node.type === 'dir';
+
+    let size = 0;
+    if (isFileNode && node.fileId) {
+      const file = await loadFile(node.fileId);
+      if (file) {
+        size = file.content.length;
+      }
+    }
+
+    const isBinary = isFileNode ? (node.isBinary ?? false) : false;
+    const mime = isFileNode
+      ? (node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain'))
+      : 'application/x-directory';
+
+    return {
+      isFile: isFileNode,
+      isDirectory: isDirectoryNode,
+      size,
+      createdAt: node.createdAt,
+      updatedAt: node.updatedAt,
+      isBinary,
+      mime,
+    };
+  });
 }
 
 /**
@@ -1421,42 +1437,46 @@ export async function getFileMeta(
   minStoredVersion: number;
   storedVersionCount: number;
 } | null> {
-  const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
-  const { node } = navigateToNode(tree, normalized);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = normalizePath(path);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node || node.type !== 'file' || node.deleted || !node.fileId) {
-    return null;
-  }
+    if (!node || node.type !== 'file' || node.deleted || !node.fileId) {
+      return null;
+    }
 
-  const file = await loadFile(node.fileId);
-  if (!file) return null;
+    const file = await loadFile(node.fileId);
+    if (!file) return null;
 
-  const minStoredVersion = file.minStoredVersion ?? 1;
-  const storedVersionCount = file.version - minStoredVersion + 1;
+    const minStoredVersion = file.minStoredVersion ?? 1;
+    const storedVersionCount = file.version - minStoredVersion + 1;
 
-  return {
-    version: file.version,
-    createdAt: file.createdAt,
-    updatedAt: file.updatedAt,
-    minStoredVersion,
-    storedVersionCount,
-  };
+    return {
+      version: file.version,
+      createdAt: file.createdAt,
+      updatedAt: file.updatedAt,
+      minStoredVersion,
+      storedVersionCount,
+    };
+  });
 }
 
 /**
  * Get fileId for a path (internal use for versioning)
  */
 export async function getFileId(projectId: string, path: string): Promise<string | null> {
-  const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
-  const { node } = navigateToNode(tree, normalized);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = normalizePath(path);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node || node.type !== 'file' || !node.fileId) {
-    return null;
-  }
+    if (!node || node.type !== 'file' || !node.fileId) {
+      return null;
+    }
 
-  return node.fileId;
+    return node.fileId;
+  });
 }
 
 // ============================================================================
@@ -1480,29 +1500,31 @@ export async function getVersion(
   fileId: string,
   version: number
 ): Promise<string | null> {
-  // Version 1 is the initial create, not stored in vfs_versions
-  // Versions 2+ are stored in vfs_versions as the "before" state
-  // Current version is in vfs_files
+  return withTreeLock(_projectId, async () => {
+    // Version 1 is the initial create, not stored in vfs_versions
+    // Versions 2+ are stored in vfs_versions as the "before" state
+    // Current version is in vfs_files
 
-  // First, load the current file to get its version
-  const currentFile = await loadFile(fileId);
-  if (!currentFile) return null;
+    // First, load the current file to get its version
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) return null;
 
-  // If requesting current version, return current content
-  if (version === currentFile.version) {
-    return currentFile.content;
-  }
+    // If requesting current version, return current content
+    if (version === currentFile.version) {
+      return currentFile.content;
+    }
 
-  // If requesting version beyond current, not found
-  if (version > currentFile.version || version < 1) {
-    return null;
-  }
+    // If requesting version beyond current, not found
+    if (version > currentFile.version || version < 1) {
+      return null;
+    }
 
-  // Look up historical version
-  const versionData = await loadVersion(fileId, version);
-  if (!versionData) return null;
+    // Look up historical version
+    const versionData = await loadVersion(fileId, version);
+    if (!versionData) return null;
 
-  return versionData.content;
+    return versionData.content;
+  });
 }
 
 /**
@@ -1512,29 +1534,31 @@ export async function getVersion(
  * @returns Array of version info, sorted by version (ascending)
  */
 export async function listVersions(_projectId: string, fileId: string): Promise<VersionInfo[]> {
-  const currentFile = await loadFile(fileId);
-  if (!currentFile) return [];
+  return withTreeLock(_projectId, async () => {
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) return [];
 
-  const versions: VersionInfo[] = [];
+    const versions: VersionInfo[] = [];
 
-  // Historical versions (1 to currentVersion - 1)
-  for (let v = 1; v < currentFile.version; v++) {
-    const versionData = await loadVersion(fileId, v);
-    if (versionData) {
-      versions.push({
-        version: versionData.version,
-        createdAt: versionData.createdAt,
-      });
+    // Historical versions (1 to currentVersion - 1)
+    for (let v = 1; v < currentFile.version; v++) {
+      const versionData = await loadVersion(fileId, v);
+      if (versionData) {
+        versions.push({
+          version: versionData.version,
+          createdAt: versionData.createdAt,
+        });
+      }
     }
-  }
 
-  // Current version
-  versions.push({
-    version: currentFile.version,
-    createdAt: currentFile.updatedAt,
+    // Current version
+    versions.push({
+      version: currentFile.version,
+      createdAt: currentFile.updatedAt,
+    });
+
+    return versions;
   });
-
-  return versions;
 }
 
 /**
@@ -1549,39 +1573,41 @@ export async function dropOldVersions(
   fileId: string,
   keepCount = 10
 ): Promise<number> {
-  const currentFile = await loadFile(fileId);
-  if (!currentFile) return 0;
+  return withTreeLock(projectId, async () => {
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) return 0;
 
-  const totalVersions = currentFile.version;
-  if (totalVersions <= keepCount) return 0;
+    const totalVersions = currentFile.version;
+    if (totalVersions <= keepCount) return 0;
 
-  // Delete versions 1 to (totalVersions - keepCount)
-  // Current version is in vfs_files, historical are in vfs_versions
-  const deleteUpTo = totalVersions - keepCount;
-  const newMinStoredVersion = deleteUpTo + 1;
-  const adapter = storage.getAdapter();
-  let deleted = 0;
+    // Delete versions 1 to (totalVersions - keepCount)
+    // Current version is in vfs_files, historical are in vfs_versions
+    const deleteUpTo = totalVersions - keepCount;
+    const newMinStoredVersion = deleteUpTo + 1;
+    const adapter = storage.getAdapter();
+    let deleted = 0;
 
-  for (let v = 1; v <= deleteUpTo; v++) {
-    const versionId = `${fileId}_v${v}`;
-    try {
-      await adapter.delete(Tables.VFS_VERSIONS, versionId);
-      deleted++;
-    } catch {
-      // Version might not exist (e.g., already deleted)
+    for (let v = 1; v <= deleteUpTo; v++) {
+      const versionId = `${fileId}_v${v}`;
+      try {
+        await adapter.delete(Tables.VFS_VERSIONS, versionId);
+        deleted++;
+      } catch {
+        // Version might not exist (e.g., already deleted)
+      }
     }
-  }
 
-  // Update minStoredVersion in the file metadata
-  if (deleted > 0) {
-    const updatedFile: VfsFile = {
-      ...currentFile,
-      minStoredVersion: newMinStoredVersion,
-    };
-    await saveFile(fileId, updatedFile, projectId);
-  }
+    // Update minStoredVersion in the file metadata
+    if (deleted > 0) {
+      const updatedFile: VfsFile = {
+        ...currentFile,
+        minStoredVersion: newMinStoredVersion,
+      };
+      await saveFile(fileId, updatedFile, projectId);
+    }
 
-  return deleted;
+    return deleted;
+  });
 }
 
 // ============================================================================
@@ -1599,12 +1625,14 @@ export interface OrphanInfo {
  * Orphans are files displaced by rename operations
  */
 export async function listOrphans(projectId: string): Promise<OrphanInfo[]> {
-  const tree = await loadTree(projectId);
-  return tree.orphans.map(o => ({
-    fileId: o.fileId,
-    originalPath: o.originalPath,
-    orphanedAt: o.orphanedAt,
-  }));
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    return tree.orphans.map(o => ({
+      fileId: o.fileId,
+      originalPath: o.originalPath,
+      orphanedAt: o.orphanedAt,
+    }));
+  });
 }
 
 /**
@@ -1777,40 +1805,72 @@ export async function strReplace(
   namespace?: string
 ): Promise<StrReplaceResult> {
   assertWritable(path, namespace);
-  const content = await readFile(projectId, path, namespace);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  const occurrences = countOccurrences(content, oldStr);
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
+    if (node.deleted) {
+      throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
+    }
 
-  if (occurrences === 0) {
-    throw new VfsError(
-      `String not found in ${normalized}: "${oldStr.slice(0, 50)}${oldStr.length > 50 ? '...' : ''}"`,
-      'STRING_NOT_FOUND'
-    );
-  }
+    const fileId = node.fileId!;
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) {
+      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  if (occurrences > 1) {
-    const lineNumbers = findOccurrenceLines(content, oldStr);
-    throw new VfsError(
-      `Multiple occurrences (${occurrences}) found in lines: ${lineNumbers.join(', ')}`,
-      'STRING_NOT_UNIQUE'
-    );
-  }
+    const content = currentFile.content;
+    const occurrences = countOccurrences(content, oldStr);
 
-  // Find line where replacement occurs
-  const replacePos = content.indexOf(oldStr);
-  const editLine = content.substring(0, replacePos).split('\n').length;
+    if (occurrences === 0) {
+      throw new VfsError(
+        `String not found in ${normalized}: "${oldStr.slice(0, 50)}${oldStr.length > 50 ? '...' : ''}"`,
+        'STRING_NOT_FOUND'
+      );
+    }
 
-  // Perform replacement
-  const newContent = content.replace(oldStr, newStr);
+    if (occurrences > 1) {
+      const lineNumbers = findOccurrenceLines(content, oldStr);
+      throw new VfsError(
+        `Multiple occurrences (${occurrences}) found in lines: ${lineNumbers.join(', ')}`,
+        'STRING_NOT_UNIQUE'
+      );
+    }
 
-  // Update file (triggers versioning)
-  await updateFile(projectId, path, newContent, namespace);
+    // Find line where replacement occurs
+    const replacePos = content.indexOf(oldStr);
+    const editLine = content.substring(0, replacePos).split('\n').length;
 
-  return {
-    editLine,
-    snippet: formatSnippet(newContent, editLine),
-  };
+    // Perform replacement
+    const newContent = content.replace(oldStr, newStr);
+
+    // Save current version to history, then update file
+    await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
+
+    const now = Date.now();
+    const newFile: VfsFile = {
+      content: newContent,
+      version: currentFile.version + 1,
+      createdAt: currentFile.createdAt,
+      updatedAt: now,
+    };
+
+    await saveFile(fileId, newFile, projectId);
+    node.updatedAt = now;
+    await saveTree(projectId, tree);
+
+    return {
+      editLine,
+      snippet: formatSnippet(newContent, editLine),
+    };
+  });
 }
 
 export interface InsertResult {
@@ -1834,29 +1894,61 @@ export async function insert(
   namespace?: string
 ): Promise<InsertResult> {
   assertWritable(path, namespace);
-  const content = await readFile(projectId, path, namespace);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  const lines = content.split('\n');
-  const nLines = lines.length;
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
+    if (node.deleted) {
+      throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
+    }
 
-  // insertLine is 0-indexed for insertion: 0 means before first line
-  if (insertLine < 0 || insertLine > nLines) {
-    throw new VfsError(
-      `Invalid line ${insertLine} in ${normalized}. Valid range: [0, ${nLines}]`,
-      'INVALID_LINE'
-    );
-  }
+    const fileId = node.fileId!;
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) {
+      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  // Insert the text at the specified line
-  const textLines = insertText.split('\n');
-  lines.splice(insertLine, 0, ...textLines);
-  const newContent = lines.join('\n');
+    const content = currentFile.content;
+    const lines = content.split('\n');
+    const nLines = lines.length;
 
-  // Update file (triggers versioning)
-  await updateFile(projectId, path, newContent, namespace);
+    // insertLine is 0-indexed for insertion: 0 means before first line
+    if (insertLine < 0 || insertLine > nLines) {
+      throw new VfsError(
+        `Invalid line ${insertLine} in ${normalized}. Valid range: [0, ${nLines}]`,
+        'INVALID_LINE'
+      );
+    }
 
-  return {
-    insertedAt: insertLine,
-  };
+    // Insert the text at the specified line
+    const textLines = insertText.split('\n');
+    lines.splice(insertLine, 0, ...textLines);
+    const newContent = lines.join('\n');
+
+    // Save current version to history, then update file
+    await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
+
+    const now = Date.now();
+    const newFile: VfsFile = {
+      content: newContent,
+      version: currentFile.version + 1,
+      createdAt: currentFile.createdAt,
+      updatedAt: now,
+    };
+
+    await saveFile(fileId, newFile, projectId);
+    node.updatedAt = now;
+    await saveTree(projectId, tree);
+
+    return {
+      insertedAt: insertLine,
+    };
+  });
 }

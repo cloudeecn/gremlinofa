@@ -1,49 +1,22 @@
 /**
- * Per-project async mutex for serializing VFS tree mutations.
+ * Per-project promise chain for serializing VFS operations.
  *
- * Every VFS write follows loadTree → modify → saveTree on a single JSON
- * document per project. Without serialization, parallel writes race and
- * the second save silently overwrites the first's changes (lost update).
- *
- * Properties: non-reentrant, FIFO, error-safe (release in finally).
+ * Every VFS op (read or write) is chained per project so that no two
+ * operations on the same project overlap. Different projects run freely
+ * in parallel. Errors are isolated: a rejection doesn't break the chain.
  */
 
-class AsyncMutex {
-  private queue: Array<(release: () => void) => void> = [];
-  private locked = false;
+const chains = new Map<string, Promise<void>>();
 
-  async acquire(): Promise<() => void> {
-    if (!this.locked) {
-      this.locked = true;
-      return () => this.release();
-    }
-    return new Promise(resolve => {
-      this.queue.push(resolve);
-    });
-  }
-
-  private release(): void {
-    const next = this.queue.shift();
-    if (next) {
-      next(() => this.release());
-    } else {
-      this.locked = false;
-    }
-  }
-}
-
-const locks = new Map<string, AsyncMutex>();
-
-export async function withTreeLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
-  let mutex = locks.get(projectId);
-  if (!mutex) {
-    mutex = new AsyncMutex();
-    locks.set(projectId, mutex);
-  }
-  const release = await mutex.acquire();
-  try {
-    return await fn();
-  } finally {
-    release();
-  }
+export function withTreeLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = chains.get(projectId) ?? Promise.resolve();
+  const result = prev.then(fn);
+  chains.set(
+    projectId,
+    result.then(
+      () => {},
+      () => {}
+    )
+  );
+  return result;
 }

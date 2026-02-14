@@ -434,67 +434,28 @@ function safeGenNext(
   );
 }
 
+/** Result from executeToolsParallel for a single tool */
+interface ParallelToolResult {
+  toolResult: ToolResultBlock;
+  renderBlock: ToolResultRenderBlock;
+}
+
 /**
- * Execute tool_use blocks with full streaming support.
- * Yields pending/running/complete events and pushes the final tool result message to `messages`.
- * Returns breakLoop info if a return tool was invoked, undefined otherwise.
+ * Execute a subset of tool_use blocks in parallel with streaming support.
+ * Yields running/streaming/complete block updates.
+ * Returns results indexed by position in the input array, plus any breakLoop.
  */
-async function* executeToolUseBlocks(
-  toolUseBlocks: ToolUseBlock[],
-  apiType: APIType,
+async function* executeToolsParallel(
+  blocks: ToolUseBlock[],
   enabledTools: string[],
   toolOptions: Record<string, ToolOptions>,
-  toolContext: ToolContext,
-  messages: Message<unknown>[],
-  totals: TokenTotals
-): AsyncGenerator<AgenticLoopEvent, { breakLoop: { returnValue?: string } } | undefined, void> {
-  console.debug('[agenticLoopGen] Executing', toolUseBlocks.length, 'tool(s)');
-
-  // Pre-scan: if a return tool is present among parallel calls, only execute it.
-  // The return tool breaks the loop, so other tools would run for nothing.
-  // No tool_result message is saved here — the caller reconstructs error results
-  // for skipped tools lazily when the conversation is next continued.
-  const returnToolIndex = toolUseBlocks.findIndex(b => b.name === 'return');
-  if (returnToolIndex !== -1 && toolUseBlocks.length > 1) {
-    console.debug('[agenticLoopGen] Return tool found in parallel batch, isolating it');
-    const returnBlock = toolUseBlocks[returnToolIndex];
-
-    const gen = executeClientSideTool(
-      returnBlock.name,
-      returnBlock.input,
-      enabledTools,
-      toolOptions,
-      toolContext
-    );
-    // Return tool completes immediately (no streaming), drain to get result
-    let iterResult = await gen.next();
-    while (!iterResult.done) iterResult = await gen.next();
-    const toolResult = iterResult.value;
-
-    return { breakLoop: toolResult.breakLoop ?? { returnValue: toolResult.content } };
-  }
-
-  // Create pending render blocks
-  const pendingRenderBlocks: ToolResultRenderBlock[] = toolUseBlocks.map(toolUse => ({
-    type: 'tool_result' as const,
-    tool_use_id: toolUse.id,
-    name: toolUse.name,
-    content: '',
-    status: 'pending' as const,
-    icon: toolRegistry.get(toolUse.name)?.iconOutput ?? '⏳',
-  }));
-
-  // Build pending tool_result message and yield for UI display
-  const pendingToolResults: ToolResultBlock[] = toolUseBlocks.map(toolUse => ({
-    type: 'tool_result' as const,
-    tool_use_id: toolUse.id,
-    content: '',
-  }));
-  const pendingMsg = buildToolResultMessage(apiType, pendingToolResults, pendingRenderBlocks);
-  yield { type: 'pending_tool_result', message: pendingMsg };
-
-  // Start all tool generators in parallel
-  const activeGens: ActiveToolGen[] = toolUseBlocks.map((toolUse, index) => {
+  toolContext: ToolContext
+): AsyncGenerator<
+  AgenticLoopEvent,
+  { results: ParallelToolResult[]; breakLoop?: { returnValue?: string } },
+  void
+> {
+  const activeGens: ActiveToolGen[] = blocks.map((toolUse, index) => {
     console.debug('[agenticLoopGen] Starting tool:', toolUse.name, 'id:', toolUse.id);
     const gen = executeClientSideTool(
       toolUse.name,
@@ -520,12 +481,8 @@ async function* executeToolUseBlocks(
     ag.pendingNext = safeGenNext(ag);
   }
 
-  // Ordered result slots (one per tool, filled as generators complete)
-  const toolResults: (ToolResultBlock | null)[] = new Array(toolUseBlocks.length).fill(null);
-  const toolResultRenderBlocks: (ToolResultRenderBlock | null)[] = new Array(
-    toolUseBlocks.length
-  ).fill(null);
-  let breakLoopResult: { returnValue?: string } | undefined;
+  const results: (ParallelToolResult | null)[] = new Array(blocks.length).fill(null);
+  let breakLoop: { returnValue?: string } | undefined;
 
   // Race loop: process events from whichever generator resolves first
   while (activeGens.some(ag => !ag.done)) {
@@ -537,8 +494,8 @@ async function* executeToolUseBlocks(
       ag.done = true;
       const toolResult = resolved.result.value;
 
-      if (toolResult.breakLoop && !breakLoopResult) {
-        breakLoopResult = toolResult.breakLoop;
+      if (toolResult.breakLoop && !breakLoop) {
+        breakLoop = toolResult.breakLoop;
       }
 
       const renderBlock = createToolResultRenderBlock(
@@ -551,13 +508,15 @@ async function* executeToolUseBlocks(
       );
       renderBlock.status = toolResult.isError ? 'error' : 'complete';
 
-      toolResults[ag.index] = {
-        type: 'tool_result',
-        tool_use_id: ag.toolUse.id,
-        content: toolResult.content,
-        is_error: toolResult.isError,
+      results[ag.index] = {
+        toolResult: {
+          type: 'tool_result',
+          tool_use_id: ag.toolUse.id,
+          content: toolResult.content,
+          is_error: toolResult.isError,
+        },
+        renderBlock,
       };
-      toolResultRenderBlocks[ag.index] = renderBlock;
 
       yield {
         type: 'tool_block_update',
@@ -573,8 +532,169 @@ async function* executeToolUseBlocks(
           block: { renderingGroups: event.groups, status: 'running' as const },
         };
       }
-      // Re-arm this generator
       ag.pendingNext = safeGenNext(ag);
+    }
+  }
+
+  return {
+    results: results.filter((r): r is ParallelToolResult => r !== null),
+    breakLoop,
+  };
+}
+
+/**
+ * Execute tool_use blocks with phased execution and return-tool error handling.
+ *
+ * Phases:
+ * 1. If `return` appears alongside other tools, produce an error result for it
+ *    and execute the remaining tools normally (loop continues).
+ * 2. Simple tools (no `complex` flag) run first.
+ * 3. Complex tools (e.g., minion) run after simple tools complete.
+ *
+ * Yields pending/running/complete events and pushes the final tool result message to `messages`.
+ * Returns breakLoop info if a return tool was invoked solo, undefined otherwise.
+ */
+async function* executeToolUseBlocks(
+  toolUseBlocks: ToolUseBlock[],
+  apiType: APIType,
+  enabledTools: string[],
+  toolOptions: Record<string, ToolOptions>,
+  toolContext: ToolContext,
+  messages: Message<unknown>[],
+  totals: TokenTotals
+): AsyncGenerator<AgenticLoopEvent, { breakLoop: { returnValue?: string } } | undefined, void> {
+  console.debug('[agenticLoopGen] Executing', toolUseBlocks.length, 'tool(s)');
+
+  // --- Return tool handling ---
+  // If return is the ONLY tool, execute it directly (preserves breakLoop behavior).
+  const returnToolIndex = toolUseBlocks.findIndex(b => b.name === 'return');
+  if (returnToolIndex !== -1 && toolUseBlocks.length === 1) {
+    const returnBlock = toolUseBlocks[0];
+    const gen = executeClientSideTool(
+      returnBlock.name,
+      returnBlock.input,
+      enabledTools,
+      toolOptions,
+      toolContext
+    );
+    let iterResult = await gen.next();
+    while (!iterResult.done) iterResult = await gen.next();
+    const toolResult = iterResult.value;
+    return { breakLoop: toolResult.breakLoop ?? { returnValue: toolResult.content } };
+  }
+
+  // Separate return tool from executable tools (return gets an error result)
+  let returnErrorResult: ParallelToolResult | undefined;
+  let executableBlocks = toolUseBlocks;
+
+  if (returnToolIndex !== -1) {
+    console.debug('[agenticLoopGen] Return tool in parallel batch — sending error result');
+    const returnBlock = toolUseBlocks[returnToolIndex];
+    const errorContent = 'return cannot be called in parallel with other tools. please try again';
+    const renderBlock = createToolResultRenderBlock(
+      returnBlock.id,
+      returnBlock.name,
+      errorContent,
+      true
+    );
+    renderBlock.status = 'error';
+    returnErrorResult = {
+      toolResult: {
+        type: 'tool_result',
+        tool_use_id: returnBlock.id,
+        content: errorContent,
+        is_error: true,
+      },
+      renderBlock,
+    };
+    executableBlocks = toolUseBlocks.filter((_, i) => i !== returnToolIndex);
+  }
+
+  // --- Classify into simple vs complex ---
+  const simpleBlocks: ToolUseBlock[] = [];
+  const complexBlocks: ToolUseBlock[] = [];
+  for (const block of executableBlocks) {
+    if (toolRegistry.get(block.name)?.complex) {
+      complexBlocks.push(block);
+    } else {
+      simpleBlocks.push(block);
+    }
+  }
+
+  if (complexBlocks.length > 0 && simpleBlocks.length > 0) {
+    console.debug(
+      '[agenticLoopGen] Phased execution:',
+      simpleBlocks.length,
+      'simple,',
+      complexBlocks.length,
+      'complex'
+    );
+  }
+
+  // --- Create pending blocks for ALL tools (in original order) ---
+  const pendingRenderBlocks: ToolResultRenderBlock[] = toolUseBlocks.map(toolUse => ({
+    type: 'tool_result' as const,
+    tool_use_id: toolUse.id,
+    name: toolUse.name,
+    content: '',
+    status: 'pending' as const,
+    icon: toolRegistry.get(toolUse.name)?.iconOutput ?? '⏳',
+  }));
+
+  const pendingToolResults: ToolResultBlock[] = toolUseBlocks.map(toolUse => ({
+    type: 'tool_result' as const,
+    tool_use_id: toolUse.id,
+    content: '',
+  }));
+  const pendingMsg = buildToolResultMessage(apiType, pendingToolResults, pendingRenderBlocks);
+  yield { type: 'pending_tool_result', message: pendingMsg };
+
+  // --- Yield return error block update immediately ---
+  if (returnErrorResult) {
+    yield {
+      type: 'tool_block_update',
+      toolUseId: returnErrorResult.renderBlock.tool_use_id,
+      block: returnErrorResult.renderBlock,
+    };
+  }
+
+  // --- Collect results keyed by tool_use_id for final merge ---
+  const resultMap = new Map<string, ParallelToolResult>();
+  if (returnErrorResult) {
+    resultMap.set(returnErrorResult.toolResult.tool_use_id, returnErrorResult);
+  }
+
+  let breakLoopResult: { returnValue?: string } | undefined;
+
+  // --- Phase 1: simple tools ---
+  if (simpleBlocks.length > 0) {
+    const phase1 = yield* executeToolsParallel(
+      simpleBlocks,
+      enabledTools,
+      toolOptions,
+      toolContext
+    );
+    for (const r of phase1.results) {
+      resultMap.set(r.toolResult.tool_use_id, r);
+    }
+    if (phase1.breakLoop) {
+      breakLoopResult = phase1.breakLoop;
+    }
+  }
+
+  // --- Phase 2: complex tools (skip if phase 1 triggered breakLoop) ---
+  if (complexBlocks.length > 0 && !breakLoopResult) {
+    const phase2 = yield* executeToolsParallel(
+      complexBlocks,
+      enabledTools,
+      toolOptions,
+      toolContext
+    );
+    for (const r of phase2.results) {
+      resultMap.set(r.toolResult.tool_use_id, r);
+    }
+    if (phase2.breakLoop) {
+      breakLoopResult = phase2.breakLoop;
     }
   }
 
@@ -582,11 +702,16 @@ async function* executeToolUseBlocks(
     return { breakLoop: breakLoopResult };
   }
 
-  // Filter out null slots (all should be filled, but defensive)
-  const finalToolResults = toolResults.filter((r): r is ToolResultBlock => r !== null);
-  const finalRenderBlocks = toolResultRenderBlocks.filter(
-    (r): r is ToolResultRenderBlock => r !== null
-  );
+  // --- Merge results in original tool order ---
+  const finalToolResults: ToolResultBlock[] = [];
+  const finalRenderBlocks: ToolResultRenderBlock[] = [];
+  for (const block of toolUseBlocks) {
+    const entry = resultMap.get(block.id);
+    if (entry) {
+      finalToolResults.push(entry.toolResult);
+      finalRenderBlocks.push(entry.renderBlock);
+    }
+  }
 
   // Accumulate tool-incurred costs (e.g., minion sub-agent API calls)
   const toolTotals = createTokenTotals();

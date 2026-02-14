@@ -451,6 +451,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   - `displayName?: string` - Display name for UI (falls back to `name`)
   - `displaySubtitle?: string` - Description shown below toggle in ProjectSettings
   - `internal?: boolean` - Internal tools not shown in ProjectSettings UI (e.g., `return` for minions)
+  - `complex?: boolean` - Complex tools run in a later phase after simple tools (e.g., `minion`)
   - `optionDefinitions?: ToolOptionDefinition[]` - Tool-specific boolean options configurable per-project
   - `description: string | ((opts) => string)` - Static or dynamic description based on toolOptions
   - `inputSchema: ToolInputSchema | ((opts) => ToolInputSchema)` - Static or dynamic input schema
@@ -1291,9 +1292,9 @@ type AgenticLoopResult =
 1. Pre-loop: executing `pendingToolUseBlocks` before the first API call
 2. In-loop: after `stop_reason === 'tool_use'`
 
-**Parallel tool execution:** When multiple tool_use blocks arrive in a single assistant response, all tool generators start simultaneously. Events are multiplexed via `Promise.race` — `tool_block_update` events from different tools interleave as they arrive. All tools are marked `running` upfront. Results are collected in original order.
+**Phased tool execution:** Tools are classified as simple or complex via `ClientSideTool.complex` flag (currently only `minion` is complex). When both types appear in a single response, simple tools run first (phase 1), then complex tools (phase 2). Within each phase, tools run in parallel via `executeToolsParallel()` with `Promise.race` multiplexing. Results are merged in original tool order.
 
-**Return tool isolation:** If the `return` tool appears in a parallel batch, only the return tool executes — other tools are skipped. No `tool_result` message is saved (breakLoop returns early). When the minion chat is continued, `minionTool.ts` detects unresolved tool_use blocks and lazily reconstructs error `tool_result` entries for skipped tools before sending the next message.
+**Return tool error handling:** If the `return` tool appears alongside other tools (`length > 1`), it receives an error result (`"return cannot be called in parallel with other tools. please try again"`) and the other tools execute normally. The loop continues so the LLM can retry. When `return` is the only tool, it executes normally and breakLoop is honored.
 
 **Pending Tool Resolution (`AgenticLoopOptions`):**
 

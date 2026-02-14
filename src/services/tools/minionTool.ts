@@ -1086,6 +1086,7 @@ export const minionTool: ClientSideTool = {
   name: 'minion',
   displayName: 'Minion',
   displaySubtitle: 'Delegate tasks to a sub-agent',
+  complex: true,
   description: getMinionDescription,
   inputSchema: getMinionInputSchema,
   systemPrompt: getMinionSystemPromptInjection,

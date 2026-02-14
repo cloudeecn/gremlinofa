@@ -212,6 +212,50 @@ describe('modelMetadata', () => {
       });
     });
 
+    describe('supportsExtendedContext', () => {
+      it('returns supportsExtendedContext for Opus 4.6', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const result = getModelMetadataFor(apiDef, 'claude-opus-4-6-20260101');
+
+        expect(result.supportsExtendedContext).toBe(true);
+      });
+
+      it('returns supportsExtendedContext for Sonnet 4.5', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const result = getModelMetadataFor(apiDef, 'claude-sonnet-4-5-20250514');
+
+        expect(result.supportsExtendedContext).toBe(true);
+      });
+
+      it('returns supportsExtendedContext for Sonnet 4', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const result = getModelMetadataFor(apiDef, 'claude-sonnet-4-20250514');
+
+        expect(result.supportsExtendedContext).toBe(true);
+      });
+
+      it('does not return supportsExtendedContext for Haiku 4.5', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const result = getModelMetadataFor(apiDef, 'claude-haiku-4-5-20250101');
+
+        expect(result.supportsExtendedContext).toBeFalsy();
+      });
+
+      it('does not return supportsExtendedContext for 3.5 Sonnet', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const result = getModelMetadataFor(apiDef, 'claude-3-5-sonnet-20241022');
+
+        expect(result.supportsExtendedContext).toBeFalsy();
+      });
+
+      it('does not return supportsExtendedContext for OpenAI models', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'gpt-4o');
+
+        expect(result.supportsExtendedContext).toBeFalsy();
+      });
+    });
+
     describe('deep cloning', () => {
       it('returns independent objects for same model', () => {
         const apiDef = createApiDef({ apiType: 'chatgpt' });

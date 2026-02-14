@@ -156,6 +156,7 @@ class APIService {
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
+      extendedContext?: boolean;
       // Context tidy (checkpoint tool)
       checkpointMessageId?: string;
       tidyToolNames?: Set<string>;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
-import { AnthropicClient, applyCacheBreakpoints } from '../anthropicClient';
+import { AnthropicClient, applyCacheBreakpoints, buildAnthropicBetas } from '../anthropicClient';
 import testMessageContent from './anthropic-multiple-step-thinking-fullContent.json';
 import expectedRenderingContent from './anthropic-multiple-step-thinking-renderingContent.json';
 
@@ -531,5 +531,61 @@ describe('applyCacheBreakpoints', () => {
     const content = messages[0].content as Anthropic.Beta.BetaContentBlockParam[];
     expect(content[0]).toHaveProperty('cache_control');
     expect(content[1]).not.toHaveProperty('cache_control');
+  });
+});
+
+describe('buildAnthropicBetas', () => {
+  it('always includes interleaved-thinking', () => {
+    const betas = buildAnthropicBetas({});
+    expect(betas).toContain('interleaved-thinking-2025-05-14');
+  });
+
+  it('includes web-fetch beta when web search is enabled', () => {
+    const betas = buildAnthropicBetas({ webSearchEnabled: true });
+    expect(betas).toContain('web-fetch-2025-09-10');
+  });
+
+  it('does not include web-fetch beta when web search is disabled', () => {
+    const betas = buildAnthropicBetas({ webSearchEnabled: false });
+    expect(betas).not.toContain('web-fetch-2025-09-10');
+  });
+
+  it('includes context-management beta when memory tool is enabled', () => {
+    const betas = buildAnthropicBetas({ enabledTools: ['memory'] });
+    expect(betas).toContain('context-management-2025-06-27');
+  });
+
+  it('includes context-management beta when thinkingKeepTurns is set', () => {
+    const betas = buildAnthropicBetas({ thinkingKeepTurns: 2 });
+    expect(betas).toContain('context-management-2025-06-27');
+  });
+
+  it('includes context-1m beta when extendedContext is true', () => {
+    const betas = buildAnthropicBetas({ extendedContext: true });
+    expect(betas).toContain('context-1m-2025-08-07');
+  });
+
+  it('does not include context-1m beta when extendedContext is false', () => {
+    const betas = buildAnthropicBetas({ extendedContext: false });
+    expect(betas).not.toContain('context-1m-2025-08-07');
+  });
+
+  it('does not include context-1m beta when extendedContext is undefined', () => {
+    const betas = buildAnthropicBetas({});
+    expect(betas).not.toContain('context-1m-2025-08-07');
+  });
+
+  it('includes all betas when all options are enabled', () => {
+    const betas = buildAnthropicBetas({
+      webSearchEnabled: true,
+      enabledTools: ['memory'],
+      thinkingKeepTurns: 3,
+      extendedContext: true,
+    });
+    expect(betas).toContain('interleaved-thinking-2025-05-14');
+    expect(betas).toContain('web-fetch-2025-09-10');
+    expect(betas).toContain('context-management-2025-06-27');
+    expect(betas).toContain('context-1m-2025-08-07');
+    expect(betas).toHaveLength(4);
   });
 });

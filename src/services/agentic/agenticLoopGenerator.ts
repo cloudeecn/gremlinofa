@@ -89,6 +89,7 @@ export interface AgenticLoopOptions {
   enabledTools: string[];
   toolOptions: Record<string, ToolOptions>;
   disableStream: boolean;
+  extendedContext: boolean;
 
   // VFS namespace for isolated minion personas
   namespace?: string;
@@ -1040,6 +1041,7 @@ export async function* runAgenticLoop(
         enabledTools,
         toolOptions,
         disableStream: options.disableStream,
+        extendedContext: options.extendedContext,
         checkpointMessageId: tidyBoundaryId,
         tidyToolNames: deriveTidyToolNames(toolOptions),
       };
@@ -1144,9 +1146,11 @@ export async function* runAgenticLoop(
         iterTokens
       );
 
-      // Fill context window from model metadata
+      // Fill context window from model metadata (extended context overrides to 1M)
       if (assistantMessage.metadata) {
-        assistantMessage.metadata.contextWindow = model.contextWindow || 0;
+        assistantMessage.metadata.contextWindow = options.extendedContext
+          ? 1_000_000
+          : model.contextWindow || 0;
       }
 
       messages.push(assistantMessage);

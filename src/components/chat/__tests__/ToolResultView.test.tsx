@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import ToolResultView from '../ToolResultView';
 import type { ToolResultRenderBlock, RenderingBlockGroup } from '../../../types/content';
 
@@ -17,12 +18,10 @@ vi.mock('../TextGroupView', () => ({
   ),
 }));
 
-// Mock storage for Copy All
-vi.mock('../../../services/storage', () => ({
-  storage: {
-    getMinionMessages: vi.fn().mockResolvedValue([{ id: 'msg_1', content: 'test' }]),
-  },
-}));
+/** Wrap component with MemoryRouter for Link support */
+function renderWithRouter(ui: React.ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 describe('ToolResultView', () => {
   beforeEach(() => {
@@ -133,26 +132,26 @@ describe('ToolResultView', () => {
     };
 
     it('renders collapsible header with icon only', () => {
-      render(<ToolResultView block={complexBlock} />);
+      renderWithRouter(<ToolResultView block={complexBlock} />);
       expect(screen.getByText('🤖')).toBeInTheDocument();
       expect(screen.queryByText('minion')).not.toBeInTheDocument();
     });
 
     it('starts collapsed when status is complete', () => {
-      render(<ToolResultView block={complexBlock} />);
+      renderWithRouter(<ToolResultView block={complexBlock} />);
       expect(screen.getByText('▶')).toBeInTheDocument();
       expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
     });
 
     it('starts collapsed even when status is running', () => {
       const runningBlock: ToolResultRenderBlock = { ...complexBlock, status: 'running' };
-      render(<ToolResultView block={runningBlock} />);
+      renderWithRouter(<ToolResultView block={runningBlock} />);
       // Collapsed by default — shows ▶ not ▼
       expect(screen.getByText('▶')).toBeInTheDocument();
     });
 
     it('shows last activity preview when collapsed', () => {
-      render(<ToolResultView block={complexBlock} />);
+      renderWithRouter(<ToolResultView block={complexBlock} />);
       // Preview shows last text from activity groups
       expect(screen.getByText('Some intermediate output')).toBeInTheDocument();
     });
@@ -163,12 +162,12 @@ describe('ToolResultView', () => {
         ...complexBlock,
         renderingGroups: [infoGroup],
       };
-      render(<ToolResultView block={infoOnlyBlock} />);
+      renderWithRouter(<ToolResultView block={infoOnlyBlock} />);
       expect(screen.getByText('minion_abc')).toBeInTheDocument();
     });
 
     it('toggles expansion on header click', () => {
-      render(<ToolResultView block={complexBlock} />);
+      renderWithRouter(<ToolResultView block={complexBlock} />);
 
       // Initially collapsed
       expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
@@ -183,7 +182,7 @@ describe('ToolResultView', () => {
     });
 
     it('shows tool_info input in blue box when expanded', () => {
-      const { container } = render(<ToolResultView block={complexBlock} />);
+      const { container } = renderWithRouter(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       const blueBox = container.querySelector('.border-blue-300');
@@ -192,7 +191,7 @@ describe('ToolResultView', () => {
     });
 
     it('shows green result box when complete and not error', () => {
-      const { container } = render(<ToolResultView block={complexBlock} />);
+      const { container } = renderWithRouter(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       const greenBox = container.querySelector('.border-green-300');
@@ -206,7 +205,7 @@ describe('ToolResultView', () => {
         is_error: true,
         content: 'Minion failed',
       };
-      const { container } = render(<ToolResultView block={errorBlock} />);
+      const { container } = renderWithRouter(<ToolResultView block={errorBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       const redBox = container.querySelector('.border-red-300');
@@ -220,7 +219,7 @@ describe('ToolResultView', () => {
         status: 'running',
         content: '',
       };
-      const { container } = render(<ToolResultView block={runningBlock} />);
+      const { container } = renderWithRouter(<ToolResultView block={runningBlock} />);
 
       // Auto-expanded when running, should not have green/red box
       const greenBox = container.querySelector('.border-green-300');
@@ -230,22 +229,24 @@ describe('ToolResultView', () => {
     });
 
     it('renders activity groups (backstage and text)', () => {
-      render(<ToolResultView block={complexBlock} />);
+      renderWithRouter(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(screen.getByTestId('backstage-view')).toBeInTheDocument();
       expect(screen.getByTestId('text-group-view')).toBeInTheDocument();
     });
 
-    it('shows Copy All button when chatId is present', () => {
-      render(<ToolResultView block={complexBlock} />);
+    it('shows View Chat link when chatId is present', () => {
+      renderWithRouter(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
-      expect(screen.getByText('📋 Copy All')).toBeInTheDocument();
+      const viewLink = screen.getByText('💬 View Chat');
+      expect(viewLink).toBeInTheDocument();
+      expect(viewLink.closest('a')).toHaveAttribute('href', '/minion-chat/minion_abc');
     });
 
     it('shows Copy JSON button', () => {
-      render(<ToolResultView block={complexBlock} />);
+      renderWithRouter(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(screen.getByText('📋 Copy JSON')).toBeInTheDocument();
@@ -255,7 +256,7 @@ describe('ToolResultView', () => {
       const mockClipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
       Object.assign(navigator, { clipboard: mockClipboard });
 
-      render(<ToolResultView block={complexBlock} />);
+      renderWithRouter(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
       fireEvent.click(screen.getByText('📋 Copy JSON'));
 
@@ -268,13 +269,13 @@ describe('ToolResultView', () => {
       };
       Object.assign(navigator, { clipboard: mockClipboard });
 
-      render(<ToolResultView block={complexBlock} />);
+      renderWithRouter(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(() => fireEvent.click(screen.getByText('📋 Copy JSON'))).not.toThrow();
     });
 
-    it('hides Copy All when no chatId', () => {
+    it('hides View Chat when no chatId', () => {
       const noChatIdBlock: ToolResultRenderBlock = {
         ...complexBlock,
         renderingGroups: [
@@ -284,10 +285,10 @@ describe('ToolResultView', () => {
           },
         ],
       };
-      render(<ToolResultView block={noChatIdBlock} />);
+      renderWithRouter(<ToolResultView block={noChatIdBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
-      expect(screen.queryByText('📋 Copy All')).not.toBeInTheDocument();
+      expect(screen.queryByText('💬 View Chat')).not.toBeInTheDocument();
       expect(screen.getByText('📋 Copy JSON')).toBeInTheDocument();
     });
 
@@ -296,7 +297,7 @@ describe('ToolResultView', () => {
         ...complexBlock,
         renderingGroups: [backstageGroup, textGroup],
       };
-      const { container } = render(<ToolResultView block={noInfoBlock} />);
+      const { container } = renderWithRouter(<ToolResultView block={noInfoBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       // No blue box
@@ -312,7 +313,7 @@ describe('ToolResultView', () => {
         ...complexBlock,
         icon: undefined,
       };
-      render(<ToolResultView block={noIconBlock} />);
+      renderWithRouter(<ToolResultView block={noIconBlock} />);
       // Default icon for complex results is 🤖
       expect(screen.getByText('🤖')).toBeInTheDocument();
     });
@@ -331,7 +332,7 @@ describe('ToolResultView', () => {
           costUnreliable: false,
         },
       };
-      render(<ToolResultView block={costBlock} />);
+      renderWithRouter(<ToolResultView block={costBlock} />);
       expect(screen.getByText('$0.042')).toBeInTheDocument();
     });
 
@@ -349,12 +350,12 @@ describe('ToolResultView', () => {
           costUnreliable: false,
         },
       };
-      render(<ToolResultView block={zeroCostBlock} />);
+      renderWithRouter(<ToolResultView block={zeroCostBlock} />);
       expect(screen.queryByText('$0.000')).not.toBeInTheDocument();
     });
 
     it('hides cost when no tokenTotals', () => {
-      render(<ToolResultView block={complexBlock} />);
+      renderWithRouter(<ToolResultView block={complexBlock} />);
       expect(screen.queryByText(/\$\d/)).not.toBeInTheDocument();
     });
   });

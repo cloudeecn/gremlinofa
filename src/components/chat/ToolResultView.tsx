@@ -1,11 +1,11 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import type {
   ToolResultRenderBlock,
   ToolInfoRenderBlock,
   RenderingBlockGroup,
   RenderingContentBlock,
 } from '../../types/content';
-import { storage } from '../../services/storage';
 import { usePreferences } from '../../hooks/usePreferences';
 import BackstageView from './BackstageView';
 import TextGroupView from './TextGroupView';
@@ -262,24 +262,17 @@ function ComplexToolResult({
             </div>
           )}
 
-          {/* Copy buttons */}
+          {/* Action buttons */}
           <div className="flex justify-end gap-3 border-t border-purple-100 pt-2">
             {toolInfo?.chatId && (
-              <button
-                onClick={async e => {
-                  e.stopPropagation();
-                  try {
-                    const messages = await storage.getMinionMessages(toolInfo.chatId!);
-                    await navigator.clipboard.writeText(JSON.stringify(messages, null, 2));
-                  } catch {
-                    // Silently fail if clipboard access denied
-                  }
-                }}
+              <Link
+                to={`/minion-chat/${toolInfo.chatId}`}
                 className="text-xs text-gray-400 hover:text-gray-600"
-                title="Copy all sub-chat messages as JSON"
+                title="View minion sub-chat"
+                onClick={e => e.stopPropagation()}
               >
-                📋 Copy All
-              </button>
+                💬 View Chat
+              </Link>
             )}
             <button
               onClick={async e => {

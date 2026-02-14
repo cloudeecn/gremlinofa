@@ -96,6 +96,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Incremental cost/token persistence during agent loop (crash-resilient)
 - [x] Fork tracking and cost analysis
 - [x] Tool call cost tracking (minion sub-agent costs flow into chat totals)
+- [x] Minion chat view (read-only, accessible via `/minion-chat/:id` route from tool result "View Chat" link)
 
 **Documentation**
 
@@ -112,8 +113,8 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 ### Testing Status
 
 - [x] Core services tested (encryption, compression, storage, CSV helper, data export/import, markdownRenderer)
-- [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useIsKeyboardVisible, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager, usePreferences)
-- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, LegacyAssistantBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, ToolResultBubble, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView)
+- [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useIsKeyboardVisible, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager, usePreferences, useMinionChat)
+- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, LegacyAssistantBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, ToolResultBubble, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView, MinionChatView)
 - [x] Error components tested (ErrorView, ErrorFloatingButton)
 - [x] OOBE components tested (OOBEScreen, OOBEComplete)
 - [x] Integration tests (import/export roundtrip with 210+ records, duplicate handling, CSV special characters)
@@ -708,6 +709,7 @@ MessageList.tsx                    # Container with virtual scrolling
 - `/project/:projectId/settings` - Project settings
 - `/project/:projectId/vfs/*` - VFS Manager (memory files, supports deep links to paths)
 - `/chat/:chatId` - Chat conversation
+- `/minion-chat/:minionChatId` - Read-only minion sub-chat view
 - `/attachments` - Attachment manager
 - `/settings` - API definitions configuration
 - `/data` - Data management (export, import, compression, CEK)
@@ -1176,7 +1178,7 @@ The `executeMinion` function has three ordered phases with distinct error recove
 - Header shows: persona name (if non-default) before expand icon, last-block activity icon (💭/🔧/💬/etc.) after expand icon
 - Blue box for task input (from `ToolInfoRenderBlock`), green/red box for final result
 - Activity groups (backstage/text) rendered with `isToolGenerated` styling
-- "Copy All" button fetches sub-chat messages (when `chatId` present), "Copy JSON" for debugging
+- "View Chat" link navigates to `/minion-chat/:id` (when `chatId` present), "Copy JSON" for debugging
 - `ToolResultBubble` hides timestamp/cost/actions line while any tool result is still pending/running
 - Integrated into `ToolResultBubble` (complex results) and `BackstageView.ToolResultSegment`
 - Real-time streaming via pending-message pattern (see Minion Streaming UI below)

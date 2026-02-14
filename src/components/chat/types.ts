@@ -3,7 +3,7 @@ import type { RenderingBlockGroup } from '../../types/content';
 
 export interface MessageBubbleProps {
   message: Message<unknown>;
-  onAction: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
+  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
   isVisible: boolean;
   onRegister: (messageId: string, element: HTMLElement | null) => void;
   onMeasureHeight: (messageId: string, height: number) => void;
@@ -13,7 +13,7 @@ export interface MessageBubbleProps {
 export interface UserMessageBubbleProps {
   message: Message<unknown>;
   attachments: MessageAttachment[];
-  onAction: (action: 'copy' | 'fork' | 'edit' | 'resend', messageId: string) => void;
+  onAction?: (action: 'copy' | 'fork' | 'edit' | 'resend', messageId: string) => void;
 }
 
 export interface AssistantMessageBubbleProps {
@@ -31,7 +31,7 @@ export interface StreamingMessageProps {
 
 export interface MessageListProps {
   messages: Message<unknown>[];
-  onAction: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
+  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
   isLoading: boolean;
   streamingGroups: RenderingBlockGroup[];
   currentApiDefId: string | null;

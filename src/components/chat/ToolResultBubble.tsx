@@ -153,7 +153,10 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
               <span className="text-gray-400">|</span>{' '}
               {formatTokens('↑', message.metadata.inputTokens)}
               {message.metadata.inputTokens ? ' ' : ''}
-              {formatTokens('↓', message.metadata.outputTokens)} $
+              {formatTokens('↓', message.metadata.outputTokens)}
+              {formatTokens(' R:', message.metadata.reasoningTokens)}
+              {formatTokens(' C↑', message.metadata.cacheCreationTokens)}
+              {formatTokens(' C↓', message.metadata.cacheReadTokens)} $
               {message.metadata.messageCost!.toFixed(3)}
             </span>
           )}

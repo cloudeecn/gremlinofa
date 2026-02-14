@@ -85,4 +85,42 @@ describe('ToolResultBubble', () => {
     expect(screen.getByText(/↑15\.0k/)).toBeInTheDocument();
     expect(screen.getByText(/↓8000/)).toBeInTheDocument();
   });
+
+  it('shows reasoning and cache tokens when present', () => {
+    const message = createToolResultMessage({
+      metadata: {
+        inputTokens: 1000,
+        outputTokens: 500,
+        reasoningTokens: 3000,
+        cacheCreationTokens: 2000,
+        cacheReadTokens: 4000,
+        messageCost: 0.05,
+      },
+    });
+
+    render(<ToolResultBubble message={message} />);
+
+    expect(screen.getByText(/R:3000/)).toBeInTheDocument();
+    expect(screen.getByText(/C↑2000/)).toBeInTheDocument();
+    expect(screen.getByText(/C↓4000/)).toBeInTheDocument();
+  });
+
+  it('hides reasoning and cache tokens when zero', () => {
+    const message = createToolResultMessage({
+      metadata: {
+        inputTokens: 1000,
+        outputTokens: 500,
+        reasoningTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        messageCost: 0.01,
+      },
+    });
+
+    render(<ToolResultBubble message={message} />);
+
+    expect(screen.queryByText(/R:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/C↑/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/C↓/)).not.toBeInTheDocument();
+  });
 });

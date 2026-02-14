@@ -641,6 +641,14 @@ export interface MinionChat {
   costUnreliable?: boolean;
   /** Last message ID before this minion run started (for future rollback) */
   checkpoint?: string;
+  /** Display name set by the LLM for UI labeling */
+  displayName?: string;
+  /** Persona name used for this minion chat */
+  persona?: string;
+  /** API definition ID of the model used (persisted for continuation) */
+  apiDefinitionId?: string;
+  /** Model ID used (persisted for continuation) */
+  modelId?: string;
 }
 
 // Virtual Filesystem (VFS) types

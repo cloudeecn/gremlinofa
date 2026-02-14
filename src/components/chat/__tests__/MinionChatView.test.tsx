@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import MinionChatView from '../MinionChatView';
 import type { MinionChat, Message, TokenUsage } from '../../../types';
@@ -57,10 +57,10 @@ const mockTokenUsage: TokenUsage = {
   cost: 0.05,
 };
 
-function renderView(minionChatId = 'mc_test', onMenuPress?: () => void) {
+function renderView(minionChatId = 'mc_test', onMenuPress?: () => void, onClose?: () => void) {
   return render(
     <MemoryRouter>
-      <MinionChatView minionChatId={minionChatId} onMenuPress={onMenuPress} />
+      <MinionChatView minionChatId={minionChatId} onMenuPress={onMenuPress} onClose={onClose} />
     </MemoryRouter>
   );
 }
@@ -125,5 +125,19 @@ describe('MinionChatView', () => {
     });
     renderView();
     expect(screen.getByText('(unreliable)')).toBeInTheDocument();
+  });
+
+  it('calls onClose when back button is clicked and onClose is provided', () => {
+    const onClose = vi.fn();
+    renderView('mc_test', undefined, onClose);
+    fireEvent.click(screen.getByTitle('Back to parent chat'));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('calls onClose when close button is clicked and onClose is provided', () => {
+    const onClose = vi.fn();
+    renderView('mc_test', undefined, onClose);
+    fireEvent.click(screen.getByText('✕'));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

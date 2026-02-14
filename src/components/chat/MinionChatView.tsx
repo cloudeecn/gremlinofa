@@ -7,15 +7,22 @@ import MessageList from './MessageList';
 interface MinionChatViewProps {
   minionChatId: string;
   onMenuPress?: () => void;
+  onClose?: () => void;
 }
 
-export default function MinionChatView({ minionChatId, onMenuPress }: MinionChatViewProps) {
+export default function MinionChatView({
+  minionChatId,
+  onMenuPress,
+  onClose,
+}: MinionChatViewProps) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { minionChat, messages, isLoading, tokenUsage } = useMinionChat(minionChatId);
 
   const handleBack = () => {
-    if (minionChat?.parentChatId) {
+    if (onClose) {
+      onClose();
+    } else if (minionChat?.parentChatId) {
       navigate(`/chat/${minionChat.parentChatId}`);
     } else {
       navigate('/');
@@ -23,7 +30,9 @@ export default function MinionChatView({ minionChatId, onMenuPress }: MinionChat
   };
 
   const handleClose = () => {
-    if (minionChat?.parentChatId) {
+    if (onClose) {
+      onClose();
+    } else if (minionChat?.parentChatId) {
       navigate(`/chat/${minionChat.parentChatId}`);
     } else {
       navigate('/');
@@ -32,9 +41,8 @@ export default function MinionChatView({ minionChatId, onMenuPress }: MinionChat
 
   return (
     <div className="flex h-full flex-col bg-white">
-      {/* Header with safe area */}
+      {/* Header */}
       <div className="border-b border-gray-200 bg-white">
-        <div className="safe-area-inset-top" />
         <div className="flex h-14 items-center px-4">
           {isMobile && onMenuPress && (
             <button

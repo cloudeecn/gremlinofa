@@ -96,7 +96,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Incremental cost/token persistence during agent loop (crash-resilient)
 - [x] Fork tracking and cost analysis
 - [x] Tool call cost tracking (minion sub-agent costs flow into chat totals)
-- [x] Minion chat view (read-only, accessible via `/minion-chat/:id` route from tool result "View Chat" link)
+- [x] Minion chat view (read-only overlay, accessible via "View Chat" button in tool result; main chat continues streaming underneath)
 
 **Documentation**
 
@@ -523,7 +523,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 **Content Types** (`src/types/content.ts`):
 
 - `RenderingBlockGroup` with category (backstage/text/error)
-- Block types: `ThinkingRenderBlock`, `TextRenderBlock`, `WebSearchRenderBlock`, `WebFetchRenderBlock`, `ToolUseRenderBlock`, `ToolResultRenderBlock`, `ToolInfoRenderBlock`, `ErrorRenderBlock`
+- Block types: `ThinkingRenderBlock`, `TextRenderBlock`, `WebSearchRenderBlock`, `WebFetchRenderBlock`, `ToolUseRenderBlock`, `ToolResultRenderBlock`, `ToolInfoRenderBlock` (with `displayName`, `apiDefinitionId`, `modelId`), `ErrorRenderBlock`
 - `RenderingBlockGroup.isToolGenerated?: boolean` — marks tool-generated content for distinct styling
 - `ToolResultRenderBlock.renderingGroups?: RenderingBlockGroup[]` — nested content from tool's internal work (e.g., minion sub-agent)
 - Citations pre-rendered as `<a class="citation-link" data-cited="...">` tags
@@ -709,7 +709,6 @@ MessageList.tsx                    # Container with virtual scrolling
 - `/project/:projectId/settings` - Project settings
 - `/project/:projectId/vfs/*` - VFS Manager (memory files, supports deep links to paths)
 - `/chat/:chatId` - Chat conversation
-- `/minion-chat/:minionChatId` - Read-only minion sub-chat view
 - `/attachments` - Attachment manager
 - `/settings` - API definitions configuration
 - `/data` - Data management (export, import, compression, CEK)
@@ -1095,6 +1094,7 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 | `enabledTools` | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                   |
 | `persona`      | string   | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is enabled.  |
 | `model`        | string   | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` + `models` configured. |
+| `displayName`  | string   | No                   | Display name shown in the UI for this minion call. If omitted, persona name is used.   |
 
 **Tool Options:**
 
@@ -1138,6 +1138,7 @@ Minion conversations stored separately for debugging visibility:
 - `getMinionMessages(minionChatId)` / `saveMinionMessage()`
 - Cascade deletion when parent chat is deleted
 - `checkpoint?: string` field stores last message ID before minion run (used by retry action for rollback). New chats start with `CHECKPOINT_START` sentinel (`'_start'`) to enable first-run retry.
+- Persisted settings: `displayName`, `persona`, `apiDefinitionId`, `modelId` — stored on creation and updated on continuation. Enables stored-model fallback when continuing without re-specifying model.
 
 **Result Handling:**
 
@@ -1147,7 +1148,7 @@ Minion conversations stored separately for debugging visibility:
   - `minionChatId` — for continuing the conversation
   - `result` — only present when return tool was used (explicit return value)
 - `renderingGroups` on ToolResult carries nested display content:
-  - First group: `ToolInfoRenderBlock` with task description (`input`), sub-chat reference (`chatId`), and optional `persona` name
+  - First group: `ToolInfoRenderBlock` with task description (`input`), sub-chat reference (`chatId`), optional `persona` name, `displayName`, `apiDefinitionId`, and `modelId`
   - Remaining groups: accumulated rendering from sub-agent messages (marked `isToolGenerated: true`)
   - Transferred to `ToolResultRenderBlock.renderingGroups` by `createToolResultRenderBlock`
 - `tokenTotals` on ToolResult carries accumulated API costs from sub-agent loop
@@ -1175,10 +1176,11 @@ The `executeMinion` function has three ordered phases with distinct error recove
 
 - `ToolResultView` renders minion results (and any tool result with `renderingGroups`)
 - Always collapsed by default, shows last activity line as preview when collapsed
-- Header shows: persona name (if non-default) before expand icon, last-block activity icon (💭/🔧/💬/etc.) after expand icon
+- Header shows: `displayName` (if set, otherwise persona name if non-default) before expand icon, last-block activity icon (💭/🔧/💬/etc.) after expand icon
+- Settings info line (persona, API icon, model ID) shown at top of expanded content
 - Blue box for task input (from `ToolInfoRenderBlock`), green/red box for final result
 - Activity groups (backstage/text) rendered with `isToolGenerated` styling
-- "View Chat" link navigates to `/minion-chat/:id` (when `chatId` present), "Copy JSON" for debugging
+- "View Chat" button opens overlay over ChatView (when `chatId` present and `MinionChatOverlayContext` provided), "Copy JSON" for debugging
 - `ToolResultBubble` hides timestamp/cost/actions line while any tool result is still pending/running
 - Integrated into `ToolResultBubble` (complex results) and `BackstageView.ToolResultSegment`
 - Real-time streaming via pending-message pattern (see Minion Streaming UI below)

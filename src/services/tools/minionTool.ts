@@ -124,6 +124,8 @@ interface MinionInput {
   persona?: string;
   /** Model to use (formatted as "apiDefinitionId:modelId"). Only when namespacedMinion + models configured. */
   model?: string;
+  /** Display name shown in the UI for this minion call. If omitted, persona name is used. */
+  displayName?: string;
 }
 
 /**
@@ -167,13 +169,19 @@ function buildMinionTools(
 function buildInfoGroup(
   taskMessage: string,
   chatId: string,
-  persona?: string
+  persona?: string,
+  displayName?: string,
+  apiDefinitionId?: string,
+  modelId?: string
 ): RenderingBlockGroup {
   const infoBlock: ToolInfoRenderBlock = {
     type: 'tool_info',
     input: taskMessage,
     chatId,
     persona,
+    displayName,
+    apiDefinitionId,
+    modelId,
   };
   return { category: 'backstage', blocks: [infoBlock] };
 }
@@ -236,6 +244,10 @@ async function* executeMinion(
     }
     minionChat = existing;
     existingMessages = await storage.getMinionMessages(minionInput.minionChatId);
+
+    // Merge caller-provided settings into existing chat
+    if (minionInput.displayName !== undefined) minionChat.displayName = minionInput.displayName;
+    if (minionInput.persona !== undefined) minionChat.persona = minionInput.persona;
 
     if (action === 'retry') {
       // Retry: roll back to checkpoint before proceeding
@@ -348,6 +360,8 @@ async function* executeMinion(
       parentChatId,
       projectId: context.projectId,
       checkpoint: CHECKPOINT_START,
+      displayName: minionInput.displayName,
+      persona: minionInput.persona,
       createdAt: new Date(),
       lastModifiedAt: new Date(),
     };
@@ -408,6 +422,14 @@ async function* executeMinion(
     if (defaultRef && isModelReference(defaultRef)) {
       effectiveModelRef = defaultRef;
     }
+  }
+
+  // Fall back to model stored from previous minion run
+  if (!effectiveModelRef && minionChat.apiDefinitionId && minionChat.modelId) {
+    effectiveModelRef = {
+      apiDefinitionId: minionChat.apiDefinitionId,
+      modelId: minionChat.modelId,
+    };
   }
 
   if (!effectiveModelRef) {
@@ -493,12 +515,24 @@ async function* executeMinion(
 
   // Build info group for streaming display (include persona name for non-default personas)
   const personaLabel =
-    minionToolOptions.namespacedMinion === true &&
+    minionInput.displayName ??
+    (minionToolOptions.namespacedMinion === true &&
     minionInput.persona &&
     minionInput.persona !== 'default'
       ? minionInput.persona
-      : undefined;
-  const infoGroup = buildInfoGroup(minionInput.message, minionChat.id, personaLabel);
+      : undefined);
+  const infoGroup = buildInfoGroup(
+    minionInput.message,
+    minionChat.id,
+    personaLabel,
+    minionInput.displayName,
+    effectiveModelRef.apiDefinitionId,
+    effectiveModelRef.modelId
+  );
+
+  // Persist resolved model into minionChat for future continuation
+  minionChat.apiDefinitionId = effectiveModelRef.apiDefinitionId;
+  minionChat.modelId = effectiveModelRef.modelId;
 
   // Build context for minion based on retry re-use, return tool resumption, or normal message
   let minionContext: Message<unknown>[];
@@ -591,7 +625,7 @@ async function* executeMinion(
   let minionSystemPrompt: string;
 
   if (namespacedMinion) {
-    const persona = minionInput.persona ?? 'default';
+    const persona = minionInput.persona ?? minionChat.persona ?? 'default';
     minionNamespace = `/minions/${persona}`;
 
     // Read global prompt shared across all personas
@@ -848,6 +882,10 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push(`Model: ${minionInput.model}`);
   }
 
+  if (minionInput.displayName) {
+    lines.push(`Display: ${minionInput.displayName}`);
+  }
+
   if (minionInput.message) {
     lines.push('');
     lines.push(minionInput.message);
@@ -945,7 +983,8 @@ function getMinionDescription(opts: ToolOptions): string {
   }
 
   lines.push(
-    '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)'
+    '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)',
+    '- Provide a displayName to label this minion in the UI'
   );
 
   if (opts.namespacedMinion === true) {
@@ -995,6 +1034,11 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
       items: { type: 'string' },
       description:
         "Tools to enable for the minion (must be subset of project tools, 'minion' excluded). Defaults to none — specify tools explicitly.",
+    },
+    displayName: {
+      type: 'string',
+      description:
+        'Display name shown in the UI for this minion call. If omitted, persona name is used.',
     },
   };
 

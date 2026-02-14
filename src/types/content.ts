@@ -113,6 +113,12 @@ export interface ToolInfoRenderBlock {
   chatId?: string;
   /** Persona name for namespaced minions (omitted for default persona) */
   persona?: string;
+  /** Display name override for persona (set by LLM via displayName parameter) */
+  displayName?: string;
+  /** API definition ID used for this minion call */
+  apiDefinitionId?: string;
+  /** Model ID used for this minion call */
+  modelId?: string;
 }
 
 /**

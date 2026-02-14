@@ -77,6 +77,9 @@ export interface ModelMetadata {
   /** Max output/completion tokens */
   maxOutputTokens?: number;
 
+  /** Whether the model supports 1M extended context window (Anthropic beta) */
+  supportsExtendedContext?: boolean;
+
   // === Pricing (per 1M tokens in USD, or per-unit for images/requests). 0 means free, undefined means unable to find data ===
 
   /** Input/prompt token price per 1M tokens */
@@ -217,6 +220,8 @@ export interface Project {
 
   // Disable streaming (use non-streaming API calls)
   disableStream?: boolean;
+  // Extended context window (1M tokens, Anthropic beta)
+  extendedContext?: boolean;
 }
 
 // Chat pending state types

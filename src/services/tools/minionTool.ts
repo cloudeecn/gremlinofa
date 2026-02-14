@@ -694,6 +694,7 @@ async function* executeMinion(
     enabledTools: minionTools,
     toolOptions: project.toolOptions ?? {},
     disableStream: project.disableStream ?? false,
+    extendedContext: project.extendedContext ?? false,
     namespace: minionNamespace,
     // Reasoning settings from project
     enableReasoning: disableReasoning ? false : project.enableReasoning,

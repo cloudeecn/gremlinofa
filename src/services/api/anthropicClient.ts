@@ -101,6 +101,31 @@ function parseBedrockEndpoint(baseUrl: string | undefined): {
   return { isBedrock: false, region: 'us-east-1', url: baseUrl };
 }
 
+/**
+ * Build the betas array for Anthropic API requests.
+ */
+export function buildAnthropicBetas(options: {
+  webSearchEnabled?: boolean;
+  enabledTools?: string[];
+  thinkingKeepTurns?: number;
+  extendedContext?: boolean;
+}): string[] {
+  const betas: string[] = ['interleaved-thinking-2025-05-14'];
+  if (options.webSearchEnabled) {
+    betas.push('web-fetch-2025-09-10');
+  }
+  const enabledTools = options.enabledTools || [];
+  const needsContextManagement =
+    enabledTools.includes('memory') || options.thinkingKeepTurns !== undefined;
+  if (needsContextManagement) {
+    betas.push('context-management-2025-06-27');
+  }
+  if (options.extendedContext) {
+    betas.push('context-1m-2025-08-07');
+  }
+  return betas;
+}
+
 export class AnthropicClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
     const bedrockInfo = parseBedrockEndpoint(apiDefinition.baseUrl);
@@ -235,6 +260,7 @@ export class AnthropicClient implements APIClient {
       webSearchEnabled?: boolean;
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
+      extendedContext?: boolean;
     }
   ): AsyncGenerator<
     StreamChunk,
@@ -412,18 +438,12 @@ export class AnthropicClient implements APIClient {
         effectiveMaxTokens = options.reasoningBudgetTokens + 500;
       }
 
-      // Build betas array - always include web-fetch and interleaved-thinking,
-      // add context-management when memory tool is enabled or thinkingKeepTurns is set
-      const betas: string[] = ['interleaved-thinking-2025-05-14'];
-      if (options.webSearchEnabled) {
-        betas.push('web-fetch-2025-09-10');
-      }
-
-      const needsContextManagement =
-        enabledTools.includes('memory') || options.thinkingKeepTurns !== undefined;
-      if (needsContextManagement) {
-        betas.push('context-management-2025-06-27');
-      }
+      const betas = buildAnthropicBetas({
+        webSearchEnabled: options.webSearchEnabled,
+        enabledTools,
+        thinkingKeepTurns: options.thinkingKeepTurns,
+        extendedContext: options.extendedContext,
+      });
 
       // Build context_management config if thinkingKeepTurns is set
       let contextManagement: Anthropic.Beta.BetaContextManagementConfig | undefined;

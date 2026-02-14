@@ -150,6 +150,7 @@ const createMockOptions = (overrides?: Partial<AgenticLoopOptions>): AgenticLoop
   enabledTools: [],
   toolOptions: {},
   disableStream: false,
+  extendedContext: false,
   enableReasoning: false,
   reasoningBudgetTokens: 0,
   ...overrides,

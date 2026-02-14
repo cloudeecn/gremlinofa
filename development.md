@@ -154,7 +154,7 @@ Projects organize chats with shared settings:
 - **Web search** toggle
 - **Message format**: three modes (user message / with metadata / use template)
 - **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook
-- **Advanced** (collapsed): temperature, max output tokens (default: 1536)
+- **Advanced** (collapsed): temperature, max output tokens (default: 1536), disable streaming, extended context (1M)
 
 ### Chats
 
@@ -297,6 +297,7 @@ public/             # Static assets and PWA icons
 - `preFillResponse?: string` - Pre-fill assistant response (Anthropic only)
 - `webSearchEnabled?: boolean` - Enable web search
 - `enabledTools?: string[]` - Enabled client-side tools
+- `extendedContext?: boolean` - Anthropic: opt into 1M context window beta (`context-1m-2025-08-07` header). Models with `supportsExtendedContext` in metadata: Opus 4.6, Sonnet 4.5, Sonnet 4. Above 200K input tokens, all tokens charged at premium rates (2x input, 1.5x output).
 
 **API Clients:**
 

@@ -257,6 +257,7 @@ async function buildAgenticLoopOptions(
     enabledTools,
     toolOptions,
     disableStream: project.disableStream ?? false,
+    extendedContext: project.extendedContext ?? false,
     enableReasoning: project.enableReasoning,
     reasoningBudgetTokens: project.reasoningBudgetTokens,
     thinkingKeepTurns: project.thinkingKeepTurns,

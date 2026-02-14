@@ -156,6 +156,7 @@ class APIService {
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
+      extendedContext?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
     const client = this.getClient(apiDefinition.apiType);

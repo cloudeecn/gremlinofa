@@ -48,6 +48,27 @@ describe('minionTool', () => {
       expect(schema.properties).toHaveProperty('message');
       expect(schema.properties).toHaveProperty('minionChatId');
       expect(schema.properties).toHaveProperty('enabledTools');
+      expect(schema.properties).toHaveProperty('displayName');
+    });
+
+    it('schema always includes displayName regardless of options', () => {
+      const withNamespaced =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ namespacedMinion: true })
+          : minionTool.inputSchema;
+      expect(withNamespaced.properties).toHaveProperty('displayName');
+
+      const withoutNamespaced =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ namespacedMinion: false })
+          : minionTool.inputSchema;
+      expect(withoutNamespaced.properties).toHaveProperty('displayName');
+
+      const noOpts =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({})
+          : minionTool.inputSchema;
+      expect(noOpts.properties).toHaveProperty('displayName');
     });
 
     it('schema action property has correct enum values', () => {
@@ -340,6 +361,12 @@ describe('minionTool', () => {
       const input = { message: 'Task', model: 'api_1:claude-3' };
       const result = minionTool.renderInput!(input);
       expect(result).toContain('Model: api_1:claude-3');
+    });
+
+    it('renders displayName when specified', () => {
+      const input = { message: 'Task', displayName: 'Code Reviewer' };
+      const result = minionTool.renderInput!(input);
+      expect(result).toContain('Display: Code Reviewer');
     });
   });
 

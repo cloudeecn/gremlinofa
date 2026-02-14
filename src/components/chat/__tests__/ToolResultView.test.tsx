@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
 import ToolResultView from '../ToolResultView';
+import { MinionChatOverlayContext } from '../MinionChatOverlayContext';
 import type { ToolResultRenderBlock, RenderingBlockGroup } from '../../../types/content';
 
 // Mock BackstageView
@@ -18,9 +18,42 @@ vi.mock('../TextGroupView', () => ({
   ),
 }));
 
-/** Wrap component with MemoryRouter for Link support */
-function renderWithRouter(ui: React.ReactElement) {
-  return render(<MemoryRouter>{ui}</MemoryRouter>);
+// Mock useApp to provide apiDefinitions
+vi.mock('../../../hooks/useApp', () => ({
+  useApp: () => ({
+    apiDefinitions: [
+      {
+        id: 'api_1',
+        apiType: 'anthropic',
+        name: 'Anthropic',
+        icon: '✨',
+        baseUrl: '',
+        apiKey: '',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: 'api_2',
+        apiType: 'chatgpt',
+        name: 'OpenAI',
+        baseUrl: '',
+        apiKey: '',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ],
+  }),
+}));
+
+const mockViewMinionChat = vi.fn();
+
+/** Wrap component with overlay context for View Chat button support */
+function renderWithOverlay(ui: React.ReactElement) {
+  return render(
+    <MinionChatOverlayContext.Provider value={{ viewMinionChat: mockViewMinionChat }}>
+      {ui}
+    </MinionChatOverlayContext.Provider>
+  );
 }
 
 describe('ToolResultView', () => {
@@ -132,26 +165,26 @@ describe('ToolResultView', () => {
     };
 
     it('renders collapsible header with icon only', () => {
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       expect(screen.getByText('🤖')).toBeInTheDocument();
       expect(screen.queryByText('minion')).not.toBeInTheDocument();
     });
 
     it('starts collapsed when status is complete', () => {
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       expect(screen.getByText('▶')).toBeInTheDocument();
       expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
     });
 
     it('starts collapsed even when status is running', () => {
       const runningBlock: ToolResultRenderBlock = { ...complexBlock, status: 'running' };
-      renderWithRouter(<ToolResultView block={runningBlock} />);
+      renderWithOverlay(<ToolResultView block={runningBlock} />);
       // Collapsed by default — shows ▶ not ▼
       expect(screen.getByText('▶')).toBeInTheDocument();
     });
 
     it('shows last activity preview when collapsed', () => {
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       // Preview shows last text from activity groups
       expect(screen.getByText('Some intermediate output')).toBeInTheDocument();
     });
@@ -162,12 +195,12 @@ describe('ToolResultView', () => {
         ...complexBlock,
         renderingGroups: [infoGroup],
       };
-      renderWithRouter(<ToolResultView block={infoOnlyBlock} />);
+      renderWithOverlay(<ToolResultView block={infoOnlyBlock} />);
       expect(screen.getByText('minion_abc')).toBeInTheDocument();
     });
 
     it('toggles expansion on header click', () => {
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
 
       // Initially collapsed
       expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
@@ -182,7 +215,7 @@ describe('ToolResultView', () => {
     });
 
     it('shows tool_info input in blue box when expanded', () => {
-      const { container } = renderWithRouter(<ToolResultView block={complexBlock} />);
+      const { container } = renderWithOverlay(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       const blueBox = container.querySelector('.border-blue-300');
@@ -191,7 +224,7 @@ describe('ToolResultView', () => {
     });
 
     it('shows green result box when complete and not error', () => {
-      const { container } = renderWithRouter(<ToolResultView block={complexBlock} />);
+      const { container } = renderWithOverlay(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       const greenBox = container.querySelector('.border-green-300');
@@ -205,7 +238,7 @@ describe('ToolResultView', () => {
         is_error: true,
         content: 'Minion failed',
       };
-      const { container } = renderWithRouter(<ToolResultView block={errorBlock} />);
+      const { container } = renderWithOverlay(<ToolResultView block={errorBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       const redBox = container.querySelector('.border-red-300');
@@ -219,7 +252,7 @@ describe('ToolResultView', () => {
         status: 'running',
         content: '',
       };
-      const { container } = renderWithRouter(<ToolResultView block={runningBlock} />);
+      const { container } = renderWithOverlay(<ToolResultView block={runningBlock} />);
 
       // Auto-expanded when running, should not have green/red box
       const greenBox = container.querySelector('.border-green-300');
@@ -229,24 +262,40 @@ describe('ToolResultView', () => {
     });
 
     it('renders activity groups (backstage and text)', () => {
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(screen.getByTestId('backstage-view')).toBeInTheDocument();
       expect(screen.getByTestId('text-group-view')).toBeInTheDocument();
     });
 
-    it('shows View Chat link when chatId is present', () => {
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+    it('shows View Chat button when chatId and overlay context are present', () => {
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
-      const viewLink = screen.getByText('💬 View Chat');
-      expect(viewLink).toBeInTheDocument();
-      expect(viewLink.closest('a')).toHaveAttribute('href', '/minion-chat/minion_abc');
+      const viewButton = screen.getByText('💬 View Chat');
+      expect(viewButton).toBeInTheDocument();
+      expect(viewButton.tagName).toBe('BUTTON');
+    });
+
+    it('calls overlay context when View Chat is clicked', () => {
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+      fireEvent.click(screen.getByText('💬 View Chat'));
+
+      expect(mockViewMinionChat).toHaveBeenCalledWith('minion_abc');
+    });
+
+    it('hides View Chat when overlay context is not provided', () => {
+      // Render without overlay context (e.g., inside MinionChatView itself)
+      render(<ToolResultView block={complexBlock} />);
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+
+      expect(screen.queryByText('💬 View Chat')).not.toBeInTheDocument();
     });
 
     it('shows Copy JSON button', () => {
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(screen.getByText('📋 Copy JSON')).toBeInTheDocument();
@@ -256,7 +305,7 @@ describe('ToolResultView', () => {
       const mockClipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
       Object.assign(navigator, { clipboard: mockClipboard });
 
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
       fireEvent.click(screen.getByText('📋 Copy JSON'));
 
@@ -269,7 +318,7 @@ describe('ToolResultView', () => {
       };
       Object.assign(navigator, { clipboard: mockClipboard });
 
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(() => fireEvent.click(screen.getByText('📋 Copy JSON'))).not.toThrow();
@@ -285,7 +334,7 @@ describe('ToolResultView', () => {
           },
         ],
       };
-      renderWithRouter(<ToolResultView block={noChatIdBlock} />);
+      renderWithOverlay(<ToolResultView block={noChatIdBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       expect(screen.queryByText('💬 View Chat')).not.toBeInTheDocument();
@@ -297,7 +346,7 @@ describe('ToolResultView', () => {
         ...complexBlock,
         renderingGroups: [backstageGroup, textGroup],
       };
-      const { container } = renderWithRouter(<ToolResultView block={noInfoBlock} />);
+      const { container } = renderWithOverlay(<ToolResultView block={noInfoBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       // No blue box
@@ -313,7 +362,7 @@ describe('ToolResultView', () => {
         ...complexBlock,
         icon: undefined,
       };
-      renderWithRouter(<ToolResultView block={noIconBlock} />);
+      renderWithOverlay(<ToolResultView block={noIconBlock} />);
       // Default icon for complex results is 🤖
       expect(screen.getByText('🤖')).toBeInTheDocument();
     });
@@ -332,7 +381,7 @@ describe('ToolResultView', () => {
           costUnreliable: false,
         },
       };
-      renderWithRouter(<ToolResultView block={costBlock} />);
+      renderWithOverlay(<ToolResultView block={costBlock} />);
       expect(screen.getByText('$0.042')).toBeInTheDocument();
     });
 
@@ -350,13 +399,88 @@ describe('ToolResultView', () => {
           costUnreliable: false,
         },
       };
-      renderWithRouter(<ToolResultView block={zeroCostBlock} />);
+      renderWithOverlay(<ToolResultView block={zeroCostBlock} />);
       expect(screen.queryByText('$0.000')).not.toBeInTheDocument();
     });
 
     it('hides cost when no tokenTotals', () => {
-      renderWithRouter(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       expect(screen.queryByText(/\$\d/)).not.toBeInTheDocument();
+    });
+
+    it('shows displayName instead of persona in header', () => {
+      const blockWithDisplayName: ToolResultRenderBlock = {
+        ...complexBlock,
+        renderingGroups: [
+          {
+            category: 'backstage',
+            blocks: [
+              {
+                type: 'tool_info',
+                input: 'task',
+                chatId: 'minion_abc',
+                persona: 'coder',
+                displayName: 'Code Reviewer',
+              },
+            ],
+          },
+          backstageGroup,
+        ],
+      };
+      renderWithOverlay(<ToolResultView block={blockWithDisplayName} />);
+      expect(screen.getByText('Code Reviewer')).toBeInTheDocument();
+      expect(screen.queryByText('coder')).not.toBeInTheDocument();
+    });
+
+    it('shows persona when no displayName', () => {
+      const blockWithPersona: ToolResultRenderBlock = {
+        ...complexBlock,
+        renderingGroups: [
+          {
+            category: 'backstage',
+            blocks: [
+              {
+                type: 'tool_info',
+                input: 'task',
+                chatId: 'minion_abc',
+                persona: 'coder',
+              },
+            ],
+          },
+          backstageGroup,
+        ],
+      };
+      renderWithOverlay(<ToolResultView block={blockWithPersona} />);
+      expect(screen.getByText('coder')).toBeInTheDocument();
+    });
+
+    it('shows settings info line with model and API icon when expanded', () => {
+      const blockWithSettings: ToolResultRenderBlock = {
+        ...complexBlock,
+        renderingGroups: [
+          {
+            category: 'backstage',
+            blocks: [
+              {
+                type: 'tool_info',
+                input: 'task',
+                chatId: 'minion_abc',
+                persona: 'coder',
+                apiDefinitionId: 'api_1',
+                modelId: 'claude-3-5-sonnet',
+              },
+            ],
+          },
+          backstageGroup,
+        ],
+      };
+      renderWithOverlay(<ToolResultView block={blockWithSettings} />);
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+
+      // API icon from mocked apiDefinitions (api_1 has icon '✨')
+      expect(screen.getByText('✨')).toBeInTheDocument();
+      // Model ID displayed
+      expect(screen.getByText('claude-3-5-sonnet')).toBeInTheDocument();
     });
   });
 });

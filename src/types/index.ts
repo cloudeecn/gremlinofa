@@ -576,6 +576,8 @@ export interface ClientSideTool {
   displaySubtitle?: string;
   /** Internal tools are not shown in ProjectSettings UI (e.g., 'return' for minions) */
   internal?: boolean;
+  /** Complex tools run in a later phase after simple tools complete (e.g., minion sub-agents) */
+  complex?: boolean;
   /** Tool description - can be static string or function for dynamic content */
   description: string | ((options: ToolOptions) => string);
   /** Input schema - can be static or function for dynamic content */

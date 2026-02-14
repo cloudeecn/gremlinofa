@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { AnthropicClient } from '../anthropicClient';
+import type Anthropic from '@anthropic-ai/sdk';
+import { AnthropicClient, applyCacheBreakpoints } from '../anthropicClient';
 import testMessageContent from './anthropic-multiple-step-thinking-fullContent.json';
 import expectedRenderingContent from './anthropic-multiple-step-thinking-renderingContent.json';
 
@@ -452,5 +453,83 @@ describe('AnthropicClient.migrateMessageRendering', () => {
       // to validate the rendering structure for UI components
       expect(result.renderingContent).toEqual(expectedRenderingContent);
     });
+  });
+});
+
+describe('applyCacheBreakpoints', () => {
+  it('should skip empty text blocks when placing breakpoints', () => {
+    const messages: Anthropic.Beta.BetaMessageParam[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Real content' },
+          { type: 'text', text: '' },
+        ],
+      },
+    ];
+    applyCacheBreakpoints(messages);
+
+    const content = messages[0].content as Anthropic.Beta.BetaContentBlockParam[];
+    // Breakpoint should be on the non-empty text block, not the empty one
+    expect(content[0]).toHaveProperty('cache_control');
+    expect(content[1]).not.toHaveProperty('cache_control');
+  });
+
+  it('should skip whitespace-only text blocks', () => {
+    const messages: Anthropic.Beta.BetaMessageParam[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Hello' },
+          { type: 'text', text: '   ' },
+        ],
+      },
+    ];
+    applyCacheBreakpoints(messages);
+
+    const content = messages[0].content as Anthropic.Beta.BetaContentBlockParam[];
+    expect(content[0]).toHaveProperty('cache_control');
+    expect(content[1]).not.toHaveProperty('cache_control');
+  });
+
+  it('should skip message when all blocks are empty or thinking', () => {
+    const messages: Anthropic.Beta.BetaMessageParam[] = [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'Cacheable' }],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking' as 'text', text: '' },
+          { type: 'text', text: '' },
+        ],
+      },
+    ];
+    applyCacheBreakpoints(messages);
+
+    // Second message skipped, first message gets breakpoint
+    const first = messages[0].content as Anthropic.Beta.BetaContentBlockParam[];
+    const second = messages[1].content as Anthropic.Beta.BetaContentBlockParam[];
+    expect(first[0]).toHaveProperty('cache_control');
+    expect(second[0]).not.toHaveProperty('cache_control');
+    expect(second[1]).not.toHaveProperty('cache_control');
+  });
+
+  it('should place breakpoint on tool_use block after empty text', () => {
+    const messages: Anthropic.Beta.BetaMessageParam[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tu_1', name: 'test', input: {} },
+          { type: 'text', text: '' },
+        ],
+      },
+    ];
+    applyCacheBreakpoints(messages);
+
+    const content = messages[0].content as Anthropic.Beta.BetaContentBlockParam[];
+    expect(content[0]).toHaveProperty('cache_control');
+    expect(content[1]).not.toHaveProperty('cache_control');
   });
 });

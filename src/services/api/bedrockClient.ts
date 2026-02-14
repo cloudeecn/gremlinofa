@@ -109,7 +109,13 @@ function parseBedrockEndpoint(baseUrl: string | undefined): {
  * Bedrock model types for reasoning configuration.
  * Different model families require different reasoning config formats.
  */
-type BedrockModelReasoningType = 'claude-3' | 'claude-4' | 'nova2' | 'deepseek' | 'none';
+type BedrockModelReasoningType =
+  | 'claude-3'
+  | 'claude-4'
+  | 'nova2'
+  | 'deepseek'
+  | 'generic-reasoning'
+  | 'none';
 
 /**
  * Detect the reasoning type of a Bedrock model from its modelId.
@@ -132,8 +138,19 @@ export function detectBedrockReasoningType(modelId: string): BedrockModelReasoni
   }
 
   // DeepSeek detection
-  if (normalizedId.includes('deepseek')) {
+  if (normalizedId.includes('deepseek.r1')) {
     return 'deepseek';
+  }
+
+  // Kimi
+  if (
+    normalizedId.includes('kimi') ||
+    normalizedId.includes('nvidia') ||
+    normalizedId.includes('qwen') ||
+    normalizedId.includes('glm') ||
+    normalizedId.includes('deepseek')
+  ) {
+    return 'generic-reasoning';
   }
 
   return 'none';
@@ -144,6 +161,21 @@ export function detectBedrockReasoningType(modelId: string): BedrockModelReasoni
  * Nova only supports 'low', 'medium', 'high'.
  */
 function mapEffortToNova(effort: ReasoningEffort | undefined): 'low' | 'medium' | 'high' {
+  switch (effort) {
+    case 'none':
+    case 'minimal':
+    case 'low':
+      return 'low';
+    case 'medium':
+    case undefined:
+      return 'medium';
+    case 'high':
+    case 'xhigh':
+      return 'high';
+  }
+}
+
+function mapEffort(effort: ReasoningEffort | undefined): 'low' | 'medium' | 'high' {
   switch (effort) {
     case 'none':
     case 'minimal':
@@ -223,12 +255,18 @@ export function buildReasoningConfig(
         },
       } as DocumentType;
 
+    case 'generic-reasoning':
+      // Nova uses reasoningConfig with maxReasoningEffort
+      return {
+        reasoning_config: mapEffort(options.reasoningEffort),
+      } as DocumentType;
+
     case 'deepseek':
       // DeepSeek uses showThinking boolean
       return {
+        reasoning_config: mapEffort(options.reasoningEffort),
         showThinking: true,
       } as DocumentType;
-
     default:
       return undefined;
   }

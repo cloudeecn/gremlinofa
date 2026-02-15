@@ -26,6 +26,21 @@ describe('returnTool', () => {
       expect(returnTool.iconOutput).toBe('✅');
     });
 
+    it('should have default description when deferReturn is not set', () => {
+      const desc = (returnTool.description as (opts: Record<string, unknown>) => string)({});
+      expect(desc).toContain('ends your current turn');
+      expect(desc).not.toContain('stored');
+    });
+
+    it('should have deferred description when deferReturn is true', () => {
+      const desc = (returnTool.description as (opts: Record<string, unknown>) => string)({
+        deferReturn: true,
+      });
+      expect(desc).toContain('Store a result');
+      expect(desc).toContain('continues after this call');
+      expect(desc).toContain('last result wins');
+    });
+
     it('should have correct input schema', () => {
       expect(returnTool.inputSchema).toEqual({
         type: 'object',

@@ -88,6 +88,10 @@ export interface AgenticLoopOptions {
   // Already-saved messages to inject into context after pending tool results
   // (e.g., a user follow-up message saved by the caller)
   pendingTrailingContext?: Message<unknown>[];
+
+  // When true, the return tool stores its value without breaking the loop.
+  // The stored value is returned when the loop ends naturally.
+  deferReturn?: boolean;
 }
 
 /**
@@ -127,6 +131,7 @@ export type AgenticLoopResult =
       status: 'max_iterations';
       messages: Message<unknown>[];
       tokens: TokenTotals;
+      returnValue?: string;
     };
 
 // Re-export for backward compatibility
@@ -560,8 +565,13 @@ async function* executeToolUseBlocks(
   toolOptions: Record<string, ToolOptions>,
   toolContext: ToolContext,
   messages: Message<unknown>[],
-  totals: TokenTotals
-): AsyncGenerator<AgenticLoopEvent, { breakLoop: { returnValue?: string } } | undefined, void> {
+  totals: TokenTotals,
+  deferReturn?: boolean
+): AsyncGenerator<
+  AgenticLoopEvent,
+  { breakLoop: { returnValue?: string } } | { deferredReturn: string } | undefined,
+  void
+> {
   console.debug('[agenticLoopGen] Executing', toolUseBlocks.length, 'tool(s)');
 
   // --- Return tool handling ---
@@ -579,6 +589,35 @@ async function* executeToolUseBlocks(
     let iterResult = await gen.next();
     while (!iterResult.done) iterResult = await gen.next();
     const toolResult = iterResult.value;
+
+    if (deferReturn) {
+      // Deferred mode: store value, build normal tool_result, continue loop
+      const returnValue = toolResult.breakLoop?.returnValue ?? toolResult.content;
+      const storedContent = 'Result stored. Please wait for next instruction.';
+
+      const renderBlock = createToolResultRenderBlock(
+        returnBlock.id,
+        returnBlock.name,
+        storedContent,
+        false
+      );
+      renderBlock.status = 'complete';
+
+      const toolResultBlocks: ToolResultBlock[] = [
+        {
+          type: 'tool_result',
+          tool_use_id: returnBlock.id,
+          content: storedContent,
+        },
+      ];
+
+      const toolResultMsg = buildToolResultMessage(apiType, toolResultBlocks, [renderBlock]);
+      messages.push(toolResultMsg);
+      yield { type: 'message_created', message: toolResultMsg };
+
+      return { deferredReturn: returnValue };
+    }
+
     return { breakLoop: toolResult.breakLoop ?? { returnValue: toolResult.content } };
   }
 
@@ -771,6 +810,7 @@ export async function* runAgenticLoop(
   const messages = [...context];
   const totals = createTokenTotals();
   let iteration = 0;
+  let storedReturnValue: string | undefined;
 
   try {
     // Handle pre-existing tool_use blocks before the first API call
@@ -786,10 +826,14 @@ export async function* runAgenticLoop(
         toolOptions,
         toolContext,
         messages,
-        totals
+        totals,
+        options.deferReturn
       );
 
-      if (breakResult?.breakLoop) {
+      if (breakResult && 'deferredReturn' in breakResult) {
+        storedReturnValue = breakResult.deferredReturn;
+        // Continue loop — don't return yet
+      } else if (breakResult?.breakLoop) {
         return {
           status: 'complete',
           messages,
@@ -953,7 +997,12 @@ export async function* runAgenticLoop(
 
       // Check stop reason
       if (result.stopReason !== 'tool_use') {
-        return { status: 'complete', messages, tokens: totals };
+        return {
+          status: 'complete',
+          messages,
+          tokens: totals,
+          returnValue: storedReturnValue,
+        };
       }
 
       // Execute tools
@@ -971,10 +1020,14 @@ export async function* runAgenticLoop(
         toolOptions,
         toolContext,
         messages,
-        totals
+        totals,
+        options.deferReturn
       );
 
-      if (breakResult?.breakLoop) {
+      if (breakResult && 'deferredReturn' in breakResult) {
+        storedReturnValue = breakResult.deferredReturn;
+        // Continue loop — don't break
+      } else if (breakResult?.breakLoop) {
         return {
           status: 'complete',
           messages,
@@ -987,7 +1040,12 @@ export async function* runAgenticLoop(
     }
 
     // Max iterations reached
-    return { status: 'max_iterations', messages, tokens: totals };
+    return {
+      status: 'max_iterations',
+      messages,
+      tokens: totals,
+      returnValue: storedReturnValue,
+    };
   } catch (error) {
     const errorObj = error instanceof Error ? error : new Error(String(error));
     console.error('[agenticLoopGen] Error:', errorObj.message);

@@ -1209,6 +1209,218 @@ describe('agenticLoopGenerator', () => {
       expect(result.value.messages).toHaveLength(2);
     });
 
+    it('deferred return: solo return stores value and loop continues', async () => {
+      // Iteration 1: return tool called → deferred, continues
+      // Iteration 2: normal end_turn response
+      const returnToolBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_ret',
+          name: 'return',
+          input: { result: 'answer42' },
+        },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: returnToolBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      const finalResult = {
+        textContent: 'Cleanup done',
+        fullContent: [{ type: 'text', text: 'Cleanup done' }],
+        stopReason: 'end_turn',
+        inputTokens: 120,
+        outputTokens: 60,
+      };
+
+      setupMultiIterationMock(
+        [createMockStream([], toolUseResult), createMockStream([], finalResult)],
+        [returnToolBlocks, returnToolBlocks, [], []]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'answer42',
+          breakLoop: { returnValue: 'answer42' },
+        })
+      );
+
+      const options = createMockOptions({
+        enabledTools: ['return'],
+        deferReturn: true,
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('complete');
+      if (result.value.status === 'complete') {
+        expect(result.value.returnValue).toBe('answer42');
+      }
+
+      // Should have TWO API calls (loop didn't break after return tool)
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(2);
+
+      // The deferred return should produce a tool_result message with "Result stored" content
+      const msgCreatedEvents = events
+        .filter(
+          (e): e is Extract<AgenticLoopEvent, { type: 'message_created' }> =>
+            e.type === 'message_created'
+        )
+        .map(e => e.message);
+
+      // user + assistant(tool_use) + tool_result(stored) + assistant(final) = 4
+      expect(result.value.messages).toHaveLength(4);
+
+      // The tool_result message should exist (not skipped like non-deferred)
+      expect(msgCreatedEvents.length).toBe(3); // assistant + tool_result + assistant
+    });
+
+    it('deferred return: multiple calls keep last value', async () => {
+      // Two iterations with return tool calls, then final response
+      const returnBlock1 = [
+        { type: 'tool_use' as const, id: 'toolu_r1', name: 'return', input: { result: 'first' } },
+      ];
+      const returnBlock2 = [
+        { type: 'tool_use' as const, id: 'toolu_r2', name: 'return', input: { result: 'second' } },
+      ];
+
+      const toolUseResult1 = {
+        textContent: '',
+        fullContent: returnBlock1,
+        stopReason: 'tool_use',
+        inputTokens: 80,
+        outputTokens: 40,
+      };
+      const toolUseResult2 = {
+        textContent: '',
+        fullContent: returnBlock2,
+        stopReason: 'tool_use',
+        inputTokens: 90,
+        outputTokens: 45,
+      };
+      const finalResult = {
+        textContent: 'Done',
+        fullContent: [{ type: 'text', text: 'Done' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      setupMultiIterationMock(
+        [
+          createMockStream([], toolUseResult1),
+          createMockStream([], toolUseResult2),
+          createMockStream([], finalResult),
+        ],
+        [returnBlock1, returnBlock1, returnBlock2, returnBlock2, [], []]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      let callCount = 0;
+      vi.mocked(executeClientSideTool).mockImplementation(() => {
+        callCount++;
+        const val = callCount === 1 ? 'first' : 'second';
+        return mockToolGenerator({
+          content: val,
+          breakLoop: { returnValue: val },
+        });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return'],
+        deferReturn: true,
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBe('second');
+      }
+
+      // Three API calls (loop continued through both return calls)
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(3);
+    });
+
+    it('deferred return: pre-loop pending blocks store value and continue', async () => {
+      const pendingReturnBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_p',
+          name: 'return',
+          input: { result: 'pending-val' },
+        },
+      ];
+
+      const finalResult = {
+        textContent: 'After pending',
+        fullContent: [{ type: 'text', text: 'After pending' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], finalResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'pending-val',
+          breakLoop: { returnValue: 'pending-val' },
+        })
+      );
+
+      const options = createMockOptions({
+        enabledTools: ['return'],
+        deferReturn: true,
+        pendingToolUseBlocks: pendingReturnBlocks,
+      });
+      const context = [createMockUserMessage('Continue')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBe('pending-val');
+      }
+
+      // API should still be called (loop continued after deferred return)
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(1);
+    });
+
     it('accumulates tool-incurred costs and yields tokens_consumed for them', async () => {
       const toolUseBlocks = [
         { type: 'tool_use' as const, id: 'toolu_1', name: 'minion', input: { message: 'task' } },

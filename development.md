@@ -1106,6 +1106,7 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 - `returnOnly` (boolean, default: false) - When return tool provides a result and accumulated text exists, suppress text from the result JSON (only return the explicit result)
 - `noReturnTool` (boolean, default: false) - Remove the return tool from minion toolset
 - `disableReasoning` (boolean, default: false) - Turn off reasoning/thinking for minion calls regardless of project settings
+- `deferReturn` (boolean, default: false) - Return tool stores result without breaking the agentic loop. The loop continues until natural completion, then returns the stored value. Multiple calls overwrite (last wins). Sets `deferReturn` on `AgenticLoopOptions` and injects it into the return tool's options so its description reflects the mode.
 - `namespacedMinion` (boolean, default: false) - Isolate each persona into its own VFS namespace. When enabled, adds `persona` input parameter and system prompt with available personas list.
 
 **Persona System (namespacedMinion):**
@@ -1208,6 +1209,7 @@ Internal tool available only to minions for explicit result signaling:
 - `internal: true` flag hides from ProjectSettings UI
 - Returns `breakLoop: { returnValue }` to stop agentic loop
 - Used by minions to signal task completion with specific result
+- **Deferred mode** (`deferReturn` option on minion tool): Return tool stores the value without breaking the loop. The agentic loop replies with "Result stored. Please wait for next instruction." and continues until natural completion. Multiple deferred returns overwrite — last value wins. Dynamic description changes based on mode.
 
 ### Agentic Loop
 
@@ -1299,6 +1301,7 @@ type AgenticLoopResult =
 
 - `pendingToolUseBlocks?: ToolUseBlock[]` — pre-existing tool_use blocks to execute before the first API call (used by `resolvePendingToolCalls` continue mode)
 - `pendingTrailingContext?: Message<unknown>[]` — already-saved messages injected after tool results (e.g., user follow-up message)
+- `deferReturn?: boolean` — when true, the return tool stores its value without breaking the loop. The stored value is delivered as `returnValue` when the loop ends naturally. Multiple deferred returns overwrite (last wins).
 
 **Integration with useChat.ts:**
 

@@ -153,7 +153,7 @@ Projects organize chats with shared settings:
 - **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
 - **Message format**: three modes (user message / with metadata / use template)
-- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook
+- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook, Checkpoint
 - **Advanced** (collapsed): temperature, max output tokens (default: 1536), disable streaming, extended context (1M)
 
 ### Chats
@@ -444,7 +444,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 
 - `src/services/tools/clientSideTools.ts` - Tool registry and execution
 - Static registration at startup: `registerAllTools()` called in `main.tsx` before React renders
-- Available tools: `memory`, `javascript`, `filesystem`, `sketchbook`
+- Available tools: `memory`, `javascript`, `filesystem`, `sketchbook`, `checkpoint`
 - Tool definitions sent to API via `getToolDefinitionsForAPI(apiType, enabledToolNames, toolOptions)`
 - Execution via `executeClientSideTool(toolName, input, enabledToolNames, toolOptions, context)`
 - `ClientSideTool` interface:
@@ -1211,6 +1211,34 @@ Internal tool available only to minions for explicit result signaling:
 - Returns `breakLoop: { returnValue }` to stop agentic loop
 - Used by minions to signal task completion with specific result
 - **Deferred mode** (`deferReturn` option on minion tool): Return tool stores the value without breaking the loop. The agentic loop replies with "Result stored. Please wait for next instruction." and continues until natural completion. Multiple deferred returns overwrite — last value wins. Dynamic description changes based on mode.
+
+### Checkpoint Tool
+
+Client-side tool that marks progress during long agentic loops. When the AI calls checkpoint, a flag propagates through the agentic loop. After the turn ends naturally (end_turn/max_tokens), the consumer auto-sends a continue message, starting a fresh API call where old thinking blocks get trimmed by `thinkingKeepTurns`.
+
+- `checkpointTool` in `src/services/tools/checkpointTool.ts`
+- `internal: false` — visible in ProjectSettings, must be explicitly enabled
+- Input: `{ note: string }` — progress summary that stays in conversation history
+- Returns `{ content, checkpoint: true }` — no `breakLoop`, loop continues normally
+- Tool option: `continueMessage` (longtext, default: `"please continue"`)
+- `iconInput: '📍'`, `iconOutput: '✅'`
+
+**Checkpoint flow:**
+
+```
+AI calls checkpoint(note) → tool returns with checkpoint: true → flag propagates
+    → loop continues → AI finishes turn naturally (end_turn/max_tokens)
+    → main loop detects checkpointSet → creates user message with continueMessage
+    → yields message_created → re-enters while loop for fresh API call
+    → old thinking trimmed by thinkingKeepTurns → AI sees note and continues
+```
+
+**Flag propagation** (`agenticLoopGenerator.ts`):
+
+- `executeToolsParallel` → `executeToolUseBlocks` → main loop's `checkpointSet` variable
+- Auto-continue handled entirely inside `runAgenticLoop`: when `checkpointSet && stopReason !== 'tool_use'`, creates a continue user message, yields it, resets flag, and `continue`s the loop
+- Continue text read from `toolOptions.checkpoint?.continueMessage` (falls back to `'please continue'`)
+- Consumer (`useChat.ts`) is unaware of checkpoints — they're transparent at the generator level
 
 ### Agentic Loop
 

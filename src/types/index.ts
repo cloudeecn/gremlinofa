@@ -364,6 +364,8 @@ export interface ToolResult {
   breakLoop?: {
     returnValue?: string;
   };
+  /** Signal that a checkpoint was set — triggers auto-continue after turn ends */
+  checkpoint?: boolean;
   /** Nested rendering groups from tool's internal work (transferred to ToolResultRenderBlock) */
   renderingGroups?: RenderingBlockGroup[];
   /** Token/cost totals incurred by this tool (e.g., minion sub-agent API costs) */

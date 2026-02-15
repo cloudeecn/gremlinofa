@@ -454,7 +454,7 @@ async function* executeToolsParallel(
   toolContext: ToolContext
 ): AsyncGenerator<
   AgenticLoopEvent,
-  { results: ParallelToolResult[]; breakLoop?: { returnValue?: string } },
+  { results: ParallelToolResult[]; breakLoop?: { returnValue?: string }; checkpoint?: boolean },
   void
 > {
   const activeGens: ActiveToolGen[] = blocks.map((toolUse, index) => {
@@ -485,6 +485,7 @@ async function* executeToolsParallel(
 
   const results: (ParallelToolResult | null)[] = new Array(blocks.length).fill(null);
   let breakLoop: { returnValue?: string } | undefined;
+  let checkpointSet = false;
 
   // Race loop: process events from whichever generator resolves first
   while (activeGens.some(ag => !ag.done)) {
@@ -499,6 +500,7 @@ async function* executeToolsParallel(
       if (toolResult.breakLoop && !breakLoop) {
         breakLoop = toolResult.breakLoop;
       }
+      if (toolResult.checkpoint) checkpointSet = true;
 
       const renderBlock = createToolResultRenderBlock(
         ag.toolUse.id,
@@ -541,6 +543,7 @@ async function* executeToolsParallel(
   return {
     results: results.filter((r): r is ParallelToolResult => r !== null),
     breakLoop,
+    checkpoint: checkpointSet || undefined,
   };
 }
 
@@ -568,7 +571,10 @@ async function* executeToolUseBlocks(
   hasStoredReturn?: boolean
 ): AsyncGenerator<
   AgenticLoopEvent,
-  { breakLoop: { returnValue?: string } } | { deferredReturn: string } | undefined,
+  | { breakLoop: { returnValue?: string } }
+  | { deferredReturn: string }
+  | { checkpoint: true }
+  | undefined,
   void
 > {
   console.debug('[agenticLoopGen] Executing', toolUseBlocks.length, 'tool(s)');
@@ -786,6 +792,7 @@ async function* executeToolUseBlocks(
   }
 
   let breakLoopResult: { returnValue?: string } | undefined;
+  let checkpointSet = false;
 
   // --- Phase 1: simple tools ---
   if (simpleBlocks.length > 0) {
@@ -801,6 +808,7 @@ async function* executeToolUseBlocks(
     if (phase1.breakLoop) {
       breakLoopResult = phase1.breakLoop;
     }
+    if (phase1.checkpoint) checkpointSet = true;
   }
 
   // --- Phase 2: complex tools (skip if phase 1 triggered breakLoop) ---
@@ -817,10 +825,16 @@ async function* executeToolUseBlocks(
     if (phase2.breakLoop) {
       breakLoopResult = phase2.breakLoop;
     }
+    if (phase2.checkpoint) checkpointSet = true;
   }
 
   if (breakLoopResult) {
     return { breakLoop: breakLoopResult };
+  }
+
+  if (checkpointSet) {
+    // Don't return immediately — fall through to build the tool result message,
+    // then signal checkpoint to the main loop
   }
 
   // --- Merge results in original tool order ---
@@ -865,6 +879,10 @@ async function* executeToolUseBlocks(
   messages.push(toolResultMsg);
   yield { type: 'message_created', message: toolResultMsg };
 
+  if (checkpointSet) {
+    return { checkpoint: true };
+  }
+
   if (deferredReturnValue !== undefined) {
     return { deferredReturn: deferredReturnValue };
   }
@@ -898,6 +916,7 @@ export async function* runAgenticLoop(
   const totals = createTokenTotals();
   let iteration = 0;
   let storedReturnValue: string | undefined;
+  let checkpointSet = false;
 
   try {
     // Handle pre-existing tool_use blocks before the first API call
@@ -921,6 +940,9 @@ export async function* runAgenticLoop(
       if (breakResult && 'deferredReturn' in breakResult) {
         storedReturnValue = breakResult.deferredReturn;
         // Continue loop — don't return yet
+      } else if (breakResult && 'checkpoint' in breakResult) {
+        checkpointSet = true;
+        // Continue loop — checkpoint will be included in final result
       } else if (breakResult?.breakLoop) {
         return {
           status: 'complete',
@@ -1085,6 +1107,30 @@ export async function* runAgenticLoop(
 
       // Check stop reason
       if (result.stopReason !== 'tool_use') {
+        // Checkpoint auto-continue: instead of returning, send a continue message
+        // and let the loop re-enter for a fresh API call
+        if (checkpointSet) {
+          console.debug('[agenticLoopGen] Checkpoint auto-continue');
+          const continueText =
+            (toolOptions.checkpoint?.continueMessage as string) || 'please continue';
+          const continueMsg: Message<string> = {
+            id: generateUniqueId('msg_user'),
+            role: 'user',
+            content: {
+              type: 'text',
+              content: continueText,
+              renderingContent: [
+                { category: 'text', blocks: [{ type: 'text', text: continueText }] },
+              ],
+            },
+            timestamp: new Date(),
+          };
+          messages.push(continueMsg);
+          yield { type: 'message_created', message: continueMsg };
+          checkpointSet = false;
+          continue; // Re-enter the while loop for a new API call
+        }
+
         return {
           status: 'complete',
           messages,
@@ -1116,6 +1162,9 @@ export async function* runAgenticLoop(
       if (breakResult && 'deferredReturn' in breakResult) {
         storedReturnValue = breakResult.deferredReturn;
         // Continue loop — don't break
+      } else if (breakResult && 'checkpoint' in breakResult) {
+        checkpointSet = true;
+        // Continue loop — checkpoint will be included in final result
       } else if (breakResult?.breakLoop) {
         return {
           status: 'complete',

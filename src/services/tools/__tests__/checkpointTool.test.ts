@@ -42,6 +42,23 @@ describe('checkpointTool', () => {
       expect(continueOpt!.type).toBe('longtext');
       expect((continueOpt as { default: string }).default).toBe('please continue');
     });
+
+    it('should have 6 swipe boolean options defaulting to true', () => {
+      const swipeIds = [
+        'swipeFilesystem',
+        'swipeMemory',
+        'swipeJavascript',
+        'swipeMinion',
+        'swipeSketchbook',
+        'swipeCheckpoint',
+      ];
+      for (const id of swipeIds) {
+        const opt = checkpointTool.optionDefinitions!.find(o => o.id === id);
+        expect(opt, `option ${id} should exist`).toBeDefined();
+        expect(opt!.type).toBe('boolean');
+        expect((opt as { default: boolean }).default).toBe(true);
+      }
+    });
   });
 
   describe('execute', () => {
@@ -49,7 +66,7 @@ describe('checkpointTool', () => {
       const result = await collectToolResult(checkpointTool.execute({ note: 'finished phase 1' }));
 
       expect(result.checkpoint).toBe(true);
-      expect(result.content).toContain('finished phase 1');
+      expect(result.content).toContain('Checkpoint');
     });
 
     it('should not set breakLoop', async () => {
@@ -121,6 +138,6 @@ describe('checkpoint tool registry', () => {
     );
 
     expect(result.checkpoint).toBe(true);
-    expect(result.content).toContain('test checkpoint');
+    expect(result.content).toContain('Checkpoint');
   });
 });

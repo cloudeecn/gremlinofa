@@ -27,12 +27,63 @@ import {
   createMapperState,
   mapCompletionChunkToStreamChunks,
 } from './completionStreamMapper';
+import { applyContextSwipe, type FilterBlocksFn } from './contextSwipe';
 import { getModelMetadataFor } from './modelMetadata';
 import { storage } from '../storage';
 import {
   populateFromOpenRouterModel,
   type OpenRouterModel,
 } from './model_metadatas/openRouterModelMapper';
+
+/**
+ * OpenAI Chat Completions block filter for context swipe.
+ *
+ * Assistant messages have object fullContent (CompletionMessage) with tool_calls[].
+ * User tool result messages have array fullContent with { type: 'tool_result', tool_call_id }.
+ * No thinking blocks in fullContent — only tool filtering needed.
+ */
+const filterOpenAIBlocks: FilterBlocksFn = (
+  fullContent,
+  removedToolNames,
+  isCheckpoint,
+  removedToolUseIds
+) => {
+  // Checkpoint message: no filtering (no thinking blocks in OpenAI fullContent)
+  if (isCheckpoint) return { filtered: fullContent, newRemovedIds: [] };
+
+  // Array fullContent = tool result message
+  if (Array.isArray(fullContent)) {
+    const filtered = fullContent.filter((item: unknown) => {
+      const i = item as { type?: string; tool_call_id?: string };
+      if (i.type === 'tool_result' && i.tool_call_id && removedToolUseIds.has(i.tool_call_id)) {
+        return false;
+      }
+      return true;
+    });
+    return { filtered, newRemovedIds: [] };
+  }
+
+  // Object fullContent = CompletionMessage with optional tool_calls
+  const msg = fullContent as { tool_calls?: Array<{ id: string; function: { name: string } }> };
+  if (!msg.tool_calls?.length) return { filtered: fullContent, newRemovedIds: [] };
+
+  const newRemovedIds: string[] = [];
+  const keptCalls = msg.tool_calls.filter(tc => {
+    if (removedToolNames.has(tc.function.name)) {
+      newRemovedIds.push(tc.id);
+      return false;
+    }
+    return true;
+  });
+
+  // If all tool_calls removed, return content-only message (or null if empty)
+  if (keptCalls.length === 0) {
+    const { tool_calls: _, ...rest } = msg;
+    return { filtered: rest, newRemovedIds };
+  }
+
+  return { filtered: { ...msg, tool_calls: keptCalls }, newRemovedIds };
+};
 
 export class OpenAIClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
@@ -127,6 +178,8 @@ export class OpenAIClient implements APIClient {
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
+      checkpointMessageId?: string;
+      swipeToolNames?: Set<string>;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<CompletionMessage>, unknown> {
     try {
@@ -136,6 +189,15 @@ export class OpenAIClient implements APIClient {
         apiKey: apiDefinition.apiKey,
         baseURL: apiDefinition.baseUrl || undefined,
       });
+
+      // Apply context swipe before message conversion
+      const swipedMessages = applyContextSwipe(
+        messages,
+        options.checkpointMessageId,
+        options.swipeToolNames,
+        'chatgpt',
+        filterOpenAIBlocks
+      );
 
       // Convert our message format to OpenAI's format
       const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [];
@@ -149,7 +211,7 @@ export class OpenAIClient implements APIClient {
       }
 
       // Add conversation messages
-      messages.forEach(msg => {
+      swipedMessages.forEach(msg => {
         if (msg.role === 'user') {
           // Check if message contains tool_result blocks in fullContent (for agentic loop continuation)
           if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {

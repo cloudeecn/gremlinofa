@@ -298,6 +298,8 @@ public/             # Static assets and PWA icons
 - `webSearchEnabled?: boolean` - Enable web search
 - `enabledTools?: string[]` - Enabled client-side tools
 - `extendedContext?: boolean` - Anthropic: opt into 1M context window beta (`context-1m-2025-08-07` header). Models with `supportsExtendedContext` in metadata: Opus 4.6, Sonnet 4.5, Sonnet 4. Above 200K input tokens, all tokens charged at premium rates (2x input, 1.5x output).
+- `checkpointMessageId?: string` - Context swipe: message ID of the last checkpoint (triggers pre-checkpoint trimming)
+- `swipeToolNames?: Set<string>` - Context swipe: tool names whose blocks should be removed from pre-checkpoint messages
 
 **API Clients:**
 
@@ -1220,7 +1222,9 @@ Client-side tool that marks progress during long agentic loops. When the AI call
 - `internal: false` — visible in ProjectSettings, must be explicitly enabled
 - Input: `{ note: string }` — progress summary that stays in conversation history
 - Returns `{ content, checkpoint: true }` — no `breakLoop`, loop continues normally
-- Tool option: `continueMessage` (longtext, default: `"please continue"`)
+- Tool options:
+  - `continueMessage` (longtext, default: `"please continue"`)
+  - `swipeFilesystem` / `swipeMemory` / `swipeJavascript` / `swipeMinion` / `swipeSketchbook` / `swipeCheckpoint` (boolean, all default `true`) — which tool blocks to remove from pre-checkpoint context
 - `iconInput: '📍'`, `iconOutput: '✅'`
 
 **Checkpoint flow:**
@@ -1228,17 +1232,30 @@ Client-side tool that marks progress during long agentic loops. When the AI call
 ```
 AI calls checkpoint(note) → tool returns with checkpoint: true → flag propagates
     → loop continues → AI finishes turn naturally (end_turn/max_tokens)
-    → main loop detects checkpointSet → creates user message with continueMessage
-    → yields message_created → re-enters while loop for fresh API call
-    → old thinking trimmed by thinkingKeepTurns → AI sees note and continues
+    → main loop detects checkpointSet → yields checkpoint_set event with assistant message ID
+    → creates user message with continueMessage → re-enters while loop for fresh API call
+    → context swipe trims old thinking + tool blocks → AI sees note and continues
 ```
 
 **Flag propagation** (`agenticLoopGenerator.ts`):
 
 - `executeToolsParallel` → `executeToolUseBlocks` → main loop's `checkpointSet` variable
-- Auto-continue handled entirely inside `runAgenticLoop`: when `checkpointSet && stopReason !== 'tool_use'`, creates a continue user message, yields it, resets flag, and `continue`s the loop
+- Auto-continue handled entirely inside `runAgenticLoop`: when `checkpointSet && stopReason !== 'tool_use'`, yields `checkpoint_set` event, creates a continue user message, yields it, resets flag, and `continue`s the loop
 - Continue text read from `toolOptions.checkpoint?.continueMessage` (falls back to `'please continue'`)
-- Consumer (`useChat.ts`) is unaware of checkpoints — they're transparent at the generator level
+- Local `checkpointMessageId` variable tracks the ID within the generator loop — set when `checkpointSet = true` (points to the assistant message containing the checkpoint tool_use), used in `streamOptions` so context swipe applies on the auto-continued turn
+- Consumer (`useChat.ts`) handles `checkpoint_set` event by persisting `checkpointMessageId` on the `Chat` object
+
+**Context Swipe** (`src/services/api/contextSwipe.ts`):
+
+When `checkpointMessageId` is set, messages older than the checkpoint get selectively trimmed before each API call:
+
+- Thinking/reasoning blocks always removed from pre-checkpoint messages
+- Tool blocks (`tool_use` + matching `tool_result`) removed per swipe option toggles
+- The checkpoint message itself: only thinking removed, tool blocks preserved
+- Messages newer than checkpoint are untouched
+- Messages with mismatched `modelFamily` or missing `fullContent` are skipped
+- Each API client calls `applyContextSwipe()` with a provider-specific `FilterBlocksFn` before message conversion
+- Tool name derivation: `deriveSwipeToolNames()` maps checkpoint option IDs to tool names, defaulting to true (swipe enabled)
 
 ### Agentic Loop
 
@@ -1281,7 +1298,8 @@ type AgenticLoopEvent =
   | { type: 'tokens_consumed'; tokens: TokenTotals }
   | { type: 'first_chunk' }
   | { type: 'pending_tool_result'; message: Message<unknown> }
-  | { type: 'tool_block_update'; toolUseId: string; block: Partial<ToolResultRenderBlock> };
+  | { type: 'tool_block_update'; toolUseId: string; block: Partial<ToolResultRenderBlock> }
+  | { type: 'checkpoint_set'; messageId: string };
 ```
 
 **Result Types:**

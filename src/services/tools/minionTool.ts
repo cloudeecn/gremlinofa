@@ -782,6 +782,7 @@ async function* executeMinion(
           case 'first_chunk':
           case 'pending_tool_result':
           case 'tool_block_update':
+          case 'checkpoint_set':
             break;
         }
       }

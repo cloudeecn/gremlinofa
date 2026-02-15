@@ -263,6 +263,7 @@ async function buildAgenticLoopOptions(
     thinkingKeepTurns: project.thinkingKeepTurns,
     reasoningEffort: project.reasoningEffort,
     reasoningSummary: project.reasoningSummary,
+    checkpointMessageId: chat.checkpointMessageId,
   };
 }
 
@@ -379,6 +380,18 @@ async function consumeAgenticLoop(
           case 'tool_block_update':
             handlers.onToolBlockUpdate(event.toolUseId, event.block);
             break;
+
+          case 'checkpoint_set': {
+            // Persist checkpoint message ID on chat (latest wins)
+            const cpChat: Chat = {
+              ...currentChat,
+              checkpointMessageId: event.messageId,
+            };
+            currentChat = cpChat;
+            await storage.saveChat(cpChat);
+            handlers.onChatUpdated(cpChat);
+            break;
+          }
         }
       }
     } while (!result.done);

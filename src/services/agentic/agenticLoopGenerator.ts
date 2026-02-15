@@ -43,6 +43,16 @@ import { createTokenTotals, addTokens, hasTokenUsage } from '../../utils/tokenTo
 
 const MAX_ITERATIONS = 999;
 
+/** Maps checkpoint swipe option IDs to tool names */
+const SWIPE_OPTION_TO_TOOL: Record<string, string> = {
+  swipeFilesystem: 'filesystem',
+  swipeMemory: 'memory',
+  swipeJavascript: 'javascript',
+  swipeMinion: 'minion',
+  swipeSketchbook: 'sketchbook',
+  swipeCheckpoint: 'checkpoint',
+};
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -93,6 +103,9 @@ export interface AgenticLoopOptions {
   // When true, the return tool stores its value without breaking the loop.
   // The stored value is returned when the loop ends naturally.
   deferReturn?: boolean;
+
+  // Checkpoint message ID from previous checkpoint — enables context swipe
+  checkpointMessageId?: string;
 }
 
 /**
@@ -110,7 +123,8 @@ export type AgenticLoopEvent =
       type: 'tool_block_update';
       toolUseId: string;
       block: Partial<ToolResultRenderBlock>;
-    };
+    }
+  | { type: 'checkpoint_set'; messageId: string };
 
 /**
  * Final result returned when loop completes.
@@ -142,6 +156,23 @@ export type { TokenTotals } from '../../types/content';
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/**
+ * Derive the set of tool names to swipe from checkpoint tool options.
+ * Options default to true (swipe enabled) when not explicitly set.
+ */
+function deriveSwipeToolNames(toolOptions: Record<string, ToolOptions>): Set<string> | undefined {
+  const checkpointOpts = toolOptions.checkpoint;
+  if (!checkpointOpts) return undefined;
+
+  const names = new Set<string>();
+  for (const [optId, toolName] of Object.entries(SWIPE_OPTION_TO_TOOL)) {
+    // Default true — swipe unless explicitly disabled
+    const enabled = checkpointOpts[optId] !== false;
+    if (enabled) names.add(toolName);
+  }
+  return names.size > 0 ? names : undefined;
+}
 
 /**
  * Merge tool_use input from fullContent into renderingContent.
@@ -600,7 +631,7 @@ async function* executeToolUseBlocks(
     if (deferReturn) {
       // Deferred mode: store value, build normal tool_result, continue loop
       const returnValue = toolResult.breakLoop?.returnValue ?? toolResult.content;
-      const storedContent = 'Result stored. Please wait for next instruction.';
+      const storedContent = 'Result stored. Please stop and wait for next instruction.';
 
       const renderBlock = createToolResultRenderBlock(
         returnBlock.id,
@@ -831,6 +862,7 @@ export async function* runAgenticLoop(
   let iteration = 0;
   let storedReturnValue: string | undefined;
   let checkpointSet = false;
+  let checkpointMessageId = options.checkpointMessageId;
 
   try {
     // Handle pre-existing tool_use blocks before the first API call
@@ -899,6 +931,8 @@ export async function* runAgenticLoop(
         toolOptions,
         disableStream: options.disableStream,
         extendedContext: options.extendedContext,
+        checkpointMessageId,
+        swipeToolNames: deriveSwipeToolNames(toolOptions),
       };
 
       // Create assembler for streaming
@@ -1027,6 +1061,7 @@ export async function* runAgenticLoop(
         // and let the loop re-enter for a fresh API call
         if (checkpointSet) {
           console.debug('[agenticLoopGen] Checkpoint auto-continue');
+          yield { type: 'checkpoint_set', messageId: checkpointMessageId! };
           const continueText =
             (toolOptions.checkpoint?.continueMessage as string) || 'please continue';
           const continueMsg: Message<string> = {
@@ -1079,6 +1114,7 @@ export async function* runAgenticLoop(
         // Continue loop — don't break
       } else if (breakResult && 'checkpoint' in breakResult) {
         checkpointSet = true;
+        checkpointMessageId = assistantMessage.id;
         // Continue loop — checkpoint will be included in final result
       } else if (breakResult?.breakLoop) {
         return {

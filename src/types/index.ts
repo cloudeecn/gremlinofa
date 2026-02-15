@@ -272,6 +272,8 @@ export interface Chat {
   forkedAtMessageId?: string; // New message ID in this chat (last copied message)
   // Pending state for deferred operations
   pendingState?: ChatPendingState;
+  // Checkpoint message ID for context swipe (latest checkpoint wins)
+  checkpointMessageId?: string;
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system';

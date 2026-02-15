@@ -34,6 +34,9 @@ export interface APIClient {
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
+      // Context swipe (checkpoint tool)
+      checkpointMessageId?: string;
+      swipeToolNames?: Set<string>;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown>;
 

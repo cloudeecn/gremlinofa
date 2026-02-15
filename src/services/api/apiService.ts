@@ -157,6 +157,9 @@ class APIService {
       toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
       extendedContext?: boolean;
+      // Context swipe (checkpoint tool)
+      checkpointMessageId?: string;
+      swipeToolNames?: Set<string>;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
     const client = this.getClient(apiDefinition.apiType);

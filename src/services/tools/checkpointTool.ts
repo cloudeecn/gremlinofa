@@ -38,18 +38,57 @@ export const checkpointTool: ClientSideTool = {
       subtitle: 'Message sent after checkpoint to resume the loop',
       default: 'please continue',
     },
+    {
+      type: 'boolean',
+      id: 'swipeFilesystem',
+      label: 'Swipe Filesystem',
+      subtitle: 'Remove filesystem tool blocks before checkpoint',
+      default: true,
+    },
+    {
+      type: 'boolean',
+      id: 'swipeMemory',
+      label: 'Swipe Memory',
+      subtitle: 'Remove memory tool blocks before checkpoint',
+      default: true,
+    },
+    {
+      type: 'boolean',
+      id: 'swipeJavascript',
+      label: 'Swipe JavaScript',
+      subtitle: 'Remove JavaScript tool blocks before checkpoint',
+      default: true,
+    },
+    {
+      type: 'boolean',
+      id: 'swipeMinion',
+      label: 'Swipe Minion',
+      subtitle: 'Remove minion tool blocks before checkpoint',
+      default: true,
+    },
+    {
+      type: 'boolean',
+      id: 'swipeSketchbook',
+      label: 'Swipe Sketchbook',
+      subtitle: 'Remove sketchbook tool blocks before checkpoint',
+      default: true,
+    },
+    {
+      type: 'boolean',
+      id: 'swipeCheckpoint',
+      label: 'Swipe Checkpoint',
+      subtitle: 'Remove checkpoint tool blocks before checkpoint',
+      default: true,
+    },
   ],
 
   iconInput: '📍',
   iconOutput: '✅',
 
   // eslint-disable-next-line require-yield -- Simple tool: no streaming events
-  execute: async function* (input): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
-    const note = (input.note as string) ?? '';
+  execute: async function* (_input): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
     return {
-      content: note
-        ? `Checkpoint saved: ${note}\nPlease stop and wait for instruction to continue.`
-        : `Checkpoint saved. Please stop and wait for instruction to continue.`,
+      content: 'Checkpoint saved. Please stop and wait for instruction to continue.',
       checkpoint: true,
     };
   },

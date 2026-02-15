@@ -24,12 +24,57 @@ import {
   mapResponsesEventToStreamChunks,
   parseResponsesStreamEvent,
 } from './responsesStreamMapper';
+import { applyContextSwipe, type FilterBlocksFn } from './contextSwipe';
 import { getModelMetadataFor } from './modelMetadata';
 import { storage } from '../storage';
 import {
   populateFromOpenRouterModel,
   type OpenRouterModel,
 } from './model_metadatas/openRouterModelMapper';
+
+/**
+ * Responses API block filter for context swipe.
+ * Removes reasoning items always, function_call by name, function_call_output by ID.
+ */
+const filterResponsesBlocks: FilterBlocksFn = (
+  fullContent,
+  removedToolNames,
+  isCheckpoint,
+  removedToolUseIds
+) => {
+  if (!Array.isArray(fullContent)) return { filtered: fullContent, newRemovedIds: [] };
+
+  const filtered: unknown[] = [];
+  const newRemovedIds: string[] = [];
+
+  for (const item of fullContent) {
+    const i = item as { type?: string; name?: string; call_id?: string };
+
+    // Always remove reasoning blocks
+    if (i.type === 'reasoning') continue;
+
+    // Checkpoint message: only reasoning removed
+    if (isCheckpoint) {
+      filtered.push(item);
+      continue;
+    }
+
+    // function_call — remove if name matches
+    if (i.type === 'function_call' && i.name && removedToolNames.has(i.name)) {
+      if (i.call_id) newRemovedIds.push(i.call_id);
+      continue;
+    }
+
+    // function_call_output — remove if matching a removed call
+    if (i.type === 'function_call_output' && i.call_id && removedToolUseIds.has(i.call_id)) {
+      continue;
+    }
+
+    filtered.push(item);
+  }
+
+  return { filtered, newRemovedIds };
+};
 
 export class ResponsesClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
@@ -123,6 +168,8 @@ export class ResponsesClient implements APIClient {
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
+      checkpointMessageId?: string;
+      swipeToolNames?: Set<string>;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.Responses.ResponseInputItem[]>, unknown> {
     let requestParams: OpenAI.Responses.ResponseCreateParams = {};
@@ -133,6 +180,15 @@ export class ResponsesClient implements APIClient {
         apiKey: apiDefinition.apiKey,
         baseURL: apiDefinition.baseUrl || undefined,
       });
+
+      // Apply context swipe before message conversion
+      const swipedMessages = applyContextSwipe(
+        messages,
+        options.checkpointMessageId,
+        options.swipeToolNames,
+        'responses_api',
+        filterResponsesBlocks
+      );
 
       // Build input array using ResponseInputItem format
       const input: OpenAI.Responses.ResponseInputItem[] = [];
@@ -151,7 +207,7 @@ export class ResponsesClient implements APIClient {
       }
 
       // Add conversation messages
-      messages.forEach(msg => {
+      swipedMessages.forEach(msg => {
         if (msg.role === 'user') {
           // Check if this is a tool result message (fullContent has function_call_output items)
           if (

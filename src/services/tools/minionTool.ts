@@ -680,6 +680,17 @@ async function* executeMinion(
     .filter(Boolean)
     .join('\n\n');
 
+  // Build effective tool options — inject deferReturn into return tool's options
+  // so its description function reflects the deferred mode
+  const deferReturn = minionToolOptions.deferReturn === true;
+  const effectiveToolOptions = { ...(project.toolOptions ?? {}) };
+  if (deferReturn) {
+    effectiveToolOptions.return = {
+      ...effectiveToolOptions.return,
+      deferReturn: true,
+    };
+  }
+
   // Build agentic loop options for minion
   const loopOptions: AgenticLoopOptions = {
     apiDef,
@@ -692,10 +703,11 @@ async function* executeMinion(
     preFillResponse: undefined, // Minions don't use prefill
     webSearchEnabled: allowWebSearch && (minionInput.enableWeb ?? false),
     enabledTools: minionTools,
-    toolOptions: project.toolOptions ?? {},
+    toolOptions: effectiveToolOptions,
     disableStream: project.disableStream ?? false,
     extendedContext: project.extendedContext ?? false,
     namespace: minionNamespace,
+    deferReturn,
     // Reasoning settings from project
     enableReasoning: disableReasoning ? false : project.enableReasoning,
     reasoningBudgetTokens: project.reasoningBudgetTokens,
@@ -805,12 +817,18 @@ async function* executeMinion(
         tokenTotals: totals,
       };
     } else if (finalResult.status === 'max_iterations') {
-      return {
-        content: `Minion reached maximum iterations (${MAX_ITERATIONS})`,
-        isError: true,
-        renderingGroups: [infoGroup, ...accumulatedGroups],
-        tokenTotals: totals,
-      };
+      // If a deferred return was stored before hitting max iterations, use it
+      if (finalResult.returnValue !== undefined) {
+        usedReturnTool = true;
+        returnValue = finalResult.returnValue;
+      } else {
+        return {
+          content: `Minion reached maximum iterations (${MAX_ITERATIONS})`,
+          isError: true,
+          renderingGroups: [infoGroup, ...accumulatedGroups],
+          tokenTotals: totals,
+        };
+      }
     }
 
     // Determine stop reason from last assistant message
@@ -1141,6 +1159,13 @@ export const minionTool: ClientSideTool = {
       id: 'disableReasoning',
       label: 'Disable Reasoning',
       subtitle: 'Turn off reasoning/thinking for minion calls regardless of project settings',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'deferReturn',
+      label: 'Deferred Return',
+      subtitle: 'Return tool stores result without breaking the agentic loop',
       default: false,
     },
     {

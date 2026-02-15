@@ -42,6 +42,30 @@ describe('checkpointTool', () => {
       expect(continueOpt!.type).toBe('longtext');
       expect((continueOpt as { default: string }).default).toBe('please continue');
     });
+
+    it('should have keepSegments number option defaulting to 0', () => {
+      const opt = checkpointTool.optionDefinitions!.find(o => o.id === 'keepSegments');
+      expect(opt).toBeDefined();
+      expect(opt!.type).toBe('number');
+      expect((opt as { default: number }).default).toBe(0);
+    });
+
+    it('should have 6 tidy boolean options defaulting to true', () => {
+      const tidyIds = [
+        'tidyFilesystem',
+        'tidyMemory',
+        'tidyJavascript',
+        'tidyMinion',
+        'tidySketchbook',
+        'tidyCheckpoint',
+      ];
+      for (const id of tidyIds) {
+        const opt = checkpointTool.optionDefinitions!.find(o => o.id === id);
+        expect(opt, `option ${id} should exist`).toBeDefined();
+        expect(opt!.type).toBe('boolean');
+        expect((opt as { default: boolean }).default).toBe(true);
+      }
+    });
   });
 
   describe('execute', () => {
@@ -49,7 +73,7 @@ describe('checkpointTool', () => {
       const result = await collectToolResult(checkpointTool.execute({ note: 'finished phase 1' }));
 
       expect(result.checkpoint).toBe(true);
-      expect(result.content).toContain('finished phase 1');
+      expect(result.content).toContain('Checkpoint');
     });
 
     it('should not set breakLoop', async () => {
@@ -121,6 +145,6 @@ describe('checkpoint tool registry', () => {
     );
 
     expect(result.checkpoint).toBe(true);
-    expect(result.content).toContain('test checkpoint');
+    expect(result.content).toContain('Checkpoint');
   });
 });

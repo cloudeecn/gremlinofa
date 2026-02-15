@@ -1764,6 +1764,113 @@ describe('agenticLoopGenerator', () => {
       expect(apiService.sendMessageStream).toHaveBeenCalledTimes(1);
     });
 
+    it('propagates checkpoint boundary to sendMessageStream on auto-continued iteration', async () => {
+      // Iteration 1: tool_use with checkpoint tool → checkpointSet = true
+      // Iteration 1 continued: end_turn → auto-continue triggers
+      // Iteration 2 (auto-continued): sendMessageStream should receive computed checkpoint boundary
+
+      // Use counter-based IDs so we can distinguish the tool_use assistant from end_turn assistant
+      let idCounter = 0;
+      const { generateUniqueId } = await import('../../../utils/idGenerator');
+      vi.mocked(generateUniqueId).mockImplementation(prefix => `${prefix}_${++idCounter}`);
+
+      const checkpointToolBlocks = [
+        { type: 'tool_use' as const, id: 'toolu_ckpt', name: 'checkpoint', input: {} },
+      ];
+
+      // Iter 1 stream: tool_use response
+      const toolUseResult = {
+        textContent: '',
+        fullContent: checkpointToolBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      // Iter 1 continued stream: end_turn → triggers checkpoint auto-continue
+      const endTurnResult = {
+        textContent: 'checkpoint set',
+        fullContent: [{ type: 'text', text: 'checkpoint set' }],
+        stopReason: 'end_turn',
+        inputTokens: 110,
+        outputTokens: 55,
+      };
+
+      // Iter 2 stream (auto-continued): final response
+      const finalResult = {
+        textContent: 'Continuing after checkpoint',
+        fullContent: [{ type: 'text', text: 'Continuing after checkpoint' }],
+        stopReason: 'end_turn',
+        inputTokens: 120,
+        outputTokens: 60,
+      };
+
+      setupMultiIterationMock(
+        [
+          createMockStream([], toolUseResult),
+          createMockStream([], endTurnResult),
+          createMockStream([], finalResult),
+        ],
+        [checkpointToolBlocks, checkpointToolBlocks, [], [], [], []]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      // Checkpoint tool returns with checkpoint flag
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'Checkpoint created',
+          isError: false,
+          checkpoint: true,
+        })
+      );
+
+      const options = createMockOptions({
+        enabledTools: ['checkpoint'],
+        toolOptions: { checkpoint: {} },
+        // No initial checkpointMessageIds — simulates first checkpoint
+      });
+      const context = [createMockUserMessage('Do a long task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('complete');
+
+      // checkpoint_set event should have been yielded
+      const checkpointEvents = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'checkpoint_set' }> =>
+          e.type === 'checkpoint_set'
+      );
+      expect(checkpointEvents).toHaveLength(1);
+      const checkpointMsgId = checkpointEvents[0].messageId;
+
+      // The checkpoint ID should point to the FIRST assistant message (tool_use),
+      // not the second (end_turn). The first assistant msg gets ID 'msg_assistant_1'.
+      expect(checkpointMsgId).toBe('msg_assistant_1');
+
+      // sendMessageStream called 3 times: iter1 (tool_use), iter1b (end_turn), iter2 (final)
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(3);
+
+      // The third call (auto-continued iteration) should have checkpointMessageId set
+      const thirdCallOptions = vi.mocked(apiService.sendMessageStream).mock.calls[2][3];
+      expect(thirdCallOptions.checkpointMessageId).toBe(checkpointMsgId);
+
+      // The first call should NOT have checkpointMessageId (it was undefined)
+      const firstCallOptions = vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      expect(firstCallOptions.checkpointMessageId).toBeUndefined();
+    });
+
     it('accumulates tool-incurred costs and yields tokens_consumed for them', async () => {
       const toolUseBlocks = [
         { type: 'tool_use' as const, id: 'toolu_1', name: 'minion', input: { message: 'task' } },
@@ -1854,6 +1961,145 @@ describe('agenticLoopGenerator', () => {
       expect(toolResultMsg).toBeDefined();
       expect(toolResultMsg!.metadata!.messageCost).toBe(0.042);
       expect(toolResultMsg!.metadata!.inputTokens).toBe(500);
+    });
+
+    it('passes keepSegments boundary when multiple checkpoints exist', async () => {
+      // Pre-seed 3 checkpoint IDs. With keepSegments=1, boundary should be checkpointMessageIds[1]
+      // (index = max(0, 3-1-1) = 1)
+      let idCounter = 0;
+      const { generateUniqueId } = await import('../../../utils/idGenerator');
+      vi.mocked(generateUniqueId).mockImplementation(prefix => `${prefix}_${++idCounter}`);
+
+      const finalResult = {
+        textContent: 'ok',
+        fullContent: [{ type: 'text', text: 'ok' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], finalResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        checkpointMessageIds: ['cp_1', 'cp_2', 'cp_3'],
+        toolOptions: { checkpoint: { keepSegments: 1 } },
+      });
+      const context = [createMockUserMessage('test')];
+
+      await collectAgenticLoop(runAgenticLoop(options, context));
+
+      const callOptions = vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      // boundary = checkpointMessageIds[max(0, 3-1-1)] = checkpointMessageIds[1] = 'cp_2'
+      expect(callOptions.checkpointMessageId).toBe('cp_2');
+    });
+
+    it('passes latest checkpoint when keepSegments is 0', async () => {
+      const finalResult = {
+        textContent: 'ok',
+        fullContent: [{ type: 'text', text: 'ok' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], finalResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        checkpointMessageIds: ['cp_1', 'cp_2', 'cp_3'],
+        toolOptions: { checkpoint: { keepSegments: 0 } },
+      });
+      const context = [createMockUserMessage('test')];
+
+      await collectAgenticLoop(runAgenticLoop(options, context));
+
+      const callOptions = vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      // boundary = checkpointMessageIds[max(0, 3-1-0)] = checkpointMessageIds[2] = 'cp_3'
+      expect(callOptions.checkpointMessageId).toBe('cp_3');
+    });
+
+    it('handles keepSegments larger than checkpoint count gracefully', async () => {
+      const finalResult = {
+        textContent: 'ok',
+        fullContent: [{ type: 'text', text: 'ok' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], finalResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        checkpointMessageIds: ['cp_1'],
+        toolOptions: { checkpoint: { keepSegments: 10 } },
+      });
+      const context = [createMockUserMessage('test')];
+
+      await collectAgenticLoop(runAgenticLoop(options, context));
+
+      const callOptions = vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      // boundary = checkpointMessageIds[max(0, 1-1-10)] = checkpointMessageIds[0] = 'cp_1'
+      expect(callOptions.checkpointMessageId).toBe('cp_1');
+    });
+
+    it('does not pass checkpointMessageId when checkpointMessageIds is empty', async () => {
+      const finalResult = {
+        textContent: 'ok',
+        fullContent: [{ type: 'text', text: 'ok' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], finalResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        // No checkpointMessageIds — checkpoint tool disabled or no checkpoints yet
+      });
+      const context = [createMockUserMessage('test')];
+
+      await collectAgenticLoop(runAgenticLoop(options, context));
+
+      const callOptions = vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      expect(callOptions.checkpointMessageId).toBeUndefined();
+    });
+
+    it('disables tidy when keepSegments is -1 (keep all)', async () => {
+      const finalResult = {
+        textContent: 'ok',
+        fullContent: [{ type: 'text', text: 'ok' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], finalResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        checkpointMessageIds: ['cp_1', 'cp_2', 'cp_3'],
+        toolOptions: { checkpoint: { keepSegments: -1 } },
+      });
+      const context = [createMockUserMessage('test')];
+
+      await collectAgenticLoop(runAgenticLoop(options, context));
+
+      const callOptions = vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      // keepSegments=-1 disables tidy entirely
+      expect(callOptions.checkpointMessageId).toBeUndefined();
     });
   });
 

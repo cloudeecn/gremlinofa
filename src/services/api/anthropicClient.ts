@@ -29,6 +29,7 @@ import {
   type SSEEvent,
 } from './anthropicStreamMapper';
 import { toolRegistry } from '../tools/clientSideTools';
+import { applyContextTidy, type FilterBlocksFn } from './contextTidy';
 import { getModelMetadataFor } from './modelMetadata';
 
 /**
@@ -100,6 +101,55 @@ function parseBedrockEndpoint(baseUrl: string | undefined): {
 
   return { isBedrock: false, region: 'us-east-1', url: baseUrl };
 }
+
+/**
+ * Anthropic-specific block filter for context tidy.
+ *
+ * Assistant messages: removes thinking/redacted_thinking always,
+ * removes tool_use by name (collects IDs), keeps text/server_tool_use.
+ * User messages: removes tool_result by collected ID,
+ * keeps web_search_tool_result/web_fetch_tool_result.
+ */
+const filterAnthropicBlocks: FilterBlocksFn = (
+  fullContent,
+  removedToolNames,
+  isCheckpoint,
+  removedToolUseIds
+) => {
+  if (!Array.isArray(fullContent)) return { filtered: fullContent, newRemovedIds: [] };
+
+  const filtered: unknown[] = [];
+  const newRemovedIds: string[] = [];
+
+  for (const block of fullContent) {
+    const b = block as { type?: string; id?: string; name?: string; tool_use_id?: string };
+
+    // Always remove thinking blocks (even on checkpoint message)
+    if (b.type === 'thinking' || b.type === 'redacted_thinking') continue;
+
+    // Checkpoint message: only thinking removed, everything else preserved
+    if (isCheckpoint) {
+      filtered.push(block);
+      continue;
+    }
+
+    // tool_use — remove if name matches, collect ID
+    if (b.type === 'tool_use' && b.name && removedToolNames.has(b.name)) {
+      if (b.id) newRemovedIds.push(b.id);
+      continue;
+    }
+
+    // tool_result — remove if matching a removed tool_use ID
+    if (b.type === 'tool_result' && b.tool_use_id && removedToolUseIds.has(b.tool_use_id)) {
+      continue;
+    }
+
+    // Keep everything else (text, server_tool_use, web_search_tool_result, web_fetch_tool_result)
+    filtered.push(block);
+  }
+
+  return { filtered, newRemovedIds };
+};
 
 export class AnthropicClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
@@ -235,6 +285,8 @@ export class AnthropicClient implements APIClient {
       webSearchEnabled?: boolean;
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
+      checkpointMessageId?: string;
+      tidyToolNames?: Set<string>;
     }
   ): AsyncGenerator<
     StreamChunk,
@@ -261,86 +313,101 @@ export class AnthropicClient implements APIClient {
             baseURL: bedrockInfo.url,
           });
 
+      // Apply context tidy before message conversion
+      const tidiedMessages = applyContextTidy(
+        messages,
+        options.checkpointMessageId,
+        options.tidyToolNames,
+        'anthropic',
+        filterAnthropicBlocks
+      ) as typeof messages;
+
       // Convert our message format to Anthropic's format
-      const anthropicMessages: Anthropic.Beta.BetaMessageParam[] = messages.map((msg, idx, arr) => {
-        // Check if previous message contains tool_result (indicates mid-turn tool call)
-        // Citations in text blocks may have invalid document_index references after tool breaks
-        const prevMsg = idx > 0 ? arr[idx - 1] : null;
-        const prevHasToolResult =
-          prevMsg?.content.modelFamily === 'anthropic' &&
-          Array.isArray(prevMsg?.content.fullContent) &&
-          prevMsg.content.fullContent.some((b: { type?: string }) => b.type === 'tool_result');
+      const anthropicMessages: Anthropic.Beta.BetaMessageParam[] = tidiedMessages.map(
+        (msg, idx, arr) => {
+          // Check if previous message contains tool_result (indicates mid-turn tool call)
+          // Citations in text blocks may have invalid document_index references after tool breaks
+          const prevMsg = idx > 0 ? arr[idx - 1] : null;
+          const prevHasToolResult =
+            prevMsg?.content.modelFamily === 'anthropic' &&
+            Array.isArray(prevMsg?.content.fullContent) &&
+            prevMsg.content.fullContent.some((b: { type?: string }) => b.type === 'tool_result');
 
-        // Use fullContent if available and from Anthropic (better caching)
-        if (msg.content.modelFamily === 'anthropic' && msg.content.fullContent) {
-          // Use the stored fullContent blocks, but add cache_control dynamically
-          const content = Array.isArray(msg.content.fullContent)
-            ? msg.content.fullContent.map((block: Anthropic.Beta.BetaContentBlock) => {
-                // Destructure to exclude 'parsed' property (SDK adds it, but API rejects it)
-                // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                const { parsed, ...blockWithoutParsed } =
-                  block as Anthropic.Beta.BetaContentBlock & { parsed?: unknown };
-                // Strip 'citations' if previous message was tool_result (document indices may be invalid)
-                // See Known Issues in development.md for details
-                let cleanBlock: Anthropic.Beta.BetaContentBlockParam = blockWithoutParsed;
-                if (prevHasToolResult && 'citations' in blockWithoutParsed) {
+          // Use fullContent if available and from Anthropic (better caching)
+          if (msg.content.modelFamily === 'anthropic' && msg.content.fullContent) {
+            // Use the stored fullContent blocks, but add cache_control dynamically
+            const content = Array.isArray(msg.content.fullContent)
+              ? msg.content.fullContent.map((block: Anthropic.Beta.BetaContentBlock) => {
+                  // Destructure to exclude 'parsed' property (SDK adds it, but API rejects it)
                   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                  const { citations, ...rest } = blockWithoutParsed as typeof blockWithoutParsed & {
-                    citations?: unknown;
-                  };
-                  cleanBlock = rest as Anthropic.Beta.BetaContentBlockParam;
-                }
-                // Replace empty text blocks with a space (API rejects empty text)
-                if (cleanBlock.type === 'text' && !(cleanBlock as { text?: string }).text?.trim()) {
-                  return { ...cleanBlock, text: ' ' };
-                }
-                return cleanBlock;
-              })
-            : [
-                {
-                  type: 'text' as const,
-                  text: msg.content.fullContent,
-                },
-              ];
+                  const { parsed, ...blockWithoutParsed } =
+                    block as Anthropic.Beta.BetaContentBlock & { parsed?: unknown };
+                  // Strip 'citations' if previous message was tool_result (document indices may be invalid)
+                  // See Known Issues in development.md for details
+                  let cleanBlock: Anthropic.Beta.BetaContentBlockParam = blockWithoutParsed;
+                  if (prevHasToolResult && 'citations' in blockWithoutParsed) {
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                    const { citations, ...rest } =
+                      blockWithoutParsed as typeof blockWithoutParsed & {
+                        citations?: unknown;
+                      };
+                    cleanBlock = rest as Anthropic.Beta.BetaContentBlockParam;
+                  }
+                  // Replace empty text blocks with a space (API rejects empty text)
+                  if (
+                    cleanBlock.type === 'text' &&
+                    !(cleanBlock as { text?: string }).text?.trim()
+                  ) {
+                    return { ...cleanBlock, text: ' ' };
+                  }
+                  return cleanBlock;
+                })
+              : [
+                  {
+                    type: 'text' as const,
+                    text: msg.content.fullContent,
+                  },
+                ];
 
-          return {
-            role: msg.role === 'user' ? 'user' : 'assistant',
-            content,
-          };
-        } else {
-          // Fall back to text content (cross-model compatibility)
-          const contentBlocks: Array<
-            Anthropic.Beta.BetaTextBlockParam | Anthropic.Beta.BetaImageBlockParam
-          > = [];
+            return {
+              role: msg.role === 'user' ? 'user' : 'assistant',
+              content,
+            };
+          } else {
+            // Fall back to text content (cross-model compatibility)
+            const contentBlocks: Array<
+              Anthropic.Beta.BetaTextBlockParam | Anthropic.Beta.BetaImageBlockParam
+            > = [];
 
-          // Add image blocks if attachments present (for user messages)
-          if (msg.role === 'user' && msg.attachments && msg.attachments.length > 0) {
-            for (const attachment of msg.attachments) {
+            // Add image blocks if attachments present (for user messages)
+            if (msg.role === 'user' && msg.attachments && msg.attachments.length > 0) {
+              for (const attachment of msg.attachments) {
+                contentBlocks.push({
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: attachment.mimeType,
+                    data: attachment.data,
+                  },
+                });
+              }
+            }
+
+            // Add text content (only if non-empty)
+            if (msg.content.content.trim()) {
               contentBlocks.push({
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: attachment.mimeType,
-                  data: attachment.data,
-                },
+                type: 'text',
+                text: msg.content.content,
               });
             }
-          }
 
-          // Add text content (only if non-empty)
-          if (msg.content.content.trim()) {
-            contentBlocks.push({
-              type: 'text',
-              text: msg.content.content,
-            });
+            return {
+              role: msg.role === 'user' ? 'user' : 'assistant',
+              content: contentBlocks,
+            };
           }
-
-          return {
-            role: msg.role === 'user' ? 'user' : 'assistant',
-            content: contentBlocks,
-          };
         }
-      });
+      );
 
       // Add cache breakpoints to last 2 eligible messages (before pre-fill)
       applyCacheBreakpoints(anthropicMessages);

@@ -34,6 +34,9 @@ export interface APIClient {
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
+      // Context tidy (checkpoint tool)
+      checkpointMessageId?: string;
+      tidyToolNames?: Set<string>;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown>;
 

@@ -43,6 +43,26 @@ import { createTokenTotals, addTokens, hasTokenUsage } from '../../utils/tokenTo
 
 const MAX_ITERATIONS = 999;
 
+/** Maps checkpoint tidy option IDs to tool names */
+const TIDY_OPTION_TO_TOOL: Record<string, string> = {
+  tidyFilesystem: 'filesystem',
+  tidyMemory: 'memory',
+  tidyJavascript: 'javascript',
+  tidyMinion: 'minion',
+  tidySketchbook: 'sketchbook',
+  tidyCheckpoint: 'checkpoint',
+};
+
+/** Legacy option IDs for backward compatibility with persisted toolOptions */
+const LEGACY_SWIPE_TO_TIDY: Record<string, string> = {
+  swipeFilesystem: 'tidyFilesystem',
+  swipeMemory: 'tidyMemory',
+  swipeJavascript: 'tidyJavascript',
+  swipeMinion: 'tidyMinion',
+  swipeSketchbook: 'tidySketchbook',
+  swipeCheckpoint: 'tidyCheckpoint',
+};
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -92,6 +112,9 @@ export interface AgenticLoopOptions {
   // When true, the return tool stores its value without breaking the loop.
   // The stored value is returned when the loop ends naturally.
   deferReturn?: boolean;
+
+  // Checkpoint message IDs from previous checkpoints — enables context tidy
+  checkpointMessageIds?: string[];
 }
 
 /**
@@ -109,7 +132,8 @@ export type AgenticLoopEvent =
       type: 'tool_block_update';
       toolUseId: string;
       block: Partial<ToolResultRenderBlock>;
-    };
+    }
+  | { type: 'checkpoint_set'; messageId: string };
 
 /**
  * Final result returned when loop completes.
@@ -141,6 +165,26 @@ export type { TokenTotals } from '../../types/content';
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/**
+ * Derive the set of tool names to tidy from checkpoint tool options.
+ * Options default to true (tidy enabled) when not explicitly set.
+ * Also checks legacy swipe* keys for backward compatibility with persisted data.
+ */
+function deriveTidyToolNames(toolOptions: Record<string, ToolOptions>): Set<string> | undefined {
+  const checkpointOpts = toolOptions.checkpoint;
+  if (!checkpointOpts) return undefined;
+
+  const names = new Set<string>();
+  for (const [optId, toolName] of Object.entries(TIDY_OPTION_TO_TOOL)) {
+    // Check new tidy* key first, then fall back to legacy swipe* key
+    const legacyKey = Object.entries(LEGACY_SWIPE_TO_TIDY).find(([, v]) => v === optId)?.[0];
+    const enabled =
+      checkpointOpts[optId] !== false && (legacyKey ? checkpointOpts[legacyKey] !== false : true);
+    if (enabled) names.add(toolName);
+  }
+  return names.size > 0 ? names : undefined;
+}
 
 /**
  * Merge tool_use input from fullContent into renderingContent.
@@ -917,6 +961,9 @@ export async function* runAgenticLoop(
   let iteration = 0;
   let storedReturnValue: string | undefined;
   let checkpointSet = false;
+  const checkpointMessageIds = options.checkpointMessageIds
+    ? [...options.checkpointMessageIds]
+    : [];
 
   try {
     // Handle pre-existing tool_use blocks before the first API call
@@ -970,6 +1017,15 @@ export async function* runAgenticLoop(
       // Load attachments for user messages
       const messagesWithAttachments = await loadAttachmentsForMessages(messages);
 
+      // Compute tidy boundary: the checkpoint ID that marks where trimming starts.
+      // keepSegments: -1 = keep all (disable tidy), 0 = tidy everything before latest, N = keep N previous segments.
+      const keepSegments = (toolOptions.checkpoint?.keepSegments as number) ?? 0;
+      let tidyBoundaryId: string | undefined;
+      if (keepSegments !== -1 && checkpointMessageIds.length > 0) {
+        const boundaryIdx = Math.max(0, checkpointMessageIds.length - 1 - keepSegments);
+        tidyBoundaryId = checkpointMessageIds[boundaryIdx];
+      }
+
       // Build stream options
       const streamOptions = {
         temperature: options.temperature,
@@ -985,6 +1041,8 @@ export async function* runAgenticLoop(
         enabledTools,
         toolOptions,
         disableStream: options.disableStream,
+        checkpointMessageId: tidyBoundaryId,
+        tidyToolNames: deriveTidyToolNames(toolOptions),
       };
 
       // Create assembler for streaming
@@ -1111,6 +1169,10 @@ export async function* runAgenticLoop(
         // and let the loop re-enter for a fresh API call
         if (checkpointSet) {
           console.debug('[agenticLoopGen] Checkpoint auto-continue');
+          yield {
+            type: 'checkpoint_set',
+            messageId: checkpointMessageIds[checkpointMessageIds.length - 1],
+          };
           const continueText =
             (toolOptions.checkpoint?.continueMessage as string) || 'please continue';
           const continueMsg: Message<string> = {
@@ -1164,6 +1226,7 @@ export async function* runAgenticLoop(
         // Continue loop — don't break
       } else if (breakResult && 'checkpoint' in breakResult) {
         checkpointSet = true;
+        checkpointMessageIds.push(assistantMessage.id);
         // Continue loop — checkpoint will be included in final result
       } else if (breakResult?.breakLoop) {
         return {

@@ -267,6 +267,10 @@ export interface Chat {
   forkedAtMessageId?: string; // New message ID in this chat (last copied message)
   // Pending state for deferred operations
   pendingState?: ChatPendingState;
+  // Checkpoint message ID for context tidy (legacy single ID, migrated to array)
+  checkpointMessageId?: string;
+  // Checkpoint message IDs for context tidy (accumulated per checkpoint call)
+  checkpointMessageIds?: string[];
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system';
@@ -392,8 +396,8 @@ export interface ModelReference {
   modelId: string;
 }
 
-/** Tool option value types - boolean, string, model reference, or model reference list */
-export type ToolOptionValue = boolean | string | ModelReference | ModelReference[];
+/** Tool option value types - boolean, number, string, model reference, or model reference list */
+export type ToolOptionValue = boolean | number | string | ModelReference | ModelReference[];
 
 /** Per-tool options - keyed by option ID */
 export type ToolOptions = Record<string, ToolOptionValue>;
@@ -411,6 +415,14 @@ interface BaseToolOption {
 export interface BooleanToolOption extends BaseToolOption {
   type: 'boolean';
   default: boolean;
+}
+
+/** Number option (inline number input) */
+export interface NumberToolOption extends BaseToolOption {
+  type: 'number';
+  default: number;
+  min?: number;
+  max?: number;
 }
 
 /** Long text option (textarea with modal editor) */
@@ -434,6 +446,7 @@ export interface ModelListToolOption extends BaseToolOption {
 /** Discriminated union of all tool option types */
 export type ToolOptionDefinition =
   | BooleanToolOption
+  | NumberToolOption
   | LongtextToolOption
   | ModelToolOption
   | ModelListToolOption;
@@ -443,6 +456,13 @@ export type ToolOptionDefinition =
  */
 export function isBooleanOption(opt: ToolOptionDefinition): opt is BooleanToolOption {
   return opt.type === 'boolean';
+}
+
+/**
+ * Type guard: check if option is a number option
+ */
+export function isNumberOption(opt: ToolOptionDefinition): opt is NumberToolOption {
+  return opt.type === 'number';
 }
 
 /**

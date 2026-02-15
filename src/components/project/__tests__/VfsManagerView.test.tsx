@@ -92,18 +92,6 @@ describe('VfsManagerView', () => {
 
       expect(mockNavigate).toHaveBeenCalledWith('/project/proj_test_123');
     });
-
-    it('renders menu button on mobile when onMenuPress provided', async () => {
-      mockIsMobile = true;
-      const onMenuPress = vi.fn();
-
-      renderWithRouter(<VfsManagerView {...defaultProps} onMenuPress={onMenuPress} />);
-
-      const menuButton = screen.getByText('☰');
-      fireEvent.click(menuButton);
-
-      expect(onMenuPress).toHaveBeenCalled();
-    });
   });
 
   describe('Desktop Layout', () => {

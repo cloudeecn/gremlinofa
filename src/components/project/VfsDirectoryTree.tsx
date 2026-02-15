@@ -8,6 +8,7 @@ export interface VfsDirectoryTreeProps {
   projectId: string;
   selectedPath: string | null;
   initialPath?: string; // Auto-expand directories to reveal this path
+  refreshToken?: number; // Change to reload expanded directories without remounting
   onSelectFile: (path: string) => void;
   onSelectDir: (path: string) => void;
 }
@@ -22,6 +23,7 @@ export default function VfsDirectoryTree({
   projectId,
   selectedPath,
   initialPath,
+  refreshToken,
   onSelectFile,
   onSelectDir,
 }: VfsDirectoryTreeProps) {
@@ -124,6 +126,32 @@ export default function VfsDirectoryTree({
 
     expandParents();
   }, [initialPath, nodeStates, projectId, loadDirectory]);
+
+  // Reload all expanded directories when refreshToken changes (preserves expanded state)
+  const refreshTokenRef = useRef(refreshToken);
+  const nodeStatesRef = useRef(nodeStates);
+  useEffect(() => {
+    nodeStatesRef.current = nodeStates;
+  });
+  useEffect(() => {
+    if (refreshToken === undefined || refreshToken === refreshTokenRef.current) return;
+    refreshTokenRef.current = refreshToken;
+
+    // Collect paths that are currently expanded and loaded
+    const expandedPaths = Object.entries(nodeStatesRef.current)
+      .filter(([, state]) => state.expanded && state.children !== null)
+      .map(([path]) => path);
+
+    if (expandedPaths.length === 0) return;
+
+    // Reload all expanded directories in parallel (deferred like initial load)
+    const timer = setTimeout(() => {
+      for (const path of expandedPaths) {
+        loadDirectory(path);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [refreshToken, loadDirectory]);
 
   const handleItemClick = useCallback(
     (entry: DirEntry, parentPath: string) => {

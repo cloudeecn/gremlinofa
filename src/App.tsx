@@ -91,10 +91,7 @@ function AppContent() {
             path="/project/:projectId/settings"
             element={<ProjectSettingsViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
           />
-          <Route
-            path="/project/:projectId/vfs/*"
-            element={<VfsManagerViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
-          />
+          <Route path="/project/:projectId/vfs/*" element={<VfsManagerViewRoute />} />
           <Route
             path="/chat/:chatId"
             element={<ChatViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
@@ -197,18 +194,13 @@ function ProjectSettingsViewRoute({ onMenuPress }: { onMenuPress?: () => void })
   return <ProjectSettingsView projectId={projectId} onMenuPress={onMenuPress} />;
 }
 
-function VfsManagerViewRoute({ onMenuPress }: { onMenuPress?: () => void }) {
+function VfsManagerViewRoute() {
   const { projectId, '*': splatPath } = useParams<{ projectId: string; '*': string }>();
   if (!projectId) return null;
   // Convert splat path to VFS path (add leading slash if present)
   const initialPath = splatPath ? `/${splatPath}` : undefined;
   return (
-    <VfsManagerView
-      key={initialPath || 'root'}
-      projectId={projectId}
-      initialPath={initialPath}
-      onMenuPress={onMenuPress}
-    />
+    <VfsManagerView key={initialPath || 'root'} projectId={projectId} initialPath={initialPath} />
   );
 }
 

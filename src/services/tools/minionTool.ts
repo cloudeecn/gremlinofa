@@ -515,17 +515,17 @@ async function* executeMinion(
 
   // Build info group for streaming display (include persona name for non-default personas)
   const personaLabel =
-    minionInput.displayName ??
+    minionChat.displayName ??
     (minionToolOptions.namespacedMinion === true &&
-    minionInput.persona &&
-    minionInput.persona !== 'default'
-      ? minionInput.persona
+    minionChat.persona &&
+    minionChat.persona !== 'default'
+      ? minionChat.persona
       : undefined);
   const infoGroup = buildInfoGroup(
     minionInput.message,
     minionChat.id,
     personaLabel,
-    minionInput.displayName,
+    minionChat.displayName,
     effectiveModelRef.apiDefinitionId,
     effectiveModelRef.modelId
   );

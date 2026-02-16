@@ -382,7 +382,7 @@ async function* executeMinion(
 
   const minionToolOptions = toolOptions ?? {};
 
-  // Resolve effective model: input.model (from LLM) > toolOptions.model (default)
+  // Resolve effective model: input.model (from LLM) > minionChat stored model > toolOptions.model (default)
   let effectiveModelRef: ModelReference | undefined;
 
   if (minionInput.model) {
@@ -416,20 +416,18 @@ async function* executeMinion(
     }
 
     effectiveModelRef = parsed;
+  } else if (minionChat.apiDefinitionId && minionChat.modelId) {
+    // Continuation: use model stored from previous minion run
+    effectiveModelRef = {
+      apiDefinitionId: minionChat.apiDefinitionId,
+      modelId: minionChat.modelId,
+    };
   } else {
     // Fall back to default model option
     const defaultRef = minionToolOptions.model;
     if (defaultRef && isModelReference(defaultRef)) {
       effectiveModelRef = defaultRef;
     }
-  }
-
-  // Fall back to model stored from previous minion run
-  if (!effectiveModelRef && minionChat.apiDefinitionId && minionChat.modelId) {
-    effectiveModelRef = {
-      apiDefinitionId: minionChat.apiDefinitionId,
-      modelId: minionChat.modelId,
-    };
   }
 
   if (!effectiveModelRef) {

@@ -9,9 +9,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { minionTool } from '../minionTool';
+import { minionTool, CHECKPOINT_START } from '../minionTool';
 import type {
   APIDefinition,
+  APIType,
   Message,
   MinionChat,
   Model,
@@ -90,6 +91,22 @@ vi.mock('../../storage', () => ({
       return Promise.resolve();
     }),
     getAttachments: vi.fn(() => Promise.resolve([])),
+    deleteMessagesAfter: vi.fn((chatId: string, messageId: string) => {
+      const messages = mockStorageData.minionMessages.get(chatId) ?? [];
+      const idx = messages.findIndex(m => m.id === messageId);
+      if (idx >= 0) {
+        mockStorageData.minionMessages.set(chatId, messages.slice(0, idx + 1));
+      }
+      return Promise.resolve();
+    }),
+    deleteMessageAndAfter: vi.fn((chatId: string, messageId: string) => {
+      const messages = mockStorageData.minionMessages.get(chatId) ?? [];
+      const idx = messages.findIndex(m => m.id === messageId);
+      if (idx >= 0) {
+        mockStorageData.minionMessages.set(chatId, messages.slice(0, idx));
+      }
+      return Promise.resolve();
+    }),
   },
 }));
 
@@ -508,7 +525,7 @@ describe('Minion Integration', () => {
   });
 
   describe('error handling', () => {
-    it('returns error when project not found', async () => {
+    it('returns Phase 2 error when project not found', async () => {
       mockStorageData.projects.clear(); // Remove project
 
       const toolOptions: ToolOptions = {
@@ -526,9 +543,10 @@ describe('Minion Integration', () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain('Project not found');
+      expect(result.content).toContain('Resend with the message to reattempt.');
     });
 
-    it('returns error when API definition not found', async () => {
+    it('returns Phase 2 error when API definition not found', async () => {
       mockStorageData.apiDefinitions.clear(); // Remove API def
 
       const toolOptions: ToolOptions = {
@@ -546,9 +564,10 @@ describe('Minion Integration', () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain('API definition not found');
+      expect(result.content).toContain('Resend with the message to reattempt.');
     });
 
-    it('returns error when model not found', async () => {
+    it('returns Phase 2 error when model not found', async () => {
       mockStorageData.models.clear(); // Remove model
 
       const toolOptions: ToolOptions = {
@@ -566,9 +585,10 @@ describe('Minion Integration', () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain('Model not found');
+      expect(result.content).toContain('Resend with the message to reattempt.');
     });
 
-    it('returns error when minion chat not found (continue mode)', async () => {
+    it('returns Phase 1 error when minion chat not found (continue mode)', async () => {
       const toolOptions: ToolOptions = {
         model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
       };
@@ -588,6 +608,7 @@ describe('Minion Integration', () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain('Minion chat not found');
+      expect(result.content).toContain('Resend to reattempt.');
     });
 
     it('returns error with renderingGroups when agentic loop fails', async () => {
@@ -872,7 +893,7 @@ describe('Minion Integration', () => {
       expect(updatedChat?.checkpoint).toBe('msg_assistant_2');
     });
 
-    it('does not set checkpoint for new minion chat', async () => {
+    it('sets CHECKPOINT_START for new minion chat', async () => {
       const mockResult = {
         textContent: 'Done!',
         fullContent: [{ type: 'text', text: 'Done!' }],
@@ -902,8 +923,8 @@ describe('Minion Integration', () => {
         c => c.id !== 'minion_checkpoint_test'
       );
 
-      // New chats should not have a checkpoint (first run has no previous messages)
-      expect(newChat?.checkpoint).toBeUndefined();
+      // New chats get CHECKPOINT_START sentinel (enables first-run retry)
+      expect(newChat?.checkpoint).toBe(CHECKPOINT_START);
     });
   });
 
@@ -941,7 +962,7 @@ describe('Minion Integration', () => {
       expect(streamOptions.systemPrompt).toContain('You are a specialized coding minion.');
     });
 
-    it('returns error when enableWeb is true but allowWebSearch is not enabled', async () => {
+    it('returns Phase 2 error when enableWeb is true but allowWebSearch is not enabled', async () => {
       const toolOptions: ToolOptions = {
         model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
         // allowWebSearch not set (defaults to false)
@@ -958,6 +979,7 @@ describe('Minion Integration', () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain('Web search is not allowed');
+      expect(result.content).toContain('Resend with the message to reattempt.');
     });
 
     it('uses web search when enableWeb is true and allowWebSearch is enabled', async () => {
@@ -996,6 +1018,565 @@ describe('Minion Integration', () => {
     });
   });
 
+  describe('retry action', () => {
+    const toolOptions: ToolOptions = {
+      model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+    };
+    const context: ToolContext = { projectId: 'proj_test', chatId: 'chat_test' };
+
+    function setupChatWithCheckpoint() {
+      const chat: MinionChat = {
+        id: 'minion_retry',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        totalInputTokens: 200,
+        totalOutputTokens: 100,
+        totalCost: 0.005,
+        checkpoint: 'msg_assistant_1',
+      };
+      mockStorageData.minionChats.set('minion_retry', chat);
+
+      const messages: Message<unknown>[] = [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          content: { type: 'text', content: 'First message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          content: { type: 'text', content: 'First response' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_user_2',
+          role: 'user',
+          content: { type: 'text', content: 'Second message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_assistant_2',
+          role: 'assistant',
+          content: { type: 'text', content: 'Second response' },
+          timestamp: new Date(),
+          metadata: { inputTokens: 80, outputTokens: 40, messageCost: 0.002 },
+        },
+      ];
+      mockStorageData.minionMessages.set('minion_retry', messages);
+      return { chat, messages };
+    }
+
+    function setupMockStream() {
+      const mockResult = {
+        textContent: 'Retried response!',
+        fullContent: [{ type: 'text', text: 'Retried response!' }],
+        stopReason: 'end_turn',
+        inputTokens: 90,
+        outputTokens: 45,
+      };
+      const mockStream = createMockStream([], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+    }
+
+    it('rolls back to checkpoint and re-sends original message', async () => {
+      setupChatWithCheckpoint();
+      setupMockStream();
+
+      const result = await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_retry' }, toolOptions, context)
+      );
+
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.content);
+      expect(parsed.minionChatId).toBe('minion_retry');
+      expect(parsed.text).toBe('Retried response!');
+
+      // Original message "Second message" was re-sent to the API
+      const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const sentMessages = callArgs[0] as Message<unknown>[];
+      const lastUserMsg = sentMessages.filter(m => m.role === 'user').pop();
+      expect(lastUserMsg?.content.content).toBe('Second message');
+    });
+
+    it('uses provided message as replacement when retrying', async () => {
+      setupChatWithCheckpoint();
+      setupMockStream();
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { action: 'retry', minionChatId: 'minion_retry', message: 'Revised instruction' },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+
+      // The replacement message was sent to the API
+      const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const sentMessages = callArgs[0] as Message<unknown>[];
+      const lastUserMsg = sentMessages.filter(m => m.role === 'user').pop();
+      expect(lastUserMsg?.content.content).toBe('Revised instruction');
+    });
+
+    it('subtracts rolled-back token metadata from chat totals', async () => {
+      setupChatWithCheckpoint();
+      setupMockStream();
+
+      await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_retry' }, toolOptions, context)
+      );
+
+      const chat = mockStorageData.minionChats.get('minion_retry')!;
+      // Original: 200 input, 100 output, 0.005 cost
+      // Rolled back msg_assistant_2: -80 input, -40 output, -0.002 cost
+      // New run: +90 input, +45 output
+      expect(chat.totalInputTokens).toBe(200 - 80 + 90);
+      expect(chat.totalOutputTokens).toBe(100 - 40 + 45);
+      expect(chat.totalCost).toBeCloseTo(0.005 - 0.002 + 0.001); // 0.001 from calculateCost mock
+    });
+
+    it('returns Phase 1 error when checkpoint is missing', async () => {
+      const chat: MinionChat = {
+        id: 'minion_no_cp',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        // checkpoint: undefined — no checkpoint
+      };
+      mockStorageData.minionChats.set('minion_no_cp', chat);
+      mockStorageData.minionMessages.set('minion_no_cp', []);
+
+      const result = await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_no_cp' }, toolOptions, context)
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('no checkpoint');
+      expect(result.content).toContain('Resend to reattempt.');
+    });
+
+    it('returns Phase 1 error when no messages after checkpoint', async () => {
+      const chat: MinionChat = {
+        id: 'minion_empty_cp',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        checkpoint: 'msg_last',
+      };
+      mockStorageData.minionChats.set('minion_empty_cp', chat);
+      mockStorageData.minionMessages.set('minion_empty_cp', [
+        {
+          id: 'msg_last',
+          role: 'assistant',
+          content: { type: 'text', content: 'Last message' },
+          timestamp: new Date(),
+        },
+      ]);
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { action: 'retry', minionChatId: 'minion_empty_cp' },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('No messages after checkpoint');
+      expect(result.content).toContain('Resend to reattempt.');
+    });
+
+    it('deletes messages after checkpoint via storage', async () => {
+      setupChatWithCheckpoint();
+      setupMockStream();
+
+      const { storage } = await import('../../storage');
+
+      await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_retry' }, toolOptions, context)
+      );
+
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledWith('minion_retry', 'msg_assistant_1');
+    });
+
+    it('retries first run when checkpoint is CHECKPOINT_START', async () => {
+      // Chat with CHECKPOINT_START (first run that generated some messages)
+      const chat: MinionChat = {
+        id: 'minion_first_retry',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        totalInputTokens: 100,
+        totalOutputTokens: 50,
+        checkpoint: CHECKPOINT_START,
+      };
+      mockStorageData.minionChats.set('minion_first_retry', chat);
+
+      const messages: Message<unknown>[] = [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          content: { type: 'text', content: 'Original first message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          content: { type: 'text', content: 'Failed response' },
+          timestamp: new Date(),
+          metadata: { inputTokens: 50, outputTokens: 30 },
+        },
+      ];
+      mockStorageData.minionMessages.set('minion_first_retry', messages);
+      setupMockStream();
+
+      const { storage } = await import('../../storage');
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { action: 'retry', minionChatId: 'minion_first_retry' },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+      // Uses deleteMessageAndAfter (not deleteMessagesAfter) for CHECKPOINT_START
+      expect(storage.deleteMessageAndAfter).toHaveBeenCalledWith(
+        'minion_first_retry',
+        'msg_user_1'
+      );
+      // Original message re-sent
+      const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const sentMessages = callArgs[0] as Message<unknown>[];
+      const lastUserMsg = sentMessages.filter(m => m.role === 'user').pop();
+      expect(lastUserMsg?.content.content).toBe('Original first message');
+    });
+
+    it('checkpoint stays unchanged after retry', async () => {
+      setupChatWithCheckpoint();
+      setupMockStream();
+
+      await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_retry' }, toolOptions, context)
+      );
+
+      const chat = mockStorageData.minionChats.get('minion_retry')!;
+      // Checkpoint should still point to the same position (not recalculated)
+      expect(chat.checkpoint).toBe('msg_assistant_1');
+    });
+
+    describe('retry-without-message on tool_result messages', () => {
+      function setupToolResultRetryChat(modelFamily: APIType) {
+        const chat: MinionChat = {
+          id: 'minion_tr_retry',
+          parentChatId: 'chat_test',
+          projectId: 'proj_test',
+          createdAt: new Date(),
+          lastModifiedAt: new Date(),
+          totalInputTokens: 100,
+          totalOutputTokens: 50,
+          checkpoint: 'msg_assistant_1',
+        };
+        mockStorageData.minionChats.set('minion_tr_retry', chat);
+
+        // The rolled-back message is a tool_result with empty content.content
+        // (as produced by buildToolResultMessage)
+        const toolResultFullContent = [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_return_1',
+            content: 'The return value text',
+          },
+        ];
+
+        const messages: Message<unknown>[] = [
+          {
+            id: 'msg_user_1',
+            role: 'user',
+            content: { type: 'text', content: 'Do something' },
+            timestamp: new Date(),
+          },
+          {
+            id: 'msg_assistant_1',
+            role: 'assistant',
+            content: {
+              type: 'text',
+              content: '',
+              fullContent: [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_return_1',
+                  name: 'return',
+                  input: { result: 'partial' },
+                },
+              ],
+            },
+            timestamp: new Date(),
+          },
+          {
+            id: 'msg_tool_result_2',
+            role: 'user',
+            content: {
+              type: 'text',
+              content: '', // buildToolResultMessage always sets this to ''
+              modelFamily,
+              fullContent: toolResultFullContent,
+            },
+            timestamp: new Date(),
+          },
+          {
+            id: 'msg_assistant_2',
+            role: 'assistant',
+            content: { type: 'text', content: 'Response after tool result' },
+            timestamp: new Date(),
+            metadata: { inputTokens: 50, outputTokens: 25 },
+          },
+        ];
+        mockStorageData.minionMessages.set('minion_tr_retry', messages);
+        return { chat, messages };
+      }
+
+      it('re-uses fullContent directly when modelFamily matches apiDef.apiType', async () => {
+        // modelFamily 'anthropic' matches the test API def's apiType 'anthropic'
+        setupToolResultRetryChat('anthropic');
+        setupMockStream();
+
+        const result = await collectToolResult(
+          minionTool.execute(
+            { action: 'retry', minionChatId: 'minion_tr_retry' },
+            toolOptions,
+            context
+          )
+        );
+
+        expect(result.isError).toBeUndefined();
+
+        // The message sent to the API should have the stashed fullContent re-used
+        const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+        const sentMessages = callArgs[0] as Message<unknown>[];
+        const lastUserMsg = sentMessages.filter(m => m.role === 'user').pop();
+
+        // fullContent should be the original tool_result array (not reconstructed)
+        expect(lastUserMsg?.content.fullContent).toEqual([
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_return_1',
+            content: 'The return value text',
+          },
+        ]);
+        expect(lastUserMsg?.content.modelFamily).toBe('anthropic');
+        // Text extracted from fullContent should be set as content
+        expect(lastUserMsg?.content.content).toBe('The return value text');
+      });
+
+      it('extracts text from fullContent when modelFamily does not match', async () => {
+        // modelFamily 'responses_api' does NOT match the test API def's apiType 'anthropic'
+        const chat: MinionChat = {
+          id: 'minion_tr_incompat',
+          parentChatId: 'chat_test',
+          projectId: 'proj_test',
+          createdAt: new Date(),
+          lastModifiedAt: new Date(),
+          totalInputTokens: 100,
+          totalOutputTokens: 50,
+          checkpoint: 'msg_assistant_1',
+        };
+        mockStorageData.minionChats.set('minion_tr_incompat', chat);
+
+        const messages: Message<unknown>[] = [
+          {
+            id: 'msg_user_1',
+            role: 'user',
+            content: { type: 'text', content: 'Do something' },
+            timestamp: new Date(),
+          },
+          {
+            id: 'msg_assistant_1',
+            role: 'assistant',
+            content: { type: 'text', content: 'Response' },
+            timestamp: new Date(),
+          },
+          {
+            id: 'msg_tool_result_2',
+            role: 'user',
+            content: {
+              type: 'text',
+              content: '', // Empty — typical for buildToolResultMessage
+              modelFamily: 'responses_api',
+              fullContent: [
+                {
+                  type: 'function_call_output',
+                  call_id: 'call_1',
+                  output: 'Extracted output text',
+                },
+              ],
+            },
+            timestamp: new Date(),
+          },
+          {
+            id: 'msg_assistant_2',
+            role: 'assistant',
+            content: { type: 'text', content: 'Final response' },
+            timestamp: new Date(),
+            metadata: { inputTokens: 50, outputTokens: 25 },
+          },
+        ];
+        mockStorageData.minionMessages.set('minion_tr_incompat', messages);
+        setupMockStream();
+
+        const result = await collectToolResult(
+          minionTool.execute(
+            { action: 'retry', minionChatId: 'minion_tr_incompat' },
+            toolOptions,
+            context
+          )
+        );
+
+        expect(result.isError).toBeUndefined();
+
+        // Since modelFamily doesn't match, text was extracted and a normal user message built
+        const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+        const sentMessages = callArgs[0] as Message<unknown>[];
+        const lastUserMsg = sentMessages.filter(m => m.role === 'user').pop();
+
+        // Should be a plain text message (no fullContent from stash)
+        expect(lastUserMsg?.content.content).toBe('Extracted output text');
+        // No modelFamily on a plain text user message
+        expect(lastUserMsg?.content.fullContent).toBeUndefined();
+      });
+
+      it('extracts text from Bedrock-format fullContent', async () => {
+        const chat: MinionChat = {
+          id: 'minion_tr_bedrock',
+          parentChatId: 'chat_test',
+          projectId: 'proj_test',
+          createdAt: new Date(),
+          lastModifiedAt: new Date(),
+          totalInputTokens: 100,
+          totalOutputTokens: 50,
+          checkpoint: 'msg_assistant_1',
+        };
+        mockStorageData.minionChats.set('minion_tr_bedrock', chat);
+
+        const messages: Message<unknown>[] = [
+          {
+            id: 'msg_user_1',
+            role: 'user',
+            content: { type: 'text', content: 'Do something' },
+            timestamp: new Date(),
+          },
+          {
+            id: 'msg_assistant_1',
+            role: 'assistant',
+            content: { type: 'text', content: 'Response' },
+            timestamp: new Date(),
+          },
+          {
+            id: 'msg_tool_result_2',
+            role: 'user',
+            content: {
+              type: 'text',
+              content: '',
+              modelFamily: 'bedrock',
+              fullContent: [
+                {
+                  toolResult: {
+                    toolUseId: 'tool_1',
+                    content: [{ text: 'Bedrock result text' }],
+                    status: 'success',
+                  },
+                },
+              ],
+            },
+            timestamp: new Date(),
+          },
+          {
+            id: 'msg_assistant_2',
+            role: 'assistant',
+            content: { type: 'text', content: 'Final' },
+            timestamp: new Date(),
+            metadata: { inputTokens: 50, outputTokens: 25 },
+          },
+        ];
+        mockStorageData.minionMessages.set('minion_tr_bedrock', messages);
+        setupMockStream();
+
+        const result = await collectToolResult(
+          minionTool.execute(
+            { action: 'retry', minionChatId: 'minion_tr_bedrock' },
+            toolOptions,
+            context
+          )
+        );
+
+        expect(result.isError).toBeUndefined();
+
+        const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+        const sentMessages = callArgs[0] as Message<unknown>[];
+        const lastUserMsg = sentMessages.filter(m => m.role === 'user').pop();
+        expect(lastUserMsg?.content.content).toBe('Bedrock result text');
+      });
+    });
+
+    it('Phase 2 errors after checkpoint do not corrupt retry state', async () => {
+      // Setup a chat with valid checkpoint
+      const chat: MinionChat = {
+        id: 'minion_phase2',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        checkpoint: 'msg_assistant_1',
+      };
+      mockStorageData.minionChats.set('minion_phase2', chat);
+      mockStorageData.minionMessages.set('minion_phase2', [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          content: { type: 'text', content: 'First message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          content: { type: 'text', content: 'Response' },
+          timestamp: new Date(),
+        },
+      ]);
+
+      // Clear models to trigger Phase 2 error
+      mockStorageData.models.clear();
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'Continue', minionChatId: 'minion_phase2' },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('Resend with the message to reattempt.');
+
+      // Checkpoint was advanced (normal continuation saves checkpoint)
+      const updatedChat = mockStorageData.minionChats.get('minion_phase2')!;
+      expect(updatedChat.checkpoint).toBe('msg_assistant_1');
+
+      // Messages remain intact (no rollback or deletion happened)
+      const msgs = mockStorageData.minionMessages.get('minion_phase2')!;
+      expect(msgs).toHaveLength(2);
+    });
+  });
+
   describe('tool scoping defaults and validation', () => {
     it('defaults to only return tool when enabledTools omitted', async () => {
       const mockResult = {
@@ -1029,7 +1610,7 @@ describe('Minion Integration', () => {
       expect(streamOptions.enabledTools).toEqual(['return']);
     });
 
-    it('returns error when enabledTools contains tools not in project', async () => {
+    it('returns Phase 2 error when enabledTools contains tools not in project', async () => {
       const toolOptions: ToolOptions = {
         model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
       };
@@ -1049,7 +1630,7 @@ describe('Minion Integration', () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain('Tools not available in project: nonexistent');
-      expect(result.content).toContain('Available tools: memory, javascript');
+      expect(result.content).toContain('Resend with the message to reattempt.');
     });
 
     it('does not trigger validation error when return is in enabledTools', async () => {

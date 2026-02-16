@@ -45,6 +45,7 @@ describe('ResponsesClient', () => {
         data: [
           { id: 'gpt-5', created: 1234567890 },
           { id: 'gpt-4o', created: 1234567890 },
+          { id: 'chatgpt-4o-latest', created: 1234567890 },
           { id: 'o3-mini', created: 1234567890 },
           { id: 'dall-e-3', created: 1234567890 }, // Should be filtered out
         ],
@@ -62,8 +63,8 @@ describe('ResponsesClient', () => {
 
       const models = await client.discoverModels(mockApiDefinition);
 
-      expect(models).toHaveLength(3);
-      expect(models.map(m => m.id)).toEqual(['gpt-5', 'gpt-4o', 'o3-mini']);
+      expect(models).toHaveLength(4);
+      expect(models.map(m => m.id)).toEqual(['chatgpt-4o-latest', 'gpt-5', 'gpt-4o', 'o3-mini']);
       expect(models[0].apiType).toBe('responses_api');
     });
 

@@ -359,6 +359,51 @@ describe('useChat', () => {
       expect(storage.saveMessage).toHaveBeenCalledTimes(2); // user + assistant
     });
 
+    it('should update chat cost incrementally during tokens_consumed events', async () => {
+      vi.mocked(modelMetadata.calculateCost).mockReturnValue(0.005);
+      const mockStreamGenerator = async function* () {
+        yield { type: 'content' as const, content: 'Response' };
+        return {
+          textContent: 'Response',
+          fullContent: {},
+          inputTokens: 100,
+          outputTokens: 50,
+        };
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStreamGenerator());
+
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+
+      await waitFor(() => {
+        expect(result.current.chat).toBeTruthy();
+      });
+
+      await result.current.sendMessage('chat_123', 'Test');
+
+      await waitFor(() => {
+        expect(mockCallbacks.onStreamingEnd).toHaveBeenCalled();
+      });
+
+      // saveChat called at least twice: once for incremental token update, once for final metadata
+      const saveChatCalls = vi.mocked(storage.saveChat).mock.calls;
+      expect(saveChatCalls.length).toBeGreaterThanOrEqual(2);
+
+      // First saveChat call should have incremental token totals (before final save)
+      const incrementalSave = saveChatCalls[saveChatCalls.length - 2][0] as Chat;
+      expect(incrementalSave.totalCost).toBeGreaterThan(mockChat.totalCost!);
+      expect(incrementalSave.totalInputTokens).toBeGreaterThan(mockChat.totalInputTokens!);
+
+      // Final saveChat call should have messageCount and lastModifiedAt
+      const finalSave = saveChatCalls[saveChatCalls.length - 1][0] as Chat;
+      expect(finalSave.lastModifiedAt).toBeDefined();
+      expect(finalSave.totalCost).toBe(incrementalSave.totalCost);
+
+      // onChatMetadataChanged should be called for both incremental and final updates
+      expect(mockCallbacks.onChatMetadataChanged).toHaveBeenCalledTimes(2);
+    });
+
     it('should ignore mismatched chatId (race condition protection)', async () => {
       const { result } = renderHook(() =>
         useChat({ chatId: 'chat_123', callbacks: mockCallbacks })

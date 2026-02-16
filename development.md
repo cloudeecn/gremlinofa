@@ -93,6 +93,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Chat-level token totals (cumulative)
 - [x] Context window usage (recalculated)
 - [x] Real-time token usage in chat header
+- [x] Incremental cost/token persistence during agent loop (crash-resilient)
 - [x] Fork tracking and cost analysis
 - [x] Tool call cost tracking (minion sub-agent costs flow into chat totals)
 
@@ -497,7 +498,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   2. `PendingToolCallsBanner` shows in MessageList with Reject/Accept buttons
   3. User actions:
      - **Reject button**: Sends error "Token limit reached, ask user to continue"
-     - **Accept button**: Executes tools and sends continuation to API
+     - **Accept button**: Delegates tool execution to the agentic loop (`pendingToolUseBlocks`) for streamed execution with live status updates
      - **User sends message**: Sends reject response along with user's message
   4. ChatInput send button enabled even with empty input when pending tools exist
 - Intermediate messages persisted with proper `renderingContent`:
@@ -1071,12 +1072,13 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 
 **Input Parameters:**
 
-| Parameter      | Type     | Required | Description                                                                      |
-| -------------- | -------- | -------- | -------------------------------------------------------------------------------- |
-| `message`      | string   | Yes      | Task to send to minion                                                           |
-| `minionChatId` | string   | No       | Existing minion chat ID to continue conversation                                 |
-| `enableWeb`    | boolean  | No       | Enable web search for minion (only exposed when `allowWebSearch` option is true) |
-| `enabledTools` | string[] | No       | Tools for minion (validated against project tools, defaults to none)             |
+| Parameter      | Type     | Required             | Description                                                                            |
+| -------------- | -------- | -------------------- | -------------------------------------------------------------------------------------- |
+| `action`       | string   | No                   | `'message'` (default) or `'retry'`. Retry rolls back to checkpoint and re-executes.    |
+| `message`      | string   | For `message` action | Task to send to minion. For `retry`: omit to re-send original, or provide replacement. |
+| `minionChatId` | string   | For `retry` action   | Existing minion chat ID to continue or retry                                           |
+| `enableWeb`    | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)       |
+| `enabledTools` | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                   |
 
 **Tool Options:**
 
@@ -1101,7 +1103,7 @@ Minion conversations stored separately for debugging visibility:
 - `getMinionChat(id)` / `getMinionChats(parentChatId)` / `saveMinionChat()`
 - `getMinionMessages(minionChatId)` / `saveMinionMessage()`
 - Cascade deletion when parent chat is deleted
-- `checkpoint?: string` field stores last message ID before minion run (for future rollback)
+- `checkpoint?: string` field stores last message ID before minion run (used by retry action for rollback). New chats start with `CHECKPOINT_START` sentinel (`'_start'`) to enable first-run retry.
 
 **Result Handling:**
 
@@ -1118,6 +1120,14 @@ Minion conversations stored separately for debugging visibility:
   - Transferred to `ToolResultRenderBlock.tokenTotals` for per-block cost display
   - Accumulated by outer agentic loop into tool result message metadata and chat totals
   - Displayed in `ToolResultView` header (compact `$X.XXX`) and `ToolResultBubble` footer
+
+**Execution Phases:**
+
+The `executeMinion` function has three ordered phases with distinct error recovery guidance:
+
+1. **Phase 1** (load + checkpoint): Validate inputs, load/create chat, retry rollback, save checkpoint. Errors append "Resend to reattempt." — no meaningful state change occurred.
+2. **Phase 2** (validation): Check web search, model, project, API def, tools. Errors append "Resend with the message to reattempt." — checkpoint is saved but no user message yet.
+3. **Phase 3** (execution): Check pendingReturnToolUse, build/save user message, run agentic loop. Errors here can be retried via `action: 'retry'`.
 
 **Return Tool Resumption:**
 
@@ -1235,11 +1245,23 @@ type AgenticLoopResult =
 - Read-only storage access (reads attachments, consumer handles persistence)
 - Error handling with cleanup
 
+**Tool Execution Helper:**
+
+`executeToolUseBlocks()` is an extracted async generator that handles tool execution with full streaming support (pending → running → streaming updates → complete). Used via `yield*` from two call sites:
+
+1. Pre-loop: executing `pendingToolUseBlocks` before the first API call
+2. In-loop: after `stop_reason === 'tool_use'`
+
+**Pending Tool Resolution (`AgenticLoopOptions`):**
+
+- `pendingToolUseBlocks?: ToolUseBlock[]` — pre-existing tool_use blocks to execute before the first API call (used by `resolvePendingToolCalls` continue mode)
+- `pendingTrailingContext?: Message<unknown>[]` — already-saved messages injected after tool results (e.g., user follow-up message)
+
 **Integration with useChat.ts:**
 
 - `sendMessage` - Thin wrapper: reads state → builds context → calls `runAgenticLoop`
-- `resolvePendingToolCalls` - Thin wrapper: builds tool results → optional user message → calls `runAgenticLoop`
-- Both 'stop' and 'continue' modes use the agentic loop (stop sends error responses to API)
+- `resolvePendingToolCalls` stop mode: builds error tool results immediately → calls `runAgenticLoop`
+- `resolvePendingToolCalls` continue mode: passes `pendingToolUseBlocks` to loop for streamed execution
 - Consumer handles `storage.saveChat` and `storage.saveProject` after loop completes
 
 **Project Setting:**

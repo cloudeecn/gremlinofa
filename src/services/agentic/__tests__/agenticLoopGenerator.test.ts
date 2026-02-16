@@ -1294,8 +1294,9 @@ describe('agenticLoopGenerator', () => {
       expect(msgCreatedEvents.length).toBe(3); // assistant + tool_result + assistant
     });
 
-    it('deferred return: multiple calls keep last value', async () => {
-      // Two iterations with return tool calls, then final response
+    it('deferred return: second call returns error and keeps first value', async () => {
+      // Two iterations with return tool calls, then final response.
+      // The second call should be rejected — first stored value is kept.
       const returnBlock1 = [
         { type: 'tool_use' as const, id: 'toolu_r1', name: 'return', input: { result: 'first' } },
       ];
@@ -1361,11 +1362,14 @@ describe('agenticLoopGenerator', () => {
 
       expect(result.status).toBe('complete');
       if (result.status === 'complete') {
-        expect(result.returnValue).toBe('second');
+        // First value is preserved — second call was rejected
+        expect(result.returnValue).toBe('first');
       }
 
       // Three API calls (loop continued through both return calls)
       expect(apiService.sendMessageStream).toHaveBeenCalledTimes(3);
+      // executeClientSideTool only called once — second call is rejected before execution
+      expect(callCount).toBe(1);
     });
 
     it('deferred return: pre-loop pending blocks store value and continue', async () => {

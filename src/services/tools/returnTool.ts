@@ -18,7 +18,7 @@ export const returnTool: ClientSideTool = {
 
   description: (opts: ToolOptions) =>
     opts.deferReturn
-      ? 'Store a result to return to the caller. Execution continues after this call — you can perform cleanup or follow-up work. The stored result will be delivered when you finish. If called multiple times, the last result wins.'
+      ? 'Store a result to return to the caller. Execution continues after this call — you can perform cleanup or follow-up work. The stored result will be delivered when you finish.'
       : 'Signal task completion by returning a result to the caller. This ends your current turn — no further tool calls will run. Use this when you have a final answer or deliverable ready. The caller may continue the conversation later.',
 
   inputSchema: {

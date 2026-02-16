@@ -601,7 +601,8 @@ async function* executeToolUseBlocks(
   toolContext: ToolContext,
   messages: Message<unknown>[],
   totals: TokenTotals,
-  deferReturn?: boolean
+  deferReturn?: boolean,
+  hasStoredReturn?: boolean
 ): AsyncGenerator<
   AgenticLoopEvent,
   | { breakLoop: { returnValue?: string } }
@@ -617,6 +618,29 @@ async function* executeToolUseBlocks(
   const returnToolIndex = toolUseBlocks.findIndex(b => b.name === 'return');
   if (returnToolIndex !== -1 && toolUseBlocks.length === 1) {
     const returnBlock = toolUseBlocks[0];
+
+    // Reject duplicate deferred return calls without executing the tool
+    if (deferReturn && hasStoredReturn) {
+      const errorContent =
+        'ERROR: A result has already been stored. Do NOT call return again. STOP immediately — do not call any more tools or produce further output.';
+      const renderBlock = createToolResultRenderBlock(
+        returnBlock.id,
+        returnBlock.name,
+        errorContent,
+        true
+      );
+      renderBlock.status = 'error';
+
+      const toolResultBlocks: ToolResultBlock[] = [
+        { type: 'tool_result', tool_use_id: returnBlock.id, content: errorContent },
+      ];
+      const toolResultMsg = buildToolResultMessage(apiType, toolResultBlocks, [renderBlock]);
+      messages.push(toolResultMsg);
+      yield { type: 'message_created', message: toolResultMsg };
+
+      return undefined;
+    }
+
     const gen = executeClientSideTool(
       returnBlock.name,
       returnBlock.input,
@@ -631,7 +655,7 @@ async function* executeToolUseBlocks(
     if (deferReturn) {
       // Deferred mode: store value, build normal tool_result, continue loop
       const returnValue = toolResult.breakLoop?.returnValue ?? toolResult.content;
-      const storedContent = 'Result stored. Please stop and wait for next instruction.';
+      const storedContent = 'Result stored. You MUST stop now — do not call any more tools.';
 
       const renderBlock = createToolResultRenderBlock(
         returnBlock.id,
@@ -879,7 +903,8 @@ export async function* runAgenticLoop(
         toolContext,
         messages,
         totals,
-        options.deferReturn
+        options.deferReturn,
+        storedReturnValue !== undefined
       );
 
       if (breakResult && 'deferredReturn' in breakResult) {
@@ -1106,7 +1131,8 @@ export async function* runAgenticLoop(
         toolContext,
         messages,
         totals,
-        options.deferReturn
+        options.deferReturn,
+        storedReturnValue !== undefined
       );
 
       if (breakResult && 'deferredReturn' in breakResult) {

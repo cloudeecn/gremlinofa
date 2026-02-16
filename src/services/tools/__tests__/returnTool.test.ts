@@ -38,7 +38,7 @@ describe('returnTool', () => {
       });
       expect(desc).toContain('Store a result');
       expect(desc).toContain('continues after this call');
-      expect(desc).toContain('last result wins');
+      expect(desc).toContain('delivered when you finish');
     });
 
     it('should have correct input schema', () => {

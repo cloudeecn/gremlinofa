@@ -50,7 +50,6 @@ function SimpleToolResult({ block }: { block: ToolResultRenderBlock }) {
         }`}
       >
         <span>{icon}</span>
-        <span>{block.name ?? 'Result'}</span>
         <span className="text-purple-500">{isExpanded ? '▼' : '▶'}</span>
       </button>
 
@@ -140,9 +139,7 @@ function ComplexToolResult({
         className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm font-medium text-purple-800 transition-colors hover:bg-purple-100"
       >
         <span className="flex shrink-0 items-center gap-1">
-          <span>
-            {!iconOnRight && defaultIcon} {block.name ?? 'Tool'}
-          </span>
+          <span>{!iconOnRight && defaultIcon}</span>
           <span className="text-purple-600">{isExpanded ? '▼' : '▶'}</span>
         </span>
         {!isExpanded && (
@@ -168,9 +165,9 @@ function ComplexToolResult({
                 ${toolCost.toFixed(3)}
               </span>
             )}
-            {iconOnRight && <span className="mr-2 shrink-0">{defaultIcon}</span>}
           </>
         )}
+        {iconOnRight && <span className="mr-2 shrink-0">{defaultIcon}</span>}
       </button>
 
       {/* Expanded content */}

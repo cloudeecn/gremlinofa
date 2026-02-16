@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import Mustache from 'mustache';
 import { apiService } from '../services/api/apiService';
 import { storage } from '../services/storage';
@@ -28,6 +28,10 @@ import type { ToolResultRenderBlock } from '../types/content';
 
 import { generateUniqueId } from '../utils/idGenerator';
 import { showAlert } from '../utils/alerts';
+
+/** Throttle interval for streaming/tool-block UI updates (ms).
+ * Batches rapid state updates from parallel minions into fewer React renders. */
+const STREAMING_THROTTLE_MS = 200;
 
 /** Format timestamp for local timezone */
 function formatTimestampLocal(): string {
@@ -589,6 +593,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   // Track if we've resolved pending state to avoid double resolution
   const [pendingStateResolved, setPendingStateResolved] = useState(false);
 
+  // Throttle refs for streaming UI updates
+  const pendingStreamingRef = useRef<RenderingBlockGroup[] | null>(null);
+  const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingToolUpdatesRef = useRef<Map<string, Partial<ToolResultRenderBlock>>>(new Map());
+  const toolUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Verification helper to ensure chatId matches
   const verifyChatId = (incomingChatId: string, methodName: string): boolean => {
     if (incomingChatId !== chatId) {
@@ -599,6 +609,50 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     }
     return true;
   };
+
+  /** Apply a batch of accumulated tool block updates in a single setMessages call. */
+  const applyToolBlockBatch = useCallback((batch: Map<string, Partial<ToolResultRenderBlock>>) => {
+    setMessages(prev => {
+      // Search backward in last 10 messages for the pending tool result message
+      const searchStart = Math.max(0, prev.length - 10);
+      let targetIdx = -1;
+      for (let i = prev.length - 1; i >= searchStart; i--) {
+        if (prev[i].role === 'user' && prev[i].content.renderingContent) {
+          targetIdx = i;
+          break;
+        }
+      }
+
+      if (targetIdx < 0) return prev;
+
+      const targetMsg = prev[targetIdx];
+      const groups = targetMsg.content.renderingContent;
+      if (!groups) return prev;
+
+      let anyFound = false;
+      const updatedGroups = groups.map(group => {
+        if (group.category !== 'backstage') return group;
+        const updatedBlocks = group.blocks.map(block => {
+          if (block.type !== 'tool_result') return block;
+          const update = batch.get((block as ToolResultRenderBlock).tool_use_id);
+          if (update) {
+            anyFound = true;
+            return { ...block, ...update };
+          }
+          return block;
+        });
+        return { ...group, blocks: updatedBlocks };
+      });
+
+      if (!anyFound) return prev;
+
+      const updatedMsg = {
+        ...targetMsg,
+        content: { ...targetMsg.content, renderingContent: updatedGroups },
+      };
+      return [...prev.slice(0, targetIdx), updatedMsg, ...prev.slice(targetIdx + 1)];
+    });
+  }, []);
 
   /**
    * Build event handlers for consuming the agentic loop generator.
@@ -628,9 +682,37 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         callbacks.onStreamingStart(chatId, 'Thinking...');
       },
       onStreamingUpdate: (groups: RenderingBlockGroup[]) => {
-        setStreamingGroups(groups);
+        pendingStreamingRef.current = groups;
+        if (!streamingTimerRef.current) {
+          streamingTimerRef.current = setTimeout(() => {
+            streamingTimerRef.current = null;
+            if (pendingStreamingRef.current !== null) {
+              setStreamingGroups(pendingStreamingRef.current);
+              pendingStreamingRef.current = null;
+            }
+          }, STREAMING_THROTTLE_MS);
+        }
       },
       onStreamingEnd: () => {
+        // Flush pending streaming update
+        if (streamingTimerRef.current) {
+          clearTimeout(streamingTimerRef.current);
+          streamingTimerRef.current = null;
+        }
+        if (pendingStreamingRef.current !== null) {
+          setStreamingGroups(pendingStreamingRef.current);
+          pendingStreamingRef.current = null;
+        }
+        // Flush pending tool block updates
+        if (toolUpdateTimerRef.current) {
+          clearTimeout(toolUpdateTimerRef.current);
+          toolUpdateTimerRef.current = null;
+        }
+        if (pendingToolUpdatesRef.current.size > 0) {
+          const batch = new Map(pendingToolUpdatesRef.current);
+          pendingToolUpdatesRef.current.clear();
+          applyToolBlockBatch(batch);
+        }
         setIsLoading(false);
         setStreamingGroups([]);
         callbacks.onStreamingEnd(chatId);
@@ -655,53 +737,32 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         });
       },
       onToolBlockUpdate: (toolUseId: string, blockUpdate: Partial<ToolResultRenderBlock>) => {
-        // Update renderingGroups on the matching block in the pending tool result message
-        // Search backward in last 10 messages to find the pending tool result
-        setMessages(prev => {
-          const searchStart = Math.max(0, prev.length - 10);
-          let targetIdx = -1;
-          for (let i = prev.length - 1; i >= searchStart; i--) {
-            if (prev[i].role === 'user' && prev[i].content.renderingContent) {
-              targetIdx = i;
-              break;
-            }
-          }
-
-          if (targetIdx < 0) return prev;
-
-          const targetMsg = prev[targetIdx];
-          const groups = targetMsg.content.renderingContent;
-          if (!groups) return prev;
-
-          // Find and update the matching tool_result block
-          let found = false;
-          const updatedGroups = groups.map(group => {
-            if (group.category !== 'backstage' || found) return group;
-            const updatedBlocks = group.blocks.map(block => {
-              if (
-                block.type === 'tool_result' &&
-                (block as ToolResultRenderBlock).tool_use_id === toolUseId
-              ) {
-                found = true;
-                return { ...block, ...blockUpdate };
-              }
-              return block;
-            });
-            return { ...group, blocks: updatedBlocks };
-          });
-
-          if (!found) return prev;
-
-          const updatedMsg = {
-            ...targetMsg,
-            content: { ...targetMsg.content, renderingContent: updatedGroups },
-          };
-          return [...prev.slice(0, targetIdx), updatedMsg, ...prev.slice(targetIdx + 1)];
-        });
+        // Accumulate updates and flush on timer
+        const existing = pendingToolUpdatesRef.current.get(toolUseId);
+        pendingToolUpdatesRef.current.set(
+          toolUseId,
+          existing ? { ...existing, ...blockUpdate } : blockUpdate
+        );
+        if (!toolUpdateTimerRef.current) {
+          toolUpdateTimerRef.current = setTimeout(() => {
+            toolUpdateTimerRef.current = null;
+            const batch = new Map(pendingToolUpdatesRef.current);
+            pendingToolUpdatesRef.current.clear();
+            applyToolBlockBatch(batch);
+          }, STREAMING_THROTTLE_MS);
+        }
       },
     }),
-    [chatId, callbacks]
+    [chatId, callbacks, applyToolBlockBatch]
   );
+
+  // Cleanup throttle timers on unmount
+  useEffect(() => {
+    return () => {
+      if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current);
+      if (toolUpdateTimerRef.current) clearTimeout(toolUpdateTimerRef.current);
+    };
+  }, []);
 
   // Single sequential loading effect to avoid race conditions
   useEffect(() => {

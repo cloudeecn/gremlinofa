@@ -1222,6 +1222,10 @@ type AgenticLoopResult =
 - Tool result messages saved before calling generator
 - Assistant messages saved via `message_created` events from generator
 
+**Streaming Render Throttle:**
+
+`onStreamingUpdate` and `onToolBlockUpdate` in `buildEventHandlers()` are throttled at 200ms intervals (`STREAMING_THROTTLE_MS`). Multiple parallel minions on fast models can produce hundreds of state updates per second — the throttle batches these into ~5 React renders/second. `onStreamingUpdate` uses latest-wins semantics (intermediate chunks dropped). `onToolBlockUpdate` accumulates a `Map<toolUseId, update>` and flushes all accumulated updates in a single `setMessages` call. Both timers are flushed synchronously in `onStreamingEnd` and cleaned up on unmount.
+
 **Features:**
 
 - Unified loop handles all cases (normal send, continue, stop)
@@ -1382,12 +1386,12 @@ Headers use `h-14` (56px) for content, but adding `safe-area-inset-top` as paddi
 
 `usePreferences()` hook provides UI preferences with hardcoded defaults (extensible for future preferences page/storage):
 
-- `iconOnRight: boolean` - Move tool icons to right side in `BackstageView` and `ToolResultBubble` collapsed headers (default: `true`)
+- `iconOnRight: boolean` - Move tool icons to right side in `BackstageView`, `ToolResultView`, and `ToolResultBubble` headers (default: `true`)
 
 When `iconOnRight` is `true`:
 
-- Status text appears on left without icon prefix
 - All icons displayed on right side (previous icons faded, last icon full opacity)
+- No state text labels in headers — icons alone identify activity type
 
 ## Known Issues 🐛
 

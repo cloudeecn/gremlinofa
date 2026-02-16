@@ -13,16 +13,11 @@ import { zip } from 'fflate';
 export interface VfsManagerViewProps {
   projectId: string;
   initialPath?: string;
-  onMenuPress?: () => void;
 }
 
 type DesktopMode = 'view' | 'edit' | 'diff';
 
-export default function VfsManagerView({
-  projectId,
-  initialPath,
-  onMenuPress,
-}: VfsManagerViewProps) {
+export default function VfsManagerView({ projectId, initialPath }: VfsManagerViewProps) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { showDestructiveConfirm } = useAlert();
@@ -374,14 +369,6 @@ export default function VfsManagerView({
       <div className="border-b border-gray-200 bg-white">
         <div className="safe-area-inset-top" />
         <div className="flex h-14 items-center px-4">
-          {onMenuPress && (
-            <button
-              onClick={onMenuPress}
-              className="flex h-11 w-11 items-center justify-center text-gray-700 hover:text-gray-900 md:hidden"
-            >
-              <span className="text-2xl">☰</span>
-            </button>
-          )}
           <button
             onClick={handleBack}
             className="flex h-11 items-center gap-1 text-gray-600 hover:text-gray-900"
@@ -401,10 +388,10 @@ export default function VfsManagerView({
         // Mobile: Full-width tree, modal for file
         <div className="flex flex-1 flex-col overflow-hidden">
           <VfsDirectoryTree
-            key={treeKey}
             projectId={projectId}
             selectedPath={selectedPath}
             initialPath={initialPath}
+            refreshToken={treeKey}
             onSelectFile={handleSelectFile}
             onSelectDir={handleSelectDir}
           />
@@ -483,10 +470,10 @@ export default function VfsManagerView({
           {/* Left panel: Directory tree */}
           <div className="flex w-2/5 max-w-[400px] min-w-[200px] flex-col border-r border-gray-200 bg-white">
             <VfsDirectoryTree
-              key={treeKey}
               projectId={projectId}
               selectedPath={selectedPath}
               initialPath={initialPath}
+              refreshToken={treeKey}
               onSelectFile={handleSelectFile}
               onSelectDir={handleSelectDir}
             />

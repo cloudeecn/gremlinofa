@@ -59,28 +59,6 @@ export default function BackstageView({
     }
   };
 
-  const getStatusText = (): string => {
-    const lastBlock = blocks[blocks.length - 1];
-    switch (lastBlock?.type) {
-      case 'thinking':
-        return 'Think';
-      case 'web_search':
-        return 'Search';
-      case 'web_fetch':
-        return 'Fetch';
-      case 'tool_use':
-        return lastBlock.name;
-      case 'tool_result':
-        return lastBlock.name ?? 'Result';
-      case 'error':
-        return 'Error';
-      case 'tool_info':
-      case 'text':
-      default:
-        return '';
-    }
-  };
-
   // Get preview text from last block for collapsed state (shows current streaming content)
   const getPreviewText = (): string => {
     const lastBlock = blocks[blocks.length - 1];
@@ -135,9 +113,7 @@ export default function BackstageView({
         className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm font-medium ${textClass} transition-colors ${hoverClass}`}
       >
         <span className="flex shrink-0 items-center gap-1">
-          <span>
-            {!iconOnRight && getLastBlockIcon()} {getStatusText()}
-          </span>
+          <span>{!iconOnRight && getLastBlockIcon()}</span>
           <span className={accentClass}>{isExpanded ? '▼' : '▶'}</span>
         </span>
         {!isExpanded && (

@@ -389,136 +389,154 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
       />
 
       {/* New Chat Input Area */}
-      <div className="border-b border-gray-200 bg-gray-50 p-4">
-        <div className="mb-2 flex items-center gap-2">
-          <span className="text-sm font-medium text-gray-700">Start a new chat</span>
-          <span className="text-gray-400">•</span>
-          <button
-            onClick={() => setShowNewChatModelSelector(true)}
-            className="text-sm font-medium text-blue-600 hover:text-blue-700"
-          >
-            {(() => {
-              const apiDefId = newChatApiDefId || project.apiDefinitionId;
-              const apiDef = apiDefId ? apiDefinitions.find(d => d.id === apiDefId) : null;
-              return apiDef ? getApiDefinitionIcon(apiDef) + ' ' : '';
-            })()}
-            {newChatModelId || 'default'} ▼
-          </button>
-        </div>
-
-        {/* Model Selector for New Chat */}
-        <ModelSelector
-          isOpen={showNewChatModelSelector}
-          onClose={() => setShowNewChatModelSelector(false)}
-          currentApiDefinitionId={newChatApiDefId}
-          currentModelId={newChatModelId}
-          parentApiDefinitionId={project.apiDefinitionId}
-          parentModelId={project.modelId}
-          onSelect={handleNewChatModelSelect}
-          title="Select Model for New Chat"
-          showResetOption={true}
-        />
-
-        <div className="flex flex-col gap-3">
-          {/* Hidden File Input */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={handleFileSelect}
-            className="hidden"
-          />
-
-          {/* Thumbnail Preview Grid - uses processed MessageAttachment data: URLs */}
-          {(attachments.length > 0 || isProcessingAttachments) && (
-            <div className="flex flex-wrap gap-2">
-              {attachments.map(attachment => (
-                <div
-                  key={attachment.id}
-                  className="relative h-20 w-20 overflow-hidden rounded-lg border border-gray-300"
-                >
-                  <img
-                    src={`data:${attachment.mimeType};base64,${attachment.data}`}
-                    alt="Attachment preview"
-                    className="h-full w-full object-cover"
-                  />
-                  <button
-                    onClick={() => handleRemoveAttachment(attachment.id)}
-                    className="absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-xs text-white hover:bg-red-600"
-                    title="Remove image"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-              {/* Processing indicator */}
-              {isProcessingAttachments && (
-                <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-gray-300 bg-gray-100">
-                  <div className="text-xs text-gray-500">
-                    <span className="bouncing-dot">.</span>
-                    <span className="bouncing-dot">.</span>
-                    <span className="bouncing-dot">.</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Validation Error */}
-          {validationError && (
-            <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
-              {validationError}
-            </div>
-          )}
-
-          <textarea
-            value={newChatMessage}
-            onChange={e => setNewChatMessage(e.target.value)}
-            placeholder="Type your message here..."
-            rows={3}
-            className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleStartNewChat();
-              }
-            }}
-          />
-
-          <div className="flex gap-2">
-            {/* Attach Button */}
+      {!project.apiDefinitionId || !project.modelId ? (
+        <div className="border-b border-gray-200 bg-gray-50 p-4">
+          <div className="flex flex-col items-center gap-3 py-4 text-center">
+            <p className="text-sm text-gray-600">No default model configured for this project.</p>
             <button
-              onClick={handleAttachClick}
-              disabled={
-                isCreatingChat || attachments.length >= maxAttachments || isProcessingAttachments
-              }
-              className="rounded-lg bg-gray-200 px-4 py-2 font-semibold text-gray-700 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-              title={
-                attachments.length >= maxAttachments
-                  ? `Maximum ${maxAttachments} images`
-                  : 'Attach images'
-              }
+              onClick={() => navigate(`/project/${projectId}/settings`)}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
             >
-              📎
-            </button>
-
-            {/* Send Button */}
-            <button
-              onClick={handleStartNewChat}
-              disabled={
-                (!newChatMessage.trim() && attachments.length === 0) ||
-                isCreatingChat ||
-                isProcessingAttachments
-              }
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
-            >
-              {isCreatingChat && <Spinner size={16} colorClass="border-white" />}
-              {isCreatingChat ? 'Creating...' : isProcessingAttachments ? 'Processing...' : 'Send'}
+              Open Project Settings
             </button>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="border-b border-gray-200 bg-gray-50 p-4">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-700">Start a new chat</span>
+            <span className="text-gray-400">•</span>
+            <button
+              onClick={() => setShowNewChatModelSelector(true)}
+              className="text-sm font-medium text-blue-600 hover:text-blue-700"
+            >
+              {(() => {
+                const apiDefId = newChatApiDefId || project.apiDefinitionId;
+                const apiDef = apiDefId ? apiDefinitions.find(d => d.id === apiDefId) : null;
+                return apiDef ? getApiDefinitionIcon(apiDef) + ' ' : '';
+              })()}
+              {newChatModelId || 'default'} ▼
+            </button>
+          </div>
+
+          {/* Model Selector for New Chat */}
+          <ModelSelector
+            isOpen={showNewChatModelSelector}
+            onClose={() => setShowNewChatModelSelector(false)}
+            currentApiDefinitionId={newChatApiDefId}
+            currentModelId={newChatModelId}
+            parentApiDefinitionId={project.apiDefinitionId}
+            parentModelId={project.modelId}
+            onSelect={handleNewChatModelSelect}
+            title="Select Model for New Chat"
+            showResetOption={true}
+          />
+
+          <div className="flex flex-col gap-3">
+            {/* Hidden File Input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+
+            {/* Thumbnail Preview Grid - uses processed MessageAttachment data: URLs */}
+            {(attachments.length > 0 || isProcessingAttachments) && (
+              <div className="flex flex-wrap gap-2">
+                {attachments.map(attachment => (
+                  <div
+                    key={attachment.id}
+                    className="relative h-20 w-20 overflow-hidden rounded-lg border border-gray-300"
+                  >
+                    <img
+                      src={`data:${attachment.mimeType};base64,${attachment.data}`}
+                      alt="Attachment preview"
+                      className="h-full w-full object-cover"
+                    />
+                    <button
+                      onClick={() => handleRemoveAttachment(attachment.id)}
+                      className="absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-xs text-white hover:bg-red-600"
+                      title="Remove image"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                {/* Processing indicator */}
+                {isProcessingAttachments && (
+                  <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-gray-300 bg-gray-100">
+                    <div className="text-xs text-gray-500">
+                      <span className="bouncing-dot">.</span>
+                      <span className="bouncing-dot">.</span>
+                      <span className="bouncing-dot">.</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Validation Error */}
+            {validationError && (
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                {validationError}
+              </div>
+            )}
+
+            <textarea
+              value={newChatMessage}
+              onChange={e => setNewChatMessage(e.target.value)}
+              placeholder="Type your message here..."
+              rows={3}
+              className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleStartNewChat();
+                }
+              }}
+            />
+
+            <div className="flex gap-2">
+              {/* Attach Button */}
+              <button
+                onClick={handleAttachClick}
+                disabled={
+                  isCreatingChat || attachments.length >= maxAttachments || isProcessingAttachments
+                }
+                className="rounded-lg bg-gray-200 px-4 py-2 font-semibold text-gray-700 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                title={
+                  attachments.length >= maxAttachments
+                    ? `Maximum ${maxAttachments} images`
+                    : 'Attach images'
+                }
+              >
+                📎
+              </button>
+
+              {/* Send Button */}
+              <button
+                onClick={handleStartNewChat}
+                disabled={
+                  (!newChatMessage.trim() && attachments.length === 0) ||
+                  isCreatingChat ||
+                  isProcessingAttachments
+                }
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+              >
+                {isCreatingChat && <Spinner size={16} colorClass="border-white" />}
+                {isCreatingChat
+                  ? 'Creating...'
+                  : isProcessingAttachments
+                    ? 'Processing...'
+                    : 'Send'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Chat List */}
       <div className="ios-scroll scroll-safe-bottom flex-1 overflow-y-auto overscroll-y-contain p-4">

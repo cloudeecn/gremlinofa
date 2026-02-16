@@ -81,12 +81,17 @@ describe('detectBedrockReasoningType', () => {
   });
 
   describe('DeepSeek models', () => {
-    it('detects deepseek-r1', () => {
-      expect(detectBedrockReasoningType('deepseek.deepseek-r1-v1:0')).toBe('deepseek');
+    it('detects deepseek-r1 via deepseek.r1 pattern', () => {
+      expect(detectBedrockReasoningType('deepseek.r1-v1:0')).toBe('deepseek');
     });
 
-    it('detects DeepSeek case-insensitive', () => {
-      expect(detectBedrockReasoningType('DeepSeek.DeepSeek-R1-v1:0')).toBe('deepseek');
+    it('detects deepseek-r1 case-insensitive', () => {
+      expect(detectBedrockReasoningType('DeepSeek.R1-v1:0')).toBe('deepseek');
+    });
+
+    it('falls back to generic-reasoning for other deepseek models', () => {
+      expect(detectBedrockReasoningType('deepseek.deepseek-r1-v1:0')).toBe('generic-reasoning');
+      expect(detectBedrockReasoningType('DeepSeek.DeepSeek-R1-v1:0')).toBe('generic-reasoning');
     });
   });
 
@@ -332,14 +337,57 @@ describe('buildReasoningConfig', () => {
   });
 
   describe('DeepSeek config', () => {
-    it('builds showThinking config', () => {
+    it('builds reasoning_config with showThinking', () => {
       const result = buildReasoningConfig('deepseek', {
         enableReasoning: true,
         reasoningBudgetTokens: 1024,
       });
       expect(result).toEqual({
+        reasoning_config: 'medium',
         showThinking: true,
       });
+    });
+
+    it('maps effort to reasoning_config', () => {
+      const result = buildReasoningConfig('deepseek', {
+        enableReasoning: true,
+        reasoningBudgetTokens: 1024,
+        reasoningEffort: 'high',
+      });
+      expect(result).toEqual({
+        reasoning_config: 'high',
+        showThinking: true,
+      });
+    });
+  });
+
+  describe('generic-reasoning config', () => {
+    it('builds reasoning_config with effort', () => {
+      const result = buildReasoningConfig('generic-reasoning', {
+        enableReasoning: true,
+        reasoningBudgetTokens: 1024,
+      });
+      expect(result).toEqual({
+        reasoning_config: 'medium',
+      });
+    });
+
+    it('maps effort levels', () => {
+      expect(
+        buildReasoningConfig('generic-reasoning', {
+          enableReasoning: true,
+          reasoningBudgetTokens: 1024,
+          reasoningEffort: 'low',
+        })
+      ).toEqual({ reasoning_config: 'low' });
+
+      expect(
+        buildReasoningConfig('generic-reasoning', {
+          enableReasoning: true,
+          reasoningBudgetTokens: 1024,
+          reasoningEffort: 'xhigh',
+        })
+      ).toEqual({ reasoning_config: 'high' });
     });
   });
 });

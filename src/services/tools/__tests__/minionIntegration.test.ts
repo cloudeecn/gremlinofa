@@ -567,6 +567,74 @@ describe('Minion Integration', () => {
       expect(updatedChat?.modelId).toBe('claude-3-opus');
     });
 
+    it('preserves stored enabledTools on continuation when not re-specified', async () => {
+      // Existing minion chat was created with enabledTools
+      const existingChat: MinionChat = {
+        id: 'minion_tools_test',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        totalInputTokens: 100,
+        totalOutputTokens: 50,
+        enabledTools: ['memory', 'javascript'],
+      };
+      mockStorageData.minionChats.set('minion_tools_test', existingChat);
+      mockStorageData.minionMessages.set('minion_tools_test', [
+        {
+          id: 'msg_u1',
+          role: 'user',
+          content: { type: 'text', content: 'First message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_a1',
+          role: 'assistant',
+          content: { type: 'text', content: 'First response' },
+          timestamp: new Date(),
+        },
+      ]);
+
+      const mockResult = {
+        textContent: 'Continued!',
+        fullContent: [{ type: 'text', text: 'Continued!' }],
+        stopReason: 'end_turn',
+        inputTokens: 50,
+        outputTokens: 25,
+      };
+      const mockStream = createMockStream([{ type: 'content', content: 'Continued!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = { projectId: 'proj_test', chatId: 'chat_test' };
+
+      // Continue WITHOUT specifying enabledTools — should use stored ones
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'Continue please', minionChatId: 'minion_tools_test' },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+
+      // The stored tools should have been used: memory, javascript, return
+      const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const streamOptions = callArgs[3];
+      expect(streamOptions.enabledTools).toContain('memory');
+      expect(streamOptions.enabledTools).toContain('javascript');
+      expect(streamOptions.enabledTools).toContain('return');
+      expect(streamOptions.enabledTools).toHaveLength(3);
+
+      // The minionChat should still have the enabledTools
+      const updatedChat = mockStorageData.minionChats.get('minion_tools_test');
+      expect(updatedChat?.enabledTools).toEqual(['memory', 'javascript']);
+    });
+
     it('scopes tools correctly (excludes minion, includes return)', async () => {
       const mockResult = {
         textContent: 'Done',

@@ -248,6 +248,7 @@ async function* executeMinion(
     // Merge caller-provided settings into existing chat
     if (minionInput.displayName !== undefined) minionChat.displayName = minionInput.displayName;
     if (minionInput.persona !== undefined) minionChat.persona = minionInput.persona;
+    if (minionInput.enabledTools !== undefined) minionChat.enabledTools = minionInput.enabledTools;
 
     if (action === 'retry') {
       // Retry: roll back to checkpoint before proceeding
@@ -362,6 +363,7 @@ async function* executeMinion(
       checkpoint: CHECKPOINT_START,
       displayName: minionInput.displayName,
       persona: minionInput.persona,
+      enabledTools: minionInput.enabledTools,
       createdAt: new Date(),
       lastModifiedAt: new Date(),
     };
@@ -466,10 +468,11 @@ async function* executeMinion(
   }
 
   const projectTools = project.enabledTools ?? [];
+  const effectiveEnabledTools = minionInput.enabledTools ?? minionChat.enabledTools;
 
-  if (minionInput.enabledTools && minionInput.enabledTools.length > 0) {
+  if (effectiveEnabledTools && effectiveEnabledTools.length > 0) {
     const projectToolSet = new Set(projectTools);
-    const invalidTools = minionInput.enabledTools.filter(
+    const invalidTools = effectiveEnabledTools.filter(
       t => t !== 'return' && !projectToolSet.has(t)
     );
     if (invalidTools.length > 0) {
@@ -482,7 +485,7 @@ async function* executeMinion(
 
   const includeReturn = minionToolOptions.noReturnTool !== true;
   const disableReasoning = minionToolOptions.disableReasoning === true;
-  const minionTools = buildMinionTools(minionInput.enabledTools, projectTools, includeReturn);
+  const minionTools = buildMinionTools(effectiveEnabledTools, projectTools, includeReturn);
 
   // ── Phase 3: Message + execution ──
   // User message will be saved. Errors here can be retried via action: 'retry'.
@@ -528,9 +531,10 @@ async function* executeMinion(
     effectiveModelRef.modelId
   );
 
-  // Persist resolved model into minionChat for future continuation
+  // Persist resolved model and tools into minionChat for future continuation
   minionChat.apiDefinitionId = effectiveModelRef.apiDefinitionId;
   minionChat.modelId = effectiveModelRef.modelId;
+  minionChat.enabledTools = effectiveEnabledTools;
 
   // Build context for minion based on retry re-use, return tool resumption, or normal message
   let minionContext: Message<unknown>[];

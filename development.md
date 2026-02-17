@@ -1125,7 +1125,7 @@ When `namespacedMinion` is enabled, each minion gets VFS namespace isolation bas
 
 Minion's available tools are computed as: `(requestedTools ∩ projectTools) - minion + return`
 
-- Defaults to `['return']` when `enabledTools` is omitted (caller must explicitly grant tools)
+- Defaults to `['return']` when `enabledTools` is omitted on first call (caller must explicitly grant tools). On continuation, stored `enabledTools` are used as fallback when not re-specified.
 - Can't spawn nested minions (self-exclusion)
 - `return` tool always available for explicit result signaling
 - Requested tools validated against project tools — error returned if any tool is not available
@@ -1139,7 +1139,7 @@ Minion conversations stored separately for debugging visibility:
 - `getMinionMessages(minionChatId)` / `saveMinionMessage()`
 - Cascade deletion when parent chat is deleted
 - `checkpoint?: string` field stores last message ID before minion run (used by retry action for rollback). New chats start with `CHECKPOINT_START` sentinel (`'_start'`) to enable first-run retry.
-- Persisted settings: `displayName`, `persona`, `apiDefinitionId`, `modelId` — stored on creation and updated on continuation. Enables stored-model fallback when continuing without re-specifying model.
+- Persisted settings: `displayName`, `persona`, `apiDefinitionId`, `modelId`, `enabledTools` — stored on creation and updated on continuation. Enables stored-model and stored-tools fallback when continuing without re-specifying them.
 
 **Result Handling:**
 

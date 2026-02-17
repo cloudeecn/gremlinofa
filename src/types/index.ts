@@ -651,6 +651,8 @@ export interface MinionChat {
   apiDefinitionId?: string;
   /** Model ID used (persisted for continuation) */
   modelId?: string;
+  /** Tools enabled for this minion (persisted for continuation) */
+  enabledTools?: string[];
 }
 
 // Virtual Filesystem (VFS) types

@@ -14,6 +14,8 @@ import ModelSelector from '../project/ModelSelector';
 import Spinner from '../ui/Spinner';
 import ChatInput from './ChatInput';
 import MessageList from './MessageList';
+import MinionChatView from './MinionChatView';
+import { MinionChatOverlayContext } from './MinionChatOverlayContext';
 
 interface ChatViewProps {
   chatId: string;
@@ -37,6 +39,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   });
 
   const [showModelSelector, setShowModelSelector] = useState(false);
+  const [activeMinionChatId, setActiveMinionChatId] = useState<string | null>(null);
   const [isRenamingChat, setIsRenamingChat] = useState(false);
   const [renameChatText, setRenameChatText] = useState('');
   const [isSavingRename, setIsSavingRename] = useState(false);
@@ -330,152 +333,165 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   if (!chat) return null;
 
   return (
-    <div className="flex h-full flex-col bg-white">
-      {/* Header with safe area */}
-      <div className="border-b border-gray-200 bg-white">
-        <div className="safe-area-inset-top" />
-        <div className="flex h-14 items-center px-4">
-          {isMobile && onMenuPress && (
-            <button
-              onClick={onMenuPress}
-              className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
-            >
-              <span className="text-2xl text-gray-700">☰</span>
-            </button>
-          )}
-          <div className="flex min-w-0 flex-1 flex-col justify-center">
-            <button
-              onClick={handleStartRename}
-              className="text-left transition-colors hover:text-blue-600"
-            >
-              <h1 className="truncate text-lg font-semibold text-gray-900">{chat.name}</h1>
-            </button>
-            <button
-              onClick={() => setShowModelSelector(true)}
-              className="truncate text-left text-xs text-gray-600 transition-colors hover:text-blue-600"
-            >
-              {(chat.apiDefinitionId !== null || chat.modelId !== null) && '*'}
-              {currentApiDefId &&
-                (() => {
-                  const apiDef = apiDefinitions.find(d => d.id === currentApiDefId);
-                  return apiDef ? getApiDefinitionIcon(apiDef) + ' ' : '';
-                })()}
-              {currentModelId || 'No model'} ▼
-            </button>
-          </div>
-          <button
-            onClick={handleClose}
-            className="-mr-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
-          >
-            <span className="text-2xl text-gray-600">✕</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Info Bar */}
-      <div className="flex items-center justify-end border-b border-gray-200 bg-white px-4 py-1">
-        <div className="text-[10px] text-gray-600">
-          {formatTokens('↑', tokenUsage.input)} {formatTokens('↓', tokenUsage.output)}
-          {formatTokens(' R:', tokenUsage.reasoning)}
-          {formatTokens(' C↑', tokenUsage.cacheCreation)}
-          {formatTokens(' C↓', tokenUsage.cacheRead)} ${tokenUsage.cost?.toFixed(3) || '0.000'}
-          {chat.costUnreliable && (
-            <span className="ml-1 text-yellow-600" title="Cost calculation may be inaccurate">
-              (unreliable)
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Message List */}
-      <MessageList
-        messages={messages}
-        onAction={handleMessageAction}
-        isLoading={isLoading}
-        streamingGroups={streamingGroups}
-        currentApiDefId={currentApiDefId}
-        currentModelId={currentModelId}
-        pendingToolCount={unresolvedToolCalls?.length}
-        onPendingToolReject={() => resolvePendingToolCalls('stop')}
-        onPendingToolAccept={() => resolvePendingToolCalls('continue')}
-      />
-
-      {/* Chat Input */}
-      <ChatInput
-        value={inputMessage}
-        onChange={setInputMessage}
-        onSend={handleSendMessage}
-        disabled={isLoading}
-        attachments={attachments}
-        onFilesAdded={handleFilesAdded}
-        onRemoveAttachment={handleRemoveAttachment}
-        maxAttachments={10}
-        isProcessing={isProcessingAttachments}
-        showSendSpinner={isLoading && !hasReceivedFirstChunk}
-        hasPendingToolCalls={!!unresolvedToolCalls && unresolvedToolCalls.length > 0}
-      />
-
-      {/* Model Selector Modal */}
-      {showModelSelector && (
-        <ModelSelector
-          isOpen={showModelSelector}
-          onClose={() => setShowModelSelector(false)}
-          currentApiDefinitionId={currentApiDefId}
-          currentModelId={currentModelId}
-          parentApiDefinitionId={parentApiDefId}
-          parentModelId={parentModelId}
-          onSelect={handleModelSelect}
-          title="Configure Chat"
-          showResetOption={true}
-        />
-      )}
-
-      {/* Rename Chat Modal */}
-      {isRenamingChat && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          onClick={handleCancelRename}
-        >
-          <div
-            className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl"
-            onClick={e => e.stopPropagation()}
-          >
-            <h2 className="mb-4 text-lg font-semibold text-gray-900">Rename Chat</h2>
-            <input
-              type="text"
-              value={renameChatText}
-              onChange={e => setRenameChatText(e.target.value)}
-              placeholder="Enter chat name"
-              autoFocus
-              className="mb-4 w-full rounded-lg border border-gray-300 px-4 py-2 text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  handleSaveRename();
-                } else if (e.key === 'Escape') {
-                  handleCancelRename();
-                }
-              }}
-            />
-            <div className="flex justify-end gap-3">
+    <MinionChatOverlayContext.Provider value={{ viewMinionChat: setActiveMinionChatId }}>
+      <div className="relative flex h-full flex-col bg-white">
+        {/* Header with safe area */}
+        <div className="border-b border-gray-200 bg-white">
+          <div className="safe-area-inset-top" />
+          <div className="flex h-14 items-center px-4">
+            {isMobile && onMenuPress && (
               <button
-                onClick={handleCancelRename}
-                disabled={isSavingRename}
-                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={onMenuPress}
+                className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
               >
-                Cancel
+                <span className="text-2xl text-gray-700">☰</span>
+              </button>
+            )}
+            <div className="flex min-w-0 flex-1 flex-col justify-center">
+              <button
+                onClick={handleStartRename}
+                className="text-left transition-colors hover:text-blue-600"
+              >
+                <h1 className="truncate text-lg font-semibold text-gray-900">{chat.name}</h1>
               </button>
               <button
-                onClick={handleSaveRename}
-                disabled={isSavingRename}
-                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
+                onClick={() => setShowModelSelector(true)}
+                className="truncate text-left text-xs text-gray-600 transition-colors hover:text-blue-600"
               >
-                {isSavingRename && <Spinner size={14} colorClass="border-white" />}
-                Save
+                {(chat.apiDefinitionId !== null || chat.modelId !== null) && '*'}
+                {currentApiDefId &&
+                  (() => {
+                    const apiDef = apiDefinitions.find(d => d.id === currentApiDefId);
+                    return apiDef ? getApiDefinitionIcon(apiDef) + ' ' : '';
+                  })()}
+                {currentModelId || 'No model'} ▼
               </button>
             </div>
+            <button
+              onClick={handleClose}
+              className="-mr-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
+            >
+              <span className="text-2xl text-gray-600">✕</span>
+            </button>
           </div>
         </div>
-      )}
-    </div>
+
+        {/* Info Bar */}
+        <div className="flex items-center justify-end border-b border-gray-200 bg-white px-4 py-1">
+          <div className="text-[10px] text-gray-600">
+            {formatTokens('↑', tokenUsage.input)} {formatTokens('↓', tokenUsage.output)}
+            {formatTokens(' R:', tokenUsage.reasoning)}
+            {formatTokens(' C↑', tokenUsage.cacheCreation)}
+            {formatTokens(' C↓', tokenUsage.cacheRead)} ${tokenUsage.cost?.toFixed(3) || '0.000'}
+            {chat.costUnreliable && (
+              <span className="ml-1 text-yellow-600" title="Cost calculation may be inaccurate">
+                (unreliable)
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Message List */}
+        <MessageList
+          messages={messages}
+          onAction={handleMessageAction}
+          isLoading={isLoading}
+          streamingGroups={streamingGroups}
+          currentApiDefId={currentApiDefId}
+          currentModelId={currentModelId}
+          pendingToolCount={unresolvedToolCalls?.length}
+          onPendingToolReject={() => resolvePendingToolCalls('stop')}
+          onPendingToolAccept={() => resolvePendingToolCalls('continue')}
+        />
+
+        {/* Chat Input */}
+        <ChatInput
+          value={inputMessage}
+          onChange={setInputMessage}
+          onSend={handleSendMessage}
+          disabled={isLoading}
+          attachments={attachments}
+          onFilesAdded={handleFilesAdded}
+          onRemoveAttachment={handleRemoveAttachment}
+          maxAttachments={10}
+          isProcessing={isProcessingAttachments}
+          showSendSpinner={isLoading && !hasReceivedFirstChunk}
+          hasPendingToolCalls={!!unresolvedToolCalls && unresolvedToolCalls.length > 0}
+        />
+
+        {/* Model Selector Modal */}
+        {showModelSelector && (
+          <ModelSelector
+            isOpen={showModelSelector}
+            onClose={() => setShowModelSelector(false)}
+            currentApiDefinitionId={currentApiDefId}
+            currentModelId={currentModelId}
+            parentApiDefinitionId={parentApiDefId}
+            parentModelId={parentModelId}
+            onSelect={handleModelSelect}
+            title="Configure Chat"
+            showResetOption={true}
+          />
+        )}
+
+        {/* Rename Chat Modal */}
+        {isRenamingChat && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={handleCancelRename}
+          >
+            <div
+              className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <h2 className="mb-4 text-lg font-semibold text-gray-900">Rename Chat</h2>
+              <input
+                type="text"
+                value={renameChatText}
+                onChange={e => setRenameChatText(e.target.value)}
+                placeholder="Enter chat name"
+                autoFocus
+                className="mb-4 w-full rounded-lg border border-gray-300 px-4 py-2 text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    handleSaveRename();
+                  } else if (e.key === 'Escape') {
+                    handleCancelRename();
+                  }
+                }}
+              />
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={handleCancelRename}
+                  disabled={isSavingRename}
+                  className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveRename}
+                  disabled={isSavingRename}
+                  className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
+                >
+                  {isSavingRename && <Spinner size={14} colorClass="border-white" />}
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Minion Chat Overlay */}
+        {activeMinionChatId && (
+          <div className="absolute inset-0 z-30 flex flex-col bg-white">
+            <MinionChatView
+              key={activeMinionChatId}
+              minionChatId={activeMinionChatId}
+              onClose={() => setActiveMinionChatId(null)}
+            />
+          </div>
+        )}
+      </div>
+    </MinionChatOverlayContext.Provider>
   );
 }

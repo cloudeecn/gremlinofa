@@ -42,15 +42,15 @@ export default function UserMessageBubble({
   };
 
   const handleFork = () => {
-    onAction('fork', message.id);
+    onAction?.('fork', message.id);
   };
 
   const handleEdit = () => {
-    onAction('edit', message.id);
+    onAction?.('edit', message.id);
   };
 
   const handleResend = () => {
-    onAction('resend', message.id);
+    onAction?.('resend', message.id);
   };
 
   return (
@@ -84,41 +84,45 @@ export default function UserMessageBubble({
       <div
         className={`mt-1 flex max-w-[85%] items-center justify-end gap-2 text-[10px] text-gray-500`}
       >
-        <button
-          onClick={handleEdit}
-          className="transition-colors hover:text-gray-700"
-          title="Edit message"
-        >
-          📝 Edit
-        </button>
-        <button
-          onClick={handleFork}
-          className="transition-colors hover:text-gray-700"
-          title="Fork chat from here"
-        >
-          🔀 Fork
-        </button>
-        <button
-          onClick={handleResend}
-          className="transition-colors hover:text-blue-600"
-          title="Resend from here"
-        >
-          🔄 Resend
-        </button>
-        <button
-          onClick={handleCopy}
-          className="transition-colors hover:text-gray-700"
-          title="Copy message"
-        >
-          📋 Copy
-        </button>
-        <button
-          onClick={handleDumpMessage}
-          className="transition-colors hover:text-gray-700"
-          title="Copy message JSON"
-        >
-          🔍
-        </button>
+        {onAction && (
+          <>
+            <button
+              onClick={handleEdit}
+              className="transition-colors hover:text-gray-700"
+              title="Edit message"
+            >
+              📝 Edit
+            </button>
+            <button
+              onClick={handleFork}
+              className="transition-colors hover:text-gray-700"
+              title="Fork chat from here"
+            >
+              🔀 Fork
+            </button>
+            <button
+              onClick={handleResend}
+              className="transition-colors hover:text-blue-600"
+              title="Resend from here"
+            >
+              🔄 Resend
+            </button>
+            <button
+              onClick={handleCopy}
+              className="transition-colors hover:text-gray-700"
+              title="Copy message"
+            >
+              📋 Copy
+            </button>
+            <button
+              onClick={handleDumpMessage}
+              className="transition-colors hover:text-gray-700"
+              title="Copy message JSON"
+            >
+              🔍
+            </button>
+          </>
+        )}
         <span>{formatTimestamp(message.timestamp)}</span>
       </div>
 

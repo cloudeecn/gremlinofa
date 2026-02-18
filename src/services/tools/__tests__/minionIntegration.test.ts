@@ -479,6 +479,162 @@ describe('Minion Integration', () => {
       expect(updatedChat?.totalOutputTokens).toBe(125); // 50 + 75
     });
 
+    it('preserves stored model on continuation instead of falling back to default', async () => {
+      // Setup: a second API + model that the minion was previously using
+      const apiDef2: APIDefinition = {
+        id: 'api_other',
+        apiType: 'anthropic',
+        name: 'Other API',
+        baseUrl: '',
+        apiKey: 'other-key',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      mockStorageData.apiDefinitions.set('api_other', apiDef2);
+
+      const model2: Model = {
+        id: 'claude-3-opus',
+        name: 'Claude 3 Opus',
+        apiType: 'anthropic',
+        contextWindow: 200000,
+        inputPrice: 15,
+        outputPrice: 75,
+      };
+      mockStorageData.models.set('api_other:claude-3-opus', model2);
+
+      // Existing minion chat was previously run with api_other:claude-3-opus
+      const existingChat: MinionChat = {
+        id: 'minion_model_test',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        totalInputTokens: 100,
+        totalOutputTokens: 50,
+        apiDefinitionId: 'api_other',
+        modelId: 'claude-3-opus',
+      };
+      mockStorageData.minionChats.set('minion_model_test', existingChat);
+      mockStorageData.minionMessages.set('minion_model_test', [
+        {
+          id: 'msg_u1',
+          role: 'user',
+          content: { type: 'text', content: 'First message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_a1',
+          role: 'assistant',
+          content: { type: 'text', content: 'First response' },
+          timestamp: new Date(),
+        },
+      ]);
+
+      const mockResult = {
+        textContent: 'Continued!',
+        fullContent: [{ type: 'text', text: 'Continued!' }],
+        stopReason: 'end_turn',
+        inputTokens: 50,
+        outputTokens: 25,
+      };
+      const mockStream = createMockStream([{ type: 'content', content: 'Continued!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      // toolOptions.model is the DEFAULT (api_test:claude-3-sonnet) — should NOT override stored model
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = { projectId: 'proj_test', chatId: 'chat_test' };
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'Continue please', minionChatId: 'minion_model_test' },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+
+      // The stored model (api_other:claude-3-opus) should have been used, not the default
+      const { storage } = await import('../../storage');
+      expect(storage.getModel).toHaveBeenCalledWith('api_other', 'claude-3-opus');
+
+      // The minionChat should still have the original model
+      const updatedChat = mockStorageData.minionChats.get('minion_model_test');
+      expect(updatedChat?.apiDefinitionId).toBe('api_other');
+      expect(updatedChat?.modelId).toBe('claude-3-opus');
+    });
+
+    it('preserves stored enabledTools on continuation when not re-specified', async () => {
+      // Existing minion chat was created with enabledTools
+      const existingChat: MinionChat = {
+        id: 'minion_tools_test',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        totalInputTokens: 100,
+        totalOutputTokens: 50,
+        enabledTools: ['memory', 'javascript'],
+      };
+      mockStorageData.minionChats.set('minion_tools_test', existingChat);
+      mockStorageData.minionMessages.set('minion_tools_test', [
+        {
+          id: 'msg_u1',
+          role: 'user',
+          content: { type: 'text', content: 'First message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_a1',
+          role: 'assistant',
+          content: { type: 'text', content: 'First response' },
+          timestamp: new Date(),
+        },
+      ]);
+
+      const mockResult = {
+        textContent: 'Continued!',
+        fullContent: [{ type: 'text', text: 'Continued!' }],
+        stopReason: 'end_turn',
+        inputTokens: 50,
+        outputTokens: 25,
+      };
+      const mockStream = createMockStream([{ type: 'content', content: 'Continued!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = { projectId: 'proj_test', chatId: 'chat_test' };
+
+      // Continue WITHOUT specifying enabledTools — should use stored ones
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'Continue please', minionChatId: 'minion_tools_test' },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+
+      // The stored tools should have been used: memory, javascript, return
+      const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const streamOptions = callArgs[3];
+      expect(streamOptions.enabledTools).toContain('memory');
+      expect(streamOptions.enabledTools).toContain('javascript');
+      expect(streamOptions.enabledTools).toContain('return');
+      expect(streamOptions.enabledTools).toHaveLength(3);
+
+      // The minionChat should still have the enabledTools
+      const updatedChat = mockStorageData.minionChats.get('minion_tools_test');
+      expect(updatedChat?.enabledTools).toEqual(['memory', 'javascript']);
+    });
+
     it('scopes tools correctly (excludes minion, includes return)', async () => {
       const mockResult = {
         textContent: 'Done',

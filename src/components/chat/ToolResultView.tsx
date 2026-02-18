@@ -5,8 +5,10 @@ import type {
   RenderingBlockGroup,
   RenderingContentBlock,
 } from '../../types/content';
-import { storage } from '../../services/storage';
 import { usePreferences } from '../../hooks/usePreferences';
+import { useApp } from '../../hooks/useApp';
+import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
+import { useMinionChatOverlay } from './MinionChatOverlayContext';
 import BackstageView from './BackstageView';
 import TextGroupView from './TextGroupView';
 
@@ -149,6 +151,8 @@ function ComplexToolResult({
   const isRunning = block.status === 'running';
   const [isExpanded, setIsExpanded] = useState(false);
   const { iconOnRight } = usePreferences();
+  const { apiDefinitions } = useApp();
+  const overlayCtx = useMinionChatOverlay();
 
   // Extract tool_info block from first group (if present)
   const toolInfo = extractToolInfo(groups);
@@ -165,7 +169,15 @@ function ComplexToolResult({
   const previewText = !isExpanded ? getLastActivityPreview(activityGroups) : '';
   const lastIcon = !isExpanded ? getLastBlockIcon(activityGroups) : undefined;
   const toolCost = block.tokenTotals?.cost;
-  const persona = toolInfo?.persona;
+  const displayLabel = toolInfo?.displayName ?? toolInfo?.persona;
+
+  // Look up API definition icon for settings info line
+  const apiDefIcon = toolInfo?.apiDefinitionId
+    ? (() => {
+        const apiDef = apiDefinitions.find(d => d.id === toolInfo.apiDefinitionId);
+        return apiDef ? getApiDefinitionIcon(apiDef) : undefined;
+      })()
+    : undefined;
 
   return (
     <div className="overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50">
@@ -176,7 +188,9 @@ function ComplexToolResult({
       >
         <span className="flex shrink-0 items-center gap-1">
           <span>{!iconOnRight && defaultIcon}</span>
-          {persona && <span className="text-xs font-normal text-purple-600">{persona}</span>}
+          {displayLabel && (
+            <span className="text-xs font-normal text-purple-600">{displayLabel}</span>
+          )}
           <span className="text-purple-600">{isExpanded ? '▼' : '▶'}</span>
           {lastIcon && <span>{lastIcon}</span>}
         </span>
@@ -211,6 +225,19 @@ function ComplexToolResult({
       {/* Expanded content */}
       {isExpanded && (
         <div className="space-y-3 border-t border-purple-200 bg-white px-4 py-3">
+          {/* Effective settings info line */}
+          {toolInfo && (toolInfo.persona || toolInfo.apiDefinitionId || toolInfo.modelId) && (
+            <div className="flex items-center gap-1.5 text-xs text-gray-500">
+              {toolInfo.persona && toolInfo.persona !== 'default' && (
+                <span className="font-medium text-purple-600">
+                  {toolInfo.displayName ?? toolInfo.persona}
+                </span>
+              )}
+              {apiDefIcon && <span>{apiDefIcon}</span>}
+              {toolInfo.modelId && <span className="text-gray-400">{toolInfo.modelId}</span>}
+            </div>
+          )}
+
           {/* Tool info input in blue box */}
           {toolInfo?.input && (
             <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2">
@@ -262,23 +289,18 @@ function ComplexToolResult({
             </div>
           )}
 
-          {/* Copy buttons */}
+          {/* Action buttons */}
           <div className="flex justify-end gap-3 border-t border-purple-100 pt-2">
-            {toolInfo?.chatId && (
+            {toolInfo?.chatId && overlayCtx && (
               <button
-                onClick={async e => {
-                  e.stopPropagation();
-                  try {
-                    const messages = await storage.getMinionMessages(toolInfo.chatId!);
-                    await navigator.clipboard.writeText(JSON.stringify(messages, null, 2));
-                  } catch {
-                    // Silently fail if clipboard access denied
-                  }
-                }}
                 className="text-xs text-gray-400 hover:text-gray-600"
-                title="Copy all sub-chat messages as JSON"
+                title="View minion sub-chat"
+                onClick={e => {
+                  e.stopPropagation();
+                  overlayCtx.viewMinionChat(toolInfo.chatId!);
+                }}
               >
-                📋 Copy All
+                💬 View Chat
               </button>
             )}
             <button

@@ -96,7 +96,7 @@ export const checkpointTool: ClientSideTool = {
   // eslint-disable-next-line require-yield -- Simple tool: no streaming events
   execute: async function* (_input): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
     return {
-      content: 'Checkpoint saved. Please stop and wait for instruction to continue.',
+      content: 'Checkpoint saved. Please stop. User will call you back to continue.',
       checkpoint: true,
     };
   },

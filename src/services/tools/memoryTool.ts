@@ -872,7 +872,7 @@ const MEMORY_TOOL_DESCRIPTION = `Tool for reading, writing, and managing files i
 * The view command supports the following cases:
   - Directories: Lists files and directories up to 2 levels deep, ignoring hidden items and node_modules
   - Text files: Displays numbered lines. Lines are determined from Python's .splitlines() method, which recognizes all standard line breaks. If the file contains more than 16000 characters, the output will be truncated.
-* The create command creates or overwrites text files with the content specified in the file_text parameter.
+* The create command creates a new text file with the content specified in the file_text parameter. It will fail if the file already exists.
 * The str_replace command replaces text in a file. Requires an exact, unique match of old_str (whitespace sensitive).
   - Will fail if old_str doesn't exist or appears multiple times
   - Omitting new_str deletes the matched text

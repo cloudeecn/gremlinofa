@@ -665,8 +665,7 @@ async function* executeToolUseBlocks(
     if (deferReturn) {
       // Deferred mode: store value, build normal tool_result, continue loop
       const returnValue = toolResult.breakLoop?.returnValue ?? toolResult.content;
-
-      const storedContent = 'Result stored. You MUST stop now — do not call any more tools.';
+      const storedContent = 'Recorded. Stop and user will call you back.';
 
       const renderBlock = createToolResultRenderBlock(
         returnBlock.id,

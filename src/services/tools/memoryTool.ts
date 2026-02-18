@@ -2,7 +2,7 @@
  * Memory Tool
  *
  * Client-side tool that provides Claude with a persistent virtual filesystem.
- * Implements Anthropic's memory tool commands: view, create, str_replace, insert, delete, rename.
+ * Implements Anthropic's memory tool commands: view, create, str_replace, insert, delete, rename, mkdir, append.
  *
  * Supports two modes:
  * - Native mode (Anthropic default): Uses memory_20250818 shorthand via getApiOverride()
@@ -66,13 +66,26 @@ interface RenameInput {
   new_path: string;
 }
 
+interface MkdirInput {
+  command: 'mkdir';
+  path: string;
+}
+
+interface AppendInput {
+  command: 'append';
+  path: string;
+  file_text: string;
+}
+
 type MemoryInput =
   | ViewInput
   | CreateInput
   | StrReplaceInput
   | InsertInput
   | DeleteInput
-  | RenameInput;
+  | RenameInput
+  | MkdirInput
+  | AppendInput;
 
 /**
  * Normalizes a user-provided path to a VFS path.
@@ -576,6 +589,102 @@ async function handleRename(
   }
 }
 
+/** Handle mkdir command */
+async function handleMkdir(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<ToolResult> {
+  const vfsPath = normalizeToVfsPath(path);
+
+  if (vfsPath === MEMORIES_ROOT) {
+    return {
+      content: 'Error: Cannot create directory at the root path.',
+      isError: true,
+    };
+  }
+
+  try {
+    // Ensure /memories directory exists
+    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
+    if (!memoriesExists) {
+      await vfs.mkdir(projectId, MEMORIES_ROOT, namespace);
+    }
+
+    await vfs.mkdir(projectId, vfsPath, namespace);
+
+    return {
+      content: `Directory created successfully at: ${vfsPath}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (error.code === 'DIR_EXISTS') {
+        return {
+          content: `Error: Directory ${vfsPath} already exists`,
+          isError: true,
+        };
+      }
+      if (error.code === 'FILE_EXISTS') {
+        return {
+          content: `Error: A file already exists at ${vfsPath}`,
+          isError: true,
+        };
+      }
+    }
+    throw error;
+  }
+}
+
+/** Handle append command */
+async function handleAppend(
+  projectId: string,
+  path: string,
+  fileText: string,
+  namespace?: string
+): Promise<ToolResult> {
+  const vfsPath = normalizeToVfsPath(path);
+
+  if (vfsPath === MEMORIES_ROOT) {
+    return {
+      content: 'Error: Cannot append to the root path.',
+      isError: true,
+    };
+  }
+
+  try {
+    // Ensure /memories directory exists
+    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
+    if (!memoriesExists) {
+      await vfs.mkdir(projectId, MEMORIES_ROOT, namespace);
+    }
+
+    const fileExists = await vfs.exists(projectId, vfsPath, namespace);
+
+    if (fileExists) {
+      const content = await vfs.readFile(projectId, vfsPath, namespace);
+      await vfs.updateFile(projectId, vfsPath, content + fileText, namespace);
+      return {
+        content: `Content appended to ${vfsPath}`,
+      };
+    }
+
+    await vfs.createFile(projectId, vfsPath, fileText, namespace);
+    return {
+      content: `File created successfully at: ${vfsPath}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (error.code === 'NOT_A_FILE') {
+        return {
+          content: `Error: ${vfsPath} is a directory, not a file.`,
+          isError: true,
+        };
+      }
+    }
+    throw error;
+  }
+}
+
 /** Execute a memory command */
 // eslint-disable-next-line require-yield -- Simple tool: generator for interface compatibility, no streaming events
 async function* executeMemoryCommand(
@@ -619,6 +728,10 @@ async function* executeMemoryCommand(
       return handleDelete(projectId, memoryInput.path, namespace);
     case 'rename':
       return handleRename(projectId, memoryInput.old_path, memoryInput.new_path, namespace);
+    case 'mkdir':
+      return handleMkdir(projectId, memoryInput.path, namespace);
+    case 'append':
+      return handleAppend(projectId, memoryInput.path, memoryInput.file_text, namespace);
     default:
       return {
         content: `Unknown memory command: ${(memoryInput as { command: string }).command}`,
@@ -766,6 +879,8 @@ const MEMORY_TOOL_DESCRIPTION = `Tool for reading, writing, and managing files i
 * The insert command inserts the text insert_text at the line insert_line.
 * The delete command deletes a file or directory (including all contents if a directory).
 * The rename command renames a file or directory. Both old_path and new_path must be provided.
+* The mkdir command creates a new directory at the specified path.
+* The append command appends text to an existing file, or creates the file if it does not exist.
 * All operations are restricted to files and directories within /memories.
 * You cannot delete or rename /memories itself, only its contents.
 * Note: when editing your memory folder, always try to keep the content up-to-date, coherent and organized. You can rename or delete files that are no longer relevant. Do not create new files unless necessary.`;
@@ -776,13 +891,13 @@ const MEMORY_INPUT_SCHEMA = {
   properties: {
     command: {
       description:
-        'The operation to perform. Choose from: view, create, str_replace, insert, delete, rename.',
-      enum: ['view', 'create', 'str_replace', 'insert', 'delete', 'rename'],
+        'The operation to perform. Choose from: view, create, str_replace, insert, delete, rename, mkdir, append.',
+      enum: ['view', 'create', 'str_replace', 'insert', 'delete', 'rename', 'mkdir', 'append'],
       type: 'string',
     },
     file_text: {
       description:
-        'Required for create command. Contains the complete text content to write to the file.',
+        'Required for create and append commands. For create: complete text content to write. For append: text to append to the file.',
       type: 'string',
     },
     insert_line: {

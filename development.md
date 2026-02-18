@@ -798,6 +798,8 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 | `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (0-indexed)                                      |
 | `delete`      | `path`                               | Delete file or directory (soft delete)                                        |
 | `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                                |
+| `mkdir`       | `path`                               | Create a new directory                                                        |
+| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists                    |
 
 **VFS Architecture:**
 
@@ -807,7 +809,12 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 - Per-file versioning in `vfs_versions` table (auto-versioned on every update)
 - Soft-delete with orphan tracking for displaced files during renames
 - 999,999 line limit per file (returns error if exceeded)
-- **Namespace isolation**: All public VFS functions accept an optional `namespace` parameter. When set, paths are resolved through the namespace (e.g., `/minions/coder` + `/memories/note.md` → `/minions/coder/memories/note.md`). Paths starting with `/share` bypass namespace prefixing for cross-namespace file sharing. `resolveNamespacedPath()` handles resolution with path traversal mitigation.
+- **Namespace isolation**: All public VFS functions accept an optional `namespace` parameter. When set, paths are resolved through the namespace (e.g., `/minions/coder` + `/memories/note.md` → `/minions/coder/memories/note.md`). `resolveNamespacedPath()` handles resolution with path traversal mitigation.
+- **Cross-namespace mounts**: Two shared paths bypass namespace prefixing:
+  - `/share` — read-only for namespaced callers (main agent has write access). Enforced via `assertWritable()` in VFS core, throws `VfsError('READONLY')`.
+  - `/sharerw` — read-write for all, including namespaced callers. Enables minion-to-minion collaboration.
+- **Mount root protection**: `/share` directory root cannot be deleted or renamed (throws `INVALID_PATH`). `/sharerw` has no root protection — the main agent can delete it if needed.
+- **Concurrency control**: Per-project promise chain (`treeLock.ts`) serializes all VFS operations — both reads and writes. `strReplace` and `insert` use internal primitives directly (no re-entrant calls to exported functions). Prevents lost-update race conditions and TOCTOU bugs when parallel tool calls access the same project's tree.
 
 **Storage Tables:**
 
@@ -872,20 +879,22 @@ Client-side tool that provides LLM access to the project's virtual filesystem. S
 | `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (text files only)                    |
 | `delete`      | `path`                               | Delete file or directory (soft delete)                            |
 | `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                    |
+| `mkdir`       | `path`                               | Create a new directory                                            |
+| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists        |
 
 **Binary File Support:**
 
 - **Create binary files**: Pass dataUrl format (`data:<mime>;base64,<data>`) as `file_text`
 - **View binary files**: Returns `Binary file {path} ({mime}):\n{dataUrl}` format
-- **Text operations blocked**: `str_replace` and `insert` return error on binary files
+- **Text operations blocked**: `str_replace`, `insert`, and `append` return error on binary files
 - MIME detection via magic bytes (JPEG, PNG, GIF, WebP, PDF, ZIP)
 - File type change (text↔binary or MIME change) orphans old file, creates new
 
 **Readonly Enforcement:**
 
-- `/memories` path and all its contents are readonly
-- Write operations (`create`, `str_replace`, `insert`, `delete`, `rename` into /memories) return error
-- Error message explains that /memories is managed by the memory tool
+- `/memories` path and all its contents are readonly (tool-level, fsTool blocks writes to /memories which is managed by the memory tool)
+- `/share` is read-only for namespaced callers (VFS-level, enforced by `assertWritable()` in VFS core)
+- Write operations to readonly paths return user-friendly error messages
 
 **Instance Management:**
 
@@ -1009,9 +1018,10 @@ Node.js-like async filesystem operations backed by the project's VFS. All method
 
 **fs Readonly Enforcement:**
 
-- `/memories` path and all its contents are read-only
+- `/memories` path and all its contents are read-only (tool-level check)
+- `/share` is read-only for namespaced callers (VFS-level, throws `READONLY` → mapped to `EROFS`)
 - Write operations (`writeFile`, `mkdir`, `unlink`, `rmdir`, `rename`) throw `EROFS` error
-- `stat()` returns `readonly: true` for paths under `/memories`
+- `stat()` returns `readonly: true` for paths under `/memories` and for `/share` paths when namespaced
 
 **fs Binary File Support:**
 
@@ -1104,7 +1114,8 @@ When `namespacedMinion` is enabled, each minion gets VFS namespace isolation bas
 - `persona` input parameter selects a persona (omit for `default`). Each persona maps to namespace `/minions/<persona>`.
 - Namespace flows through the agentic loop: `AgenticLoopOptions.namespace` → `ToolContext.namespace` → all VFS calls in memory, filesystem, and JavaScript tools.
 - A persona's `/memories/README.md` resolves to `/minions/<persona>/memories/README.md` in VFS storage.
-- `/share` paths bypass namespace prefixing, enabling cross-persona file sharing.
+- `/share` paths bypass namespace prefixing — read-only for namespaced minions (main agent writes, minions read).
+- `/sharerw` paths bypass namespace prefixing — read-write for all, enables minion-to-minion collaboration.
 - System prompt injection lists available personas from `/minions/*.md` with their first lines.
 
 **Tool Scoping:**

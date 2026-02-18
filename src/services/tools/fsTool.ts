@@ -5,7 +5,7 @@
  * Similar to memory tool but operates from VFS root (/) with /memories as readonly.
  *
  * This is a stateless tool - all state is passed via toolOptions and context.
- * Commands: view, create, str_replace, insert, delete, rename
+ * Commands: view, create, str_replace, insert, delete, rename, mkdir, append
  */
 
 import type {
@@ -69,7 +69,26 @@ interface RenameInput {
   new_path: string;
 }
 
-type FsInput = ViewInput | CreateInput | StrReplaceInput | InsertInput | DeleteInput | RenameInput;
+interface MkdirInput {
+  command: 'mkdir';
+  path: string;
+}
+
+interface AppendInput {
+  command: 'append';
+  path: string;
+  file_text: string;
+}
+
+type FsInput =
+  | ViewInput
+  | CreateInput
+  | StrReplaceInput
+  | InsertInput
+  | DeleteInput
+  | RenameInput
+  | MkdirInput
+  | AppendInput;
 
 /**
  * Format file content with line numbers
@@ -303,11 +322,13 @@ async function handleCreate(
       content: `File created successfully at: ${vfsPath}`,
     };
   } catch (error) {
-    if (error instanceof VfsError && error.code === 'FILE_EXISTS') {
-      return {
-        content: `Error: File ${vfsPath} already exists`,
-        isError: true,
-      };
+    if (error instanceof VfsError) {
+      if (error.code === 'FILE_EXISTS') {
+        return { content: `Error: File ${vfsPath} already exists`, isError: true };
+      }
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
     }
     throw error;
   }
@@ -382,6 +403,9 @@ async function handleStrReplace(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (
         error.code === 'PATH_NOT_FOUND' ||
         error.code === 'IS_DELETED' ||
@@ -456,6 +480,9 @@ async function handleInsert(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (
         error.code === 'PATH_NOT_FOUND' ||
         error.code === 'IS_DELETED' ||
@@ -502,6 +529,9 @@ async function handleDelete(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
         return {
           content: `Error: The path ${vfsPath} does not exist`,
@@ -566,6 +596,9 @@ async function handleRename(
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
       if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
         return {
           content: `Error: The path ${oldVfsPath} does not exist`,
@@ -575,6 +608,121 @@ async function handleRename(
       if (error.code === 'DESTINATION_EXISTS') {
         return {
           content: `Error: The destination ${newVfsPath} already exists`,
+          isError: true,
+        };
+      }
+    }
+    throw error;
+  }
+}
+
+/** Handle mkdir command */
+async function handleMkdir(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<ToolResult> {
+  const vfsPath = normalizePath(path);
+
+  if (vfsPath === '/') {
+    return {
+      content: 'Error: Cannot create directory at the root path.',
+      isError: true,
+    };
+  }
+
+  // Check readonly
+  if (isReadonly(vfsPath)) {
+    return {
+      content: `Error: Cannot write to readonly path ${vfsPath}. The /memories directory is managed by the memory tool.`,
+      isError: true,
+    };
+  }
+
+  try {
+    await vfs.mkdir(projectId, vfsPath, namespace);
+
+    return {
+      content: `Directory created successfully at: ${vfsPath}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
+      if (error.code === 'DIR_EXISTS') {
+        return {
+          content: `Error: Directory ${vfsPath} already exists`,
+          isError: true,
+        };
+      }
+      if (error.code === 'FILE_EXISTS') {
+        return {
+          content: `Error: A file already exists at ${vfsPath}`,
+          isError: true,
+        };
+      }
+    }
+    throw error;
+  }
+}
+
+/** Handle append command */
+async function handleAppend(
+  projectId: string,
+  path: string,
+  fileText: string,
+  namespace?: string
+): Promise<ToolResult> {
+  const vfsPath = normalizePath(path);
+
+  if (vfsPath === '/') {
+    return {
+      content: 'Error: Cannot append to the root path.',
+      isError: true,
+    };
+  }
+
+  // Check readonly
+  if (isReadonly(vfsPath)) {
+    return {
+      content: `Error: Cannot write to readonly path ${vfsPath}. The /memories directory is managed by the memory tool.`,
+      isError: true,
+    };
+  }
+
+  try {
+    const fileExists = await vfs.exists(projectId, vfsPath, namespace);
+
+    if (fileExists) {
+      // Check if binary
+      const fileStat = await vfs.stat(projectId, vfsPath, namespace);
+      if (fileStat.isBinary) {
+        return {
+          content: `Error: Cannot append to binary file ${vfsPath}.`,
+          isError: true,
+        };
+      }
+
+      const content = await vfs.readFile(projectId, vfsPath, namespace);
+      await vfs.updateFile(projectId, vfsPath, content + fileText, namespace);
+      return {
+        content: `Content appended to ${vfsPath}`,
+      };
+    }
+
+    await vfs.writeFile(projectId, vfsPath, fileText, namespace);
+    return {
+      content: `File created successfully at: ${vfsPath}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (error.code === 'READONLY') {
+        return { content: `Error: ${error.message}`, isError: true };
+      }
+      if (error.code === 'NOT_A_FILE') {
+        return {
+          content: `Error: ${vfsPath} is a directory, not a file.`,
           isError: true,
         };
       }
@@ -620,6 +768,10 @@ async function* executeFsCommand(
       return handleDelete(projectId, fsInput.path, namespace);
     case 'rename':
       return handleRename(projectId, fsInput.old_path, fsInput.new_path, namespace);
+    case 'mkdir':
+      return handleMkdir(projectId, fsInput.path, namespace);
+    case 'append':
+      return handleAppend(projectId, fsInput.path, fsInput.file_text, namespace);
     default:
       return {
         content: `Unknown filesystem command: ${(fsInput as { command: string }).command}`,
@@ -657,7 +809,8 @@ export const fsTool: ClientSideTool = {
   displaySubtitle: 'Read/write VFS files (/memories readonly)',
   // No options - just enable/disable
   description: `Access the project's virtual filesystem. Read/write files anywhere except /memories (readonly, managed by memory tool). Use for: storing code, data files, configuration, scripts.
-Binary file support: view returns dataUrl format for binary files, create accepts dataUrl format (data:<mime>;base64,<data>) to write binary files. str_replace and insert are blocked on binary files.`,
+Binary file support: view returns dataUrl format for binary files, create accepts dataUrl format (data:<mime>;base64,<data>) to write binary files. str_replace, insert, and append are blocked on binary files.
+The mkdir command creates a new directory. The append command appends text to an existing file, or creates the file if it does not exist.`,
   iconInput: '📁',
   renderInput: renderFsInput,
   inputSchema: {
@@ -665,7 +818,7 @@ Binary file support: view returns dataUrl format for binary files, create accept
     properties: {
       command: {
         type: 'string',
-        enum: ['view', 'create', 'str_replace', 'insert', 'delete', 'rename'],
+        enum: ['view', 'create', 'str_replace', 'insert', 'delete', 'rename', 'mkdir', 'append'],
         description: 'The command to execute',
       },
       path: {
@@ -674,7 +827,7 @@ Binary file support: view returns dataUrl format for binary files, create accept
       },
       file_text: {
         type: 'string',
-        description: 'Content for create command',
+        description: 'Content for create and append commands',
       },
       old_str: {
         type: 'string',

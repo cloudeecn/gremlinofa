@@ -57,6 +57,11 @@ describe('resolveNamespacedPath', () => {
     expect(resolveNamespacedPath('  ', '/minions/code')).toBe('/minions/code');
   });
 
+  it('bypasses namespace for /sharerw paths', () => {
+    expect(resolveNamespacedPath('/sharerw/data.json', '/minions/code')).toBe('/sharerw/data.json');
+    expect(resolveNamespacedPath('/sharerw', '/minions/code')).toBe('/sharerw');
+  });
+
   it('does not treat /sharing or /shared as /share bypass', () => {
     expect(resolveNamespacedPath('/sharing/file.txt', '/minions/code')).toBe(
       '/minions/code/sharing/file.txt'

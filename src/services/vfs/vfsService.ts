@@ -21,6 +21,7 @@ import { encryptionService } from '../encryption/encryptionService';
 import { storage } from '../storage';
 import { Tables } from '../storage/StorageAdapter';
 import { generateUniqueId } from '../../utils/idGenerator';
+import { withTreeLock } from './treeLock';
 
 // ============================================================================
 // Path Utilities
@@ -91,7 +92,7 @@ export function isRootPath(path: string): boolean {
 /**
  * Resolve a path within a namespace.
  * - No namespace → returns normalizePath(path)
- * - /share paths → bypass namespace, return normalizePath(path)
+ * - /share and /sharerw paths → bypass namespace, return normalizePath(path)
  * - Otherwise → normalizePath(namespace) + normalizePath(path)
  *
  * Path traversal is mitigated: both path and namespace are normalized
@@ -101,11 +102,50 @@ export function resolveNamespacedPath(path: string, namespace?: string): string 
   const normalized = normalizePath(path);
   if (!namespace) return normalized;
   if (normalized === '/share' || normalized.startsWith('/share/')) return normalized;
+  if (normalized === '/sharerw' || normalized.startsWith('/sharerw/')) return normalized;
   const normalizedNs = normalizePath(namespace);
   if (normalizedNs === '/') return normalized;
   // When path normalizes to '/', just return the namespace path
   if (normalized === '/') return normalizedNs;
   return normalizedNs + normalized;
+}
+
+/**
+ * Check if a path is read-only due to namespace isolation.
+ * /share paths are read-only when accessed from a namespace.
+ */
+export function isNamespacedReadonly(path: string, namespace?: string): boolean {
+  if (!namespace) return false;
+  const normalized = normalizePath(path);
+  return normalized === '/share' || normalized.startsWith('/share/');
+}
+
+/** Mount roots that cannot be deleted or renamed */
+const MOUNT_ROOTS = ['/share'];
+
+/**
+ * Throw if trying to write to a namespace-readonly path.
+ * /share is read-only for namespaced callers; /sharerw is not.
+ */
+function assertWritable(path: string, namespace?: string): void {
+  if (!namespace) return;
+  const normalized = normalizePath(path);
+  if (normalized === '/share' || normalized.startsWith('/share/')) {
+    throw new VfsError(
+      `Cannot write to ${normalized}: /share is read-only in namespaced context`,
+      'READONLY'
+    );
+  }
+}
+
+/**
+ * Throw if trying to delete or rename a structural mount root.
+ * Expects a resolved (post-namespace) path.
+ */
+function assertNotMountRoot(resolvedPath: string): void {
+  if (MOUNT_ROOTS.includes(resolvedPath)) {
+    throw new VfsError(`Cannot delete or move mount root ${resolvedPath}`, 'INVALID_PATH');
+  }
 }
 
 // ============================================================================
@@ -366,7 +406,8 @@ export type VfsErrorCode =
   | 'STRING_NOT_FOUND'
   | 'STRING_NOT_UNIQUE'
   | 'INVALID_LINE'
-  | 'BINARY_FILE';
+  | 'BINARY_FILE'
+  | 'READONLY';
 
 export class VfsError extends Error {
   code: VfsErrorCode;
@@ -480,53 +521,56 @@ export async function createFile(
   content: string,
   namespace?: string
 ): Promise<void> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const basename = getBasename(normalized);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const basename = getBasename(normalized);
 
-  if (!basename) {
-    throw new VfsError('Cannot create file at root path', 'INVALID_PATH');
-  }
+    if (!basename) {
+      throw new VfsError('Cannot create file at root path', 'INVALID_PATH');
+    }
 
-  // Check if file already exists
-  const { node } = navigateToNode(tree, normalized);
-  if (node && !node.deleted) {
-    throw new VfsError(`File already exists: ${normalized}`, 'FILE_EXISTS');
-  }
+    // Check if file already exists
+    const { node } = navigateToNode(tree, normalized);
+    if (node && !node.deleted) {
+      throw new VfsError(`File already exists: ${normalized}`, 'FILE_EXISTS');
+    }
 
-  // Ensure parent directory exists
-  const parent = ensureParentExists(tree, normalized);
-  if (!parent) {
-    throw new VfsError(`Parent path is not a directory`, 'NOT_A_DIRECTORY');
-  }
+    // Ensure parent directory exists
+    const parent = ensureParentExists(tree, normalized);
+    if (!parent) {
+      throw new VfsError(`Parent path is not a directory`, 'NOT_A_DIRECTORY');
+    }
 
-  const children = 'children' in parent ? parent.children : (parent as VfsNode).children;
-  if (!children) {
-    throw new VfsError(`Parent is not a directory`, 'NOT_A_DIRECTORY');
-  }
+    const children = 'children' in parent ? parent.children : (parent as VfsNode).children;
+    if (!children) {
+      throw new VfsError(`Parent is not a directory`, 'NOT_A_DIRECTORY');
+    }
 
-  const now = Date.now();
-  const fileId = generateUniqueId('vfs_file');
+    const now = Date.now();
+    const fileId = generateUniqueId('vfs_file');
 
-  // Create file node in tree
-  children[basename] = {
-    type: 'file',
-    fileId,
-    deleted: false,
-    createdAt: now,
-    updatedAt: now,
-  };
+    // Create file node in tree
+    children[basename] = {
+      type: 'file',
+      fileId,
+      deleted: false,
+      createdAt: now,
+      updatedAt: now,
+    };
 
-  // Save file content (version 1)
-  const fileData: VfsFile = {
-    content,
-    version: 1,
-    createdAt: now,
-    updatedAt: now,
-  };
+    // Save file content (version 1)
+    const fileData: VfsFile = {
+      content,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
 
-  await saveFile(fileId, fileData, projectId);
-  await saveTree(projectId, tree);
+    await saveFile(fileId, fileData, projectId);
+    await saveTree(projectId, tree);
+  });
 }
 
 /**
@@ -538,28 +582,30 @@ export async function readFile(
   path: string,
   namespace?: string
 ): Promise<string> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node } = navigateToNode(tree, normalized);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  if (node.type !== 'file') {
-    throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
-  }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
 
-  if (node.deleted) {
-    throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
-  }
+    if (node.deleted) {
+      throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
+    }
 
-  const file = await loadFile(node.fileId!);
-  if (!file) {
-    throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    const file = await loadFile(node.fileId!);
+    if (!file) {
+      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  return file.content;
+    return file.content;
+  });
 }
 
 /**
@@ -572,46 +618,49 @@ export async function updateFile(
   content: string,
   namespace?: string
 ): Promise<void> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node } = navigateToNode(tree, normalized);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  if (node.type !== 'file') {
-    throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
-  }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
 
-  if (node.deleted) {
-    throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
-  }
+    if (node.deleted) {
+      throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
+    }
 
-  const fileId = node.fileId!;
-  const currentFile = await loadFile(fileId);
-  if (!currentFile) {
-    throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    const fileId = node.fileId!;
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) {
+      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  // Save current version to history before updating
-  await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
+    // Save current version to history before updating
+    await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
 
-  const now = Date.now();
+    const now = Date.now();
 
-  // Update file with new content and incremented version
-  const newFile: VfsFile = {
-    content,
-    version: currentFile.version + 1,
-    createdAt: currentFile.createdAt,
-    updatedAt: now,
-  };
+    // Update file with new content and incremented version
+    const newFile: VfsFile = {
+      content,
+      version: currentFile.version + 1,
+      createdAt: currentFile.createdAt,
+      updatedAt: now,
+    };
 
-  await saveFile(fileId, newFile, projectId);
+    await saveFile(fileId, newFile, projectId);
 
-  // Update node timestamp in tree
-  node.updatedAt = now;
-  await saveTree(projectId, tree);
+    // Update node timestamp in tree
+    node.updatedAt = now;
+    await saveTree(projectId, tree);
+  });
 }
 
 /**
@@ -629,112 +678,115 @@ export async function writeFile(
   content: FileContent,
   namespace?: string
 ): Promise<void> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const basename = getBasename(normalized);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const basename = getBasename(normalized);
 
-  if (!basename) {
-    throw new VfsError('Cannot write file at root path', 'INVALID_PATH');
-  }
+    if (!basename) {
+      throw new VfsError('Cannot write file at root path', 'INVALID_PATH');
+    }
 
-  const isBinary = isBinaryContent(content);
-  const newMime = isBinary ? detectMimeFromBuffer(content) : 'text/plain';
-  const storedContent = isBinary ? bufferToBase64(content) : content;
+    const isBinary = isBinaryContent(content);
+    const newMime = isBinary ? detectMimeFromBuffer(content) : 'text/plain';
+    const storedContent = isBinary ? bufferToBase64(content) : content;
 
-  const { node } = navigateToNode(tree, normalized);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (node && !node.deleted && node.type === 'file') {
-    // File exists - check if we need to orphan due to type/mime change
-    const oldIsBinary = node.isBinary ?? false;
-    const oldMime = node.mime ?? 'text/plain';
+    if (node && !node.deleted && node.type === 'file') {
+      // File exists - check if we need to orphan due to type/mime change
+      const oldIsBinary = node.isBinary ?? false;
+      const oldMime = node.mime ?? 'text/plain';
 
-    if (oldIsBinary !== isBinary || oldMime !== newMime) {
-      // Type or mime changed - orphan the old file and create new
-      if (node.fileId) {
-        tree.orphans.push({
-          fileId: node.fileId,
-          originalPath: normalized,
-          orphanedAt: Date.now(),
-        });
+      if (oldIsBinary !== isBinary || oldMime !== newMime) {
+        // Type or mime changed - orphan the old file and create new
+        if (node.fileId) {
+          tree.orphans.push({
+            fileId: node.fileId,
+            originalPath: normalized,
+            orphanedAt: Date.now(),
+          });
+        }
+
+        // Create new file with new type
+        const now = Date.now();
+        const newFileId = generateUniqueId('vfs_file');
+
+        node.fileId = newFileId;
+        node.isBinary = isBinary;
+        node.mime = newMime;
+        node.updatedAt = now;
+
+        const fileData: VfsFile = {
+          content: storedContent,
+          version: 1,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        await saveFile(newFileId, fileData, projectId);
+        await saveTree(projectId, tree);
+        return;
       }
 
-      // Create new file with new type
+      // Same type - normal update
+      const fileId = node.fileId!;
+      const currentFile = await loadFile(fileId);
+      if (!currentFile) {
+        throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+      }
+
+      await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
+
       const now = Date.now();
-      const newFileId = generateUniqueId('vfs_file');
-
-      node.fileId = newFileId;
-      node.isBinary = isBinary;
-      node.mime = newMime;
-      node.updatedAt = now;
-
-      const fileData: VfsFile = {
+      const newFile: VfsFile = {
         content: storedContent,
-        version: 1,
-        createdAt: now,
+        version: currentFile.version + 1,
+        createdAt: currentFile.createdAt,
         updatedAt: now,
       };
 
-      await saveFile(newFileId, fileData, projectId);
+      await saveFile(fileId, newFile, projectId);
+      node.updatedAt = now;
       await saveTree(projectId, tree);
       return;
     }
 
-    // Same type - normal update
-    const fileId = node.fileId!;
-    const currentFile = await loadFile(fileId);
-    if (!currentFile) {
-      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    // File doesn't exist or is deleted - create new
+    const parent = ensureParentExists(tree, normalized);
+    if (!parent) {
+      throw new VfsError(`Parent path is not a directory`, 'NOT_A_DIRECTORY');
     }
 
-    await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
+    const children = 'children' in parent ? parent.children : (parent as VfsNode).children;
+    if (!children) {
+      throw new VfsError(`Parent is not a directory`, 'NOT_A_DIRECTORY');
+    }
 
     const now = Date.now();
-    const newFile: VfsFile = {
+    const fileId = generateUniqueId('vfs_file');
+
+    children[basename] = {
+      type: 'file',
+      fileId,
+      deleted: false,
+      createdAt: now,
+      updatedAt: now,
+      isBinary,
+      mime: newMime,
+    };
+
+    const fileData: VfsFile = {
       content: storedContent,
-      version: currentFile.version + 1,
-      createdAt: currentFile.createdAt,
+      version: 1,
+      createdAt: now,
       updatedAt: now,
     };
 
-    await saveFile(fileId, newFile, projectId);
-    node.updatedAt = now;
+    await saveFile(fileId, fileData, projectId);
     await saveTree(projectId, tree);
-    return;
-  }
-
-  // File doesn't exist or is deleted - create new
-  const parent = ensureParentExists(tree, normalized);
-  if (!parent) {
-    throw new VfsError(`Parent path is not a directory`, 'NOT_A_DIRECTORY');
-  }
-
-  const children = 'children' in parent ? parent.children : (parent as VfsNode).children;
-  if (!children) {
-    throw new VfsError(`Parent is not a directory`, 'NOT_A_DIRECTORY');
-  }
-
-  const now = Date.now();
-  const fileId = generateUniqueId('vfs_file');
-
-  children[basename] = {
-    type: 'file',
-    fileId,
-    deleted: false,
-    createdAt: now,
-    updatedAt: now,
-    isBinary,
-    mime: newMime,
-  };
-
-  const fileData: VfsFile = {
-    content: storedContent,
-    version: 1,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await saveFile(fileId, fileData, projectId);
-  await saveTree(projectId, tree);
+  });
 }
 
 /**
@@ -747,44 +799,46 @@ export async function readFileWithMeta(
   path: string,
   namespace?: string
 ): Promise<ReadFileResult> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node } = navigateToNode(tree, normalized);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  if (node.type !== 'file') {
-    throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
-  }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
 
-  if (node.deleted) {
-    throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
-  }
+    if (node.deleted) {
+      throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
+    }
 
-  const file = await loadFile(node.fileId!);
-  if (!file) {
-    throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    const file = await loadFile(node.fileId!);
+    if (!file) {
+      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  const isBinary = node.isBinary ?? false;
-  const mime = node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain');
+    const isBinary = node.isBinary ?? false;
+    const mime = node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain');
 
-  if (isBinary) {
+    if (isBinary) {
+      return {
+        content: file.content, // base64
+        isBinary: true,
+        mime,
+        buffer: base64ToBuffer(file.content),
+      };
+    }
+
     return {
-      content: file.content, // base64
-      isBinary: true,
+      content: file.content,
+      isBinary: false,
       mime,
-      buffer: base64ToBuffer(file.content),
     };
-  }
-
-  return {
-    content: file.content,
-    isBinary: false,
-    mime,
-  };
+  });
 }
 
 /**
@@ -796,27 +850,31 @@ export async function deleteFile(
   path: string,
   namespace?: string
 ): Promise<void> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node } = navigateToNode(tree, normalized);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    assertNotMountRoot(normalized);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  if (node.type !== 'file') {
-    throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
-  }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
 
-  if (node.deleted) {
-    // Already deleted - no-op
-    return;
-  }
+    if (node.deleted) {
+      // Already deleted - no-op
+      return;
+    }
 
-  node.deleted = true;
-  node.updatedAt = Date.now();
+    node.deleted = true;
+    node.updatedAt = Date.now();
 
-  await saveTree(projectId, tree);
+    await saveTree(projectId, tree);
+  });
 }
 
 // ============================================================================
@@ -828,45 +886,48 @@ export async function deleteFile(
  * @throws VfsError if path exists
  */
 export async function mkdir(projectId: string, path: string, namespace?: string): Promise<void> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const basename = getBasename(normalized);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const basename = getBasename(normalized);
 
-  if (!basename) {
-    throw new VfsError('Cannot create directory at root', 'INVALID_PATH');
-  }
-
-  // Check if path already exists
-  const { node } = navigateToNode(tree, normalized);
-  if (node && !node.deleted) {
-    if (node.type === 'dir') {
-      throw new VfsError(`Directory already exists: ${normalized}`, 'DIR_EXISTS');
-    } else {
-      throw new VfsError(`File exists at path: ${normalized}`, 'FILE_EXISTS');
+    if (!basename) {
+      throw new VfsError('Cannot create directory at root', 'INVALID_PATH');
     }
-  }
 
-  // Ensure parent exists
-  const parent = ensureParentExists(tree, normalized);
-  if (!parent) {
-    throw new VfsError(`Parent path is not a directory`, 'NOT_A_DIRECTORY');
-  }
+    // Check if path already exists
+    const { node } = navigateToNode(tree, normalized);
+    if (node && !node.deleted) {
+      if (node.type === 'dir') {
+        throw new VfsError(`Directory already exists: ${normalized}`, 'DIR_EXISTS');
+      } else {
+        throw new VfsError(`File exists at path: ${normalized}`, 'FILE_EXISTS');
+      }
+    }
 
-  const children = 'children' in parent ? parent.children : (parent as VfsNode).children;
-  if (!children) {
-    throw new VfsError(`Parent is not a directory`, 'NOT_A_DIRECTORY');
-  }
+    // Ensure parent exists
+    const parent = ensureParentExists(tree, normalized);
+    if (!parent) {
+      throw new VfsError(`Parent path is not a directory`, 'NOT_A_DIRECTORY');
+    }
 
-  const now = Date.now();
-  children[basename] = {
-    type: 'dir',
-    deleted: false,
-    createdAt: now,
-    updatedAt: now,
-    children: {},
-  };
+    const children = 'children' in parent ? parent.children : (parent as VfsNode).children;
+    if (!children) {
+      throw new VfsError(`Parent is not a directory`, 'NOT_A_DIRECTORY');
+    }
 
-  await saveTree(projectId, tree);
+    const now = Date.now();
+    children[basename] = {
+      type: 'dir',
+      deleted: false,
+      createdAt: now,
+      updatedAt: now,
+      children: {},
+    };
+
+    await saveTree(projectId, tree);
+  });
 }
 
 /**
@@ -880,49 +941,53 @@ export async function rmdir(
   recursive = false,
   namespace?: string
 ): Promise<void> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    assertNotMountRoot(normalized);
 
-  if (isRootPath(normalized)) {
-    throw new VfsError('Cannot delete root directory', 'INVALID_PATH');
-  }
-
-  const { node } = navigateToNode(tree, normalized);
-
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
-
-  if (node.type !== 'dir') {
-    throw new VfsError(`Not a directory: ${normalized}`, 'NOT_A_DIRECTORY');
-  }
-
-  if (node.deleted) {
-    // Already deleted
-    return;
-  }
-
-  // Check if empty (only non-deleted children count)
-  const children = node.children || {};
-  const activeChildren = Object.values(children).filter(c => !c.deleted);
-
-  if (activeChildren.length > 0 && !recursive) {
-    throw new VfsError(`Directory not empty: ${normalized}`, 'DIR_NOT_EMPTY');
-  }
-
-  // Recursively mark all descendants as deleted
-  const markDeleted = (n: VfsNode, now: number) => {
-    n.deleted = true;
-    n.updatedAt = now;
-    if (n.children) {
-      for (const child of Object.values(n.children)) {
-        markDeleted(child, now);
-      }
+    if (isRootPath(normalized)) {
+      throw new VfsError('Cannot delete root directory', 'INVALID_PATH');
     }
-  };
 
-  markDeleted(node, Date.now());
-  await saveTree(projectId, tree);
+    const { node } = navigateToNode(tree, normalized);
+
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
+
+    if (node.type !== 'dir') {
+      throw new VfsError(`Not a directory: ${normalized}`, 'NOT_A_DIRECTORY');
+    }
+
+    if (node.deleted) {
+      // Already deleted
+      return;
+    }
+
+    // Check if empty (only non-deleted children count)
+    const children = node.children || {};
+    const activeChildren = Object.values(children).filter(c => !c.deleted);
+
+    if (activeChildren.length > 0 && !recursive) {
+      throw new VfsError(`Directory not empty: ${normalized}`, 'DIR_NOT_EMPTY');
+    }
+
+    // Recursively mark all descendants as deleted
+    const markDeleted = (n: VfsNode, now: number) => {
+      n.deleted = true;
+      n.updatedAt = now;
+      if (n.children) {
+        for (const child of Object.values(n.children)) {
+          markDeleted(child, now);
+        }
+      }
+    };
+
+    markDeleted(node, Date.now());
+    await saveTree(projectId, tree);
+  });
 }
 
 /**
@@ -936,64 +1001,66 @@ export async function readDir(
   includeDeleted = false,
   namespace?: string
 ): Promise<DirEntry[]> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
 
-  let children: Record<string, VfsNode>;
+    let children: Record<string, VfsNode>;
 
-  if (isRootPath(normalized)) {
-    children = tree.children ?? {};
-  } else {
-    const { node } = navigateToNode(tree, normalized);
+    if (isRootPath(normalized)) {
+      children = tree.children ?? {};
+    } else {
+      const { node } = navigateToNode(tree, normalized);
 
-    if (!node) {
-      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-    }
-
-    if (node.type !== 'dir') {
-      throw new VfsError(`Not a directory: ${normalized}`, 'NOT_A_DIRECTORY');
-    }
-
-    if (node.deleted) {
-      throw new VfsError(`Directory is deleted: ${normalized}`, 'IS_DELETED');
-    }
-
-    children = node.children || {};
-  }
-
-  const entries: DirEntry[] = [];
-
-  for (const [name, child] of Object.entries(children)) {
-    if (!includeDeleted && child.deleted) continue;
-
-    const entry: DirEntry = {
-      name,
-      type: child.type,
-      deleted: child.deleted,
-      createdAt: child.createdAt,
-      updatedAt: child.updatedAt,
-    };
-
-    // For files, try to get content length
-    if (child.type === 'file' && child.fileId) {
-      const file = await loadFile(child.fileId);
-      if (file && file.content) {
-        entry.size = file.content.length;
+      if (!node) {
+        throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
       }
+
+      if (node.type !== 'dir') {
+        throw new VfsError(`Not a directory: ${normalized}`, 'NOT_A_DIRECTORY');
+      }
+
+      if (node.deleted) {
+        throw new VfsError(`Directory is deleted: ${normalized}`, 'IS_DELETED');
+      }
+
+      children = node.children || {};
     }
 
-    entries.push(entry);
-  }
+    const entries: DirEntry[] = [];
 
-  // Sort: directories first, then by name
-  entries.sort((a, b) => {
-    if (a.type !== b.type) {
-      return a.type === 'dir' ? -1 : 1;
+    for (const [name, child] of Object.entries(children)) {
+      if (!includeDeleted && child.deleted) continue;
+
+      const entry: DirEntry = {
+        name,
+        type: child.type,
+        deleted: child.deleted,
+        createdAt: child.createdAt,
+        updatedAt: child.updatedAt,
+      };
+
+      // For files, try to get content length
+      if (child.type === 'file' && child.fileId) {
+        const file = await loadFile(child.fileId);
+        if (file && file.content) {
+          entry.size = file.content.length;
+        }
+      }
+
+      entries.push(entry);
     }
-    return a.name.localeCompare(b.name);
+
+    // Sort: directories first, then by name
+    entries.sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === 'dir' ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    return entries;
   });
-
-  return entries;
 }
 
 // ============================================================================
@@ -1011,86 +1078,92 @@ export async function rename(
   newPath: string,
   namespace?: string
 ): Promise<void> {
-  const tree = await loadTree(projectId);
-  const oldNormalized = resolveNamespacedPath(oldPath, namespace);
-  const newNormalized = resolveNamespacedPath(newPath, namespace);
+  assertWritable(oldPath, namespace);
+  assertWritable(newPath, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const oldNormalized = resolveNamespacedPath(oldPath, namespace);
+    const newNormalized = resolveNamespacedPath(newPath, namespace);
+    assertNotMountRoot(oldNormalized);
+    assertNotMountRoot(newNormalized);
 
-  if (oldNormalized === newNormalized) return; // No-op
+    if (oldNormalized === newNormalized) return; // No-op
 
-  if (isRootPath(oldNormalized)) {
-    throw new VfsError('Cannot rename root', 'INVALID_PATH');
-  }
-
-  // Get source node
-  const {
-    node: sourceNode,
-    parent: sourceParent,
-    name: sourceName,
-  } = navigateToNode(tree, oldNormalized);
-
-  if (!sourceNode) {
-    throw new VfsError(`Source not found: ${oldNormalized}`, 'PATH_NOT_FOUND');
-  }
-
-  if (sourceNode.deleted) {
-    throw new VfsError(`Source is deleted: ${oldNormalized}`, 'IS_DELETED');
-  }
-
-  // Check destination
-  const {
-    node: destNode,
-    parent: _destParent,
-    name: destName,
-  } = navigateToNode(tree, newNormalized);
-
-  // Ensure destination parent exists
-  const actualDestParent = ensureParentExists(tree, newNormalized);
-  if (!actualDestParent) {
-    throw new VfsError(`Destination parent is not a directory`, 'NOT_A_DIRECTORY');
-  }
-
-  const destChildren =
-    'children' in actualDestParent
-      ? actualDestParent.children
-      : (actualDestParent as VfsNode).children;
-  if (!destChildren) {
-    throw new VfsError(`Destination parent is not a directory`, 'NOT_A_DIRECTORY');
-  }
-
-  // Handle destination collision
-  if (destNode) {
-    if (!destNode.deleted) {
-      throw new VfsError(`Destination already exists: ${newNormalized}`, 'DESTINATION_EXISTS');
+    if (isRootPath(oldNormalized)) {
+      throw new VfsError('Cannot rename root', 'INVALID_PATH');
     }
 
-    // Destination is soft-deleted - move to orphans
-    if (destNode.type === 'file' && destNode.fileId) {
-      tree.orphans.push({
-        fileId: destNode.fileId,
-        originalPath: newNormalized,
-        orphanedAt: Date.now(),
-      });
+    // Get source node
+    const {
+      node: sourceNode,
+      parent: sourceParent,
+      name: sourceName,
+    } = navigateToNode(tree, oldNormalized);
+
+    if (!sourceNode) {
+      throw new VfsError(`Source not found: ${oldNormalized}`, 'PATH_NOT_FOUND');
     }
-    // For directories, we'd need to orphan all file descendants
-    // For now, just remove the deleted node from tree
-    delete destChildren[destName];
-  }
 
-  // Remove from source parent
-  const sourceChildren =
-    sourceParent && 'children' in sourceParent
-      ? sourceParent.children
-      : sourceParent && (sourceParent as VfsNode).children;
+    if (sourceNode.deleted) {
+      throw new VfsError(`Source is deleted: ${oldNormalized}`, 'IS_DELETED');
+    }
 
-  if (sourceChildren) {
-    delete sourceChildren[sourceName];
-  }
+    // Check destination
+    const {
+      node: destNode,
+      parent: _destParent,
+      name: destName,
+    } = navigateToNode(tree, newNormalized);
 
-  // Add to destination
-  sourceNode.updatedAt = Date.now();
-  destChildren[getBasename(newNormalized)] = sourceNode;
+    // Ensure destination parent exists
+    const actualDestParent = ensureParentExists(tree, newNormalized);
+    if (!actualDestParent) {
+      throw new VfsError(`Destination parent is not a directory`, 'NOT_A_DIRECTORY');
+    }
 
-  await saveTree(projectId, tree);
+    const destChildren =
+      'children' in actualDestParent
+        ? actualDestParent.children
+        : (actualDestParent as VfsNode).children;
+    if (!destChildren) {
+      throw new VfsError(`Destination parent is not a directory`, 'NOT_A_DIRECTORY');
+    }
+
+    // Handle destination collision
+    if (destNode) {
+      if (!destNode.deleted) {
+        throw new VfsError(`Destination already exists: ${newNormalized}`, 'DESTINATION_EXISTS');
+      }
+
+      // Destination is soft-deleted - move to orphans
+      if (destNode.type === 'file' && destNode.fileId) {
+        tree.orphans.push({
+          fileId: destNode.fileId,
+          originalPath: newNormalized,
+          orphanedAt: Date.now(),
+        });
+      }
+      // For directories, we'd need to orphan all file descendants
+      // For now, just remove the deleted node from tree
+      delete destChildren[destName];
+    }
+
+    // Remove from source parent
+    const sourceChildren =
+      sourceParent && 'children' in sourceParent
+        ? sourceParent.children
+        : sourceParent && (sourceParent as VfsNode).children;
+
+    if (sourceChildren) {
+      delete sourceChildren[sourceName];
+    }
+
+    // Add to destination
+    sourceNode.updatedAt = Date.now();
+    destChildren[getBasename(newNormalized)] = sourceNode;
+
+    await saveTree(projectId, tree);
+  });
 }
 
 // ============================================================================
@@ -1105,13 +1178,15 @@ export async function exists(
   path: string,
   namespace?: string
 ): Promise<boolean> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
 
-  if (isRootPath(normalized)) return true;
+    if (isRootPath(normalized)) return true;
 
-  const { node } = navigateToNode(tree, normalized);
-  return node !== null && !node.deleted;
+    const { node } = navigateToNode(tree, normalized);
+    return node !== null && !node.deleted;
+  });
 }
 
 /**
@@ -1122,10 +1197,12 @@ export async function isFile(
   path: string,
   namespace?: string
 ): Promise<boolean> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node } = navigateToNode(tree, normalized);
-  return node !== null && node.type === 'file' && !node.deleted;
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
+    return node !== null && node.type === 'file' && !node.deleted;
+  });
 }
 
 /**
@@ -1136,13 +1213,15 @@ export async function isDirectory(
   path: string,
   namespace?: string
 ): Promise<boolean> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
 
-  if (isRootPath(normalized)) return true;
+    if (isRootPath(normalized)) return true;
 
-  const { node } = navigateToNode(tree, normalized);
-  return node !== null && node.type === 'dir' && !node.deleted;
+    const { node } = navigateToNode(tree, normalized);
+    return node !== null && node.type === 'dir' && !node.deleted;
+  });
 }
 
 // ============================================================================
@@ -1154,26 +1233,29 @@ export async function isDirectory(
  * @throws VfsError if path not found or not deleted
  */
 export async function restore(projectId: string, path: string, namespace?: string): Promise<void> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node } = navigateToNode(tree, normalized);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  if (!node.deleted) {
-    // Not deleted - no-op
-    return;
-  }
+    if (!node.deleted) {
+      // Not deleted - no-op
+      return;
+    }
 
-  node.deleted = false;
-  node.updatedAt = Date.now();
+    node.deleted = false;
+    node.updatedAt = Date.now();
 
-  // If it's a directory, we only restore the directory itself, not children
-  // (children can be restored individually)
+    // If it's a directory, we only restore the directory itself, not children
+    // (children can be restored individually)
 
-  await saveTree(projectId, tree);
+    await saveTree(projectId, tree);
+  });
 }
 
 // ============================================================================
@@ -1186,48 +1268,51 @@ export async function restore(projectId: string, path: string, namespace?: strin
  * @throws VfsError if not deleted
  */
 export async function purge(projectId: string, path: string, namespace?: string): Promise<void> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
-  const { node, parent, name } = navigateToNode(tree, normalized);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node, parent, name } = navigateToNode(tree, normalized);
 
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
-
-  if (!node.deleted) {
-    throw new VfsError(`Cannot purge non-deleted item: ${normalized}`, 'INVALID_PATH');
-  }
-
-  // Collect all fileIds to purge (including nested for directories)
-  const fileIds: string[] = [];
-  const collectFileIds = (n: VfsNode) => {
-    if (n.type === 'file' && n.fileId) {
-      fileIds.push(n.fileId);
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
     }
-    if (n.children) {
-      for (const child of Object.values(n.children)) {
-        collectFileIds(child);
+
+    if (!node.deleted) {
+      throw new VfsError(`Cannot purge non-deleted item: ${normalized}`, 'INVALID_PATH');
+    }
+
+    // Collect all fileIds to purge (including nested for directories)
+    const fileIds: string[] = [];
+    const collectFileIds = (n: VfsNode) => {
+      if (n.type === 'file' && n.fileId) {
+        fileIds.push(n.fileId);
       }
+      if (n.children) {
+        for (const child of Object.values(n.children)) {
+          collectFileIds(child);
+        }
+      }
+    };
+    collectFileIds(node);
+
+    // Delete file contents and versions
+    const adapter = storage.getAdapter();
+    for (const fileId of fileIds) {
+      await deleteFileContent(fileId);
+      // Delete all versions
+      await adapter.deleteMany(Tables.VFS_VERSIONS, { parentId: fileId });
     }
-  };
-  collectFileIds(node);
 
-  // Delete file contents and versions
-  const adapter = storage.getAdapter();
-  for (const fileId of fileIds) {
-    await deleteFileContent(fileId);
-    // Delete all versions
-    await adapter.deleteMany(Tables.VFS_VERSIONS, { parentId: fileId });
-  }
+    // Remove from tree
+    const parentChildren =
+      parent && 'children' in parent ? parent.children : parent && (parent as VfsNode).children;
+    if (parentChildren && name) {
+      delete parentChildren[name];
+    }
 
-  // Remove from tree
-  const parentChildren =
-    parent && 'children' in parent ? parent.children : parent && (parent as VfsNode).children;
-  if (parentChildren && name) {
-    delete parentChildren[name];
-  }
-
-  await saveTree(projectId, tree);
+    await saveTree(projectId, tree);
+  });
 }
 
 // ============================================================================
@@ -1238,27 +1323,31 @@ export async function purge(projectId: string, path: string, namespace?: string)
  * Clear all VFS data for a project
  */
 export async function clearVfs(projectId: string): Promise<void> {
-  const adapter = storage.getAdapter();
+  return withTreeLock(projectId, async () => {
+    const adapter = storage.getAdapter();
 
-  // Delete meta
-  const metaId = `vfs_meta_${projectId}`;
-  await adapter.delete(Tables.VFS_META, metaId);
+    // Delete meta
+    const metaId = `vfs_meta_${projectId}`;
+    await adapter.delete(Tables.VFS_META, metaId);
 
-  // Delete all files for this project
-  await adapter.deleteMany(Tables.VFS_FILES, { parentId: projectId });
+    // Delete all files for this project
+    await adapter.deleteMany(Tables.VFS_FILES, { parentId: projectId });
 
-  // Note: vfs_versions have parentId = fileId, so we'd need to track those
-  // For now, orphaned versions will be cleaned up by a future maintenance task
+    // Note: vfs_versions have parentId = fileId, so we'd need to track those
+    // For now, orphaned versions will be cleaned up by a future maintenance task
+  });
 }
 
 /**
  * Check if a project has any VFS data
  */
 export async function hasVfs(projectId: string): Promise<boolean> {
-  const adapter = storage.getAdapter();
-  const metaId = `vfs_meta_${projectId}`;
-  const record = await adapter.get(Tables.VFS_META, metaId);
-  return record !== null;
+  return withTreeLock(projectId, async () => {
+    const adapter = storage.getAdapter();
+    const metaId = `vfs_meta_${projectId}`;
+    const record = await adapter.get(Tables.VFS_META, metaId);
+    return record !== null;
+  });
 }
 
 // ============================================================================
@@ -1280,57 +1369,59 @@ export interface VfsStat {
  * @throws VfsError if path not found or is deleted
  */
 export async function stat(projectId: string, path: string, namespace?: string): Promise<VfsStat> {
-  const tree = await loadTree(projectId);
-  const normalized = resolveNamespacedPath(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
 
-  // Handle root directory
-  if (isRootPath(normalized)) {
-    return {
-      isFile: false,
-      isDirectory: true,
-      size: 0,
-      createdAt: 0,
-      updatedAt: 0,
-      isBinary: false,
-      mime: 'application/x-directory',
-    };
-  }
-
-  const { node } = navigateToNode(tree, normalized);
-
-  if (!node) {
-    throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
-  }
-
-  if (node.deleted) {
-    throw new VfsError(`Path is deleted: ${normalized}`, 'IS_DELETED');
-  }
-
-  const isFileNode = node.type === 'file';
-  const isDirectoryNode = node.type === 'dir';
-
-  let size = 0;
-  if (isFileNode && node.fileId) {
-    const file = await loadFile(node.fileId);
-    if (file) {
-      size = file.content.length;
+    // Handle root directory
+    if (isRootPath(normalized)) {
+      return {
+        isFile: false,
+        isDirectory: true,
+        size: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        isBinary: false,
+        mime: 'application/x-directory',
+      };
     }
-  }
 
-  const isBinary = isFileNode ? (node.isBinary ?? false) : false;
-  const mime = isFileNode
-    ? (node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain'))
-    : 'application/x-directory';
+    const { node } = navigateToNode(tree, normalized);
 
-  return {
-    isFile: isFileNode,
-    isDirectory: isDirectoryNode,
-    size,
-    createdAt: node.createdAt,
-    updatedAt: node.updatedAt,
-    isBinary,
-    mime,
-  };
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
+
+    if (node.deleted) {
+      throw new VfsError(`Path is deleted: ${normalized}`, 'IS_DELETED');
+    }
+
+    const isFileNode = node.type === 'file';
+    const isDirectoryNode = node.type === 'dir';
+
+    let size = 0;
+    if (isFileNode && node.fileId) {
+      const file = await loadFile(node.fileId);
+      if (file) {
+        size = file.content.length;
+      }
+    }
+
+    const isBinary = isFileNode ? (node.isBinary ?? false) : false;
+    const mime = isFileNode
+      ? (node.mime ?? (isBinary ? 'application/octet-stream' : 'text/plain'))
+      : 'application/x-directory';
+
+    return {
+      isFile: isFileNode,
+      isDirectory: isDirectoryNode,
+      size,
+      createdAt: node.createdAt,
+      updatedAt: node.updatedAt,
+      isBinary,
+      mime,
+    };
+  });
 }
 
 /**
@@ -1346,42 +1437,46 @@ export async function getFileMeta(
   minStoredVersion: number;
   storedVersionCount: number;
 } | null> {
-  const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
-  const { node } = navigateToNode(tree, normalized);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = normalizePath(path);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node || node.type !== 'file' || node.deleted || !node.fileId) {
-    return null;
-  }
+    if (!node || node.type !== 'file' || node.deleted || !node.fileId) {
+      return null;
+    }
 
-  const file = await loadFile(node.fileId);
-  if (!file) return null;
+    const file = await loadFile(node.fileId);
+    if (!file) return null;
 
-  const minStoredVersion = file.minStoredVersion ?? 1;
-  const storedVersionCount = file.version - minStoredVersion + 1;
+    const minStoredVersion = file.minStoredVersion ?? 1;
+    const storedVersionCount = file.version - minStoredVersion + 1;
 
-  return {
-    version: file.version,
-    createdAt: file.createdAt,
-    updatedAt: file.updatedAt,
-    minStoredVersion,
-    storedVersionCount,
-  };
+    return {
+      version: file.version,
+      createdAt: file.createdAt,
+      updatedAt: file.updatedAt,
+      minStoredVersion,
+      storedVersionCount,
+    };
+  });
 }
 
 /**
  * Get fileId for a path (internal use for versioning)
  */
 export async function getFileId(projectId: string, path: string): Promise<string | null> {
-  const tree = await loadTree(projectId);
-  const normalized = normalizePath(path);
-  const { node } = navigateToNode(tree, normalized);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = normalizePath(path);
+    const { node } = navigateToNode(tree, normalized);
 
-  if (!node || node.type !== 'file' || !node.fileId) {
-    return null;
-  }
+    if (!node || node.type !== 'file' || !node.fileId) {
+      return null;
+    }
 
-  return node.fileId;
+    return node.fileId;
+  });
 }
 
 // ============================================================================
@@ -1405,29 +1500,31 @@ export async function getVersion(
   fileId: string,
   version: number
 ): Promise<string | null> {
-  // Version 1 is the initial create, not stored in vfs_versions
-  // Versions 2+ are stored in vfs_versions as the "before" state
-  // Current version is in vfs_files
+  return withTreeLock(_projectId, async () => {
+    // Version 1 is the initial create, not stored in vfs_versions
+    // Versions 2+ are stored in vfs_versions as the "before" state
+    // Current version is in vfs_files
 
-  // First, load the current file to get its version
-  const currentFile = await loadFile(fileId);
-  if (!currentFile) return null;
+    // First, load the current file to get its version
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) return null;
 
-  // If requesting current version, return current content
-  if (version === currentFile.version) {
-    return currentFile.content;
-  }
+    // If requesting current version, return current content
+    if (version === currentFile.version) {
+      return currentFile.content;
+    }
 
-  // If requesting version beyond current, not found
-  if (version > currentFile.version || version < 1) {
-    return null;
-  }
+    // If requesting version beyond current, not found
+    if (version > currentFile.version || version < 1) {
+      return null;
+    }
 
-  // Look up historical version
-  const versionData = await loadVersion(fileId, version);
-  if (!versionData) return null;
+    // Look up historical version
+    const versionData = await loadVersion(fileId, version);
+    if (!versionData) return null;
 
-  return versionData.content;
+    return versionData.content;
+  });
 }
 
 /**
@@ -1437,29 +1534,31 @@ export async function getVersion(
  * @returns Array of version info, sorted by version (ascending)
  */
 export async function listVersions(_projectId: string, fileId: string): Promise<VersionInfo[]> {
-  const currentFile = await loadFile(fileId);
-  if (!currentFile) return [];
+  return withTreeLock(_projectId, async () => {
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) return [];
 
-  const versions: VersionInfo[] = [];
+    const versions: VersionInfo[] = [];
 
-  // Historical versions (1 to currentVersion - 1)
-  for (let v = 1; v < currentFile.version; v++) {
-    const versionData = await loadVersion(fileId, v);
-    if (versionData) {
-      versions.push({
-        version: versionData.version,
-        createdAt: versionData.createdAt,
-      });
+    // Historical versions (1 to currentVersion - 1)
+    for (let v = 1; v < currentFile.version; v++) {
+      const versionData = await loadVersion(fileId, v);
+      if (versionData) {
+        versions.push({
+          version: versionData.version,
+          createdAt: versionData.createdAt,
+        });
+      }
     }
-  }
 
-  // Current version
-  versions.push({
-    version: currentFile.version,
-    createdAt: currentFile.updatedAt,
+    // Current version
+    versions.push({
+      version: currentFile.version,
+      createdAt: currentFile.updatedAt,
+    });
+
+    return versions;
   });
-
-  return versions;
 }
 
 /**
@@ -1474,39 +1573,41 @@ export async function dropOldVersions(
   fileId: string,
   keepCount = 10
 ): Promise<number> {
-  const currentFile = await loadFile(fileId);
-  if (!currentFile) return 0;
+  return withTreeLock(projectId, async () => {
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) return 0;
 
-  const totalVersions = currentFile.version;
-  if (totalVersions <= keepCount) return 0;
+    const totalVersions = currentFile.version;
+    if (totalVersions <= keepCount) return 0;
 
-  // Delete versions 1 to (totalVersions - keepCount)
-  // Current version is in vfs_files, historical are in vfs_versions
-  const deleteUpTo = totalVersions - keepCount;
-  const newMinStoredVersion = deleteUpTo + 1;
-  const adapter = storage.getAdapter();
-  let deleted = 0;
+    // Delete versions 1 to (totalVersions - keepCount)
+    // Current version is in vfs_files, historical are in vfs_versions
+    const deleteUpTo = totalVersions - keepCount;
+    const newMinStoredVersion = deleteUpTo + 1;
+    const adapter = storage.getAdapter();
+    let deleted = 0;
 
-  for (let v = 1; v <= deleteUpTo; v++) {
-    const versionId = `${fileId}_v${v}`;
-    try {
-      await adapter.delete(Tables.VFS_VERSIONS, versionId);
-      deleted++;
-    } catch {
-      // Version might not exist (e.g., already deleted)
+    for (let v = 1; v <= deleteUpTo; v++) {
+      const versionId = `${fileId}_v${v}`;
+      try {
+        await adapter.delete(Tables.VFS_VERSIONS, versionId);
+        deleted++;
+      } catch {
+        // Version might not exist (e.g., already deleted)
+      }
     }
-  }
 
-  // Update minStoredVersion in the file metadata
-  if (deleted > 0) {
-    const updatedFile: VfsFile = {
-      ...currentFile,
-      minStoredVersion: newMinStoredVersion,
-    };
-    await saveFile(fileId, updatedFile, projectId);
-  }
+    // Update minStoredVersion in the file metadata
+    if (deleted > 0) {
+      const updatedFile: VfsFile = {
+        ...currentFile,
+        minStoredVersion: newMinStoredVersion,
+      };
+      await saveFile(fileId, updatedFile, projectId);
+    }
 
-  return deleted;
+    return deleted;
+  });
 }
 
 // ============================================================================
@@ -1524,12 +1625,14 @@ export interface OrphanInfo {
  * Orphans are files displaced by rename operations
  */
 export async function listOrphans(projectId: string): Promise<OrphanInfo[]> {
-  const tree = await loadTree(projectId);
-  return tree.orphans.map(o => ({
-    fileId: o.fileId,
-    originalPath: o.originalPath,
-    orphanedAt: o.orphanedAt,
-  }));
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    return tree.orphans.map(o => ({
+      fileId: o.fileId,
+      originalPath: o.originalPath,
+      orphanedAt: o.orphanedAt,
+    }));
+  });
 }
 
 /**
@@ -1544,64 +1647,66 @@ export async function restoreOrphan(
   fileId: string,
   targetPath: string
 ): Promise<void> {
-  const tree = await loadTree(projectId);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
 
-  // Find the orphan
-  const orphanIndex = tree.orphans.findIndex(o => o.fileId === fileId);
-  if (orphanIndex === -1) {
-    throw new VfsError(`Orphan not found: ${fileId}`, 'PATH_NOT_FOUND');
-  }
+    // Find the orphan
+    const orphanIndex = tree.orphans.findIndex(o => o.fileId === fileId);
+    if (orphanIndex === -1) {
+      throw new VfsError(`Orphan not found: ${fileId}`, 'PATH_NOT_FOUND');
+    }
 
-  const normalized = normalizePath(targetPath);
-  const basename = getBasename(normalized);
+    const normalized = normalizePath(targetPath);
+    const basename = getBasename(normalized);
 
-  if (!basename) {
-    throw new VfsError('Cannot restore to root path', 'INVALID_PATH');
-  }
+    if (!basename) {
+      throw new VfsError('Cannot restore to root path', 'INVALID_PATH');
+    }
 
-  // Check if target already exists
-  const { node: existingNode } = navigateToNode(tree, normalized);
-  if (existingNode && !existingNode.deleted) {
-    throw new VfsError(`Target path already exists: ${normalized}`, 'DESTINATION_EXISTS');
-  }
+    // Check if target already exists
+    const { node: existingNode } = navigateToNode(tree, normalized);
+    if (existingNode && !existingNode.deleted) {
+      throw new VfsError(`Target path already exists: ${normalized}`, 'DESTINATION_EXISTS');
+    }
 
-  // Ensure parent directory exists
-  const parent = ensureParentExists(tree, normalized);
-  if (!parent) {
-    throw new VfsError(`Parent path is not a directory`, 'NOT_A_DIRECTORY');
-  }
+    // Ensure parent directory exists
+    const parent = ensureParentExists(tree, normalized);
+    if (!parent) {
+      throw new VfsError(`Parent path is not a directory`, 'NOT_A_DIRECTORY');
+    }
 
-  const children = 'children' in parent ? parent.children : (parent as VfsNode).children;
-  if (!children) {
-    throw new VfsError(`Parent is not a directory`, 'NOT_A_DIRECTORY');
-  }
+    const children = 'children' in parent ? parent.children : (parent as VfsNode).children;
+    if (!children) {
+      throw new VfsError(`Parent is not a directory`, 'NOT_A_DIRECTORY');
+    }
 
-  // Load the orphan's file data to get timestamps
-  const file = await loadFile(fileId);
-  if (!file) {
-    throw new VfsError(`Orphan file data not found: ${fileId}`, 'PATH_NOT_FOUND');
-  }
+    // Load the orphan's file data to get timestamps
+    const file = await loadFile(fileId);
+    if (!file) {
+      throw new VfsError(`Orphan file data not found: ${fileId}`, 'PATH_NOT_FOUND');
+    }
 
-  const now = Date.now();
+    const now = Date.now();
 
-  // If there's a deleted node at target, remove it (it was already displaced or will be lost)
-  if (existingNode && existingNode.deleted) {
-    delete children[basename];
-  }
+    // If there's a deleted node at target, remove it (it was already displaced or will be lost)
+    if (existingNode && existingNode.deleted) {
+      delete children[basename];
+    }
 
-  // Create new node pointing to the orphan's fileId
-  children[basename] = {
-    type: 'file',
-    fileId,
-    deleted: false,
-    createdAt: file.createdAt,
-    updatedAt: now,
-  };
+    // Create new node pointing to the orphan's fileId
+    children[basename] = {
+      type: 'file',
+      fileId,
+      deleted: false,
+      createdAt: file.createdAt,
+      updatedAt: now,
+    };
 
-  // Remove from orphans list
-  tree.orphans.splice(orphanIndex, 1);
+    // Remove from orphans list
+    tree.orphans.splice(orphanIndex, 1);
 
-  await saveTree(projectId, tree);
+    await saveTree(projectId, tree);
+  });
 }
 
 /**
@@ -1611,25 +1716,27 @@ export async function restoreOrphan(
  * @throws VfsError if orphan not found
  */
 export async function purgeOrphan(projectId: string, fileId: string): Promise<void> {
-  const tree = await loadTree(projectId);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
 
-  // Find the orphan
-  const orphanIndex = tree.orphans.findIndex(o => o.fileId === fileId);
-  if (orphanIndex === -1) {
-    throw new VfsError(`Orphan not found: ${fileId}`, 'PATH_NOT_FOUND');
-  }
+    // Find the orphan
+    const orphanIndex = tree.orphans.findIndex(o => o.fileId === fileId);
+    if (orphanIndex === -1) {
+      throw new VfsError(`Orphan not found: ${fileId}`, 'PATH_NOT_FOUND');
+    }
 
-  // Delete file content
-  await deleteFileContent(fileId);
+    // Delete file content
+    await deleteFileContent(fileId);
 
-  // Delete all versions
-  const adapter = storage.getAdapter();
-  await adapter.deleteMany(Tables.VFS_VERSIONS, { parentId: fileId });
+    // Delete all versions
+    const adapter = storage.getAdapter();
+    await adapter.deleteMany(Tables.VFS_VERSIONS, { parentId: fileId });
 
-  // Remove from orphans list
-  tree.orphans.splice(orphanIndex, 1);
+    // Remove from orphans list
+    tree.orphans.splice(orphanIndex, 1);
 
-  await saveTree(projectId, tree);
+    await saveTree(projectId, tree);
+  });
 }
 
 // ============================================================================
@@ -1697,40 +1804,73 @@ export async function strReplace(
   newStr: string,
   namespace?: string
 ): Promise<StrReplaceResult> {
-  const content = await readFile(projectId, path, namespace);
-  const normalized = resolveNamespacedPath(path, namespace);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  const occurrences = countOccurrences(content, oldStr);
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
+    if (node.deleted) {
+      throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
+    }
 
-  if (occurrences === 0) {
-    throw new VfsError(
-      `String not found in ${normalized}: "${oldStr.slice(0, 50)}${oldStr.length > 50 ? '...' : ''}"`,
-      'STRING_NOT_FOUND'
-    );
-  }
+    const fileId = node.fileId!;
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) {
+      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  if (occurrences > 1) {
-    const lineNumbers = findOccurrenceLines(content, oldStr);
-    throw new VfsError(
-      `Multiple occurrences (${occurrences}) found in lines: ${lineNumbers.join(', ')}`,
-      'STRING_NOT_UNIQUE'
-    );
-  }
+    const content = currentFile.content;
+    const occurrences = countOccurrences(content, oldStr);
 
-  // Find line where replacement occurs
-  const replacePos = content.indexOf(oldStr);
-  const editLine = content.substring(0, replacePos).split('\n').length;
+    if (occurrences === 0) {
+      throw new VfsError(
+        `String not found in ${normalized}: "${oldStr.slice(0, 50)}${oldStr.length > 50 ? '...' : ''}"`,
+        'STRING_NOT_FOUND'
+      );
+    }
 
-  // Perform replacement
-  const newContent = content.replace(oldStr, newStr);
+    if (occurrences > 1) {
+      const lineNumbers = findOccurrenceLines(content, oldStr);
+      throw new VfsError(
+        `Multiple occurrences (${occurrences}) found in lines: ${lineNumbers.join(', ')}`,
+        'STRING_NOT_UNIQUE'
+      );
+    }
 
-  // Update file (triggers versioning)
-  await updateFile(projectId, path, newContent, namespace);
+    // Find line where replacement occurs
+    const replacePos = content.indexOf(oldStr);
+    const editLine = content.substring(0, replacePos).split('\n').length;
 
-  return {
-    editLine,
-    snippet: formatSnippet(newContent, editLine),
-  };
+    // Perform replacement
+    const newContent = content.replace(oldStr, newStr);
+
+    // Save current version to history, then update file
+    await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
+
+    const now = Date.now();
+    const newFile: VfsFile = {
+      content: newContent,
+      version: currentFile.version + 1,
+      createdAt: currentFile.createdAt,
+      updatedAt: now,
+    };
+
+    await saveFile(fileId, newFile, projectId);
+    node.updatedAt = now;
+    await saveTree(projectId, tree);
+
+    return {
+      editLine,
+      snippet: formatSnippet(newContent, editLine),
+    };
+  });
 }
 
 export interface InsertResult {
@@ -1753,29 +1893,62 @@ export async function insert(
   insertText: string,
   namespace?: string
 ): Promise<InsertResult> {
-  const content = await readFile(projectId, path, namespace);
-  const normalized = resolveNamespacedPath(path, namespace);
+  assertWritable(path, namespace);
+  return withTreeLock(projectId, async () => {
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const { node } = navigateToNode(tree, normalized);
 
-  const lines = content.split('\n');
-  const nLines = lines.length;
+    if (!node) {
+      throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
+    if (node.type !== 'file') {
+      throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+    }
+    if (node.deleted) {
+      throw new VfsError(`File is deleted: ${normalized}`, 'IS_DELETED');
+    }
 
-  // insertLine is 0-indexed for insertion: 0 means before first line
-  if (insertLine < 0 || insertLine > nLines) {
-    throw new VfsError(
-      `Invalid line ${insertLine} in ${normalized}. Valid range: [0, ${nLines}]`,
-      'INVALID_LINE'
-    );
-  }
+    const fileId = node.fileId!;
+    const currentFile = await loadFile(fileId);
+    if (!currentFile) {
+      throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+    }
 
-  // Insert the text at the specified line
-  const textLines = insertText.split('\n');
-  lines.splice(insertLine, 0, ...textLines);
-  const newContent = lines.join('\n');
+    const content = currentFile.content;
+    const lines = content.split('\n');
+    const nLines = lines.length;
 
-  // Update file (triggers versioning)
-  await updateFile(projectId, path, newContent, namespace);
+    // insertLine is 0-indexed for insertion: 0 means before first line
+    if (insertLine < 0 || insertLine > nLines) {
+      throw new VfsError(
+        `Invalid line ${insertLine} in ${normalized}. Valid range: [0, ${nLines}]`,
+        'INVALID_LINE'
+      );
+    }
 
-  return {
-    insertedAt: insertLine,
-  };
+    // Insert the text at the specified line
+    const textLines = insertText.split('\n');
+    lines.splice(insertLine, 0, ...textLines);
+    const newContent = lines.join('\n');
+
+    // Save current version to history, then update file
+    await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
+
+    const now = Date.now();
+    const newFile: VfsFile = {
+      content: newContent,
+      version: currentFile.version + 1,
+      createdAt: currentFile.createdAt,
+      updatedAt: now,
+    };
+
+    await saveFile(fileId, newFile, projectId);
+    node.updatedAt = now;
+    await saveTree(projectId, tree);
+
+    return {
+      insertedAt: insertLine,
+    };
+  });
 }

@@ -12,7 +12,7 @@
 
 import type { QuickJSContext, QuickJSHandle } from 'quickjs-emscripten-core';
 import * as vfs from '../../vfs/vfsService';
-import { VfsError, normalizePath } from '../../vfs/vfsService';
+import { VfsError, normalizePath, isNamespacedReadonly } from '../../vfs/vfsService';
 
 /** Readonly paths - any write/delete to these paths throws EROFS */
 const READONLY_PATHS = ['/memories'];
@@ -61,6 +61,8 @@ function vfsErrorToErrno(error: VfsError, path: string): string {
       return `EIO: ${error.message}`;
     case 'BINARY_FILE':
       return `EINVAL: binary file, '${path}'`;
+    case 'READONLY':
+      return `EROFS: read-only file system, '${path}'`;
     default:
       return `EIO: ${error.message}`;
   }
@@ -392,7 +394,7 @@ export class FsBridge {
               isFile: st.isFile,
               isDirectory: st.isDirectory,
               size: st.size,
-              readonly: isReadonly(path),
+              readonly: isReadonly(path) || isNamespacedReadonly(path, this.namespace),
               mtime: st.updatedAt,
               isBinary: st.isBinary,
               mime: st.mime,

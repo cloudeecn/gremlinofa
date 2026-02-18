@@ -207,15 +207,13 @@ function createToolResultRenderBlock(
   tokenTotals?: TokenTotals
 ): ToolResultRenderBlock {
   const tool = toolRegistry.get(toolName);
-  const defaultIcon = isError ? '❌' : '✅';
-
   return {
     type: 'tool_result',
     tool_use_id: toolUseId,
     content,
     is_error: isError,
     name: toolName,
-    icon: tool?.iconOutput ?? defaultIcon,
+    icon: isError ? '❌' : (tool?.iconOutput ?? '✅'),
     renderedContent: tool?.renderOutput?.(content, isError) ?? content,
     renderingGroups,
     tokenTotals,
@@ -584,7 +582,7 @@ async function* executeToolUseBlocks(
     // Reject duplicate deferred return calls without executing the tool
     if (deferReturn && hasStoredReturn) {
       const errorContent =
-        'ERROR: A result has already been stored. Do NOT call return again. STOP immediately — do not call any more tools or produce further output.';
+        'The previous return has been recorded already. Please stop and user will call back.';
       const renderBlock = createToolResultRenderBlock(
         returnBlock.id,
         returnBlock.name,
@@ -594,7 +592,7 @@ async function* executeToolUseBlocks(
       renderBlock.status = 'error';
 
       const toolResultBlocks: ToolResultBlock[] = [
-        { type: 'tool_result', tool_use_id: returnBlock.id, content: errorContent },
+        { type: 'tool_result', tool_use_id: returnBlock.id, content: errorContent, is_error: true },
       ];
       const toolResultMsg = buildToolResultMessage(apiType, toolResultBlocks, [renderBlock]);
       messages.push(toolResultMsg);
@@ -646,31 +644,91 @@ async function* executeToolUseBlocks(
     return { breakLoop: toolResult.breakLoop ?? { returnValue: toolResult.content } };
   }
 
-  // Separate return tool from executable tools (return gets an error result)
-  let returnErrorResult: ParallelToolResult | undefined;
+  // Separate return tool from executable tools
+  let returnPreResult: ParallelToolResult | undefined;
+  let deferredReturnValue: string | undefined;
   let executableBlocks = toolUseBlocks;
 
   if (returnToolIndex !== -1) {
-    console.debug('[agenticLoopGen] Return tool in parallel batch — sending error result');
     const returnBlock = toolUseBlocks[returnToolIndex];
-    const errorContent = 'return cannot be called in parallel with other tools. please try again';
-    const renderBlock = createToolResultRenderBlock(
-      returnBlock.id,
-      returnBlock.name,
-      errorContent,
-      true
-    );
-    renderBlock.status = 'error';
-    returnErrorResult = {
-      toolResult: {
-        type: 'tool_result',
-        tool_use_id: returnBlock.id,
-        content: errorContent,
-        is_error: true,
-      },
-      renderBlock,
-    };
     executableBlocks = toolUseBlocks.filter((_, i) => i !== returnToolIndex);
+
+    if (deferReturn) {
+      if (hasStoredReturn) {
+        // Duplicate deferred — error (same as solo duplicate at line 636)
+        console.debug('[agenticLoopGen] Duplicate deferred return in parallel — error');
+        const errorContent =
+          'The previous return has been recorded already. Please stop and user will call back.';
+        const renderBlock = createToolResultRenderBlock(
+          returnBlock.id,
+          returnBlock.name,
+          errorContent,
+          true
+        );
+        renderBlock.status = 'error';
+        returnPreResult = {
+          toolResult: {
+            type: 'tool_result',
+            tool_use_id: returnBlock.id,
+            content: errorContent,
+            is_error: true,
+          },
+          renderBlock,
+        };
+      } else {
+        // Execute return tool directly, store value
+        console.debug('[agenticLoopGen] Deferred return in parallel — executing and storing');
+        const gen = executeClientSideTool(
+          returnBlock.name,
+          returnBlock.input,
+          enabledTools,
+          toolOptions,
+          toolContext
+        );
+        let iterResult = await gen.next();
+        while (!iterResult.done) iterResult = await gen.next();
+        const toolResult = iterResult.value;
+        deferredReturnValue = toolResult.breakLoop?.returnValue ?? toolResult.content;
+
+        const storedContent = 'Recorded. Stop and user will call you back.';
+        const renderBlock = createToolResultRenderBlock(
+          returnBlock.id,
+          returnBlock.name,
+          storedContent,
+          false
+        );
+        renderBlock.status = 'complete';
+        returnPreResult = {
+          toolResult: {
+            type: 'tool_result',
+            tool_use_id: returnBlock.id,
+            content: storedContent,
+          },
+          renderBlock,
+        };
+      }
+    } else {
+      // Non-deferred parallel — ERROR
+      console.debug('[agenticLoopGen] Return tool in parallel batch — sending error result');
+      const errorContent =
+        'ERROR: return cannot be called in parallel with other tools. Please try again with return as the only tool call.';
+      const renderBlock = createToolResultRenderBlock(
+        returnBlock.id,
+        returnBlock.name,
+        errorContent,
+        true
+      );
+      renderBlock.status = 'error';
+      returnPreResult = {
+        toolResult: {
+          type: 'tool_result',
+          tool_use_id: returnBlock.id,
+          content: errorContent,
+          is_error: true,
+        },
+        renderBlock,
+      };
+    }
   }
 
   // --- Classify into simple vs complex ---
@@ -712,19 +770,19 @@ async function* executeToolUseBlocks(
   const pendingMsg = buildToolResultMessage(apiType, pendingToolResults, pendingRenderBlocks);
   yield { type: 'pending_tool_result', message: pendingMsg };
 
-  // --- Yield return error block update immediately ---
-  if (returnErrorResult) {
+  // --- Yield return pre-result block update immediately ---
+  if (returnPreResult) {
     yield {
       type: 'tool_block_update',
-      toolUseId: returnErrorResult.renderBlock.tool_use_id,
-      block: returnErrorResult.renderBlock,
+      toolUseId: returnPreResult.renderBlock.tool_use_id,
+      block: returnPreResult.renderBlock,
     };
   }
 
   // --- Collect results keyed by tool_use_id for final merge ---
   const resultMap = new Map<string, ParallelToolResult>();
-  if (returnErrorResult) {
-    resultMap.set(returnErrorResult.toolResult.tool_use_id, returnErrorResult);
+  if (returnPreResult) {
+    resultMap.set(returnPreResult.toolResult.tool_use_id, returnPreResult);
   }
 
   let breakLoopResult: { returnValue?: string } | undefined;
@@ -806,6 +864,10 @@ async function* executeToolUseBlocks(
 
   messages.push(toolResultMsg);
   yield { type: 'message_created', message: toolResultMsg };
+
+  if (deferredReturnValue !== undefined) {
+    return { deferredReturn: deferredReturnValue };
+  }
 
   return undefined;
 }

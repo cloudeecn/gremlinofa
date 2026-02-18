@@ -4,6 +4,7 @@ import {
   collectAgenticLoop,
   createTokenTotals,
   addTokens,
+  createToolResultRenderBlock,
   type AgenticLoopOptions,
   type AgenticLoopEvent,
   type AgenticLoopResult,
@@ -905,6 +906,106 @@ describe('agenticLoopGenerator', () => {
       expect(messageCreated.length).toBe(3);
     });
 
+    it('deferred return works in parallel — both tools execute, value stored', async () => {
+      const toolUseBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_1',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+        { type: 'tool_use' as const, id: 'toolu_2', name: 'return', input: { result: 'done' } },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      const finalResult = {
+        textContent: 'Finished',
+        fullContent: [{ type: 'text', text: 'Finished' }],
+        stopReason: 'end_turn',
+        inputTokens: 120,
+        outputTokens: 60,
+      };
+
+      setupMultiIterationMock(
+        [createMockStream([], toolUseResult), createMockStream([], finalResult)],
+        [toolUseBlocks, toolUseBlocks, [], []]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'done',
+            breakLoop: { returnValue: 'done' },
+          });
+        }
+        return mockToolGenerator({ content: `Result from ${name}`, isError: false });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: true,
+      });
+      const context = [createMockUserMessage('Do both')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      // Both tools should execute (return + memory)
+      expect(executeClientSideTool).toHaveBeenCalledTimes(2);
+      expect(executeClientSideTool).toHaveBeenCalledWith(
+        'return',
+        { result: 'done' },
+        ['return', 'memory'],
+        {},
+        { projectId: 'proj_test', chatId: 'chat_test' }
+      );
+      expect(executeClientSideTool).toHaveBeenCalledWith(
+        'memory',
+        { command: 'view', path: '/' },
+        ['return', 'memory'],
+        {},
+        { projectId: 'proj_test', chatId: 'chat_test' }
+      );
+
+      // Loop continues (deferred, no breakLoop) — LLM sees "Recorded" for return + memory result
+      expect(result.value.status).toBe('complete');
+      if (result.value.status === 'complete') {
+        expect(result.value.returnValue).toBe('done');
+      }
+
+      // Two API calls — loop continued after deferred return
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(2);
+
+      // Return tool gets a 'complete' block update (not error)
+      const blockUpdates = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'tool_block_update' }> =>
+          e.type === 'tool_block_update'
+      );
+      const returnBlock = blockUpdates.find(
+        e => e.toolUseId === 'toolu_2' && e.block.status === 'complete'
+      );
+      expect(returnBlock).toBeDefined();
+    });
+
     it('handles one tool error alongside a successful tool', async () => {
       const toolUseBlocks = [
         {
@@ -1369,6 +1470,244 @@ describe('agenticLoopGenerator', () => {
       expect(apiService.sendMessageStream).toHaveBeenCalledTimes(3);
       // executeClientSideTool only called once — second call is rejected before execution
       expect(callCount).toBe(1);
+
+      // The duplicate rejection builds the tool_result directly (not via executeClientSideTool),
+      // so capture the error content from buildToolResultMessage calls.
+      const buildCalls = vi.mocked(apiService.buildToolResultMessage).mock.calls;
+      // Second buildToolResultMessage call carries the duplicate-error tool_result
+      const duplicateToolResults = buildCalls[1][1] as Array<{
+        content: string;
+        is_error?: boolean;
+      }>;
+      expect(duplicateToolResults[0].is_error).toBe(true);
+      expect(duplicateToolResults[0].content).toBe(
+        'The previous return has been recorded already. Please stop and user will call back.'
+      );
+    });
+
+    it('deferred return: parallel return+memory then solo duplicate next message', async () => {
+      // Iteration 1: return + memory in parallel (deferred) → stores value, loop continues
+      // Iteration 2: solo return again → duplicate error, NOT executed
+      // Iteration 3: end_turn → final result has first stored value
+      const parallelBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_m1',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_r1',
+          name: 'return',
+          input: { result: 'first' },
+        },
+      ];
+      const soloReturnBlock = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_r2',
+          name: 'return',
+          input: { result: 'second' },
+        },
+      ];
+
+      const iter1Result = {
+        textContent: '',
+        fullContent: parallelBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 80,
+        outputTokens: 40,
+      };
+      const iter2Result = {
+        textContent: '',
+        fullContent: soloReturnBlock,
+        stopReason: 'tool_use',
+        inputTokens: 90,
+        outputTokens: 45,
+      };
+      const iter3Result = {
+        textContent: 'Final',
+        fullContent: [{ type: 'text', text: 'Final' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      setupMultiIterationMock(
+        [
+          createMockStream([], iter1Result),
+          createMockStream([], iter2Result),
+          createMockStream([], iter3Result),
+        ],
+        [parallelBlocks, parallelBlocks, soloReturnBlock, soloReturnBlock, [], []]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'first',
+            breakLoop: { returnValue: 'first' },
+          });
+        }
+        return mockToolGenerator({ content: 'memory ok', isError: false });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: true,
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('complete');
+      if (result.value.status === 'complete') {
+        expect(result.value.returnValue).toBe('first');
+      }
+
+      // return + memory executed in iteration 1; duplicate rejected in iteration 2
+      expect(executeClientSideTool).toHaveBeenCalledTimes(2);
+      expect(executeClientSideTool).toHaveBeenCalledWith(
+        'return',
+        { result: 'first' },
+        ['return', 'memory'],
+        {},
+        { projectId: 'proj_test', chatId: 'chat_test' }
+      );
+      expect(executeClientSideTool).toHaveBeenCalledWith(
+        'memory',
+        { command: 'view', path: '/' },
+        ['return', 'memory'],
+        {},
+        { projectId: 'proj_test', chatId: 'chat_test' }
+      );
+
+      // 3 API calls
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(3);
+
+      // Solo duplicate path builds tool_result message directly (no tool_block_update).
+      // The second buildToolResultMessage call in iteration 2 carries the duplicate error.
+      const buildCalls = vi.mocked(apiService.buildToolResultMessage).mock.calls;
+      // Iter 1 parallel: pending msg + final msg = 2 calls; Iter 2 solo duplicate: 1 call → index 2
+      const duplicateToolResults = buildCalls[2][1] as Array<{
+        content: string;
+        is_error?: boolean;
+      }>;
+      expect(duplicateToolResults[0].is_error).toBe(true);
+      expect(duplicateToolResults[0].content).toBe(
+        'The previous return has been recorded already. Please stop and user will call back.'
+      );
+    });
+
+    it('deferred return: empty string stores correctly and blocks duplicate', async () => {
+      // Iteration 1: solo return with "" (empty string) → deferred, stores ""
+      // Iteration 2: solo return again → duplicate error, not executed
+      // Iteration 3: end_turn → final result has ""
+      const returnBlock1 = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_e1',
+          name: 'return',
+          input: { result: '' },
+        },
+      ];
+      const returnBlock2 = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_e2',
+          name: 'return',
+          input: { result: 'overwrite' },
+        },
+      ];
+
+      const iter1Result = {
+        textContent: '',
+        fullContent: returnBlock1,
+        stopReason: 'tool_use',
+        inputTokens: 80,
+        outputTokens: 40,
+      };
+      const iter2Result = {
+        textContent: '',
+        fullContent: returnBlock2,
+        stopReason: 'tool_use',
+        inputTokens: 90,
+        outputTokens: 45,
+      };
+      const iter3Result = {
+        textContent: 'Done',
+        fullContent: [{ type: 'text', text: 'Done' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      setupMultiIterationMock(
+        [
+          createMockStream([], iter1Result),
+          createMockStream([], iter2Result),
+          createMockStream([], iter3Result),
+        ],
+        [returnBlock1, returnBlock1, returnBlock2, returnBlock2, [], []]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: '',
+          breakLoop: { returnValue: '' },
+        })
+      );
+
+      const options = createMockOptions({
+        enabledTools: ['return'],
+        deferReturn: true,
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        // Empty string is preserved, not overwritten
+        expect(result.returnValue).toBe('');
+      }
+
+      // Only first call executed — second rejected before execution
+      expect(executeClientSideTool).toHaveBeenCalledTimes(1);
+      // 3 API calls
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(3);
+
+      // Verify duplicate error content
+      const buildCalls = vi.mocked(apiService.buildToolResultMessage).mock.calls;
+      const duplicateToolResults = buildCalls[1][1] as Array<{
+        content: string;
+        is_error?: boolean;
+      }>;
+      expect(duplicateToolResults[0].is_error).toBe(true);
+      expect(duplicateToolResults[0].content).toBe(
+        'The previous return has been recorded already. Please stop and user will call back.'
+      );
     });
 
     it('deferred return: pre-loop pending blocks store value and continue', async () => {
@@ -1515,6 +1854,24 @@ describe('agenticLoopGenerator', () => {
       expect(toolResultMsg).toBeDefined();
       expect(toolResultMsg!.metadata!.messageCost).toBe(0.042);
       expect(toolResultMsg!.metadata!.inputTokens).toBe(500);
+    });
+  });
+
+  describe('createToolResultRenderBlock', () => {
+    it('uses error icon when isError is true, ignoring tool iconOutput', () => {
+      const block = createToolResultRenderBlock('tu_1', 'return', 'error msg', true);
+      expect(block.icon).toBe('❌');
+      expect(block.is_error).toBe(true);
+    });
+
+    it('uses tool iconOutput when isError is false', () => {
+      const block = createToolResultRenderBlock('tu_1', 'return', 'ok', false);
+      expect(block.icon).toBe('✅');
+    });
+
+    it('uses default success icon for unknown tools', () => {
+      const block = createToolResultRenderBlock('tu_1', 'unknown_tool', 'ok');
+      expect(block.icon).toBe('✅');
     });
   });
 });

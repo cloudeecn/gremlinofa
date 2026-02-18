@@ -16,6 +16,8 @@ export default function ChatInput({
   isProcessing = false,
   showSendSpinner = false,
   hasPendingToolCalls = false,
+  softStopRequested = false,
+  onRequestSoftStop,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -189,24 +191,46 @@ export default function ChatInput({
             style={{ minHeight: '48px', maxHeight: '120px' }}
           />
 
-          {/* Send Button */}
-          <button
-            onClick={onSend}
-            disabled={
-              (!value.trim() && attachments.length === 0 && !hasPendingToolCalls) ||
-              disabled ||
-              isProcessing ||
-              showSendSpinner
-            }
-            className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
-            title={hasPendingToolCalls ? 'Resolve pending tool calls' : 'Send message (Enter)'}
-          >
-            {showSendSpinner ? (
-              <Spinner size={16} colorClass="border-white" />
-            ) : (
-              <span className="text-lg">➤</span>
-            )}
-          </button>
+          {/* Send / Stop Button */}
+          {disabled && onRequestSoftStop ? (
+            <button
+              onClick={onRequestSoftStop}
+              disabled={softStopRequested}
+              className={`absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+                softStopRequested
+                  ? 'bg-gray-300 text-white'
+                  : 'bg-red-600 text-white hover:bg-red-700'
+              }`}
+              title={softStopRequested ? 'Stopping...' : 'Stop after current step'}
+            >
+              {softStopRequested ? (
+                <Spinner size={16} colorClass="border-white" />
+              ) : (
+                <>
+                  <Spinner size={30} colorClass="border-red-300" className="absolute" />
+                  <span className="text-[10px]">&#x25A0;</span>
+                </>
+              )}
+            </button>
+          ) : (
+            <button
+              onClick={onSend}
+              disabled={
+                (!value.trim() && attachments.length === 0 && !hasPendingToolCalls) ||
+                disabled ||
+                isProcessing ||
+                showSendSpinner
+              }
+              className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+              title={hasPendingToolCalls ? 'Resolve pending tool calls' : 'Send message (Enter)'}
+            >
+              {showSendSpinner ? (
+                <Spinner size={16} colorClass="border-white" />
+              ) : (
+                <span className="text-lg">➤</span>
+              )}
+            </button>
+          )}
         </div>
       </div>
       {/* Safe Area Bottom Spacer - hidden when keyboard covers home indicator */}

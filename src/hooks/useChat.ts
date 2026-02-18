@@ -289,13 +289,18 @@ interface LoopEventHandlers {
  * Consume the agentic loop generator, handling events and persistence.
  * Returns the final accumulated tokens.
  */
+interface ConsumeLoopResult {
+  tokens: TokenTotals;
+  softStopped?: 'before_tools' | 'after_tools';
+}
+
 async function consumeAgenticLoop(
   options: AgenticLoopOptions,
   context: Message<unknown>[],
   chat: Chat,
   project: Project,
   handlers: LoopEventHandlers
-): Promise<TokenTotals> {
+): Promise<ConsumeLoopResult> {
   const totals = createTokenTotals();
   let currentChat = chat;
   let lastContextWindowUsage = 0;
@@ -406,6 +411,8 @@ async function consumeAgenticLoop(
       console.error('[useChat] Agentic loop error:', finalResult.error.message);
     } else if (finalResult.status === 'max_iterations') {
       console.warn('[useChat] Agentic loop reached max iterations');
+    } else if (finalResult.status === 'soft_stopped') {
+      console.debug('[useChat] Soft stopped at:', finalResult.stopPoint);
     }
 
     // Final save: tokens already accumulated incrementally via tokens_consumed events,
@@ -428,7 +435,10 @@ async function consumeAgenticLoop(
     await storage.saveProject(updatedProject);
     handlers.onProjectUpdated(updatedProject);
 
-    return totals;
+    return {
+      tokens: totals,
+      softStopped: finalResult.status === 'soft_stopped' ? finalResult.stopPoint : undefined,
+    };
   } finally {
     handlers.onStreamingEnd();
   }
@@ -517,6 +527,17 @@ function extractToolResultIdsFromMessage(message: Message<unknown>): Set<string>
 }
 
 /**
+ * Check if a message is a tool_result message (has backstage tool_result blocks).
+ */
+function isToolResultMessage(message: Message<unknown>): boolean {
+  const renderingContent = message.content.renderingContent;
+  if (!renderingContent) return false;
+  return renderingContent.some(
+    group => group.category === 'backstage' && group.blocks.some(b => b.type === 'tool_result')
+  );
+}
+
+/**
  * Detect unresolved tool calls in the message history.
  * Returns the unresolved ToolUseBlocks if any, or null if all are resolved.
  */
@@ -590,6 +611,10 @@ export interface UseChatReturn {
   parentModelId: string | null;
   /** Unresolved tool_use blocks that need user action (stop/continue) */
   unresolvedToolCalls: ToolUseBlock[] | null;
+  /** True while a soft stop has been requested but not yet effective */
+  softStopRequested: boolean;
+  /** True when loop paused after tools completed (tool results persisted, awaiting continuation) */
+  suspendedAfterTools: boolean;
   sendMessage: (
     chatId: string,
     content: string,
@@ -608,6 +633,10 @@ export interface UseChatReturn {
   ) => Promise<void>;
   /** Resend from a message - delete messages after and re-run agentic loop */
   resendFromMessage: (messageId: string) => Promise<void>;
+  /** Request the agentic loop to stop at the next tool boundary */
+  requestSoftStop: () => void;
+  /** Continue the loop after it was soft-stopped at the after_tools point */
+  continueAfterToolStop: () => Promise<void>;
 }
 
 export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
@@ -617,6 +646,11 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   const [apiDefinition, setApiDefinition] = useState<APIDefinition | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [hasReceivedFirstChunk, setHasReceivedFirstChunk] = useState(false);
+
+  // Soft stop state
+  const softStopRequestedRef = useRef(false);
+  const [softStopRequested, setSoftStopRequested] = useState(false);
+  const [suspendedAfterTools, setSuspendedAfterTools] = useState(false);
 
   // Streaming state for UI rendering
   const [streamingGroups, setStreamingGroups] = useState<RenderingBlockGroup[]>([]);
@@ -710,6 +744,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       onStreamingStart: () => {
         setIsLoading(true);
         setHasReceivedFirstChunk(false);
+        softStopRequestedRef.current = false;
+        setSoftStopRequested(false);
+        setSuspendedAfterTools(false);
         callbacks.onStreamingStart(chatId, 'Thinking...');
       },
       onStreamingUpdate: (groups: RenderingBlockGroup[]) => {
@@ -745,6 +782,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           applyToolBlockBatch(batch);
         }
         setIsLoading(false);
+        setSoftStopRequested(false);
         setStreamingGroups([]);
         callbacks.onStreamingEnd(chatId);
       },
@@ -928,7 +966,17 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       setMessages(loadedMessages);
       callbacks.onMessagesLoaded(chatId, loadedMessages);
 
-      // 3c. Load API definition
+      // 3c. Detect suspended-after-tools state (last message is tool_result with no unresolved calls)
+      if (
+        loadedMessages.length > 0 &&
+        isToolResultMessage(loadedMessages[loadedMessages.length - 1]) &&
+        !getUnresolvedToolCalls(loadedMessages)
+      ) {
+        console.debug('[useChat] Detected suspended-after-tools state on load');
+        setSuspendedAfterTools(true);
+      }
+
+      // 3d. Load API definition
       let loadedApiDef: APIDefinition | null = null;
       const effectiveApiDefId = loadedChat.apiDefinitionId ?? loadedProject.apiDefinitionId;
       if (effectiveApiDefId) {
@@ -1005,6 +1053,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
                 model,
                 effectiveModelId
               );
+              options.shouldStop = () => softStopRequestedRef.current;
 
               // Consume the agentic loop generator (fire and forget, no await to avoid blocking)
               consumeAgenticLoop(
@@ -1013,7 +1062,11 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
                 updatedChat,
                 loadedProject,
                 buildEventHandlers()
-              );
+              ).then(loopResult => {
+                if (loopResult.softStopped === 'after_tools') {
+                  setSuspendedAfterTools(true);
+                }
+              });
             }
           }
         } else if (loadedChat.pendingState.type === 'forkMessage') {
@@ -1120,9 +1173,22 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       model,
       effectiveModelId
     );
+    options.shouldStop = () => softStopRequestedRef.current;
+
+    // Clear suspended state when user sends normally
+    setSuspendedAfterTools(false);
 
     // Consume the agentic loop generator
-    await consumeAgenticLoop(options, context, chat, project, buildEventHandlers());
+    const loopResult = await consumeAgenticLoop(
+      options,
+      context,
+      chat,
+      project,
+      buildEventHandlers()
+    );
+    if (loopResult.softStopped === 'after_tools') {
+      setSuspendedAfterTools(true);
+    }
   };
 
   const editMessage = async (incomingChatId: string, messageId: string, _content: string) => {
@@ -1265,6 +1331,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       effectiveModelId
     );
 
+    options.shouldStop = () => softStopRequestedRef.current;
+
     if (mode === 'continue') {
       // Continue mode: delegate tool execution to the agentic loop for streaming
       options.pendingToolUseBlocks = unresolvedToolCalls;
@@ -1290,7 +1358,16 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         options.pendingTrailingContext = [userMsg];
       }
 
-      await consumeAgenticLoop(options, context, chat, project, buildEventHandlers());
+      const loopResult = await consumeAgenticLoop(
+        options,
+        context,
+        chat,
+        project,
+        buildEventHandlers()
+      );
+      if (loopResult.softStopped === 'after_tools') {
+        setSuspendedAfterTools(true);
+      }
     } else {
       // Stop mode: build error tool results immediately (no streaming needed)
       const toolResults: ToolResultBlock[] = [];
@@ -1346,7 +1423,16 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         context = [...context, userMsg];
       }
 
-      await consumeAgenticLoop(options, context, chat, project, buildEventHandlers());
+      const loopResult = await consumeAgenticLoop(
+        options,
+        context,
+        chat,
+        project,
+        buildEventHandlers()
+      );
+      if (loopResult.softStopped === 'after_tools') {
+        setSuspendedAfterTools(true);
+      }
     }
   };
 
@@ -1419,8 +1505,51 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       model,
       effectiveModelId
     );
+    options.shouldStop = () => softStopRequestedRef.current;
 
-    await consumeAgenticLoop(options, context, updatedChat, project, buildEventHandlers());
+    const loopResult = await consumeAgenticLoop(
+      options,
+      context,
+      updatedChat,
+      project,
+      buildEventHandlers()
+    );
+    if (loopResult.softStopped === 'after_tools') {
+      setSuspendedAfterTools(true);
+    }
+  };
+
+  const requestSoftStop = useCallback(() => {
+    softStopRequestedRef.current = true;
+    setSoftStopRequested(true);
+  }, []);
+
+  const continueAfterToolStop = async () => {
+    if (!chat || !project || !apiDefinition) return;
+    setSuspendedAfterTools(false);
+    const effectiveModelId = chat.modelId ?? project.modelId;
+    if (!effectiveModelId) return;
+    const model = await storage.getModel(apiDefinition.id, effectiveModelId);
+    if (!model) return;
+    const options = await buildAgenticLoopOptions(
+      chat,
+      project,
+      apiDefinition,
+      model,
+      effectiveModelId
+    );
+    options.shouldStop = () => softStopRequestedRef.current;
+    const context = [...messages];
+    const loopResult = await consumeAgenticLoop(
+      options,
+      context,
+      chat,
+      project,
+      buildEventHandlers()
+    );
+    if (loopResult.softStopped === 'after_tools') {
+      setSuspendedAfterTools(true);
+    }
   };
 
   return {
@@ -1435,6 +1564,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     parentApiDefId: project?.apiDefinitionId ?? null,
     parentModelId: project?.modelId ?? null,
     unresolvedToolCalls,
+    softStopRequested,
+    suspendedAfterTools,
     sendMessage,
     editMessage,
     copyMessage,
@@ -1443,5 +1574,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     updateChatName,
     resolvePendingToolCalls,
     resendFromMessage,
+    requestSoftStop,
+    continueAfterToolStop,
   };
 }

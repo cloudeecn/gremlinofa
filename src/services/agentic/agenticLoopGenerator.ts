@@ -116,6 +116,9 @@ export interface AgenticLoopOptions {
 
   // Checkpoint message IDs from previous checkpoints — enables context tidy
   checkpointMessageIds?: string[];
+
+  // Soft stop: checked at tool boundaries, returns soft_stopped when true
+  shouldStop?: () => boolean;
 }
 
 /**
@@ -154,6 +157,13 @@ export type AgenticLoopResult =
     }
   | {
       status: 'max_iterations';
+      messages: Message<unknown>[];
+      tokens: TokenTotals;
+      returnValue?: string;
+    }
+  | {
+      status: 'soft_stopped';
+      stopPoint: 'before_tools' | 'after_tools';
       messages: Message<unknown>[];
       tokens: TokenTotals;
       returnValue?: string;
@@ -1208,6 +1218,18 @@ export async function* runAgenticLoop(
         };
       }
 
+      // Check soft stop before executing tools
+      if (options.shouldStop?.()) {
+        console.debug('[agenticLoopGen] Soft stop: before tools');
+        return {
+          status: 'soft_stopped',
+          stopPoint: 'before_tools',
+          messages,
+          tokens: totals,
+          returnValue: storedReturnValue,
+        };
+      }
+
       // Execute tools
       const toolUseBlocks = apiService.extractToolUseBlocks(apiDef.apiType, result.fullContent);
 
@@ -1241,6 +1263,18 @@ export async function* runAgenticLoop(
           messages,
           tokens: totals,
           returnValue: breakResult.breakLoop.returnValue,
+        };
+      }
+
+      // Check soft stop after tool execution
+      if (options.shouldStop?.()) {
+        console.debug('[agenticLoopGen] Soft stop: after tools');
+        return {
+          status: 'soft_stopped',
+          stopPoint: 'after_tools',
+          messages,
+          tokens: totals,
+          returnValue: storedReturnValue,
         };
       }
 

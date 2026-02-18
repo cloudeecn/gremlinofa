@@ -13,7 +13,7 @@
  */
 
 import { apiService } from '../api/apiService';
-import { calculateCost, isCostUnreliable } from '../api/modelMetadata';
+import { calculateCost, isCostUnreliable, getModelMetadataFor } from '../api/modelMetadata';
 import { storage } from '../storage';
 import { StreamingContentAssembler } from '../streaming/StreamingContentAssembler';
 import { executeClientSideTool, toolRegistry } from '../tools/clientSideTools';
@@ -89,6 +89,7 @@ export interface AgenticLoopOptions {
   enabledTools: string[];
   toolOptions: Record<string, ToolOptions>;
   disableStream: boolean;
+  extendedContext: boolean;
 
   // VFS namespace for isolated minion personas
   namespace?: string;
@@ -951,6 +952,10 @@ export async function* runAgenticLoop(
 ): AsyncGenerator<AgenticLoopEvent, AgenticLoopResult, void> {
   const { apiDef, model, projectId, chatId, enabledTools, toolOptions } = options;
 
+  // Gate extended context on whether the effective model actually supports it
+  const effectiveExtendedContext =
+    options.extendedContext && !!getModelMetadataFor(apiDef, model.id).supportsExtendedContext;
+
   // Build tool execution context
   const toolContext = { projectId, chatId, namespace: options.namespace };
 
@@ -1040,6 +1045,7 @@ export async function* runAgenticLoop(
         enabledTools,
         toolOptions,
         disableStream: options.disableStream,
+        extendedContext: effectiveExtendedContext,
         checkpointMessageId: tidyBoundaryId,
         tidyToolNames: deriveTidyToolNames(toolOptions),
       };
@@ -1144,9 +1150,11 @@ export async function* runAgenticLoop(
         iterTokens
       );
 
-      // Fill context window from model metadata
+      // Fill context window from model metadata (extended context overrides to 1M)
       if (assistantMessage.metadata) {
-        assistantMessage.metadata.contextWindow = model.contextWindow || 0;
+        assistantMessage.metadata.contextWindow = effectiveExtendedContext
+          ? 1_000_000
+          : model.contextWindow || 0;
       }
 
       messages.push(assistantMessage);

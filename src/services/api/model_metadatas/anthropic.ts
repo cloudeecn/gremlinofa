@@ -19,6 +19,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
     webSearchPrice: 0.01,
     contextWindow: 200000,
     maxOutputTokens: 128000,
+    supportsExtendedContext: true,
   },
   {
     matches: [
@@ -74,6 +75,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
     webSearchPrice: 0.01,
     contextWindow: 200000,
     maxOutputTokens: 64000,
+    supportsExtendedContext: true,
   },
   {
     matches: [
@@ -92,6 +94,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
     webSearchPrice: 0.01,
     contextWindow: 200000,
     maxOutputTokens: 16384,
+    supportsExtendedContext: true,
   },
   {
     matches: [

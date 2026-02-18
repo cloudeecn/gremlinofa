@@ -153,7 +153,6 @@ Projects organize chats with shared settings:
 - **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
 - **Message format**: three modes (user message / with metadata / use template)
-
 - **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook, Checkpoint
 - **Advanced** (collapsed): temperature, max output tokens (default: 1536), disable streaming, extended context (1M)
 
@@ -298,6 +297,7 @@ public/             # Static assets and PWA icons
 - `preFillResponse?: string` - Pre-fill assistant response (Anthropic only)
 - `webSearchEnabled?: boolean` - Enable web search
 - `enabledTools?: string[]` - Enabled client-side tools
+- `extendedContext?: boolean` - Anthropic: opt into 1M context window beta (`context-1m-2025-08-07` header). Models with `supportsExtendedContext` in metadata: Opus 4.6, Sonnet 4.5, Sonnet 4. Above 200K input tokens, all tokens charged at premium rates (2x input, 1.5x output). Toggle is always visible in project settings; the beta header is only sent at runtime when the effective model supports it (gated in `agenticLoopGenerator`).
 - `checkpointMessageId?: string` - Context tidy: computed tidy boundary ID (triggers pre-checkpoint trimming)
 - `tidyToolNames?: Set<string>` - Context tidy: tool names whose blocks should be removed from pre-checkpoint messages
 

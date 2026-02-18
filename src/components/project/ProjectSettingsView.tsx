@@ -86,6 +86,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     'auto' | 'concise' | 'detailed' | undefined
   >(project?.reasoningSummary);
   const [disableStream, setDisableStream] = useState(project?.disableStream || false);
+  const [extendedContext, setExtendedContext] = useState(project?.extendedContext || false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [temperature, setTemperature] = useState(project?.temperature?.toString() || '');
@@ -143,6 +144,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setSelectedApiDefId(project.apiDefinitionId || null);
       setSelectedModelId(project.modelId || null);
       setDisableStream(project.disableStream || false);
+      setExtendedContext(project.extendedContext || false);
     }
   }, [project]);
 
@@ -267,6 +269,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         temperature: temperature === '' ? null : parseFloat(temperature),
         maxOutputTokens: parseInt(maxOutputTokens) || 1536,
         disableStream: disableStream || undefined,
+        extendedContext: extendedContext || undefined,
         lastUsedAt: new Date(),
       };
 
@@ -300,6 +303,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     temperature,
     maxOutputTokens,
     disableStream,
+    extendedContext,
     updateProject,
     projectId,
     navigate,
@@ -1301,6 +1305,36 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       onChange={e => setDisableStream(e.target.checked)}
                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
+                  </div>
+
+                  {/* Extended Context (1M) */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label
+                          htmlFor="extendedContext"
+                          className="cursor-pointer text-sm font-medium text-gray-900"
+                        >
+                          Extended Context (1M tokens)
+                        </label>
+                        <p className="text-xs text-gray-500">
+                          Only applies to models that support it (Opus 4.6, Sonnet 4.5, Sonnet 4)
+                        </p>
+                      </div>
+                      <input
+                        id="extendedContext"
+                        type="checkbox"
+                        checked={extendedContext}
+                        onChange={e => setExtendedContext(e.target.checked)}
+                        className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    {extendedContext && (
+                      <p className="mt-1 text-xs text-yellow-700 italic">
+                        ⚠️ When input exceeds 200K tokens, all tokens are charged at premium rates
+                        (2x input, 1.5x output)
+                      </p>
+                    )}
                   </div>
                 </div>
               )}

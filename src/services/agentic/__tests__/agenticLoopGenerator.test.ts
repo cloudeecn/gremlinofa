@@ -2104,6 +2104,216 @@ describe('agenticLoopGenerator', () => {
     });
   });
 
+  describe('soft stop', () => {
+    beforeEach(() => {
+      resetMockState();
+    });
+
+    it('stops before tools when shouldStop returns true at tool boundary', async () => {
+      const toolUseBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_1',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([{ type: 'content', content: '' }], toolUseResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue(toolUseBlocks);
+
+      const options = createMockOptions({
+        enabledTools: ['memory'],
+        shouldStop: () => true,
+      });
+      const context = [createMockUserMessage('Do something')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('soft_stopped');
+      if (result.status === 'soft_stopped') {
+        expect(result.stopPoint).toBe('before_tools');
+      }
+      // Tool should NOT have been executed
+      expect(executeClientSideTool).not.toHaveBeenCalled();
+      // Assistant message with tool_use blocks is still in messages
+      expect(result.messages).toHaveLength(2); // user + assistant
+    });
+
+    it('stops after tools when shouldStop returns true only after tool execution', async () => {
+      const toolUseBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_1',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], toolUseResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue(toolUseBlocks);
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({ content: 'Done', isError: false })
+      );
+
+      // Return false on first check (before tools), true on second (after tools)
+      let checkCount = 0;
+      const options = createMockOptions({
+        enabledTools: ['memory'],
+        shouldStop: () => {
+          checkCount++;
+          return checkCount > 1;
+        },
+      });
+      const context = [createMockUserMessage('Do something')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('soft_stopped');
+      if (result.status === 'soft_stopped') {
+        expect(result.stopPoint).toBe('after_tools');
+      }
+      // Tool WAS executed
+      expect(executeClientSideTool).toHaveBeenCalledTimes(1);
+      // user + assistant + tool_result = 3 messages
+      expect(result.messages).toHaveLength(3);
+    });
+
+    it('does not check shouldStop on non-tool-use responses', async () => {
+      const mockResult = {
+        textContent: 'Hello!',
+        fullContent: [{ type: 'text', text: 'Hello!' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([{ type: 'content', content: 'Hello!' }], mockResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const shouldStop = vi.fn(() => true);
+      const options = createMockOptions({ shouldStop });
+      const context = [createMockUserMessage('Hi')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      // Normal completion — shouldStop not checked because stop_reason was end_turn
+      expect(result.status).toBe('complete');
+      expect(shouldStop).not.toHaveBeenCalled();
+    });
+
+    it('preserves deferred return value in soft_stopped result', async () => {
+      // Iteration 1: deferred return stores value
+      // Iteration 2: tool_use with shouldStop → soft_stopped carries stored value
+      const returnBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_r1',
+          name: 'return',
+          input: { result: 'stored-val' },
+        },
+      ];
+      const toolBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_t1',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+      ];
+
+      const iter1Result = {
+        textContent: '',
+        fullContent: returnBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 80,
+        outputTokens: 40,
+      };
+      const iter2Result = {
+        textContent: '',
+        fullContent: toolBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 90,
+        outputTokens: 45,
+      };
+
+      setupMultiIterationMock(
+        [createMockStream([], iter1Result), createMockStream([], iter2Result)],
+        [returnBlocks, returnBlocks, toolBlocks, toolBlocks]
+      );
+
+      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
+        id: 'msg_tool_result',
+        role: 'user',
+        content: { type: 'text', content: '' },
+        timestamp: new Date(),
+      });
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'stored-val',
+            breakLoop: { returnValue: 'stored-val' },
+          });
+        }
+        return mockToolGenerator({ content: 'Done', isError: false });
+      });
+
+      // shouldStop is checked twice per iteration (before + after tools).
+      // Iter 1: check 1 (before) = false, iter 1 has no after-tools check (deferred return path).
+      // Wait — deferred return solo path doesn't go through executeToolUseBlocks' after-tools check.
+      // Actually, the shouldStop checks are in the main loop. Iter 1: before=false, after=false.
+      // Iter 2: before=true → soft_stopped before_tools.
+      let checkCount = 0;
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: true,
+        shouldStop: () => {
+          checkCount++;
+          return checkCount > 2; // false for iter1 before+after, true for iter2 before
+        },
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('soft_stopped');
+      if (result.status === 'soft_stopped') {
+        expect(result.returnValue).toBe('stored-val');
+        expect(result.stopPoint).toBe('before_tools');
+      }
+    });
+  });
+
   describe('createToolResultRenderBlock', () => {
     it('uses error icon when isError is true, ignoring tool iconOutput', () => {
       const block = createToolResultRenderBlock('tu_1', 'return', 'error msg', true);

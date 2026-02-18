@@ -77,6 +77,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 **Chat Features**
 
 - [ ] Background API support (responses continue after navigation)
+- [x] Soft stop for agentic loop (stop button halts at next tool boundary)
 - [ ] Abort ongoing API calls
 
 **API & Pricing**
@@ -1212,7 +1213,7 @@ Internal tool available only to minions for explicit result signaling:
 - `internal: true` flag hides from ProjectSettings UI
 - Returns `breakLoop: { returnValue }` to stop agentic loop
 - Used by minions to signal task completion with specific result
-- **Deferred mode** (`deferReturn` option on minion tool): Return tool stores the value without breaking the loop. The agentic loop replies with "Result stored. Please wait for next instruction." and continues until natural completion. Multiple deferred returns overwrite — last value wins. Dynamic description changes based on mode.
+- **Deferred mode** (`deferReturn` option on minion tool): Return tool stores the value without breaking the loop. The agentic loop replies with "Recorded. Stop and user will call you back." and continues until natural completion. Works both solo and in parallel with other tools. Duplicate deferred calls are rejected with an error. Dynamic description changes based on mode.
 
 ### Checkpoint Tool
 
@@ -1320,7 +1321,14 @@ type AgenticLoopEvent =
 type AgenticLoopResult =
   | { status: 'complete'; messages; tokens; returnValue? }
   | { status: 'error'; messages; tokens; error }
-  | { status: 'max_iterations'; messages; tokens };
+  | { status: 'max_iterations'; messages; tokens }
+  | {
+      status: 'soft_stopped';
+      stopPoint: 'before_tools' | 'after_tools';
+      messages;
+      tokens;
+      returnValue?;
+    };
 ```
 
 **Consumer** (`useChat.ts`):
@@ -1338,7 +1346,8 @@ type AgenticLoopResult =
 
 **Features:**
 
-- Unified loop handles all cases (normal send, continue, stop)
+- Unified loop handles all cases (normal send, continue, stop, soft stop)
+- Soft stop: `shouldStop` callback on `AgenticLoopOptions` checked at two tool boundaries (before execution, after execution). Returns `soft_stopped` with `stopPoint`. `before_tools` leaves tool_use blocks unexecuted (existing `unresolvedToolCalls` handles resumption). `after_tools` has tool results persisted — `continueAfterToolStop()` starts a new loop.
 - Automatic tool execution and continuation
 - JS tool configuration at loop start (project context, library log reset)
 - Cost/token accumulation across iterations
@@ -1354,13 +1363,13 @@ type AgenticLoopResult =
 
 **Phased tool execution:** Tools are classified as simple or complex via `ClientSideTool.complex` flag (currently only `minion` is complex). When both types appear in a single response, simple tools run first (phase 1), then complex tools (phase 2). Within each phase, tools run in parallel via `executeToolsParallel()` with `Promise.race` multiplexing. Results are merged in original tool order.
 
-**Return tool error handling:** If the `return` tool appears alongside other tools (`length > 1`), it receives an error result (`"return cannot be called in parallel with other tools. please try again"`) and the other tools execute normally. The loop continues so the LLM can retry. When `return` is the only tool, it executes normally and breakLoop is honored.
+**Return tool error handling:** If the `return` tool appears alongside other tools (`length > 1`): in **deferred mode** (`deferReturn: true`), the return tool executes and stores its value while other tools also run normally — the loop continues with the stored value. In **non-deferred mode**, it receives an error result (`"ERROR: return cannot be called in parallel..."`) and the other tools execute normally; the loop continues so the LLM can retry. When `return` is the only tool, it executes normally — breakLoop (non-deferred) or store-and-continue (deferred) is honored.
 
 **Pending Tool Resolution (`AgenticLoopOptions`):**
 
 - `pendingToolUseBlocks?: ToolUseBlock[]` — pre-existing tool_use blocks to execute before the first API call (used by `resolvePendingToolCalls` continue mode)
 - `pendingTrailingContext?: Message<unknown>[]` — already-saved messages injected after tool results (e.g., user follow-up message)
-- `deferReturn?: boolean` — when true, the return tool stores its value without breaking the loop. The stored value is delivered as `returnValue` when the loop ends naturally. Multiple deferred returns overwrite (last wins).
+- `deferReturn?: boolean` — when true, the return tool stores its value without breaking the loop. The stored value is delivered as `returnValue` when the loop ends naturally. Duplicate deferred returns are rejected (first value wins). Works both solo and in parallel with other tools.
 
 **Integration with useChat.ts:**
 

@@ -42,6 +42,10 @@ export interface MessageListProps {
   onPendingToolReject?: () => void;
   /** Callback when user clicks Accept on pending tool calls */
   onPendingToolAccept?: () => void;
+  /** Whether the loop is suspended after tool execution */
+  suspendedAfterTools?: boolean;
+  /** Callback to continue after tool-stop suspension */
+  onContinueAfterToolStop?: () => void;
 }
 
 export interface ChatInputProps {
@@ -60,4 +64,8 @@ export interface ChatInputProps {
   showSendSpinner?: boolean;
   /** Whether there are pending tool calls (enables send button even with empty input) */
   hasPendingToolCalls?: boolean;
+  /** Whether a soft stop has been requested */
+  softStopRequested?: boolean;
+  /** Callback to request soft stop of the agentic loop */
+  onRequestSoftStop?: () => void;
 }

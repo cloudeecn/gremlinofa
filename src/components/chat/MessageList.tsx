@@ -6,6 +6,7 @@ import BouncingDots from './BouncingDots';
 import CacheWarning from './CacheWarning';
 import WebLLMLoadingView from './WebLLMLoadingView';
 import PendingToolCallsBanner from './PendingToolCallsBanner';
+import SuspendedAfterToolsBanner from './SuspendedAfterToolsBanner';
 import { useVirtualScroll } from '../../hooks/useVirtualScroll';
 import { subscribeToLoadingState, type WebLLMLoadingState } from '../../services/api/webllmClient';
 
@@ -22,6 +23,8 @@ export default function MessageList({
   pendingToolCount,
   onPendingToolReject,
   onPendingToolAccept,
+  suspendedAfterTools,
+  onContinueAfterToolStop,
 }: MessageListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -210,6 +213,11 @@ export default function MessageList({
                 onAccept={onPendingToolAccept}
               />
             )}
+
+          {/* Suspended after tools banner */}
+          {!isLoading && suspendedAfterTools && onContinueAfterToolStop && (
+            <SuspendedAfterToolsBanner onContinue={onContinueAfterToolStop} />
+          )}
         </div>
       </div>
 

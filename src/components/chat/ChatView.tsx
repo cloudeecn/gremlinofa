@@ -150,6 +150,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     streamingGroups,
     hasReceivedFirstChunk,
     unresolvedToolCalls,
+    softStopRequested,
+    suspendedAfterTools,
     sendMessage,
     editMessage,
     copyMessage,
@@ -158,6 +160,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     updateChatName,
     resolvePendingToolCalls,
     resendFromMessage,
+    requestSoftStop,
+    continueAfterToolStop,
   } = useChat({
     chatId: chatId,
     callbacks,
@@ -402,6 +406,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           pendingToolCount={unresolvedToolCalls?.length}
           onPendingToolReject={() => resolvePendingToolCalls('stop')}
           onPendingToolAccept={() => resolvePendingToolCalls('continue')}
+          suspendedAfterTools={suspendedAfterTools}
+          onContinueAfterToolStop={continueAfterToolStop}
         />
 
         {/* Chat Input */}
@@ -417,6 +423,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           isProcessing={isProcessingAttachments}
           showSendSpinner={isLoading && !hasReceivedFirstChunk}
           hasPendingToolCalls={!!unresolvedToolCalls && unresolvedToolCalls.length > 0}
+          softStopRequested={softStopRequested}
+          onRequestSoftStop={isLoading ? requestSoftStop : undefined}
         />
 
         {/* Model Selector Modal */}

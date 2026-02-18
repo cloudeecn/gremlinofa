@@ -63,6 +63,25 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
         apiType: ['anthropic'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-sonnet', unreliable: true }, // fuzz match all future sonnet
+          { modelIdPrefix: 'claude-sonnet-4-6' },
+          { modelIdPrefix: 'anthropic.claude-sonnet-4-6' },
+        ],
+      },
+    ],
+    inputPrice: 3,
+    outputPrice: 15,
+    cacheWritePrice: 3.75,
+    cacheReadPrice: 0.3,
+    webSearchPrice: 0.01,
+    contextWindow: 200000,
+    maxOutputTokens: 64000,
+    supportsExtendedContext: true,
+  },
+  {
+    matches: [
+      {
+        apiType: ['anthropic'],
+        modelIdFuzz: [
           { modelIdPrefix: 'claude-sonnet-4-5' },
           { modelIdPrefix: 'anthropic.claude-sonnet-4-5' },
         ],

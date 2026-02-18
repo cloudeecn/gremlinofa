@@ -462,13 +462,14 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 - **Tool Options System** (Project schema):
   - `enabledTools?: string[]` - List of enabled tool names (e.g., `['memory', 'javascript', 'filesystem']`)
   - `toolOptions?: Record<string, ToolOptions>` - Per-tool options keyed by tool name
-  - `ToolOptions = Record<string, ToolOptionValue>` where `ToolOptionValue = boolean | string | ModelReference`
+  - `ToolOptions = Record<string, ToolOptionValue>` where `ToolOptionValue = boolean | string | ModelReference | ModelReference[]`
   - `ModelReference = { apiDefinitionId: string; modelId: string }` for model selection options
-  - `ToolOptionDefinition` is a discriminated union with three types:
+  - `ToolOptionDefinition` is a discriminated union with four types:
     - `BooleanToolOption`: `{ type: 'boolean'; id; label; subtitle?; default: boolean }`
     - `LongtextToolOption`: `{ type: 'longtext'; id; label; subtitle?; default: string; placeholder? }`
     - `ModelToolOption`: `{ type: 'model'; id; label; subtitle? }` (no default, prepopulated from project)
-  - Type guards: `isBooleanOption()`, `isLongtextOption()`, `isModelOption()`, `isModelReference()`
+    - `ModelListToolOption`: `{ type: 'modellist'; id; label; subtitle? }` (initialized to `[]`)
+  - Type guards: `isBooleanOption()`, `isLongtextOption()`, `isModelOption()`, `isModelListOption()`, `isModelReference()`, `isModelReferenceArray()`
   - `initializeToolOptions(existing, optionDefs, projectContext)` - Initializes options with defaults, preserves existing values
   - Migration: Storage layer auto-migrates old boolean flags on project load (see `migrateProjectToolSettings()` in `unifiedStorage.ts`)
   - Legacy fields (`memoryEnabled`, `jsExecutionEnabled`, etc.) cleared after migration
@@ -806,6 +807,7 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 - Per-file versioning in `vfs_versions` table (auto-versioned on every update)
 - Soft-delete with orphan tracking for displaced files during renames
 - 999,999 line limit per file (returns error if exceeded)
+- **Namespace isolation**: All public VFS functions accept an optional `namespace` parameter. When set, paths are resolved through the namespace (e.g., `/minions/coder` + `/memories/note.md` → `/minions/coder/memories/note.md`). Paths starting with `/share` bypass namespace prefixing for cross-namespace file sharing. `resolveNamespacedPath()` handles resolution with path traversal mitigation.
 
 **Storage Tables:**
 
@@ -1079,12 +1081,31 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 | `minionChatId` | string   | For `retry` action   | Existing minion chat ID to continue or retry                                           |
 | `enableWeb`    | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)       |
 | `enabledTools` | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                   |
+| `persona`      | string   | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is enabled.  |
+| `model`        | string   | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` + `models` configured. |
 
 **Tool Options:**
 
 - `systemPrompt` (longtext) - Instructions for minion sub-agents
 - `model` (ModelReference) - Model for delegated tasks (can use cheaper model)
+- `models` (ModelReference[]) - Models the LLM can choose from when calling minions. When non-empty and `namespacedMinion` is enabled, adds `model` input parameter with enum of `apiDefId:modelId` strings. LLM omitting `model` falls back to default `model` option.
 - `allowWebSearch` (boolean, default: false) - Project-level gate for minion web search. Must be enabled for `enableWeb` to work. When disabled, `enableWeb` parameter and web search mention are omitted from the schema/description sent to the LLM.
+- `returnOnly` (boolean, default: false) - When return tool provides a result and accumulated text exists, suppress text from the result JSON (only return the explicit result)
+- `noReturnTool` (boolean, default: false) - Remove the return tool from minion toolset
+- `disableReasoning` (boolean, default: false) - Turn off reasoning/thinking for minion calls regardless of project settings
+- `namespacedMinion` (boolean, default: false) - Isolate each persona into its own VFS namespace. When enabled, adds `persona` input parameter and system prompt with available personas list.
+
+**Persona System (namespacedMinion):**
+
+When `namespacedMinion` is enabled, each minion gets VFS namespace isolation based on its persona:
+
+- Persona files stored at `/minions/<name>.md` in root VFS. Content becomes the minion's system prompt.
+- `/minions/_global.md` (optional) — content prepended to the system prompt for all personas (including default). Read from root VFS before persona-specific prompt.
+- `persona` input parameter selects a persona (omit for `default`). Each persona maps to namespace `/minions/<persona>`.
+- Namespace flows through the agentic loop: `AgenticLoopOptions.namespace` → `ToolContext.namespace` → all VFS calls in memory, filesystem, and JavaScript tools.
+- A persona's `/memories/README.md` resolves to `/minions/<persona>/memories/README.md` in VFS storage.
+- `/share` paths bypass namespace prefixing, enabling cross-persona file sharing.
+- System prompt injection lists available personas from `/minions/*.md` with their first lines.
 
 **Tool Scoping:**
 
@@ -1113,7 +1134,7 @@ Minion conversations stored separately for debugging visibility:
   - `minionChatId` — for continuing the conversation
   - `result` — only present when return tool was used (explicit return value)
 - `renderingGroups` on ToolResult carries nested display content:
-  - First group: `ToolInfoRenderBlock` with task description (`input`) and sub-chat reference (`chatId`)
+  - First group: `ToolInfoRenderBlock` with task description (`input`), sub-chat reference (`chatId`), and optional `persona` name
   - Remaining groups: accumulated rendering from sub-agent messages (marked `isToolGenerated: true`)
   - Transferred to `ToolResultRenderBlock.renderingGroups` by `createToolResultRenderBlock`
 - `tokenTotals` on ToolResult carries accumulated API costs from sub-agent loop
@@ -1141,9 +1162,11 @@ The `executeMinion` function has three ordered phases with distinct error recove
 
 - `ToolResultView` renders minion results (and any tool result with `renderingGroups`)
 - Always collapsed by default, shows last activity line as preview when collapsed
+- Header shows: persona name (if non-default) before expand icon, last-block activity icon (💭/🔧/💬/etc.) after expand icon
 - Blue box for task input (from `ToolInfoRenderBlock`), green/red box for final result
 - Activity groups (backstage/text) rendered with `isToolGenerated` styling
 - "Copy All" button fetches sub-chat messages (when `chatId` present), "Copy JSON" for debugging
+- `ToolResultBubble` hides timestamp/cost/actions line while any tool result is still pending/running
 - Integrated into `ToolResultBubble` (complex results) and `BackstageView.ToolResultSegment`
 - Real-time streaming via pending-message pattern (see Minion Streaming UI below)
 
@@ -1251,6 +1274,10 @@ type AgenticLoopResult =
 
 1. Pre-loop: executing `pendingToolUseBlocks` before the first API call
 2. In-loop: after `stop_reason === 'tool_use'`
+
+**Parallel tool execution:** When multiple tool_use blocks arrive in a single assistant response, all tool generators start simultaneously. Events are multiplexed via `Promise.race` — `tool_block_update` events from different tools interleave as they arrive. All tools are marked `running` upfront. Results are collected in original order.
+
+**Return tool isolation:** If the `return` tool appears in a parallel batch, only the return tool executes — other tools are skipped. No `tool_result` message is saved (breakLoop returns early). When the minion chat is continued, `minionTool.ts` detects unresolved tool_use blocks and lazily reconstructs error `tool_result` entries for skipped tools before sending the next message.
 
 **Pending Tool Resolution (`AgenticLoopOptions`):**
 

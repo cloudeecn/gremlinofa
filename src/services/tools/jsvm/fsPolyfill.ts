@@ -74,11 +74,13 @@ function vfsErrorToErrno(error: VfsError, path: string): string {
 export class FsBridge {
   private projectId: string;
   private context: QuickJSContext;
+  private namespace?: string;
   private pendingOps: PendingFsOp[] = [];
 
-  constructor(projectId: string, context: QuickJSContext) {
+  constructor(projectId: string, context: QuickJSContext, namespace?: string) {
     this.projectId = projectId;
     this.context = context;
+    this.namespace = namespace;
   }
 
   /**
@@ -139,7 +141,7 @@ export class FsBridge {
         const encoding = encodingHandle ? this.context.getString(encodingHandle) : undefined;
         return this.queueOp(async () => {
           try {
-            const result = await vfs.readFileWithMeta(this.projectId, path);
+            const result = await vfs.readFileWithMeta(this.projectId, path, this.namespace);
 
             if (result.isBinary) {
               // Binary file
@@ -239,7 +241,7 @@ export class FsBridge {
           }
           try {
             // Use vfs.writeFile which handles both string and ArrayBuffer
-            await vfs.writeFile(this.projectId, path, data);
+            await vfs.writeFile(this.projectId, path, data, this.namespace);
             return { ok: true, value: undefined };
           } catch (error) {
             if (error instanceof VfsError) {
@@ -257,7 +259,7 @@ export class FsBridge {
     const existsFn = this.context.newFunction('exists', (pathHandle: QuickJSHandle) => {
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
-        const exists = await vfs.exists(this.projectId, path);
+        const exists = await vfs.exists(this.projectId, path, this.namespace);
         return { ok: true, value: exists };
       });
     });
@@ -273,7 +275,7 @@ export class FsBridge {
           return { ok: false, error: `EROFS: read-only file system, mkdir '${path}'` };
         }
         try {
-          await vfs.mkdir(this.projectId, path);
+          await vfs.mkdir(this.projectId, path, this.namespace);
           return { ok: true, value: undefined };
         } catch (error) {
           if (error instanceof VfsError) {
@@ -291,7 +293,7 @@ export class FsBridge {
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         try {
-          const entries = await vfs.readDir(this.projectId, path);
+          const entries = await vfs.readDir(this.projectId, path, false, this.namespace);
           const names = entries.map(e => e.name);
           return { ok: true, value: names };
         } catch (error) {
@@ -314,7 +316,7 @@ export class FsBridge {
           return { ok: false, error: `EROFS: read-only file system, unlink '${path}'` };
         }
         try {
-          await vfs.deleteFile(this.projectId, path);
+          await vfs.deleteFile(this.projectId, path, this.namespace);
           return { ok: true, value: undefined };
         } catch (error) {
           if (error instanceof VfsError) {
@@ -336,7 +338,7 @@ export class FsBridge {
           return { ok: false, error: `EROFS: read-only file system, rmdir '${path}'` };
         }
         try {
-          await vfs.rmdir(this.projectId, path, true);
+          await vfs.rmdir(this.projectId, path, true, this.namespace);
           return { ok: true, value: undefined };
         } catch (error) {
           if (error instanceof VfsError) {
@@ -364,7 +366,7 @@ export class FsBridge {
             return { ok: false, error: `EROFS: read-only file system, rename '${newPath}'` };
           }
           try {
-            await vfs.rename(this.projectId, oldPath, newPath);
+            await vfs.rename(this.projectId, oldPath, newPath, this.namespace);
             return { ok: true, value: undefined };
           } catch (error) {
             if (error instanceof VfsError) {
@@ -383,7 +385,7 @@ export class FsBridge {
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         try {
-          const st = await vfs.stat(this.projectId, path);
+          const st = await vfs.stat(this.projectId, path, this.namespace);
           return {
             ok: true,
             value: {

@@ -3,6 +3,7 @@ import type {
   ToolResultRenderBlock,
   ToolInfoRenderBlock,
   RenderingBlockGroup,
+  RenderingContentBlock,
 } from '../../types/content';
 import { storage } from '../../services/storage';
 import { usePreferences } from '../../hooks/usePreferences';
@@ -63,6 +64,39 @@ function SimpleToolResult({ block }: { block: ToolResultRenderBlock }) {
 }
 
 // --- Complex tool result (with renderingGroups) ---
+
+/** Map a rendering block to its display icon */
+function getBlockIcon(block: RenderingContentBlock): string {
+  switch (block.type) {
+    case 'thinking':
+      return '💭';
+    case 'web_search':
+      return '🔍';
+    case 'web_fetch':
+      return '🌐';
+    case 'tool_use':
+      return block.icon ?? '🔧';
+    case 'tool_result':
+      return block.icon ?? (block.is_error ? '❌' : '✅');
+    case 'error':
+      return '❌';
+    case 'tool_info':
+    case 'text':
+    default:
+      return '💬';
+  }
+}
+
+/** Get the icon of the last block across activity groups */
+function getLastBlockIcon(groups: RenderingBlockGroup[]): string | undefined {
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const blocks = groups[i].blocks;
+    if (blocks.length > 0) {
+      return getBlockIcon(blocks[blocks.length - 1]);
+    }
+  }
+  return undefined;
+}
 
 /** Extract the last meaningful preview line from activity groups */
 function getLastActivityPreview(groups: RenderingBlockGroup[]): string {
@@ -129,7 +163,9 @@ function ComplexToolResult({
 
   const defaultIcon = block.icon ?? '🤖';
   const previewText = !isExpanded ? getLastActivityPreview(activityGroups) : '';
+  const lastIcon = !isExpanded ? getLastBlockIcon(activityGroups) : undefined;
   const toolCost = block.tokenTotals?.cost;
+  const persona = toolInfo?.persona;
 
   return (
     <div className="overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50">
@@ -140,7 +176,9 @@ function ComplexToolResult({
       >
         <span className="flex shrink-0 items-center gap-1">
           <span>{!iconOnRight && defaultIcon}</span>
+          {persona && <span className="text-xs font-normal text-purple-600">{persona}</span>}
           <span className="text-purple-600">{isExpanded ? '▼' : '▶'}</span>
+          {lastIcon && <span>{lastIcon}</span>}
         </span>
         {!isExpanded && (
           <>

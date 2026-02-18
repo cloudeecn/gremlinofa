@@ -142,11 +142,15 @@ interface ListingEntry {
 /**
  * List directory contents up to 2 levels deep
  */
-async function listTwoLevels(projectId: string, basePath: string): Promise<ListingEntry[]> {
+async function listTwoLevels(
+  projectId: string,
+  basePath: string,
+  namespace?: string
+): Promise<ListingEntry[]> {
   const entries: ListingEntry[] = [];
 
   // Level 1: direct children
-  const level1 = await vfs.readDir(projectId, basePath);
+  const level1 = await vfs.readDir(projectId, basePath, false, namespace);
 
   for (const entry of level1) {
     const entryPath = basePath === '/' ? `/${entry.name}` : `${basePath}/${entry.name}`;
@@ -155,7 +159,7 @@ async function listTwoLevels(projectId: string, basePath: string): Promise<Listi
     // Level 2: children of directories
     if (entry.type === 'dir') {
       try {
-        const level2 = await vfs.readDir(projectId, entryPath);
+        const level2 = await vfs.readDir(projectId, entryPath, false, namespace);
         for (const child of level2) {
           entries.push({
             path: `${entryPath}/${child.name}`,
@@ -179,17 +183,18 @@ async function listTwoLevels(projectId: string, basePath: string): Promise<Listi
 async function handleView(
   projectId: string,
   path: string,
-  viewRange?: [number, number]
+  viewRange?: [number, number],
+  namespace?: string
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
   // Directory listing (root or any directory)
   try {
     // Check if it's a directory first
-    const isDir = await vfs.isDirectory(projectId, vfsPath);
+    const isDir = await vfs.isDirectory(projectId, vfsPath, namespace);
 
     if (isDir) {
-      const entries = await listTwoLevels(projectId, vfsPath);
+      const entries = await listTwoLevels(projectId, vfsPath, namespace);
 
       if (entries.length === 0) {
         return {
@@ -210,7 +215,7 @@ async function handleView(
     }
 
     // File content - use readFileWithMeta to handle binary files
-    const result = await vfs.readFileWithMeta(projectId, vfsPath);
+    const result = await vfs.readFileWithMeta(projectId, vfsPath, namespace);
 
     // Binary files return as dataUrl
     if (result.isBinary) {
@@ -258,7 +263,8 @@ async function handleView(
 async function handleCreate(
   projectId: string,
   path: string,
-  fileText: string
+  fileText: string,
+  namespace?: string
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
@@ -284,14 +290,14 @@ async function handleCreate(
       // Binary file via dataUrl
       const base64Data = dataUrlMatch[2];
       const buffer = base64ToBuffer(base64Data);
-      await vfs.writeFile(projectId, vfsPath, buffer);
+      await vfs.writeFile(projectId, vfsPath, buffer, namespace);
       return {
         content: `Binary file created successfully at: ${vfsPath}`,
       };
     }
 
     // Text file
-    await vfs.writeFile(projectId, vfsPath, fileText);
+    await vfs.writeFile(projectId, vfsPath, fileText, namespace);
 
     return {
       content: `File created successfully at: ${vfsPath}`,
@@ -312,7 +318,8 @@ async function handleStrReplace(
   projectId: string,
   path: string,
   oldStr: string,
-  newStr: string
+  newStr: string,
+  namespace?: string
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
@@ -333,7 +340,7 @@ async function handleStrReplace(
 
   try {
     // Check if file is binary
-    const fileStat = await vfs.stat(projectId, vfsPath);
+    const fileStat = await vfs.stat(projectId, vfsPath, namespace);
     if (fileStat.isBinary) {
       return {
         content: `Error: Cannot use str_replace on binary file ${vfsPath}. Use create command with dataUrl to overwrite.`,
@@ -341,7 +348,7 @@ async function handleStrReplace(
       };
     }
 
-    const content = await vfs.readFile(projectId, vfsPath);
+    const content = await vfs.readFile(projectId, vfsPath, namespace);
 
     const occurrences = countOccurrences(content, oldStr);
 
@@ -366,7 +373,7 @@ async function handleStrReplace(
 
     // Replace first (and only) occurrence
     const newContent = content.replace(oldStr, newStr);
-    await vfs.updateFile(projectId, vfsPath, newContent);
+    await vfs.updateFile(projectId, vfsPath, newContent, namespace);
 
     const snippet = formatEditSnippet(newContent, editLine);
 
@@ -395,7 +402,8 @@ async function handleInsert(
   projectId: string,
   path: string,
   insertLine: number,
-  insertText: string
+  insertText: string,
+  namespace?: string
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
@@ -416,7 +424,7 @@ async function handleInsert(
 
   try {
     // Check if file is binary
-    const fileStat = await vfs.stat(projectId, vfsPath);
+    const fileStat = await vfs.stat(projectId, vfsPath, namespace);
     if (fileStat.isBinary) {
       return {
         content: `Error: Cannot use insert on binary file ${vfsPath}. Use create command with dataUrl to overwrite.`,
@@ -424,7 +432,7 @@ async function handleInsert(
       };
     }
 
-    const content = await vfs.readFile(projectId, vfsPath);
+    const content = await vfs.readFile(projectId, vfsPath, namespace);
     const lines = content.split('\n');
     const nLines = lines.length;
 
@@ -441,7 +449,7 @@ async function handleInsert(
     lines.splice(insertLine, 0, ...textLines);
     const newContent = lines.join('\n');
 
-    await vfs.updateFile(projectId, vfsPath, newContent);
+    await vfs.updateFile(projectId, vfsPath, newContent, namespace);
 
     return {
       content: `The file ${vfsPath} has been edited.`,
@@ -464,7 +472,11 @@ async function handleInsert(
 }
 
 /** Handle delete command */
-async function handleDelete(projectId: string, path: string): Promise<ToolResult> {
+async function handleDelete(
+  projectId: string,
+  path: string,
+  namespace?: string
+): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
   if (vfsPath === '/') {
@@ -484,7 +496,7 @@ async function handleDelete(projectId: string, path: string): Promise<ToolResult
 
   try {
     // Try as file first
-    await vfs.deleteFile(projectId, vfsPath);
+    await vfs.deleteFile(projectId, vfsPath, namespace);
     return {
       content: `Successfully deleted ${vfsPath}`,
     };
@@ -499,7 +511,7 @@ async function handleDelete(projectId: string, path: string): Promise<ToolResult
       if (error.code === 'NOT_A_FILE') {
         // Try deleting as a directory
         try {
-          await vfs.rmdir(projectId, vfsPath, true);
+          await vfs.rmdir(projectId, vfsPath, true, namespace);
           return {
             content: `Successfully deleted ${vfsPath}`,
           };
@@ -519,7 +531,8 @@ async function handleDelete(projectId: string, path: string): Promise<ToolResult
 async function handleRename(
   projectId: string,
   oldPath: string,
-  newPath: string
+  newPath: string,
+  namespace?: string
 ): Promise<ToolResult> {
   const oldVfsPath = normalizePath(oldPath);
   const newVfsPath = normalizePath(newPath);
@@ -546,7 +559,7 @@ async function handleRename(
   }
 
   try {
-    await vfs.rename(projectId, oldVfsPath, newVfsPath);
+    await vfs.rename(projectId, oldVfsPath, newVfsPath, namespace);
 
     return {
       content: `Successfully renamed ${oldVfsPath} to ${newVfsPath}`,
@@ -585,21 +598,28 @@ async function* executeFsCommand(
   }
 
   const projectId = context.projectId;
+  const namespace = context.namespace;
   const fsInput = input as unknown as FsInput;
 
   switch (fsInput.command) {
     case 'view':
-      return handleView(projectId, fsInput.path, fsInput.view_range);
+      return handleView(projectId, fsInput.path, fsInput.view_range, namespace);
     case 'create':
-      return handleCreate(projectId, fsInput.path, fsInput.file_text);
+      return handleCreate(projectId, fsInput.path, fsInput.file_text, namespace);
     case 'str_replace':
-      return handleStrReplace(projectId, fsInput.path, fsInput.old_str, fsInput.new_str);
+      return handleStrReplace(projectId, fsInput.path, fsInput.old_str, fsInput.new_str, namespace);
     case 'insert':
-      return handleInsert(projectId, fsInput.path, fsInput.insert_line, fsInput.insert_text);
+      return handleInsert(
+        projectId,
+        fsInput.path,
+        fsInput.insert_line,
+        fsInput.insert_text,
+        namespace
+      );
     case 'delete':
-      return handleDelete(projectId, fsInput.path);
+      return handleDelete(projectId, fsInput.path, namespace);
     case 'rename':
-      return handleRename(projectId, fsInput.old_path, fsInput.new_path);
+      return handleRename(projectId, fsInput.old_path, fsInput.new_path, namespace);
     default:
       return {
         content: `Unknown filesystem command: ${(fsInput as { command: string }).command}`,

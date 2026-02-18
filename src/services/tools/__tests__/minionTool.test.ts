@@ -6,8 +6,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { minionTool, CHECKPOINT_START } from '../minionTool';
-import type { ToolResult, ToolExecuteReturn } from '../../../types';
+import { minionTool, CHECKPOINT_START, formatModelString, parseModelString } from '../minionTool';
+import type { ToolResult, ToolExecuteReturn, ModelReference } from '../../../types';
 
 // Minimal storage mock for execute tests that now reach storage (Phase 2 errors)
 vi.mock('../../storage', () => ({
@@ -91,6 +91,44 @@ describe('minionTool', () => {
       expect(schema.properties).not.toHaveProperty('enableWeb');
     });
 
+    it('schema includes persona when namespacedMinion is true', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ namespacedMinion: true })
+          : minionTool.inputSchema;
+      expect(schema.properties).toHaveProperty('persona');
+    });
+
+    it('schema excludes persona when namespacedMinion is false', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ namespacedMinion: false })
+          : minionTool.inputSchema;
+      expect(schema.properties).not.toHaveProperty('persona');
+    });
+
+    it('schema excludes persona when namespacedMinion is missing', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({})
+          : minionTool.inputSchema;
+      expect(schema.properties).not.toHaveProperty('persona');
+    });
+
+    it('description mentions persona when namespacedMinion is true', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') throw new Error('Expected description to be a function');
+      const desc = descFn({ namespacedMinion: true });
+      expect(desc).toContain('persona');
+    });
+
+    it('description omits persona when namespacedMinion is false', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') throw new Error('Expected description to be a function');
+      const desc = descFn({});
+      expect(desc).not.toContain('persona');
+    });
+
     it('description mentions web search only when allowWebSearch is true', () => {
       const descFn = minionTool.description;
       if (typeof descFn !== 'function') {
@@ -106,9 +144,9 @@ describe('minionTool', () => {
       expect(noOpts).not.toContain('web search');
     });
 
-    it('has option definitions for model, system prompt, allowWebSearch, and noReturnTool', () => {
+    it('has option definitions for model, models, system prompt, allowWebSearch, returnOnly, noReturnTool, disableReasoning, and namespacedMinion', () => {
       expect(minionTool.optionDefinitions).toBeDefined();
-      expect(minionTool.optionDefinitions).toHaveLength(4);
+      expect(minionTool.optionDefinitions).toHaveLength(8);
 
       const systemPromptOpt = minionTool.optionDefinitions?.find(o => o.id === 'systemPrompt');
       expect(systemPromptOpt).toBeDefined();
@@ -125,12 +163,122 @@ describe('minionTool', () => {
         expect(webSearchOpt.default).toBe(false);
       }
 
+      const returnOnlyOpt = minionTool.optionDefinitions?.find(o => o.id === 'returnOnly');
+      expect(returnOnlyOpt).toBeDefined();
+      expect(returnOnlyOpt?.type).toBe('boolean');
+      if (returnOnlyOpt?.type === 'boolean') {
+        expect(returnOnlyOpt.default).toBe(false);
+      }
+
       const noReturnOpt = minionTool.optionDefinitions?.find(o => o.id === 'noReturnTool');
       expect(noReturnOpt).toBeDefined();
       expect(noReturnOpt?.type).toBe('boolean');
       if (noReturnOpt?.type === 'boolean') {
         expect(noReturnOpt.default).toBe(false);
       }
+
+      const disableReasoningOpt = minionTool.optionDefinitions?.find(
+        o => o.id === 'disableReasoning'
+      );
+      expect(disableReasoningOpt).toBeDefined();
+      expect(disableReasoningOpt?.type).toBe('boolean');
+      if (disableReasoningOpt?.type === 'boolean') {
+        expect(disableReasoningOpt.default).toBe(false);
+      }
+
+      const namespacedOpt = minionTool.optionDefinitions?.find(o => o.id === 'namespacedMinion');
+      expect(namespacedOpt).toBeDefined();
+      expect(namespacedOpt?.type).toBe('boolean');
+      if (namespacedOpt?.type === 'boolean') {
+        expect(namespacedOpt.default).toBe(false);
+      }
+
+      const modelsOpt = minionTool.optionDefinitions?.find(o => o.id === 'models');
+      expect(modelsOpt).toBeDefined();
+      expect(modelsOpt?.type).toBe('modellist');
+    });
+
+    it('schema includes model enum when namespacedMinion + models configured', () => {
+      const models: ModelReference[] = [
+        { apiDefinitionId: 'api_1', modelId: 'claude-3' },
+        { apiDefinitionId: 'api_2', modelId: 'us.anthropic.claude-3-5-sonnet:0' },
+      ];
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ namespacedMinion: true, models })
+          : minionTool.inputSchema;
+      expect(schema.properties).toHaveProperty('model');
+      const modelProp = schema.properties!.model as { enum: string[] };
+      expect(modelProp.enum).toEqual(['api_1:claude-3', 'api_2:us.anthropic.claude-3-5-sonnet:0']);
+    });
+
+    it('schema excludes model param when namespacedMinion is false', () => {
+      const models: ModelReference[] = [{ apiDefinitionId: 'a', modelId: 'b' }];
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ namespacedMinion: false, models })
+          : minionTool.inputSchema;
+      expect(schema.properties).not.toHaveProperty('model');
+    });
+
+    it('schema excludes model param when models list is empty', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({ namespacedMinion: true, models: [] })
+          : minionTool.inputSchema;
+      expect(schema.properties).not.toHaveProperty('model');
+    });
+
+    it('description mentions model selection when namespacedMinion + models configured', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') throw new Error('Expected description to be a function');
+      const models: ModelReference[] = [{ apiDefinitionId: 'a', modelId: 'b' }];
+      const desc = descFn({ namespacedMinion: true, models });
+      expect(desc).toContain('model parameter');
+    });
+
+    it('description omits model selection when no models configured', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') throw new Error('Expected description to be a function');
+      const desc = descFn({ namespacedMinion: true });
+      expect(desc).not.toContain('model parameter');
+    });
+  });
+
+  describe('formatModelString', () => {
+    it('formats apiDefinitionId:modelId', () => {
+      expect(formatModelString({ apiDefinitionId: 'api_1', modelId: 'claude-3' })).toBe(
+        'api_1:claude-3'
+      );
+    });
+
+    it('preserves colons in modelId (Bedrock ARNs)', () => {
+      expect(
+        formatModelString({
+          apiDefinitionId: 'bedrock',
+          modelId: 'us.anthropic.claude-3-5-sonnet:0',
+        })
+      ).toBe('bedrock:us.anthropic.claude-3-5-sonnet:0');
+    });
+  });
+
+  describe('parseModelString', () => {
+    it('parses standard format', () => {
+      expect(parseModelString('api_1:claude-3')).toEqual({
+        apiDefinitionId: 'api_1',
+        modelId: 'claude-3',
+      });
+    });
+
+    it('splits on first colon only (Bedrock ARN)', () => {
+      expect(parseModelString('bedrock:us.anthropic.claude-3-5-sonnet:0')).toEqual({
+        apiDefinitionId: 'bedrock',
+        modelId: 'us.anthropic.claude-3-5-sonnet:0',
+      });
+    });
+
+    it('returns undefined for string without colon', () => {
+      expect(parseModelString('nocolon')).toBeUndefined();
     });
   });
 
@@ -186,6 +334,12 @@ describe('minionTool', () => {
       const result = minionTool.renderInput!(input);
       expect(result).toContain('Action: retry');
       expect(result).toContain('New instruction');
+    });
+
+    it('renders model when specified', () => {
+      const input = { message: 'Task', model: 'api_1:claude-3' };
+      const result = minionTool.renderInput!(input);
+      expect(result).toContain('Model: api_1:claude-3');
     });
   });
 
@@ -288,6 +442,45 @@ describe('minionTool', () => {
       expect(result.isError).toBe(true);
       expect(result.content).toContain('Minion model not configured');
       expect(result.content).toContain('Resend with the message to reattempt.');
+    });
+
+    it('returns Phase 2 error when input.model provided but models list not configured', async () => {
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'test', model: 'api_1:claude-3' },
+          { model: { apiDefinitionId: 'api_1', modelId: 'claude-3' } },
+          { projectId: 'proj_123' }
+        )
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('no models list configured');
+    });
+
+    it('returns Phase 2 error when input.model is not in configured models list', async () => {
+      const models: ModelReference[] = [{ apiDefinitionId: 'api_1', modelId: 'claude-3' }];
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'test', model: 'api_2:gpt-4' },
+          { model: { apiDefinitionId: 'api_1', modelId: 'claude-3' }, models },
+          { projectId: 'proj_123' }
+        )
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('not in the configured models list');
+      expect(result.content).toContain('api_1:claude-3');
+    });
+
+    it('returns Phase 2 error when input.model has invalid format', async () => {
+      const models: ModelReference[] = [{ apiDefinitionId: 'api_1', modelId: 'claude-3' }];
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'test', model: 'nocolon' },
+          { model: { apiDefinitionId: 'api_1', modelId: 'claude-3' }, models },
+          { projectId: 'proj_123' }
+        )
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('Invalid model format');
     });
 
     it('exports CHECKPOINT_START sentinel', () => {

@@ -144,37 +144,39 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
         </div>
       ))}
 
-      {/* Timestamp, cost, and actions */}
-      <div className="mt-1 flex items-center gap-2">
-        <span className="text-[10px] text-gray-500">{formatTimestamp(message.timestamp)}</span>
-        {(message.metadata?.messageCost ?? 0) > 0 && message.metadata && (
-          <span className="text-[10px] text-gray-500">
-            <span className="text-gray-400">|</span>{' '}
-            {formatTokens('↑', message.metadata.inputTokens)}
-            {message.metadata.inputTokens ? ' ' : ''}
-            {formatTokens('↓', message.metadata.outputTokens)} $
-            {message.metadata.messageCost!.toFixed(3)}
-          </span>
-        )}
-        {onAction && (
-          <>
-            <button
-              onClick={() => onAction('resend', message.id)}
-              className="text-[10px] text-gray-400 transition-colors hover:text-blue-600"
-              title="Resend from here"
-            >
-              🔄
-            </button>
-            <button
-              onClick={() => onAction('delete', message.id)}
-              className="text-[10px] text-gray-400 transition-colors hover:text-red-600"
-              title="Delete this message and all after"
-            >
-              🗑️
-            </button>
-          </>
-        )}
-      </div>
+      {/* Timestamp, cost, and actions — hidden while any tool is still in progress */}
+      {toolResults.every(r => !r.status || r.status === 'complete' || r.status === 'error') && (
+        <div className="mt-1 flex items-center gap-2">
+          <span className="text-[10px] text-gray-500">{formatTimestamp(message.timestamp)}</span>
+          {(message.metadata?.messageCost ?? 0) > 0 && message.metadata && (
+            <span className="text-[10px] text-gray-500">
+              <span className="text-gray-400">|</span>{' '}
+              {formatTokens('↑', message.metadata.inputTokens)}
+              {message.metadata.inputTokens ? ' ' : ''}
+              {formatTokens('↓', message.metadata.outputTokens)} $
+              {message.metadata.messageCost!.toFixed(3)}
+            </span>
+          )}
+          {onAction && (
+            <>
+              <button
+                onClick={() => onAction('resend', message.id)}
+                className="text-[10px] text-gray-400 transition-colors hover:text-blue-600"
+                title="Resend from here"
+              >
+                🔄
+              </button>
+              <button
+                onClick={() => onAction('delete', message.id)}
+                className="text-[10px] text-gray-400 transition-colors hover:text-red-600"
+                title="Delete this message and all after"
+              >
+                🗑️
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

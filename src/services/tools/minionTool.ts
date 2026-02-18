@@ -17,7 +17,9 @@ import type {
   ClientSideTool,
   Message,
   MinionChat,
+  ModelReference,
   RenderingBlockGroup,
+  SystemPromptContext,
   ToolContext,
   ToolInputSchema,
   ToolOptions,
@@ -26,7 +28,7 @@ import type {
   ToolStreamEvent,
 } from '../../types';
 import type { ToolInfoRenderBlock, ToolResultRenderBlock } from '../../types/content';
-import { isModelReference } from '../../types';
+import { isModelReference, isModelReferenceArray } from '../../types';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { storage } from '../storage';
 import {
@@ -38,9 +40,22 @@ import {
 import { createTokenTotals, addTokens } from '../../utils/tokenTotals';
 import { toolRegistry } from './clientSideTools';
 import { apiService } from '../api/apiService';
+import * as vfs from '../vfs/vfsService';
 
 // Tool names that minions cannot use
 const MINION_EXCLUDED_TOOLS = ['minion'];
+
+/** Format a ModelReference as "apiDefinitionId:modelId" for schema enum values */
+export function formatModelString(ref: ModelReference): string {
+  return `${ref.apiDefinitionId}:${ref.modelId}`;
+}
+
+/** Parse "apiDefinitionId:modelId" back to a ModelReference. First colon only — modelId can contain colons (Bedrock ARNs). */
+export function parseModelString(str: string): ModelReference | undefined {
+  const idx = str.indexOf(':');
+  if (idx === -1) return undefined;
+  return { apiDefinitionId: str.substring(0, idx), modelId: str.substring(idx + 1) };
+}
 
 /** Stashed fullContent from a rolled-back message for re-use during retry */
 interface StashedRetryContent {
@@ -105,6 +120,10 @@ interface MinionInput {
   enableWeb?: boolean;
   /** Scoped tools for the minion (intersected with project tools) */
   enabledTools?: string[];
+  /** Persona name (matches /minions/<name>.md). Only used when namespacedMinion is enabled. */
+  persona?: string;
+  /** Model to use (formatted as "apiDefinitionId:modelId"). Only when namespacedMinion + models configured. */
+  model?: string;
 }
 
 /**
@@ -145,11 +164,16 @@ function buildMinionTools(
  * Build the ToolInfoRenderBlock group for a minion execution.
  * Placed at the start of renderingGroups to show task description and chat reference.
  */
-function buildInfoGroup(taskMessage: string, chatId: string): RenderingBlockGroup {
+function buildInfoGroup(
+  taskMessage: string,
+  chatId: string,
+  persona?: string
+): RenderingBlockGroup {
   const infoBlock: ToolInfoRenderBlock = {
     type: 'tool_info',
     input: taskMessage,
     chatId,
+    persona,
   };
   return { category: 'backstage', blocks: [infoBlock] };
 }
@@ -343,9 +367,50 @@ async function* executeMinion(
   }
 
   const minionToolOptions = toolOptions ?? {};
-  const modelRef = minionToolOptions.model;
 
-  if (!modelRef || !isModelReference(modelRef)) {
+  // Resolve effective model: input.model (from LLM) > toolOptions.model (default)
+  let effectiveModelRef: ModelReference | undefined;
+
+  if (minionInput.model) {
+    // LLM specified a model — validate against configured models list
+    const modelsList = minionToolOptions.models;
+    if (!isModelReferenceArray(modelsList) || modelsList.length === 0) {
+      return {
+        content:
+          'Error: model parameter provided but no models list configured. Resend with the message to reattempt.',
+        isError: true,
+      };
+    }
+
+    const parsed = parseModelString(minionInput.model);
+    if (!parsed) {
+      return {
+        content: `Error: Invalid model format: "${minionInput.model}". Expected "apiDefinitionId:modelId". Resend with the message to reattempt.`,
+        isError: true,
+      };
+    }
+
+    const isInList = modelsList.some(
+      ref => ref.apiDefinitionId === parsed.apiDefinitionId && ref.modelId === parsed.modelId
+    );
+    if (!isInList) {
+      const available = modelsList.map(formatModelString).join(', ');
+      return {
+        content: `Error: Model "${minionInput.model}" is not in the configured models list. Available: ${available}. Resend with the message to reattempt.`,
+        isError: true,
+      };
+    }
+
+    effectiveModelRef = parsed;
+  } else {
+    // Fall back to default model option
+    const defaultRef = minionToolOptions.model;
+    if (defaultRef && isModelReference(defaultRef)) {
+      effectiveModelRef = defaultRef;
+    }
+  }
+
+  if (!effectiveModelRef) {
     return {
       content:
         'Error: Minion model not configured. Please configure a model in project settings. Resend with the message to reattempt.',
@@ -361,18 +426,21 @@ async function* executeMinion(
     };
   }
 
-  const apiDef = await storage.getAPIDefinition(modelRef.apiDefinitionId);
+  const apiDef = await storage.getAPIDefinition(effectiveModelRef.apiDefinitionId);
   if (!apiDef) {
     return {
-      content: `Error: API definition not found: ${modelRef.apiDefinitionId}. Resend with the message to reattempt.`,
+      content: `Error: API definition not found: ${effectiveModelRef.apiDefinitionId}. Resend with the message to reattempt.`,
       isError: true,
     };
   }
 
-  const model = await storage.getModel(modelRef.apiDefinitionId, modelRef.modelId);
+  const model = await storage.getModel(
+    effectiveModelRef.apiDefinitionId,
+    effectiveModelRef.modelId
+  );
   if (!model) {
     return {
-      content: `Error: Model not found: ${modelRef.modelId}. Resend with the message to reattempt.`,
+      content: `Error: Model not found: ${effectiveModelRef.modelId}. Resend with the message to reattempt.`,
       isError: true,
     };
   }
@@ -393,13 +461,17 @@ async function* executeMinion(
   }
 
   const includeReturn = minionToolOptions.noReturnTool !== true;
+  const disableReasoning = minionToolOptions.disableReasoning === true;
   const minionTools = buildMinionTools(minionInput.enabledTools, projectTools, includeReturn);
 
   // ── Phase 3: Message + execution ──
   // User message will be saved. Errors here can be retried via action: 'retry'.
 
-  // Check if last message is assistant with pending return tool (needs apiDef.apiType)
+  // Check if last message is assistant with unresolved tool_use blocks (needs apiDef.apiType).
+  // This happens when the return tool was called (possibly in parallel with other tools),
+  // breaking the agentic loop before a tool_result message could be saved.
   let pendingReturnToolUse: { id: string; name: string } | undefined;
+  let unresolvedNonReturnTools: { id: string; name: string }[] = [];
   if (existingMessages.length > 0) {
     const lastMsg = existingMessages[existingMessages.length - 1];
     if (lastMsg.role === 'assistant' && lastMsg.content.fullContent) {
@@ -407,15 +479,26 @@ async function* executeMinion(
         apiDef.apiType,
         lastMsg.content.fullContent
       );
-      const returnToolUse = toolUseBlocks.find(t => t.name === 'return');
-      if (returnToolUse) {
-        pendingReturnToolUse = { id: returnToolUse.id, name: returnToolUse.name };
+      if (toolUseBlocks.length > 0) {
+        const returnToolUse = toolUseBlocks.find(t => t.name === 'return');
+        if (returnToolUse) {
+          pendingReturnToolUse = { id: returnToolUse.id, name: returnToolUse.name };
+          unresolvedNonReturnTools = toolUseBlocks
+            .filter(t => t.name !== 'return')
+            .map(t => ({ id: t.id, name: t.name }));
+        }
       }
     }
   }
 
-  // Build info group for streaming display
-  const infoGroup = buildInfoGroup(minionInput.message, minionChat.id);
+  // Build info group for streaming display (include persona name for non-default personas)
+  const personaLabel =
+    minionToolOptions.namespacedMinion === true &&
+    minionInput.persona &&
+    minionInput.persona !== 'default'
+      ? minionInput.persona
+      : undefined;
+  const infoGroup = buildInfoGroup(minionInput.message, minionChat.id, personaLabel);
 
   // Build context for minion based on retry re-use, return tool resumption, or normal message
   let minionContext: Message<unknown>[];
@@ -438,26 +521,46 @@ async function* executeMinion(
     await storage.saveMinionMessage(minionChat.id, reusedMessage);
     minionContext = [...existingMessages, reusedMessage];
   } else if (pendingReturnToolUse) {
-    // Resume after return tool: send tool_result instead of user message
-    const toolResultBlock: ToolResultBlock = {
+    // Resume after return tool: build tool_result for the return tool + error results
+    // for any other tools that were called in parallel and skipped.
+    const toolResultBlocks: ToolResultBlock[] = [];
+    const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+
+    // Error results for tools that were skipped due to parallel return call
+    for (const skipped of unresolvedNonReturnTools) {
+      const errContent =
+        'Tool call skipped: the return tool was called in parallel, which breaks the agentic loop. Other parallel tool calls cannot be executed.';
+      toolResultBlocks.push({
+        type: 'tool_result',
+        tool_use_id: skipped.id,
+        content: errContent,
+        is_error: true,
+      });
+      toolResultRenderBlocks.push(
+        createToolResultRenderBlock(skipped.id, skipped.name, errContent, true)
+      );
+    }
+
+    // Return tool result: user's continuation message
+    toolResultBlocks.push({
       type: 'tool_result',
       tool_use_id: pendingReturnToolUse.id,
       content: minionInput.message,
-    };
-
-    const toolResultRenderBlock: ToolResultRenderBlock = createToolResultRenderBlock(
-      pendingReturnToolUse.id,
-      pendingReturnToolUse.name,
-      minionInput.message,
-      false
+    });
+    toolResultRenderBlocks.push(
+      createToolResultRenderBlock(
+        pendingReturnToolUse.id,
+        pendingReturnToolUse.name,
+        minionInput.message,
+        false
+      )
     );
 
-    const toolResultMessage = apiService.buildToolResultMessage(apiDef.apiType, [toolResultBlock]);
+    const toolResultMessage = apiService.buildToolResultMessage(apiDef.apiType, toolResultBlocks);
     toolResultMessage.content.renderingContent = [
-      { category: 'backstage' as const, blocks: [toolResultRenderBlock] },
+      { category: 'backstage' as const, blocks: toolResultRenderBlocks },
     ];
 
-    // Save tool result message to minion chat
     await storage.saveMinionMessage(minionChat.id, toolResultMessage);
 
     minionContext = [...existingMessages, toolResultMessage];
@@ -482,9 +585,44 @@ async function* executeMinion(
     minionContext = [...existingMessages, userMessage];
   }
 
-  // Get minion system prompt from toolOptions
-  const minionSystemPrompt =
-    typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+  // Resolve persona and namespace when namespacedMinion is enabled
+  const namespacedMinion = minionToolOptions.namespacedMinion === true;
+  let minionNamespace: string | undefined;
+  let minionSystemPrompt: string;
+
+  if (namespacedMinion) {
+    const persona = minionInput.persona ?? 'default';
+    minionNamespace = `/minions/${persona}`;
+
+    // Read global prompt shared across all personas
+    let globalPrompt = '';
+    try {
+      globalPrompt = await vfs.readFile(context.projectId, '/minions/_global.md');
+    } catch {
+      // No global prompt — that's fine
+    }
+
+    if (persona !== 'default') {
+      // Read persona prompt from /minions/<persona>.md (root VFS, no namespace)
+      try {
+        const personaPrompt = await vfs.readFile(context.projectId, `/minions/${persona}.md`);
+        minionSystemPrompt = [globalPrompt, personaPrompt].filter(Boolean).join('\n\n');
+      } catch {
+        return {
+          content: `Error: Persona file /minions/${persona}.md not found. Create the file or use a different persona. Resend with the message to reattempt.`,
+          isError: true,
+        };
+      }
+    } else {
+      // Default persona uses configured system prompt
+      const configuredPrompt =
+        typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+      minionSystemPrompt = [globalPrompt, configuredPrompt].filter(Boolean).join('\n\n');
+    }
+  } else {
+    minionSystemPrompt =
+      typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+  }
 
   // Build system prompts from enabled tools
   const systemPromptContext = {
@@ -493,6 +631,7 @@ async function* executeMinion(
     apiDefinitionId: apiDef.id,
     modelId: model.id,
     apiType: apiDef.apiType,
+    namespace: minionNamespace,
   };
 
   const toolSystemPrompts = await toolRegistry.getSystemPrompts(
@@ -521,8 +660,9 @@ async function* executeMinion(
     enabledTools: minionTools,
     toolOptions: project.toolOptions ?? {},
     disableStream: project.disableStream ?? false,
+    namespace: minionNamespace,
     // Reasoning settings from project
-    enableReasoning: project.enableReasoning,
+    enableReasoning: disableReasoning ? false : project.enableReasoning,
     reasoningBudgetTokens: project.reasoningBudgetTokens,
     thinkingKeepTurns: project.thinkingKeepTurns,
     reasoningEffort: project.reasoningEffort,
@@ -652,8 +792,12 @@ async function* executeMinion(
     }
 
     // Build result JSON: `result` only present when return tool was used
+    const joinedText = accumulatedText.join('\n\n');
+    const returnOnly = minionToolOptions.returnOnly === true;
+    const suppressText = returnOnly && usedReturnTool && returnValue !== undefined && joinedText;
+
     const resultJson: Record<string, unknown> = {
-      text: accumulatedText.join('\n\n'),
+      text: suppressText ? '' : joinedText,
       stopReason,
       minionChatId: minionChat.id,
     };
@@ -700,6 +844,10 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push('Web: enabled');
   }
 
+  if (minionInput.model) {
+    lines.push(`Model: ${minionInput.model}`);
+  }
+
   if (minionInput.message) {
     lines.push('');
     lines.push(minionInput.message);
@@ -736,6 +884,52 @@ function renderMinionOutput(output: string, isError?: boolean): string {
   }
 }
 
+/**
+ * System prompt for persona discovery.
+ * Lists available persona files from /minions/ when namespacedMinion is enabled.
+ */
+async function getMinionSystemPromptInjection(
+  context: SystemPromptContext,
+  opts: ToolOptions
+): Promise<string> {
+  if (opts.namespacedMinion !== true) return '';
+
+  try {
+    const dirExists = await vfs.isDirectory(context.projectId, '/minions');
+    if (!dirExists) return '';
+
+    const entries = await vfs.readDir(context.projectId, '/minions');
+    const personaFiles = entries
+      .filter(e => e.type === 'file' && e.name.endsWith('.md'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    if (personaFiles.length === 0) return '';
+
+    const lines = ['## Available Minion Personas', ''];
+    for (const file of personaFiles) {
+      const name = file.name.replace(/\.md$/, '');
+      try {
+        const content = await vfs.readFile(context.projectId, `/minions/${file.name}`);
+        const firstLine = content
+          .split('\n')[0]
+          .replace(/^#+\s*/, '')
+          .trim();
+        lines.push(`- **${name}**: ${firstLine}`);
+      } catch {
+        lines.push(`- **${name}**`);
+      }
+    }
+    lines.push(
+      '',
+      'Use the `persona` parameter when calling the minion tool to select one.',
+      'Omit persona for the default minion (uses configured system prompt).'
+    );
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
 /** Build minion tool description, conditionally including web search bullet. */
 function getMinionDescription(opts: ToolOptions): string {
   const lines = [
@@ -753,6 +947,20 @@ function getMinionDescription(opts: ToolOptions): string {
   lines.push(
     '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)'
   );
+
+  if (opts.namespacedMinion === true) {
+    lines.push(
+      '- Select a persona via the persona parameter. Each persona gets its own isolated VFS namespace and system prompt from /minions/<name>.md'
+    );
+
+    // Check if models list is configured
+    const modelsList = opts.models;
+    if (isModelReferenceArray(modelsList) && modelsList.length > 0) {
+      lines.push(
+        '- Select a model via the model parameter. Available models are listed in the schema enum.'
+      );
+    }
+  }
 
   if (opts.noReturnTool !== true) {
     lines.push(
@@ -797,6 +1005,25 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     };
   }
 
+  if (opts.namespacedMinion === true) {
+    properties.persona = {
+      type: 'string',
+      description:
+        'Persona name for the minion (matches a file in /minions/). Omit for default persona.',
+    };
+
+    // Add model enum when models list is configured
+    const modelsList = opts.models;
+    if (isModelReferenceArray(modelsList) && modelsList.length > 0) {
+      const modelStrings = modelsList.map(formatModelString);
+      properties.model = {
+        type: 'string',
+        enum: modelStrings,
+        description: 'Model to use for this minion call. Omit to use the default minion model.',
+      };
+    }
+  }
+
   return {
     type: 'object',
     properties,
@@ -816,6 +1043,7 @@ export const minionTool: ClientSideTool = {
   displaySubtitle: 'Delegate tasks to a sub-agent',
   description: getMinionDescription,
   inputSchema: getMinionInputSchema,
+  systemPrompt: getMinionSystemPromptInjection,
 
   iconInput: '🤖',
   iconOutput: '🤖',
@@ -836,6 +1064,12 @@ export const minionTool: ClientSideTool = {
       subtitle: 'Model for delegated tasks (can use cheaper model)',
     },
     {
+      type: 'modellist',
+      id: 'models',
+      label: 'Available Models',
+      subtitle: 'Models the LLM can choose from when calling minions (namespaced mode)',
+    },
+    {
       type: 'boolean',
       id: 'allowWebSearch',
       label: 'Allow Web Search',
@@ -844,9 +1078,30 @@ export const minionTool: ClientSideTool = {
     },
     {
       type: 'boolean',
+      id: 'returnOnly',
+      label: 'Return Only',
+      subtitle: 'Suppress accumulated text when return tool provides a result',
+      default: false,
+    },
+    {
+      type: 'boolean',
       id: 'noReturnTool',
       label: 'No Return Tool',
       subtitle: 'Remove the return tool from minion toolset',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'disableReasoning',
+      label: 'Disable Reasoning',
+      subtitle: 'Turn off reasoning/thinking for minion calls regardless of project settings',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'namespacedMinion',
+      label: 'Namespaced Minion',
+      subtitle: 'Isolate each persona into its own VFS namespace',
       default: false,
     },
   ],

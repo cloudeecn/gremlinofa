@@ -390,8 +390,8 @@ export interface ModelReference {
   modelId: string;
 }
 
-/** Tool option value types - boolean, string, or model reference */
-export type ToolOptionValue = boolean | string | ModelReference;
+/** Tool option value types - boolean, string, model reference, or model reference list */
+export type ToolOptionValue = boolean | string | ModelReference | ModelReference[];
 
 /** Per-tool options - keyed by option ID */
 export type ToolOptions = Record<string, ToolOptionValue>;
@@ -424,8 +424,17 @@ export interface ModelToolOption extends BaseToolOption {
   // No default - prepopulated from project when tool first enabled
 }
 
+/** Model list option (multiple model references) */
+export interface ModelListToolOption extends BaseToolOption {
+  type: 'modellist';
+}
+
 /** Discriminated union of all tool option types */
-export type ToolOptionDefinition = BooleanToolOption | LongtextToolOption | ModelToolOption;
+export type ToolOptionDefinition =
+  | BooleanToolOption
+  | LongtextToolOption
+  | ModelToolOption
+  | ModelListToolOption;
 
 /**
  * Type guard: check if option is a boolean option
@@ -449,11 +458,35 @@ export function isModelOption(opt: ToolOptionDefinition): opt is ModelToolOption
 }
 
 /**
- * Type guard: check if a value is a ModelReference
+ * Type guard: check if option is a model list option
+ */
+export function isModelListOption(opt: ToolOptionDefinition): opt is ModelListToolOption {
+  return opt.type === 'modellist';
+}
+
+/**
+ * Type guard: check if a value is a ModelReference (single, not array)
  */
 export function isModelReference(value: ToolOptionValue): value is ModelReference {
   return (
-    typeof value === 'object' && value !== null && 'apiDefinitionId' in value && 'modelId' in value
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    'apiDefinitionId' in value &&
+    'modelId' in value
+  );
+}
+
+/**
+ * Type guard: check if a value is a ModelReference array
+ */
+export function isModelReferenceArray(value: ToolOptionValue): value is ModelReference[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      item =>
+        typeof item === 'object' && item !== null && 'apiDefinitionId' in item && 'modelId' in item
+    )
   );
 }
 
@@ -487,6 +520,8 @@ export function initializeToolOptions(
         };
       }
       // If project has no model, leave undefined - UI will require selection
+    } else if (opt.type === 'modellist') {
+      result[opt.id] = [];
     } else {
       result[opt.id] = opt.default;
     }
@@ -499,6 +534,7 @@ export function initializeToolOptions(
 export interface ToolContext {
   projectId: string;
   chatId?: string;
+  namespace?: string;
 }
 
 /** Context passed to system prompt functions for dynamic generation */
@@ -510,6 +546,8 @@ export interface SystemPromptContext {
   modelId: string;
   /** API type of the current API definition (optional for backward compat) */
   apiType?: APIType;
+  /** VFS namespace for isolated minion personas */
+  namespace?: string;
 }
 
 /** Input schema type for tool definitions - includes index signature for SDK compatibility */

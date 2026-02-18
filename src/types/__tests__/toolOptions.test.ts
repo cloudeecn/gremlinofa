@@ -2,7 +2,7 @@
  * Tool Options Types Tests
  *
  * Tests for the tool option type system including:
- * - Type guards (isBooleanOption, isLongtextOption, isModelOption, isModelReference)
+ * - Type guards (isBooleanOption, isLongtextOption, isModelOption, isModelListOption, isModelReference, isModelReferenceArray)
  * - initializeToolOptions helper
  */
 
@@ -11,11 +11,14 @@ import {
   isBooleanOption,
   isLongtextOption,
   isModelOption,
+  isModelListOption,
   isModelReference,
+  isModelReferenceArray,
   initializeToolOptions,
   type BooleanToolOption,
   type LongtextToolOption,
   type ModelToolOption,
+  type ModelListToolOption,
   type ToolOptionDefinition,
   type ToolOptions,
   type ModelReference,
@@ -41,6 +44,12 @@ describe('Tool Option Type Guards', () => {
     type: 'model',
     id: 'model',
     label: 'Minion Model',
+  };
+
+  const modelListOption: ModelListToolOption = {
+    type: 'modellist',
+    id: 'models',
+    label: 'Available Models',
   };
 
   describe('isBooleanOption', () => {
@@ -109,6 +118,60 @@ describe('Tool Option Type Guards', () => {
     it('returns false for object without required fields', () => {
       expect(isModelReference({ apiDefinitionId: 'test' } as unknown as boolean)).toBe(false);
       expect(isModelReference({ modelId: 'test' } as unknown as boolean)).toBe(false);
+    });
+
+    it('returns false for ModelReference array', () => {
+      const refs: ModelReference[] = [
+        { apiDefinitionId: 'api_1', modelId: 'model-1' },
+        { apiDefinitionId: 'api_2', modelId: 'model-2' },
+      ];
+      expect(isModelReference(refs)).toBe(false);
+    });
+  });
+
+  describe('isModelListOption', () => {
+    it('returns true for model list options', () => {
+      expect(isModelListOption(modelListOption)).toBe(true);
+    });
+
+    it('returns false for boolean options', () => {
+      expect(isModelListOption(booleanOption)).toBe(false);
+    });
+
+    it('returns false for model options', () => {
+      expect(isModelListOption(modelOption)).toBe(false);
+    });
+  });
+
+  describe('isModelReferenceArray', () => {
+    it('returns true for array of valid model references', () => {
+      const refs: ModelReference[] = [
+        { apiDefinitionId: 'api_1', modelId: 'model-1' },
+        { apiDefinitionId: 'api_2', modelId: 'model-2' },
+      ];
+      expect(isModelReferenceArray(refs)).toBe(true);
+    });
+
+    it('returns true for empty array', () => {
+      expect(isModelReferenceArray([])).toBe(true);
+    });
+
+    it('returns false for single ModelReference', () => {
+      expect(isModelReferenceArray({ apiDefinitionId: 'a', modelId: 'b' })).toBe(false);
+    });
+
+    it('returns false for boolean', () => {
+      expect(isModelReferenceArray(true)).toBe(false);
+    });
+
+    it('returns false for string', () => {
+      expect(isModelReferenceArray('hello')).toBe(false);
+    });
+
+    it('returns false for array with invalid elements', () => {
+      expect(isModelReferenceArray([{ apiDefinitionId: 'a' }] as unknown as ModelReference[])).toBe(
+        false
+      );
     });
   });
 });
@@ -246,5 +309,30 @@ describe('initializeToolOptions', () => {
       apiDefinitionId: 'api_123',
       modelId: 'claude-3',
     });
+  });
+
+  it('initializes modellist option to empty array', () => {
+    const defsWithModelList: ToolOptionDefinition[] = [
+      { type: 'modellist', id: 'models', label: 'Available Models' },
+    ];
+    const result = initializeToolOptions(undefined, defsWithModelList, {
+      apiDefinitionId: 'api_123',
+      modelId: 'claude-3',
+    });
+    expect(result.models).toEqual([]);
+  });
+
+  it('preserves existing modellist value', () => {
+    const existing: ToolOptions = {
+      models: [{ apiDefinitionId: 'api_1', modelId: 'model-1' }],
+    };
+    const defsWithModelList: ToolOptionDefinition[] = [
+      { type: 'modellist', id: 'models', label: 'Available Models' },
+    ];
+    const result = initializeToolOptions(existing, defsWithModelList, {
+      apiDefinitionId: 'api_123',
+      modelId: 'claude-3',
+    });
+    expect(result.models).toEqual([{ apiDefinitionId: 'api_1', modelId: 'model-1' }]);
   });
 });

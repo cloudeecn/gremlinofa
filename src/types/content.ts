@@ -111,6 +111,8 @@ export interface ToolInfoRenderBlock {
   input?: string;
   /** Sub-chat ID for "Copy All" functionality */
   chatId?: string;
+  /** Persona name for namespaced minions (omitted for default persona) */
+  persona?: string;
 }
 
 /**

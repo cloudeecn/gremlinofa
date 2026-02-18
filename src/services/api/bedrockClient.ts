@@ -42,6 +42,7 @@ import type {
 import { groupAndConsolidateBlocks } from '../../types';
 import { generateUniqueId } from '../../utils/idGenerator';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import { applyContextTidy, type FilterBlocksFn } from './contextTidy';
 import { getModelMetadataFor } from './modelMetadata';
 import { toolRegistry } from '../tools/clientSideTools';
 import {
@@ -288,6 +289,54 @@ function base64ToUint8Array(base64: string): Uint8Array {
  * Bedrock fullContent type - array of ContentBlock
  */
 export type BedrockFullContent = ContentBlock[];
+
+/**
+ * Bedrock Converse API block filter for context tidy.
+ * Removes reasoningContent always, toolUse by name, toolResult by ID.
+ */
+const filterBedrockBlocks: FilterBlocksFn = (
+  fullContent,
+  removedToolNames,
+  isCheckpoint,
+  removedToolUseIds
+) => {
+  if (!Array.isArray(fullContent)) return { filtered: fullContent, newRemovedIds: [] };
+
+  const filtered: unknown[] = [];
+  const newRemovedIds: string[] = [];
+
+  for (const block of fullContent) {
+    const b = block as {
+      reasoningContent?: unknown;
+      toolUse?: { name?: string; toolUseId?: string };
+      toolResult?: { toolUseId?: string };
+    };
+
+    // Always remove reasoning blocks
+    if (b.reasoningContent) continue;
+
+    // Checkpoint message: only reasoning removed
+    if (isCheckpoint) {
+      filtered.push(block);
+      continue;
+    }
+
+    // toolUse — remove if name matches
+    if (b.toolUse?.name && removedToolNames.has(b.toolUse.name)) {
+      if (b.toolUse.toolUseId) newRemovedIds.push(b.toolUse.toolUseId);
+      continue;
+    }
+
+    // toolResult — remove if matching a removed toolUse ID
+    if (b.toolResult?.toolUseId && removedToolUseIds.has(b.toolResult.toolUseId)) {
+      continue;
+    }
+
+    filtered.push(block);
+  }
+
+  return { filtered, newRemovedIds };
+};
 
 export class BedrockClient implements APIClient {
   /**
@@ -538,6 +587,8 @@ export class BedrockClient implements APIClient {
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
+      checkpointMessageId?: string;
+      tidyToolNames?: Set<string>;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<BedrockFullContent>, unknown> {
     try {
@@ -553,8 +604,17 @@ export class BedrockClient implements APIClient {
         ...(runtimeUrl && { endpoint: runtimeUrl }),
       });
 
+      // Apply context tidy before message conversion
+      const tidiedMessages = applyContextTidy(
+        messages,
+        options.checkpointMessageId,
+        options.tidyToolNames,
+        'bedrock',
+        filterBedrockBlocks
+      ) as typeof messages;
+
       // Convert messages to Bedrock format
-      const bedrockMessages = this.convertMessages(messages);
+      const bedrockMessages = this.convertMessages(tidiedMessages);
 
       // Build tool config
       const toolConfig = this.buildToolConfig(options.enabledTools, options.toolOptions);

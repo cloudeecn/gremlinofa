@@ -6,6 +6,7 @@ import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
 import type { Project, APIType, ToolOptions, ModelReference, ToolOptionValue } from '../../types';
 import {
   isBooleanOption,
+  isNumberOption,
   isLongtextOption,
   isModelOption,
   isModelListOption,
@@ -1015,6 +1016,41 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                                         setToolOptionValue(tool.name, opt.id, e.target.checked)
                                       }
                                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                                    />
+                                  </div>
+                                );
+                              }
+
+                              // Number option - inline number input
+                              if (isNumberOption(opt)) {
+                                const raw = getToolOptionValue(tool.name, opt.id, opt.default);
+                                const numValue = typeof raw === 'number' ? raw : opt.default;
+                                return (
+                                  <div key={opt.id} className="flex items-center justify-between">
+                                    <div>
+                                      <label
+                                        htmlFor={`tool-${tool.name}-${opt.id}`}
+                                        className="cursor-pointer text-sm font-medium text-gray-900"
+                                      >
+                                        {opt.label}
+                                      </label>
+                                      {opt.subtitle && (
+                                        <p className="text-xs text-gray-500">{opt.subtitle}</p>
+                                      )}
+                                    </div>
+                                    <input
+                                      id={`tool-${tool.name}-${opt.id}`}
+                                      type="number"
+                                      value={numValue}
+                                      min={opt.min}
+                                      max={opt.max}
+                                      onChange={e => {
+                                        const parsed = parseInt(e.target.value, 10);
+                                        if (!isNaN(parsed)) {
+                                          setToolOptionValue(tool.name, opt.id, parsed);
+                                        }
+                                      }}
+                                      className="w-20 rounded border border-gray-300 px-2 py-1 text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                                     />
                                   </div>
                                 );

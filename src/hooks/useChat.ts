@@ -262,6 +262,10 @@ async function buildAgenticLoopOptions(
     thinkingKeepTurns: project.thinkingKeepTurns,
     reasoningEffort: project.reasoningEffort,
     reasoningSummary: project.reasoningSummary,
+    checkpointMessageIds: enabledTools.includes('checkpoint')
+      ? (chat.checkpointMessageIds ??
+        (chat.checkpointMessageId ? [chat.checkpointMessageId] : undefined))
+      : undefined,
   };
 }
 
@@ -378,6 +382,18 @@ async function consumeAgenticLoop(
           case 'tool_block_update':
             handlers.onToolBlockUpdate(event.toolUseId, event.block);
             break;
+
+          case 'checkpoint_set': {
+            // Accumulate checkpoint message IDs on chat
+            const cpChat: Chat = {
+              ...currentChat,
+              checkpointMessageIds: [...(currentChat.checkpointMessageIds ?? []), event.messageId],
+            };
+            currentChat = cpChat;
+            await storage.saveChat(cpChat);
+            handlers.onChatUpdated(cpChat);
+            break;
+          }
         }
       }
     } while (!result.done);

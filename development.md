@@ -153,8 +153,9 @@ Projects organize chats with shared settings:
 - **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
 - **Message format**: three modes (user message / with metadata / use template)
-- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook
-- **Advanced** (collapsed): temperature, max output tokens (default: 1536)
+
+- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook, Checkpoint
+- **Advanced** (collapsed): temperature, max output tokens (default: 1536), disable streaming, extended context (1M)
 
 ### Chats
 
@@ -297,6 +298,8 @@ public/             # Static assets and PWA icons
 - `preFillResponse?: string` - Pre-fill assistant response (Anthropic only)
 - `webSearchEnabled?: boolean` - Enable web search
 - `enabledTools?: string[]` - Enabled client-side tools
+- `checkpointMessageId?: string` - Context tidy: computed tidy boundary ID (triggers pre-checkpoint trimming)
+- `tidyToolNames?: Set<string>` - Context tidy: tool names whose blocks should be removed from pre-checkpoint messages
 
 **API Clients:**
 
@@ -443,7 +446,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 
 - `src/services/tools/clientSideTools.ts` - Tool registry and execution
 - Static registration at startup: `registerAllTools()` called in `main.tsx` before React renders
-- Available tools: `memory`, `javascript`, `filesystem`, `sketchbook`
+- Available tools: `memory`, `javascript`, `filesystem`, `sketchbook`, `checkpoint`
 - Tool definitions sent to API via `getToolDefinitionsForAPI(apiType, enabledToolNames, toolOptions)`
 - Execution via `executeClientSideTool(toolName, input, enabledToolNames, toolOptions, context)`
 - `ClientSideTool` interface:
@@ -1211,6 +1214,61 @@ Internal tool available only to minions for explicit result signaling:
 - Used by minions to signal task completion with specific result
 - **Deferred mode** (`deferReturn` option on minion tool): Return tool stores the value without breaking the loop. The agentic loop replies with "Result stored. Please wait for next instruction." and continues until natural completion. Multiple deferred returns overwrite — last value wins. Dynamic description changes based on mode.
 
+### Checkpoint Tool
+
+Client-side tool that marks progress during long agentic loops. When the AI calls checkpoint, a flag propagates through the agentic loop. After the turn ends naturally (end_turn/max_tokens), the consumer auto-sends a continue message, starting a fresh API call where old thinking blocks get trimmed by `thinkingKeepTurns`.
+
+- `checkpointTool` in `src/services/tools/checkpointTool.ts`
+- `internal: false` — visible in ProjectSettings, must be explicitly enabled
+- Input: `{ note: string }` — progress summary that stays in conversation history
+- Returns `{ content, checkpoint: true }` — no `breakLoop`, loop continues normally
+- Tool options:
+  - `keepSegments` (number, default: `0`) — how many previous checkpoint segments to preserve (-1 = keep all / disable tidy, 0 = tidy all before latest)
+  - `continueMessage` (longtext, default: `"please continue"`)
+  - `tidyFilesystem` / `tidyMemory` / `tidyJavascript` / `tidyMinion` / `tidySketchbook` / `tidyCheckpoint` (boolean, all default `true`) — which tool blocks to remove from pre-checkpoint context
+- `iconInput: '📍'`, `iconOutput: '✅'`
+- **Gating**: Context tidy only runs when the checkpoint tool is enabled. `useChat.ts` passes `checkpointMessageIds` only if `enabledTools.includes('checkpoint')`. Old persisted `chat.checkpointMessageId` won't cause unintended trimming when the tool is disabled.
+
+**Checkpoint flow:**
+
+```
+AI calls checkpoint(note) → tool returns with checkpoint: true → flag propagates
+    → loop continues → AI finishes turn naturally (end_turn/max_tokens)
+    → main loop detects checkpointSet → yields checkpoint_set event with assistant message ID
+    → creates user message with continueMessage → re-enters while loop for fresh API call
+    → context tidy trims old thinking + tool blocks → AI sees note and continues
+```
+
+**Flag propagation** (`agenticLoopGenerator.ts`):
+
+- `executeToolsParallel` → `executeToolUseBlocks` → main loop's `checkpointSet` variable
+- Auto-continue handled entirely inside `runAgenticLoop`: when `checkpointSet && stopReason !== 'tool_use'`, yields `checkpoint_set` event, creates a continue user message, yields it, resets flag, and `continue`s the loop
+- Continue text read from `toolOptions.checkpoint?.continueMessage` (falls back to `'please continue'`)
+- Local `checkpointMessageIds` array tracks all checkpoint IDs within the generator loop — pushed when `checkpointSet = true` (points to assistant messages containing checkpoint tool_use). The tidy boundary is computed from this array using `keepSegments`
+- Consumer (`useChat.ts`) handles `checkpoint_set` event by accumulating IDs to `checkpointMessageIds` on the `Chat` object
+
+**Checkpoint segments & keepSegments:**
+
+- `Chat.checkpointMessageIds: string[]` — accumulated array of all checkpoint assistant message IDs
+- `Chat.checkpointMessageId?: string` — legacy single-ID field, migrated to array on read
+- Tidy boundary computed as `checkpointMessageIds[max(0, length - 1 - keepSegments)]`
+- `keepSegments=-1`: disable tidy entirely (keep all segments, auto-continue still works)
+- `keepSegments=0` (default): tidy boundary = latest checkpoint (original behavior)
+- `keepSegments=1`: preserve one previous segment as reference
+- `keepSegments > count`: boundary clamps to first checkpoint
+
+**Context Tidy** (`src/services/api/contextTidy.ts`):
+
+When `checkpointMessageId` (the computed boundary) is set, messages older than the checkpoint get selectively trimmed before each API call:
+
+- Thinking/reasoning blocks always removed from pre-checkpoint messages
+- Tool blocks (`tool_use` + matching `tool_result`) removed per tidy option toggles
+- The checkpoint message itself: only thinking removed, tool blocks preserved
+- Messages newer than checkpoint are untouched
+- Messages with mismatched `modelFamily` or missing `fullContent` are skipped
+- Each API client calls `applyContextTidy()` with a provider-specific `FilterBlocksFn` before message conversion
+- Tool name derivation: `deriveTidyToolNames()` maps checkpoint option IDs to tool names, defaulting to true (tidy enabled). Also checks legacy `swipe*` keys for backward compatibility with persisted data
+
 ### Agentic Loop
 
 **Architecture:**
@@ -1252,7 +1310,8 @@ type AgenticLoopEvent =
   | { type: 'tokens_consumed'; tokens: TokenTotals }
   | { type: 'first_chunk' }
   | { type: 'pending_tool_result'; message: Message<unknown> }
-  | { type: 'tool_block_update'; toolUseId: string; block: Partial<ToolResultRenderBlock> };
+  | { type: 'tool_block_update'; toolUseId: string; block: Partial<ToolResultRenderBlock> }
+  | { type: 'checkpoint_set'; messageId: string };
 ```
 
 **Result Types:**

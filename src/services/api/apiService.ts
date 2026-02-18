@@ -156,6 +156,9 @@ class APIService {
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
+      // Context tidy (checkpoint tool)
+      checkpointMessageId?: string;
+      tidyToolNames?: Set<string>;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
     const client = this.getClient(apiDefinition.apiType);

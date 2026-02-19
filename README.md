@@ -301,14 +301,16 @@ All tools persist data in the project's encrypted VFS. **Filesystem Manager** le
 
 Your AI can spawn other AIs. The minion system lets your primary model delegate tasks to sub-agents that run their own agentic loops — with their own tools, their own conversation history, and their own streaming output.
 
-- **Pick a cheaper model** — Delegate research to Haiku while Opus handles the thinking. Your wallet will thank you.
+- **Pick a cheaper model** — Delegate research to Haiku while Opus handles the thinking. Your wallet will thank you. With multi-model selection, the orchestrating model picks the right model for each minion at invocation time.
+- **Namespace personas** — Give minions persistent identities. Each persona gets its own VFS sandbox (`/minions/<name>`), a custom system prompt (`/minions/<name>.md`), and shared instructions via `/minions/_global.md`. The `/share` directory bypasses namespacing so personas can collaborate on shared artifacts.
+- **Minion swarm** — Multiple minions run in parallel within a single turn. The orchestrator fires off a batch, results interleave as they complete, and phased execution ensures simple tools (memory, js) finish before complex ones (minions) start. It's concurrent delegation, not sequential waiting.
 - **Scoped tool access** — Minions inherit the project's client-side tools. The main model can narrow it down per-task, and minions can't spawn other minions (we learned that lesson so you don't have to)
-- **Conversation control** — The main model decides: start a fresh minion or pick up an existing one. Minion chats persist, so multi-turn delegation just works.
-- **Real-time streaming** — Watch sub-agents work in a collapsible view, or collapse and check back when they're done
+- **Conversation control** — The main model decides: start a fresh minion or pick up an existing one. Minion chats persist with their settings (model, persona, tools), so multi-turn delegation just works.
+- **Inspect while streaming** — Pop open a minion's full conversation in an overlay without leaving your main chat. Watch sub-agents work in real-time, or collapse and check back later.
 - **Cost tracking** — Sub-agent costs roll up into your chat totals. No hidden bills.
 - **Optional web search** — Gate web access per-project. When enabled, the primary model can grant minions web search on a per-task basis.
 
-**Use cases:** Have Opus delegate web research to a Haiku minion and synthesize the results. Run parallel searches from different angles. Let a cheap model handle memory file housekeeping. Or just enjoy watching LLMs talk to each other — we don't judge.
+**Use cases:** Have Opus dispatch a swarm of Haiku minions to research different angles simultaneously. Set up named personas — a "researcher" for web lookups, an "analyst" for data crunching — each with tailored instructions and their own workspace. Or just enjoy watching LLMs talk to each other — we don't judge.
 
 ### Remote Storage 🔄
 

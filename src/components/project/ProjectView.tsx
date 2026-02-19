@@ -6,8 +6,11 @@ import { useProject } from '../../hooks/useProject';
 import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
 import type { Chat, MessageAttachment, Project } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 import { processImages } from '../../utils/imageProcessor';
+import { createFile } from '../../services/vfs/vfsService';
+import { generateUniqueId } from '../../utils/idGenerator';
 import ModelSelector from './ModelSelector';
 import ProjectNameIconModal from './ProjectNameIconModal';
 import SystemPromptModal from './SystemPromptModal';
@@ -70,6 +73,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
   const navigate = useNavigate();
   const { apiDefinitions } = useApp();
   const { showDestructiveConfirm } = useAlert();
+  const isMobile = useIsMobile();
 
   // Use the project hook
   const {
@@ -269,6 +273,27 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
       setNewChatApiDefId(null);
       setNewChatModelId(null);
       // Navigate to chat view - useChat will auto-send the pending message
+      void navigate(`/chat/${newChat.id}`);
+    }
+  };
+
+  const handleSendAsFile = async () => {
+    if (!newChatMessage.trim() || isCreatingChat || isProcessingAttachments) return;
+
+    const fileId = generateUniqueId('tmp');
+    const filePath = `/tmp/${fileId}.txt`;
+
+    await createFile(projectId, filePath, newChatMessage);
+
+    const newChat = await createNewChat(filePath, newChatApiDefId, newChatModelId, undefined);
+
+    if (newChat) {
+      setNewChatMessage('');
+      setAttachments([]);
+      setValidationError('');
+      clearDraft('project-chat', projectId);
+      setNewChatApiDefId(null);
+      setNewChatModelId(null);
       void navigate(`/chat/${newChat.id}`);
     }
   };
@@ -492,7 +517,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
               rows={3}
               className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
               onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
                   e.preventDefault();
                   handleStartNewChat();
                 }
@@ -515,6 +540,18 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
               >
                 📎
               </button>
+
+              {/* Send as File Button - only when filesystem tool is enabled */}
+              {project.enabledTools?.includes('filesystem') && (
+                <button
+                  onClick={handleSendAsFile}
+                  disabled={!newChatMessage.trim() || isCreatingChat || isProcessingAttachments}
+                  className="rounded-lg bg-gray-200 px-4 py-2 font-semibold text-gray-700 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
+                  title="Send text as a VFS file"
+                >
+                  📄
+                </button>
+              )}
 
               {/* Send Button */}
               <button

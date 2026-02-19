@@ -73,6 +73,8 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [ ] Accessibility features (ARIA labels, keyboard navigation)
 - [ ] Loading states and skeletons
 - [ ] Monochrome emoji
+- [x] ProjectView new chat: Enter inserts newline on mobile (matches ChatInput behavior)
+- [x] ProjectView new chat: "Send as File" button (📄) writes text to VFS `/tmp/` and starts chat with file path (only shown when filesystem tool is enabled)
 
 **Chat Features**
 

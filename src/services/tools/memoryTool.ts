@@ -2,7 +2,7 @@
  * Memory Tool
  *
  * Client-side tool that provides Claude with a persistent virtual filesystem.
- * Implements Anthropic's memory tool commands: view, create, str_replace, insert, delete, rename, mkdir, append.
+ * Implements Anthropic's memory tool commands: view, create, str_replace, insert, delete, rename, copy, mkdir, append.
  *
  * Supports two modes:
  * - Native mode (Anthropic default): Uses memory_20250818 shorthand via getApiOverride()
@@ -21,8 +21,9 @@ import type {
   ToolResult,
   ToolStreamEvent,
 } from '../../types';
-import * as vfs from '../vfs/vfsService';
-import { VfsError } from '../vfs/vfsService';
+import * as vfs from '../vfs';
+import { VfsError } from '../vfs';
+import { formatFileWithLineNumbers } from '../../utils/formatFileContent';
 
 const MEMORIES_ROOT = '/memories';
 const MAX_LINE_COUNT = 999999;
@@ -38,21 +39,22 @@ interface ViewInput {
 interface CreateInput {
   command: 'create';
   path: string;
-  file_text: string;
+  file_text?: string;
+  overwrite?: boolean;
 }
 
 interface StrReplaceInput {
   command: 'str_replace';
   path: string;
   old_str: string;
-  new_str: string;
+  new_str?: string;
 }
 
 interface InsertInput {
   command: 'insert';
   path: string;
   insert_line: number;
-  insert_text: string;
+  insert_text?: string;
 }
 
 interface DeleteInput {
@@ -64,6 +66,14 @@ interface RenameInput {
   command: 'rename';
   old_path: string;
   new_path: string;
+  overwrite?: boolean;
+}
+
+interface CopyInput {
+  command: 'copy';
+  old_path: string;
+  new_path: string;
+  overwrite?: boolean;
 }
 
 interface MkdirInput {
@@ -74,7 +84,12 @@ interface MkdirInput {
 interface AppendInput {
   command: 'append';
   path: string;
-  file_text: string;
+  file_text?: string;
+}
+
+interface ViewAllInput {
+  command: 'view-all';
+  paths: string[];
 }
 
 type MemoryInput =
@@ -84,8 +99,10 @@ type MemoryInput =
   | InsertInput
   | DeleteInput
   | RenameInput
+  | CopyInput
   | MkdirInput
-  | AppendInput;
+  | AppendInput
+  | ViewAllInput;
 
 /**
  * Normalizes a user-provided path to a VFS path.
@@ -109,59 +126,6 @@ function normalizeToVfsPath(path: string): string {
   }
 
   return `${MEMORIES_ROOT}/${normalized}`;
-}
-
-/**
- * Format file content with line numbers
- * Line numbers are 6 characters, right-aligned, followed by tab
- */
-function formatFileWithLineNumbers(content: string, startLine = 1, endLine?: number): string {
-  const lines = content.split('\n');
-  const start = startLine - 1;
-  const end = endLine !== undefined ? endLine : lines.length;
-  const selectedLines = lines.slice(start, end);
-
-  return selectedLines.map((line, i) => `${String(start + i + 1).padStart(6)}\t${line}`).join('\n');
-}
-
-/**
- * Format a snippet of content around edited lines for str_replace result
- */
-function formatEditSnippet(content: string, editStartLine: number): string {
-  const lines = content.split('\n');
-  const contextLines = 3;
-  const start = Math.max(0, editStartLine - contextLines);
-  const end = Math.min(lines.length, editStartLine + contextLines + 1);
-  const snippetLines = lines.slice(start, end);
-
-  return snippetLines.map((line, i) => `${String(start + i + 1).padStart(6)}\t${line}`).join('\n');
-}
-
-/**
- * Find all line numbers where a string occurs
- */
-function findOccurrenceLines(content: string, searchStr: string): number[] {
-  const lines: number[] = [];
-  let pos = 0;
-  while ((pos = content.indexOf(searchStr, pos)) !== -1) {
-    const lineNum = content.substring(0, pos).split('\n').length;
-    lines.push(lineNum);
-    pos += 1;
-  }
-  return lines;
-}
-
-/**
- * Count occurrences of a substring
- */
-function countOccurrences(content: string, searchStr: string): number {
-  let count = 0;
-  let pos = 0;
-  while ((pos = content.indexOf(searchStr, pos)) !== -1) {
-    count++;
-    pos += 1;
-  }
-  return count;
 }
 
 /**
@@ -224,7 +188,8 @@ async function handleView(
   projectId: string,
   path: string,
   viewRange?: [number, number],
-  namespace?: string
+  namespace?: string,
+  noLineNumbers?: boolean
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
@@ -279,16 +244,24 @@ async function handleView(
       };
     }
 
-    let numberedContent: string;
-    if (viewRange) {
+    let formattedContent: string;
+    if (noLineNumbers) {
+      if (viewRange) {
+        const [start, end] = viewRange;
+        formattedContent = lines.slice(start - 1, end).join('\n');
+      } else {
+        formattedContent = content;
+      }
+    } else if (viewRange) {
       const [start, end] = viewRange;
-      numberedContent = formatFileWithLineNumbers(content, start, end);
+      formattedContent = formatFileWithLineNumbers(content, start, end);
     } else {
-      numberedContent = formatFileWithLineNumbers(content);
+      formattedContent = formatFileWithLineNumbers(content);
     }
 
+    const label = noLineNumbers ? '' : ' with line numbers';
     return {
-      content: `Here's the content of ${vfsPath} with line numbers:\n${numberedContent}`,
+      content: `Here's the content of ${vfsPath}${label}:\n${formattedContent}`,
     };
   } catch (error) {
     if (error instanceof VfsError) {
@@ -328,6 +301,7 @@ async function handleCreate(
   projectId: string,
   path: string,
   fileText: string,
+  overwrite?: boolean,
   namespace?: string
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
@@ -340,13 +314,11 @@ async function handleCreate(
   }
 
   try {
-    // Ensure /memories directory exists
-    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
-    if (!memoriesExists) {
-      await vfs.mkdir(projectId, MEMORIES_ROOT, namespace);
+    if (overwrite) {
+      await vfs.writeFile(projectId, vfsPath, fileText, namespace);
+    } else {
+      await vfs.createFile(projectId, vfsPath, fileText, namespace);
     }
-
-    await vfs.createFile(projectId, vfsPath, fileText, namespace);
 
     return {
       content: `File created successfully at: ${vfsPath}`,
@@ -380,40 +352,25 @@ async function handleStrReplace(
   }
 
   try {
-    const content = await vfs.readFile(projectId, vfsPath, namespace);
-
-    const occurrences = countOccurrences(content, oldStr);
-
-    if (occurrences === 0) {
-      return {
-        content: `No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${vfsPath}.`,
-        isError: true,
-      };
-    }
-
-    if (occurrences > 1) {
-      const lineNumbers = findOccurrenceLines(content, oldStr);
-      return {
-        content: `No replacement was performed. Multiple occurrences of old_str \`${oldStr}\` in lines: ${lineNumbers.join(', ')}. Please ensure it is unique`,
-        isError: true,
-      };
-    }
-
-    // Find line number where replacement occurs
-    const beforeReplace = content.substring(0, content.indexOf(oldStr));
-    const editLine = beforeReplace.split('\n').length;
-
-    // Replace first (and only) occurrence
-    const newContent = content.replace(oldStr, newStr);
-    await vfs.updateFile(projectId, vfsPath, newContent, namespace);
-
-    const snippet = formatEditSnippet(newContent, editLine);
+    const { snippet } = await vfs.strReplace(projectId, vfsPath, oldStr, newStr, namespace);
 
     return {
       content: `The memory file has been edited.\n${snippet}`,
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'STRING_NOT_FOUND') {
+        return {
+          content: `No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${vfsPath}.`,
+          isError: true,
+        };
+      }
+      if (error.code === 'STRING_NOT_UNIQUE') {
+        return {
+          content: `No replacement was performed. Multiple occurrences of old_str \`${oldStr}\`. Please ensure it is unique`,
+          isError: true,
+        };
+      }
       if (
         error.code === 'PATH_NOT_FOUND' ||
         error.code === 'IS_DELETED' ||
@@ -447,30 +404,19 @@ async function handleInsert(
   }
 
   try {
-    const content = await vfs.readFile(projectId, vfsPath, namespace);
-    const lines = content.split('\n');
-    const nLines = lines.length;
-
-    // insert_line is 0-indexed for insertion: 0 means before first line
-    if (insertLine < 0 || insertLine > nLines) {
-      return {
-        content: `Error: Invalid \`insert_line\` parameter: ${insertLine}. It should be within the range of lines of the file: [0, ${nLines}]`,
-        isError: true,
-      };
-    }
-
-    // Insert the text at the specified line
-    const textLines = insertText.split('\n');
-    lines.splice(insertLine, 0, ...textLines);
-    const newContent = lines.join('\n');
-
-    await vfs.updateFile(projectId, vfsPath, newContent, namespace);
+    await vfs.insert(projectId, vfsPath, insertLine, insertText, namespace);
 
     return {
       content: `The file ${vfsPath} has been edited.`,
     };
   } catch (error) {
     if (error instanceof VfsError) {
+      if (error.code === 'INVALID_LINE') {
+        return {
+          content: `Error: Invalid \`insert_line\` parameter: ${insertLine}. It should be within the range of lines of the file.`,
+          isError: true,
+        };
+      }
       if (
         error.code === 'PATH_NOT_FOUND' ||
         error.code === 'IS_DELETED' ||
@@ -502,7 +448,7 @@ async function handleDelete(
   }
 
   try {
-    await vfs.deleteFile(projectId, vfsPath, namespace);
+    await vfs.deletePath(projectId, vfsPath, namespace);
 
     return {
       content: `Successfully deleted ${vfsPath}`,
@@ -515,20 +461,6 @@ async function handleDelete(
           isError: true,
         };
       }
-      if (error.code === 'NOT_A_FILE') {
-        // Try deleting as a directory
-        try {
-          await vfs.rmdir(projectId, vfsPath, true, namespace);
-          return {
-            content: `Successfully deleted ${vfsPath}`,
-          };
-        } catch {
-          return {
-            content: `Error: The path ${vfsPath} does not exist`,
-            isError: true,
-          };
-        }
-      }
     }
     throw error;
   }
@@ -539,6 +471,7 @@ async function handleRename(
   projectId: string,
   oldPath: string,
   newPath: string,
+  overwrite?: boolean,
   namespace?: string
 ): Promise<ToolResult> {
   const oldVfsPath = normalizeToVfsPath(oldPath);
@@ -559,7 +492,7 @@ async function handleRename(
   }
 
   try {
-    await vfs.rename(projectId, oldVfsPath, newVfsPath, namespace);
+    await vfs.rename(projectId, oldVfsPath, newVfsPath, namespace, overwrite);
 
     return {
       content: `Successfully renamed ${oldVfsPath} to ${newVfsPath}`,
@@ -580,7 +513,63 @@ async function handleRename(
       }
       if (error.code === 'DESTINATION_EXISTS') {
         return {
-          content: `Error: The destination ${newVfsPath} already exists`,
+          content: `Error: The destination ${newVfsPath} already exists. Set overwrite to true to replace.`,
+          isError: true,
+        };
+      }
+    }
+    throw error;
+  }
+}
+
+/** Handle copy command */
+async function handleCopy(
+  projectId: string,
+  sourcePath: string,
+  destPath: string,
+  overwrite?: boolean,
+  namespace?: string
+): Promise<ToolResult> {
+  const srcVfsPath = normalizeToVfsPath(sourcePath);
+  const dstVfsPath = normalizeToVfsPath(destPath);
+
+  if (srcVfsPath === MEMORIES_ROOT) {
+    return {
+      content: `Error: The path ${MEMORIES_ROOT} is a directory, not a file.`,
+      isError: true,
+    };
+  }
+
+  if (dstVfsPath === MEMORIES_ROOT) {
+    return {
+      content: `Error: Cannot copy to the root path.`,
+      isError: true,
+    };
+  }
+
+  try {
+    await vfs.copyFile(projectId, srcVfsPath, dstVfsPath, overwrite, namespace);
+
+    return {
+      content: `Successfully copied ${srcVfsPath} to ${dstVfsPath}`,
+    };
+  } catch (error) {
+    if (error instanceof VfsError) {
+      if (error.code === 'NOT_A_FILE') {
+        return {
+          content: `Error: The destination ${dstVfsPath} is a directory.`,
+          isError: true,
+        };
+      }
+      if (error.code === 'DESTINATION_EXISTS') {
+        return {
+          content: `Error: The destination ${dstVfsPath} already exists. Set overwrite to true to replace.`,
+          isError: true,
+        };
+      }
+      if (error.code === 'PATH_NOT_FOUND' || error.code === 'IS_DELETED') {
+        return {
+          content: `Error: The path ${srcVfsPath} does not exist.`,
           isError: true,
         };
       }
@@ -605,12 +594,6 @@ async function handleMkdir(
   }
 
   try {
-    // Ensure /memories directory exists
-    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
-    if (!memoriesExists) {
-      await vfs.mkdir(projectId, MEMORIES_ROOT, namespace);
-    }
-
     await vfs.mkdir(projectId, vfsPath, namespace);
 
     return {
@@ -652,25 +635,15 @@ async function handleAppend(
   }
 
   try {
-    // Ensure /memories directory exists
-    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
-    if (!memoriesExists) {
-      await vfs.mkdir(projectId, MEMORIES_ROOT, namespace);
-    }
+    const { created } = await vfs.appendFile(projectId, vfsPath, fileText, namespace);
 
-    const fileExists = await vfs.exists(projectId, vfsPath, namespace);
-
-    if (fileExists) {
-      const content = await vfs.readFile(projectId, vfsPath, namespace);
-      await vfs.updateFile(projectId, vfsPath, content + fileText, namespace);
+    if (created) {
       return {
-        content: `Content appended to ${vfsPath}`,
+        content: `File created successfully at: ${vfsPath}`,
       };
     }
-
-    await vfs.createFile(projectId, vfsPath, fileText, namespace);
     return {
-      content: `File created successfully at: ${vfsPath}`,
+      content: `Content appended to ${vfsPath}`,
     };
   } catch (error) {
     if (error instanceof VfsError) {
@@ -683,6 +656,41 @@ async function handleAppend(
     }
     throw error;
   }
+}
+
+/** Handle view-all command — batch multiple file reads into one result */
+async function handleMultiView(
+  projectId: string,
+  paths: string[],
+  namespace?: string,
+  noLineNumbers?: boolean
+): Promise<ToolResult> {
+  if (!paths || paths.length === 0) {
+    return {
+      content: 'Error: paths array is required and must not be empty.',
+      isError: true,
+    };
+  }
+
+  const sections: string[] = [];
+  let errorCount = 0;
+
+  for (const path of paths) {
+    const result = await handleView(projectId, path, undefined, namespace, noLineNumbers);
+    if (result.isError) {
+      errorCount++;
+      const vfsPath = normalizeToVfsPath(path);
+      sections.push(`=== ${vfsPath} [ERROR] ===\n${result.content}`);
+    } else {
+      const vfsPath = normalizeToVfsPath(path);
+      sections.push(`=== ${vfsPath} ===\n${result.content}`);
+    }
+  }
+
+  return {
+    content: sections.join('\n\n'),
+    isError: errorCount === paths.length,
+  };
 }
 
 /** Execute a memory command */
@@ -703,17 +711,69 @@ async function* executeMemoryCommand(
   const namespace = context.namespace;
   const memoryInput = input as unknown as MemoryInput;
 
+  // Validate required fields before dispatch — LLMs sometimes omit them
+  const cmd = input.command;
+  if (!cmd || typeof cmd !== 'string') {
+    return { content: 'Error: command is required', isError: true };
+  }
+
+  const requirePath = ['view', 'create', 'str_replace', 'insert', 'delete', 'mkdir', 'append'];
+  if (requirePath.includes(cmd) && (!input.path || typeof input.path !== 'string')) {
+    return { content: `Error: path is required for ${cmd} command`, isError: true };
+  }
+
+  if (cmd === 'rename' || cmd === 'copy') {
+    if (
+      !input.old_path ||
+      typeof input.old_path !== 'string' ||
+      !input.new_path ||
+      typeof input.new_path !== 'string'
+    ) {
+      return {
+        content: `Error: old_path and new_path are required for ${cmd} command`,
+        isError: true,
+      };
+    }
+  }
+
+  if (cmd === 'str_replace' && (input.old_str === undefined || typeof input.old_str !== 'string')) {
+    return { content: 'Error: old_str is required for str_replace command', isError: true };
+  }
+
+  if (
+    cmd === 'insert' &&
+    (input.insert_line === undefined || typeof input.insert_line !== 'number')
+  ) {
+    return { content: 'Error: insert_line (number) is required for insert command', isError: true };
+  }
+
+  if (cmd === 'view-all' && !Array.isArray(input.paths)) {
+    return { content: 'Error: paths (array) is required for view-all command', isError: true };
+  }
+
   switch (memoryInput.command) {
     case 'view':
-      return handleView(projectId, memoryInput.path, memoryInput.view_range, namespace);
+      return handleView(
+        projectId,
+        memoryInput.path,
+        memoryInput.view_range,
+        namespace,
+        context.noLineNumbers
+      );
     case 'create':
-      return handleCreate(projectId, memoryInput.path, memoryInput.file_text, namespace);
+      return handleCreate(
+        projectId,
+        memoryInput.path,
+        memoryInput.file_text ?? '',
+        memoryInput.overwrite,
+        namespace
+      );
     case 'str_replace':
       return handleStrReplace(
         projectId,
         memoryInput.path,
         memoryInput.old_str,
-        memoryInput.new_str,
+        memoryInput.new_str ?? '',
         namespace
       );
     case 'insert':
@@ -721,17 +781,33 @@ async function* executeMemoryCommand(
         projectId,
         memoryInput.path,
         memoryInput.insert_line,
-        memoryInput.insert_text,
+        memoryInput.insert_text ?? '',
         namespace
       );
     case 'delete':
       return handleDelete(projectId, memoryInput.path, namespace);
     case 'rename':
-      return handleRename(projectId, memoryInput.old_path, memoryInput.new_path, namespace);
+      return handleRename(
+        projectId,
+        memoryInput.old_path,
+        memoryInput.new_path,
+        memoryInput.overwrite,
+        namespace
+      );
+    case 'copy':
+      return handleCopy(
+        projectId,
+        memoryInput.old_path,
+        memoryInput.new_path,
+        memoryInput.overwrite,
+        namespace
+      );
     case 'mkdir':
       return handleMkdir(projectId, memoryInput.path, namespace);
     case 'append':
-      return handleAppend(projectId, memoryInput.path, memoryInput.file_text, namespace);
+      return handleAppend(projectId, memoryInput.path, memoryInput.file_text ?? '', namespace);
+    case 'view-all':
+      return handleMultiView(projectId, memoryInput.paths, namespace, context.noLineNumbers);
     default:
       return {
         content: `Unknown memory command: ${(memoryInput as { command: string }).command}`,
@@ -780,10 +856,13 @@ async function getMemorySystemPrompt(
   const parts: string[] = [];
 
   // Part 1: Description and file listing
-  const description = `You have access to a persistent memory system under /memories with "memory" tool. Use it to record your progress, status, thoughts, and important information across conversations. Changes to README.md will immediately reflect in this system prompt on the next message.
+  const description = toolOptions.noHandHolding
+    ? ''
+    : `\nYou have access to a persistent memory system under /memories with "memory" tool. Use it to record your progress, status, thoughts, and important information across conversations. Changes to README.md will immediately reflect in this system prompt on the next message.
 
-Unless asked otherwise, as you make progress, record status / progress / thoughts etc in your memory and use README.md as an index.`;
+Unless asked otherwise, as you make progress, record status / progress / thoughts etc in your memory and use README.md as an index.\n`;
 
+  let fileListing: string;
   try {
     const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
     if (memoriesExists) {
@@ -791,38 +870,23 @@ Unless asked otherwise, as you make progress, record status / progress / thought
 
       if (entries.length > 0) {
         const listing = entries.map(entry => `\t${entry.path}`).join('\n');
-
-        parts.push(`## Memory
-
-${description}
-
-### Files
+        fileListing = `\n### Files
 
 Here are the files and directories up to 2 levels deep in /memories:
 <listing>
 ${listing}
-</listing>`);
+</listing>`;
       } else {
-        parts.push(`## Memory
-
-${description}
-
-The /memories directory is empty.`);
+        fileListing = '\nThe /memories directory is empty.';
       }
     } else {
-      parts.push(`## Memory
-
-${description}
-
-The /memories directory is empty.`);
+      fileListing = '\nThe /memories directory is empty.';
     }
   } catch {
-    parts.push(`## Memory
-
-${description}
-
-The /memories directory is empty.`);
+    fileListing = '\nThe /memories directory is empty.';
   }
+
+  parts.push(`## Memory${description}${fileListing}`);
 
   // Part 2: Read /memories/README.md if it exists
   const readmePath = `${MEMORIES_ROOT}/README.md`;
@@ -872,15 +936,17 @@ const MEMORY_TOOL_DESCRIPTION = `Tool for reading, writing, and managing files i
 * The view command supports the following cases:
   - Directories: Lists files and directories up to 2 levels deep, ignoring hidden items and node_modules
   - Text files: Displays numbered lines. Lines are determined from Python's .splitlines() method, which recognizes all standard line breaks. If the file contains more than 16000 characters, the output will be truncated.
-* The create command creates a new text file with the content specified in the file_text parameter. It will fail if the file already exists.
+* The create command creates a new text file with the content specified in the file_text parameter. It will fail if the file already exists. Set overwrite to true to replace existing files.
 * The str_replace command replaces text in a file. Requires an exact, unique match of old_str (whitespace sensitive).
   - Will fail if old_str doesn't exist or appears multiple times
   - Omitting new_str deletes the matched text
 * The insert command inserts the text insert_text at the line insert_line.
 * The delete command deletes a file or directory (including all contents if a directory).
-* The rename command renames a file or directory. Both old_path and new_path must be provided.
+* The rename command renames a file or directory. Both old_path and new_path must be provided. Fails if destination exists unless overwrite is true.
+* The copy command copies a file from old_path to new_path. Source must be a file. Fails if destination exists unless overwrite is true. Errors if destination is a directory.
 * The mkdir command creates a new directory at the specified path.
 * The append command appends text to an existing file, or creates the file if it does not exist.
+* The view-all command reads multiple files in one call. Takes a paths array, returns concatenated content with === path === headers. No view_range support.
 * All operations are restricted to files and directories within /memories.
 * You cannot delete or rename /memories itself, only its contents.
 * Note: when editing your memory folder, always try to keep the content up-to-date, coherent and organized. You can rename or delete files that are no longer relevant. Do not create new files unless necessary.`;
@@ -891,14 +957,30 @@ const MEMORY_INPUT_SCHEMA = {
   properties: {
     command: {
       description:
-        'The operation to perform. Choose from: view, create, str_replace, insert, delete, rename, mkdir, append.',
-      enum: ['view', 'create', 'str_replace', 'insert', 'delete', 'rename', 'mkdir', 'append'],
+        'The operation to perform. Choose from: view, create, str_replace, insert, delete, rename, copy, mkdir, append, view-all.',
+      enum: [
+        'view',
+        'create',
+        'str_replace',
+        'insert',
+        'delete',
+        'rename',
+        'copy',
+        'mkdir',
+        'append',
+        'view-all',
+      ],
       type: 'string',
     },
     file_text: {
       description:
         'Required for create and append commands. For create: complete text content to write. For append: text to append to the file.',
       type: 'string',
+    },
+    overwrite: {
+      description:
+        'If true, overwrite existing destination. Used with create, copy, and rename commands. Default: false.',
+      type: 'boolean',
     },
     insert_line: {
       description:
@@ -911,7 +993,7 @@ const MEMORY_INPUT_SCHEMA = {
       type: 'string',
     },
     new_path: {
-      description: 'Required for rename command. The new path for the file or directory.',
+      description: 'Required for rename and copy commands. The new path for the file or directory.',
       type: 'string',
     },
     new_str: {
@@ -921,7 +1003,7 @@ const MEMORY_INPUT_SCHEMA = {
     },
     old_path: {
       description:
-        'Required for rename command. The current path of the file or directory to rename.',
+        'Required for rename and copy commands. The current path of the file or directory.',
       type: 'string',
     },
     old_str: {
@@ -933,6 +1015,11 @@ const MEMORY_INPUT_SCHEMA = {
       description:
         'Required for view, create, str_replace, insert, and delete commands. Absolute path to file or directory.',
       type: 'string',
+    },
+    paths: {
+      description: 'Required for view-all command. Array of file paths to read.',
+      items: { type: 'string' },
+      type: 'array',
     },
     view_range: {
       description:
@@ -963,6 +1050,13 @@ export const memoryTool: ClientSideTool = {
       label: '(Anthropic) Use System Prompt Mode',
       subtitle:
         'Inject memory listing into system prompt instead of native tool. (Cannot disable for other providers.)',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'noHandHolding',
+      label: 'No Hand Holding',
+      subtitle: 'Only inject file listing and README into system prompt, skip the usage manual.',
       default: false,
     },
   ],

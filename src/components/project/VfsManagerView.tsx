@@ -7,7 +7,7 @@ import VfsFileViewer from './VfsFileViewer';
 import VfsFileEditor from './VfsFileEditor';
 import VfsDiffViewer from './VfsDiffViewer';
 import VfsFileModal from './VfsFileModal';
-import * as vfsService from '../../services/vfs/vfsService';
+import * as vfsService from '../../services/vfs';
 import { zip } from 'fflate';
 
 export interface VfsManagerViewProps {

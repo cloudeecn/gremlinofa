@@ -2,6 +2,12 @@
 @import 'highlight.js/styles/github.css';
 @import 'katex/dist/katex.min.css';
 
+/* Prevent page-level bounce/overscroll on iOS Safari */
+html,
+body {
+  overscroll-behavior: none;
+}
+
 /* iOS-style momentum scrolling with scroll containment */
 .ios-scroll {
   -webkit-overflow-scrolling: touch;
@@ -52,6 +58,7 @@
   padding: 1em;
   border-radius: 6px;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   margin: 0.75em 0;
 }
 
@@ -168,6 +175,7 @@
   width: 100%;
   display: block;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 
 .prose th,
@@ -259,6 +267,7 @@
   margin: 1em 0;
   text-align: center;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
 }
@@ -267,6 +276,7 @@
 .katex {
   max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   overflow-y: hidden;
   display: inline-block;
   vertical-align: middle;

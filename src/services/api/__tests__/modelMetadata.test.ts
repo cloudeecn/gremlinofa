@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { getModelMetadataFor, clearModelKnowledgeCache } from '../modelMetadata';
-import type { APIDefinition } from '../../../types';
+import {
+  getModelMetadataFor,
+  clearModelKnowledgeCache,
+  calculateCost,
+  isCostUnreliable,
+} from '../modelMetadata';
+import type { APIDefinition, Model } from '../../../types';
 
 // Helper to create test API definitions
 function createApiDef(overrides: Partial<APIDefinition> = {}): APIDefinition {
@@ -254,6 +259,27 @@ describe('modelMetadata', () => {
 
         expect(result.supportsExtendedContext).toBeFalsy();
       });
+
+      it('returns supportsExtendedContext for Bedrock Opus 4.6 foundation model', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const result = getModelMetadataFor(apiDef, 'anthropic.claude-opus-4-6-20250514-v1:0');
+
+        expect(result.supportsExtendedContext).toBe(true);
+      });
+
+      it('returns supportsExtendedContext for Bedrock Sonnet 4.6 foundation model', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const result = getModelMetadataFor(apiDef, 'anthropic.claude-sonnet-4-6-20250514-v1:0');
+
+        expect(result.supportsExtendedContext).toBe(true);
+      });
+
+      it('returns supportsExtendedContext for Bedrock Sonnet 4.5 foundation model', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const result = getModelMetadataFor(apiDef, 'anthropic.claude-sonnet-4-5-20250514-v1:0');
+
+        expect(result.supportsExtendedContext).toBe(true);
+      });
     });
 
     describe('deep cloning', () => {
@@ -268,6 +294,153 @@ describe('modelMetadata', () => {
         // Other result should be unaffected
         expect(result2.inputPrice).toBe(2.5);
       });
+    });
+
+    describe('provider prefix stripping', () => {
+      it('matches openai/gpt-4o via exact match after stripping prefix', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'openai/gpt-4o');
+
+        expect(result.id).toBe('openai/gpt-4o');
+        expect(result.matchedMode).toBe('exact');
+        expect(result.inputPrice).toBe(2.5);
+      });
+
+      it('matches openai/gpt-5.4-2025-xx via fuzz after stripping prefix', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'openai/gpt-5.4-2025-01-01');
+
+        expect(result.id).toBe('openai/gpt-5.4-2025-01-01');
+        expect(result.matchedMode).toBe('fuzz');
+        expect(result.inputPrice).toBe(2.5);
+      });
+
+      it('matches anthropic/claude-sonnet-4-5-20250514 via fuzz after stripping prefix', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const result = getModelMetadataFor(apiDef, 'anthropic/claude-sonnet-4-5-20250514');
+
+        expect(result.id).toBe('anthropic/claude-sonnet-4-5-20250514');
+        expect(result.matchedMode).toBe('fuzz');
+        expect(result.inputPrice).toBe(3);
+      });
+
+      it('matches xai/grok-4 via exact match after stripping prefix', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'xai/grok-4');
+
+        expect(result.id).toBe('xai/grok-4');
+        expect(result.matchedMode).toBe('exact');
+        expect(result.inputPrice).toBe(3.0);
+      });
+
+      it('prefers direct match over prefix-stripped match', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const direct = getModelMetadataFor(apiDef, 'gpt-4o');
+        const prefixed = getModelMetadataFor(apiDef, 'openai/gpt-4o');
+
+        expect(direct.matchedMode).toBe('exact');
+        expect(prefixed.matchedMode).toBe('exact');
+        expect(direct.inputPrice).toBe(prefixed.inputPrice);
+      });
+
+      it('does not strip when no slash present', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'unknown-model-xyz');
+
+        expect(result.matchedMode).toBe('default');
+      });
+
+      it('does not strip when slash is at position 0', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, '/gpt-4o');
+
+        expect(result.matchedMode).toBe('default');
+      });
+    });
+  });
+
+  // Helper to create test models
+  function createModel(overrides: Partial<Model> = {}): Model {
+    return {
+      id: 'test-model',
+      name: 'Test Model',
+      apiType: 'anthropic',
+      matchedMode: 'exact',
+      inputPrice: 5,
+      outputPrice: 25,
+      ...overrides,
+    };
+  }
+
+  describe('calculateCost', () => {
+    it('calculates basic input/output cost', () => {
+      const model = createModel({ inputPrice: 5, outputPrice: 25 });
+      const cost = calculateCost(model, 1_000_000, 100_000);
+      expect(cost).toBeCloseTo(5 + 2.5);
+    });
+
+    it('uses cacheWritePrice when available', () => {
+      const model = createModel({ inputPrice: 5, cacheWritePrice: 6.25 });
+      const cost = calculateCost(model, 0, 0, 0, 1_000_000, 0);
+      expect(cost).toBeCloseTo(6.25);
+    });
+
+    it('uses cacheReadPrice when available', () => {
+      const model = createModel({ inputPrice: 5, cacheReadPrice: 0.5 });
+      const cost = calculateCost(model, 0, 0, 0, 0, 1_000_000);
+      expect(cost).toBeCloseTo(0.5);
+    });
+
+    it('falls back to inputPrice for cache write when cacheWritePrice is missing', () => {
+      const model = createModel({ inputPrice: 5 });
+      const cost = calculateCost(model, 0, 0, 0, 1_000_000, 0);
+      expect(cost).toBeCloseTo(5);
+    });
+
+    it('falls back to inputPrice for cache read when cacheReadPrice is missing', () => {
+      const model = createModel({ inputPrice: 5 });
+      const cost = calculateCost(model, 0, 0, 0, 0, 1_000_000);
+      expect(cost).toBeCloseTo(5);
+    });
+
+    it('prefers cache-specific price over inputPrice fallback', () => {
+      const model = createModel({ inputPrice: 5, cacheReadPrice: 0.5, cacheWritePrice: 6.25 });
+      const cost = calculateCost(model, 0, 0, 0, 1_000_000, 1_000_000);
+      expect(cost).toBeCloseTo(6.25 + 0.5);
+    });
+
+    it('handles zero cache tokens without adding cost', () => {
+      const model = createModel({ inputPrice: 5 });
+      const cost = calculateCost(model, 0, 0, 0, 0, 0);
+      expect(cost).toBe(0);
+    });
+  });
+
+  describe('isCostUnreliable', () => {
+    it('returns false for model with all prices defined', () => {
+      const model = createModel({
+        inputPrice: 5,
+        outputPrice: 25,
+        cacheWritePrice: 6.25,
+        cacheReadPrice: 0.5,
+      });
+      expect(isCostUnreliable(model, 100, 50, 0, 100, 100)).toBe(false);
+    });
+
+    it('returns false when cache prices missing but inputPrice exists', () => {
+      const model = createModel({ inputPrice: 5, outputPrice: 25 });
+      expect(isCostUnreliable(model, 100, 50, 0, 100, 100)).toBe(false);
+    });
+
+    it('returns true when cache tokens present and both cache price and inputPrice missing', () => {
+      const model = createModel({ inputPrice: undefined, outputPrice: 25 });
+      expect(isCostUnreliable(model, 0, 50, 0, 100, 0)).toBe(true);
+    });
+
+    it('returns true for default matchedMode regardless of tokens', () => {
+      const model = createModel({ matchedMode: 'default' });
+      expect(isCostUnreliable(model, 0, 0)).toBe(true);
+      expect(isCostUnreliable(model, 100, 0)).toBe(true);
     });
   });
 });

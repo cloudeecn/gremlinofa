@@ -67,12 +67,6 @@ export function createTestChat(overrides: Partial<Chat> = {}): Chat {
     totalCacheCreationTokens: 0,
     totalCacheReadTokens: 0,
     totalCost: 0,
-    sinkInputTokens: 0,
-    sinkOutputTokens: 0,
-    sinkReasoningTokens: 0,
-    sinkCacheCreationTokens: 0,
-    sinkCacheReadTokens: 0,
-    sinkCost: 0,
     ...overrides,
   };
 }

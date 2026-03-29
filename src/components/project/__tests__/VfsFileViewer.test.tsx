@@ -6,7 +6,7 @@ import VfsFileViewer from '../VfsFileViewer';
 const mockReadFileWithMeta = vi.fn();
 const mockGetFileMeta = vi.fn();
 
-vi.mock('../../../services/vfs/vfsService', () => ({
+vi.mock('../../../services/vfs', () => ({
   readFileWithMeta: (...args: unknown[]) => mockReadFileWithMeta(...args),
   getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),
   getBasename: (path: string) => {

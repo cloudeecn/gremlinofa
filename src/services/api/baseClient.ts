@@ -1,12 +1,4 @@
-import type {
-  APIDefinition,
-  Message,
-  MessageStopReason,
-  Model,
-  RenderingBlockGroup,
-  ToolResultBlock,
-  ToolUseBlock,
-} from '../../types';
+import type { APIDefinition, Message, Model, ToolUseBlock } from '../../types';
 
 // Common interface for all API clients
 export interface APIClient {
@@ -41,31 +33,10 @@ export interface APIClient {
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown>;
 
   /**
-   * Migrate old messages without renderingContent to the new format.
-   * Converts provider-specific fullContent to generic RenderingBlockGroup[].
-   * ONLY used during message migration - streaming uses StreamingContentAssembler.
-   */
-  migrateMessageRendering(
-    fullContent: unknown,
-    stopReason: string | null
-  ): {
-    renderingContent: RenderingBlockGroup[];
-    stopReason: MessageStopReason;
-  };
-
-  /**
    * Extract tool_use blocks from provider-specific fullContent.
    * Returns array of ToolUseBlock for client-side tool execution.
    */
   extractToolUseBlocks(fullContent: unknown): ToolUseBlock[];
-
-  /**
-   * Build tool result message in provider's expected format.
-   *
-   * @param toolResults - Results from executing client-side tools
-   * @returns Message containing tool results for continuation
-   */
-  buildToolResultMessage(toolResults: ToolResultBlock[]): Message<unknown>;
 }
 
 // Stream chunk types
@@ -97,6 +68,7 @@ export type StreamChunk =
 export interface StreamResult<T> {
   textContent: string; // Pure text for display & cross-model compatibility
   thinkingContent?: string; // Pure text for display (used during streaming only)
+  hasCoT?: boolean; // True if response included any chain-of-thought reasoning (including encrypted)
   fullContent: T; // Provider-specific blocks (Anthropic: ContentBlock[], ChatCompletions: {role,content,tool_calls?,refusal})
   stopReason?: string; // Why the response ended (end_turn, max_tokens, etc.)
   error?: {

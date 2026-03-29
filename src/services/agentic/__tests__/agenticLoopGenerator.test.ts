@@ -5,6 +5,7 @@ import {
   createTokenTotals,
   addTokens,
   createToolResultRenderBlock,
+  extractHookHistory,
   type AgenticLoopOptions,
   type AgenticLoopEvent,
   type AgenticLoopResult,
@@ -17,7 +18,6 @@ vi.mock('../../api/apiService', () => ({
   apiService: {
     sendMessageStream: vi.fn(),
     extractToolUseBlocks: vi.fn(),
-    buildToolResultMessage: vi.fn(),
     mapStopReason: vi.fn((_, reason) => reason || 'end_turn'),
     shouldPrependPrefill: vi.fn(() => false),
   },
@@ -79,6 +79,16 @@ vi.mock('../../../utils/idGenerator', () => ({
   generateUniqueId: vi.fn(prefix => `${prefix}_test123`),
 }));
 
+const mockHookRuntime = {
+  run: vi.fn(),
+  dispose: vi.fn(),
+};
+vi.mock('../dummyHookRuntime', () => ({
+  DummyHookRuntime: {
+    load: vi.fn(() => Promise.resolve(mockHookRuntime)),
+  },
+}));
+
 import { apiService } from '../../api/apiService';
 import { executeClientSideTool } from '../../tools/clientSideTools';
 
@@ -111,12 +121,21 @@ function setupMultiIterationMock(streams: AsyncGenerator[], extracts: unknown[][
     return mockState.streams[idx] as never;
   });
 
-  vi.mocked(apiService.extractToolUseBlocks).mockImplementation(() => {
-    const idx = mockState.extractIdx;
-    if (mockState.extractIdx < mockState.extracts.length - 1) {
-      mockState.extractIdx++;
+  // extractToolUseBlocks is called multiple times per iteration with the same fullContent
+  // (buildAssistantMessage, mergeToolUseInputFromFullContent, and the main loop check).
+  // The extracts array maps 1:1 with streams — one entry per iteration.
+  // Advance the index only when a new (different) fullContent is seen.
+  let lastFullContent: unknown;
+  vi.mocked(apiService.extractToolUseBlocks).mockImplementation((_apiType, fullContent) => {
+    if (fullContent !== lastFullContent) {
+      if (lastFullContent !== undefined) {
+        if (mockState.extractIdx < mockState.extracts.length - 1) {
+          mockState.extractIdx++;
+        }
+      }
+      lastFullContent = fullContent;
     }
-    return (mockState.extracts[idx] ?? []) as ToolUseBlock[];
+    return (mockState.extracts[mockState.extractIdx] ?? []) as ToolUseBlock[];
   });
 }
 
@@ -333,13 +352,6 @@ describe('agenticLoopGenerator', () => {
 
       // Return tool blocks on all calls - the loop will get suspended anyway
       vi.mocked(apiService.extractToolUseBlocks).mockReturnValue(toolUseBlocks);
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       // Use breakLoop to exit after tool execution - mockImplementation for fresh generator each call
       vi.mocked(executeClientSideTool).mockImplementation(() =>
@@ -558,20 +570,12 @@ describe('agenticLoopGenerator', () => {
         outputTokens: 75,
       };
 
-      // extractToolUseBlocks is called TWICE per iteration:
-      // 1. mergeToolUseInputFromFullContent (for display)
-      // 2. actual tool check
+      // extractToolUseBlocks is called multiple times per iteration with the same fullContent.
+      // The mock deduplicates repeated calls with identical fullContent.
       setupMultiIterationMock(
         [createMockStream([], toolUseResult), createMockStream([], finalResult)],
-        [toolUseBlocks, toolUseBlocks, [], []] // merge, check, merge, check
+        [toolUseBlocks, []] // iter1: tool blocks, iter2: empty
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation(() =>
         mockToolGenerator({
@@ -616,18 +620,11 @@ describe('agenticLoopGenerator', () => {
         outputTokens: 75,
       };
 
-      // extractToolUseBlocks called twice per iteration: merge + check
+      // extractToolUseBlocks called multiple times per iteration — deduped by fullContent
       setupMultiIterationMock(
         [createMockStream([], toolUseResult), createMockStream([], finalResult)],
-        [toolUseBlocks, toolUseBlocks, [], []] // iter1: merge, check; iter2: merge, check
+        [toolUseBlocks, []] // iter1: tool blocks, iter2: empty
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation(() =>
         mockToolGenerator({
@@ -682,23 +679,15 @@ describe('agenticLoopGenerator', () => {
         outputTokens: 50,
       };
 
-      // extractToolUseBlocks called twice per iteration: merge + check
-      // iter1: merge(tool1), check(tool1); iter2: merge(tool2), check(tool2); iter3: merge([]), check([])
+      // extractToolUseBlocks called multiple times per iteration — deduped by fullContent
       setupMultiIterationMock(
         [
           createMockStream([], tool1Result),
           createMockStream([], tool2Result),
           createMockStream([], finalResult),
         ],
-        [tool1Blocks, tool1Blocks, tool2Blocks, tool2Blocks, [], []]
+        [tool1Blocks, tool2Blocks, []] // one entry per distinct fullContent
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation(() =>
         mockToolGenerator({
@@ -772,15 +761,8 @@ describe('agenticLoopGenerator', () => {
 
       setupMultiIterationMock(
         [createMockStream([], toolUseResult), createMockStream([], finalResult)],
-        [toolUseBlocks, toolUseBlocks, [], []]
+        [toolUseBlocks, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       // Track call order to verify both tools are called
       const callOrder: string[] = [];
@@ -853,15 +835,8 @@ describe('agenticLoopGenerator', () => {
 
       setupMultiIterationMock(
         [createMockStream([], toolUseResult), createMockStream([], finalResult)],
-        [toolUseBlocks, toolUseBlocks, [], []]
+        [toolUseBlocks, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
         return mockToolGenerator({ content: `Result from ${name}`, isError: false });
@@ -936,15 +911,8 @@ describe('agenticLoopGenerator', () => {
 
       setupMultiIterationMock(
         [createMockStream([], toolUseResult), createMockStream([], finalResult)],
-        [toolUseBlocks, toolUseBlocks, [], []]
+        [toolUseBlocks, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
         if (name === 'return') {
@@ -958,7 +926,7 @@ describe('agenticLoopGenerator', () => {
 
       const options = createMockOptions({
         enabledTools: ['return', 'memory'],
-        deferReturn: true,
+        deferReturn: 'free-run',
       });
       const context = [createMockUserMessage('Do both')];
 
@@ -1007,6 +975,88 @@ describe('agenticLoopGenerator', () => {
       expect(returnBlock).toBeDefined();
     });
 
+    it('recovers tool_use blocks missing from renderingContent using fullContent', async () => {
+      // The mock assembler returns only text blocks (no tool_use).
+      // mergeToolUseInputFromFullContent should recover the missing tool_use blocks
+      // from fullContent into renderingContent.
+      const toolUseBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_1',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+        { type: 'tool_use' as const, id: 'toolu_2', name: 'return', input: { result: 'val' } },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      const finalResult = {
+        textContent: 'Done',
+        fullContent: [{ type: 'text', text: 'Done' }],
+        stopReason: 'end_turn',
+        inputTokens: 120,
+        outputTokens: 60,
+      };
+
+      setupMultiIterationMock(
+        [createMockStream([], toolUseResult), createMockStream([], finalResult)],
+        [toolUseBlocks, []]
+      );
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({ content: 'val', breakLoop: { returnValue: 'val' } });
+        }
+        return mockToolGenerator({ content: 'ok', isError: false });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: 'free-run',
+      });
+      const context = [createMockUserMessage('Go')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      // Find the first assistant message (from the tool_use iteration)
+      const assistantMsgs = events
+        .filter(
+          (e): e is Extract<AgenticLoopEvent, { type: 'message_created' }> =>
+            e.type === 'message_created' && e.message.role === 'assistant'
+        )
+        .map(e => e.message);
+      expect(assistantMsgs.length).toBeGreaterThanOrEqual(1);
+
+      const firstAssistant = assistantMsgs[0];
+      const rendering = firstAssistant.content
+        .renderingContent as import('../../../types/content').RenderingBlockGroup[];
+
+      // The mock assembler produces only a text group — the fix should have added
+      // a backstage group with the two recovered tool_use blocks
+      const backstageBlocks = rendering
+        .filter(g => g.category === 'backstage')
+        .flatMap(g => g.blocks)
+        .filter(b => b.type === 'tool_use');
+
+      expect(backstageBlocks).toHaveLength(2);
+      expect(
+        backstageBlocks.map(b => (b as import('../../../types/content').ToolUseRenderBlock).id)
+      ).toEqual(expect.arrayContaining(['toolu_1', 'toolu_2']));
+    });
+
     it('handles one tool error alongside a successful tool', async () => {
       const toolUseBlocks = [
         {
@@ -1041,15 +1091,8 @@ describe('agenticLoopGenerator', () => {
 
       setupMultiIterationMock(
         [createMockStream([], toolUseResult), createMockStream([], finalResult)],
-        [toolUseBlocks, toolUseBlocks, [], []]
+        [toolUseBlocks, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
         if (name === 'javascript') {
@@ -1111,12 +1154,6 @@ describe('agenticLoopGenerator', () => {
         createMockStream([], toolUseResult) as never
       );
       vi.mocked(apiService.extractToolUseBlocks).mockReturnValue(toolUseBlocks);
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       // Create generators that yield streaming events before completing
       const streamingGroups = [
@@ -1201,15 +1238,8 @@ describe('agenticLoopGenerator', () => {
 
       setupMultiIterationMock(
         [createMockStream([], toolUseResult), createMockStream([], finalResult)],
-        [toolUseBlocks, toolUseBlocks, [], []]
+        [toolUseBlocks, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       // Track execution order across phases
       const executionOrder: string[] = [];
@@ -1272,12 +1302,6 @@ describe('agenticLoopGenerator', () => {
         createMockStream([], toolUseResult) as never
       );
       vi.mocked(apiService.extractToolUseBlocks).mockReturnValue(toolUseBlocks);
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation(() =>
         mockToolGenerator({
@@ -1341,15 +1365,8 @@ describe('agenticLoopGenerator', () => {
 
       setupMultiIterationMock(
         [createMockStream([], toolUseResult), createMockStream([], finalResult)],
-        [returnToolBlocks, returnToolBlocks, [], []]
+        [returnToolBlocks, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation(() =>
         mockToolGenerator({
@@ -1360,7 +1377,7 @@ describe('agenticLoopGenerator', () => {
 
       const options = createMockOptions({
         enabledTools: ['return'],
-        deferReturn: true,
+        deferReturn: 'free-run',
       });
       const context = [createMockUserMessage('Do task')];
 
@@ -1393,6 +1410,144 @@ describe('agenticLoopGenerator', () => {
 
       // The tool_result message should exist (not skipped like non-deferred)
       expect(msgCreatedEvents.length).toBe(3); // assistant + tool_result + assistant
+    });
+
+    it('auto-ack return: solo return creates tool result + assistant ack message and breaks loop', async () => {
+      const returnToolBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_ret_ack',
+          name: 'return',
+          input: { result: 'ack_result' },
+        },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: returnToolBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      setupMultiIterationMock([createMockStream([], toolUseResult)], [returnToolBlocks]);
+
+      vi.mocked(executeClientSideTool).mockReturnValue(
+        mockToolGenerator({
+          content: 'ack_result',
+          breakLoop: { returnValue: 'ack_result' },
+        })
+      );
+
+      const options = createMockOptions({
+        enabledTools: ['return'],
+        deferReturn: 'auto-ack',
+        autoAckMessage: 'Understood.',
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('complete');
+      if (result.value.status === 'complete') {
+        expect(result.value.returnValue).toBe('ack_result');
+      }
+
+      // Only ONE API call — loop breaks after auto-ack return
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(1);
+
+      const msgCreatedEvents = events
+        .filter(
+          (e): e is Extract<AgenticLoopEvent, { type: 'message_created' }> =>
+            e.type === 'message_created'
+        )
+        .map(e => e.message);
+
+      // assistant(tool_use) + tool_result + assistant(ack) = 3 messages created
+      expect(msgCreatedEvents.length).toBe(3);
+
+      // Last created message should be the synthetic assistant ack
+      const ackMsg = msgCreatedEvents[msgCreatedEvents.length - 1];
+      expect(ackMsg.role).toBe('assistant');
+      expect(ackMsg.content.content).toBe('Understood.');
+    });
+
+    it('auto-ack return in parallel: resolves alongside other tools then breaks', async () => {
+      const toolUseBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_ret_p',
+          name: 'return',
+          input: { result: 'parallel_ack' },
+        },
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_mem_p',
+          name: 'memory',
+          input: { action: 'read', key: 'x' },
+        },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      setupMultiIterationMock([createMockStream([], toolUseResult)], [toolUseBlocks]);
+
+      vi.mocked(executeClientSideTool).mockImplementation(name => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'parallel_ack',
+            breakLoop: { returnValue: 'parallel_ack' },
+          });
+        }
+        return mockToolGenerator({ content: 'memory_result' });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: 'auto-ack',
+        autoAckMessage: 'Got it.',
+      });
+      const context = [createMockUserMessage('Do both')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('complete');
+      if (result.value.status === 'complete') {
+        expect(result.value.returnValue).toBe('parallel_ack');
+      }
+
+      // Only ONE API call — loop breaks after auto-ack parallel return
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(1);
+
+      const msgCreatedEvents = events
+        .filter(
+          (e): e is Extract<AgenticLoopEvent, { type: 'message_created' }> =>
+            e.type === 'message_created'
+        )
+        .map(e => e.message);
+
+      // Last created message should be the synthetic assistant ack
+      const ackMsg = msgCreatedEvents[msgCreatedEvents.length - 1];
+      expect(ackMsg.role).toBe('assistant');
+      expect(ackMsg.content.content).toBe('Got it.');
     });
 
     it('deferred return: second call returns error and keeps first value', async () => {
@@ -1433,15 +1588,8 @@ describe('agenticLoopGenerator', () => {
           createMockStream([], toolUseResult2),
           createMockStream([], finalResult),
         ],
-        [returnBlock1, returnBlock1, returnBlock2, returnBlock2, [], []]
+        [returnBlock1, returnBlock2, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       let callCount = 0;
       vi.mocked(executeClientSideTool).mockImplementation(() => {
@@ -1455,7 +1603,7 @@ describe('agenticLoopGenerator', () => {
 
       const options = createMockOptions({
         enabledTools: ['return'],
-        deferReturn: true,
+        deferReturn: 'free-run',
       });
       const context = [createMockUserMessage('Do task')];
 
@@ -1472,16 +1620,17 @@ describe('agenticLoopGenerator', () => {
       // executeClientSideTool only called once — second call is rejected before execution
       expect(callCount).toBe(1);
 
-      // The duplicate rejection builds the tool_result directly (not via executeClientSideTool),
-      // so capture the error content from buildToolResultMessage calls.
-      const buildCalls = vi.mocked(apiService.buildToolResultMessage).mock.calls;
-      // Second buildToolResultMessage call carries the duplicate-error tool_result
-      const duplicateToolResults = buildCalls[1][1] as Array<{
-        content: string;
-        is_error?: boolean;
+      // The duplicate rejection builds the tool_result directly (not via executeClientSideTool).
+      // The third sendMessageStream call receives context with the duplicate-error tool_result.
+      const streamCalls = vi.mocked(apiService.sendMessageStream).mock.calls;
+      const thirdCallMessages = streamCalls[2][0] as Array<{
+        role: string;
+        content: { toolResults?: Array<{ content: string; is_error?: boolean }> };
       }>;
-      expect(duplicateToolResults[0].is_error).toBe(true);
-      expect(duplicateToolResults[0].content).toBe(
+      const dupMsg = thirdCallMessages.find(m => m.content.toolResults?.some(tr => tr.is_error));
+      expect(dupMsg).toBeDefined();
+      expect(dupMsg!.content.toolResults![0].is_error).toBe(true);
+      expect(dupMsg!.content.toolResults![0].content).toBe(
         'The previous return has been recorded already. Please stop and user will call back.'
       );
     });
@@ -1541,15 +1690,8 @@ describe('agenticLoopGenerator', () => {
           createMockStream([], iter2Result),
           createMockStream([], iter3Result),
         ],
-        [parallelBlocks, parallelBlocks, soloReturnBlock, soloReturnBlock, [], []]
+        [parallelBlocks, soloReturnBlock, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
         if (name === 'return') {
@@ -1563,7 +1705,7 @@ describe('agenticLoopGenerator', () => {
 
       const options = createMockOptions({
         enabledTools: ['return', 'memory'],
-        deferReturn: true,
+        deferReturn: 'free-run',
       });
       const context = [createMockUserMessage('Do task')];
 
@@ -1601,15 +1743,16 @@ describe('agenticLoopGenerator', () => {
       expect(apiService.sendMessageStream).toHaveBeenCalledTimes(3);
 
       // Solo duplicate path builds tool_result message directly (no tool_block_update).
-      // The second buildToolResultMessage call in iteration 2 carries the duplicate error.
-      const buildCalls = vi.mocked(apiService.buildToolResultMessage).mock.calls;
-      // Iter 1 parallel: pending msg + final msg = 2 calls; Iter 2 solo duplicate: 1 call → index 2
-      const duplicateToolResults = buildCalls[2][1] as Array<{
-        content: string;
-        is_error?: boolean;
+      // The third sendMessageStream call receives context containing the duplicate-error tool_result.
+      const streamCalls = vi.mocked(apiService.sendMessageStream).mock.calls;
+      const thirdCallMessages = streamCalls[2][0] as Array<{
+        role: string;
+        content: { toolResults?: Array<{ content: string; is_error?: boolean }> };
       }>;
-      expect(duplicateToolResults[0].is_error).toBe(true);
-      expect(duplicateToolResults[0].content).toBe(
+      const dupMsg = thirdCallMessages.find(m => m.content.toolResults?.some(tr => tr.is_error));
+      expect(dupMsg).toBeDefined();
+      expect(dupMsg!.content.toolResults![0].is_error).toBe(true);
+      expect(dupMsg!.content.toolResults![0].content).toBe(
         'The previous return has been recorded already. Please stop and user will call back.'
       );
     });
@@ -1663,15 +1806,8 @@ describe('agenticLoopGenerator', () => {
           createMockStream([], iter2Result),
           createMockStream([], iter3Result),
         ],
-        [returnBlock1, returnBlock1, returnBlock2, returnBlock2, [], []]
+        [returnBlock1, returnBlock2, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation(() =>
         mockToolGenerator({
@@ -1682,7 +1818,7 @@ describe('agenticLoopGenerator', () => {
 
       const options = createMockOptions({
         enabledTools: ['return'],
-        deferReturn: true,
+        deferReturn: 'free-run',
       });
       const context = [createMockUserMessage('Do task')];
 
@@ -1699,14 +1835,16 @@ describe('agenticLoopGenerator', () => {
       // 3 API calls
       expect(apiService.sendMessageStream).toHaveBeenCalledTimes(3);
 
-      // Verify duplicate error content
-      const buildCalls = vi.mocked(apiService.buildToolResultMessage).mock.calls;
-      const duplicateToolResults = buildCalls[1][1] as Array<{
-        content: string;
-        is_error?: boolean;
+      // Verify duplicate error content via the third sendMessageStream call's context
+      const streamCalls = vi.mocked(apiService.sendMessageStream).mock.calls;
+      const thirdCallMessages = streamCalls[2][0] as Array<{
+        role: string;
+        content: { toolResults?: Array<{ content: string; is_error?: boolean }> };
       }>;
-      expect(duplicateToolResults[0].is_error).toBe(true);
-      expect(duplicateToolResults[0].content).toBe(
+      const dupMsg = thirdCallMessages.find(m => m.content.toolResults?.some(tr => tr.is_error));
+      expect(dupMsg).toBeDefined();
+      expect(dupMsg!.content.toolResults![0].is_error).toBe(true);
+      expect(dupMsg!.content.toolResults![0].content).toBe(
         'The previous return has been recorded already. Please stop and user will call back.'
       );
     });
@@ -1733,12 +1871,6 @@ describe('agenticLoopGenerator', () => {
         createMockStream([], finalResult) as never
       );
       vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation(() =>
         mockToolGenerator({
@@ -1749,7 +1881,7 @@ describe('agenticLoopGenerator', () => {
 
       const options = createMockOptions({
         enabledTools: ['return'],
-        deferReturn: true,
+        deferReturn: 'free-run',
         pendingToolUseBlocks: pendingReturnBlocks,
       });
       const context = [createMockUserMessage('Continue')];
@@ -1763,6 +1895,87 @@ describe('agenticLoopGenerator', () => {
 
       // API should still be called (loop continued after deferred return)
       expect(apiService.sendMessageStream).toHaveBeenCalledTimes(1);
+    });
+
+    it('deferred return: custom returnAckMessage and returnDuplicateMessage are used', async () => {
+      const returnBlock1 = [
+        { type: 'tool_use' as const, id: 'toolu_r1', name: 'return', input: { result: 'first' } },
+      ];
+      const returnBlock2 = [
+        { type: 'tool_use' as const, id: 'toolu_r2', name: 'return', input: { result: 'second' } },
+      ];
+
+      const toolUseResult1 = {
+        textContent: '',
+        fullContent: returnBlock1,
+        stopReason: 'tool_use',
+        inputTokens: 80,
+        outputTokens: 40,
+      };
+      const toolUseResult2 = {
+        textContent: '',
+        fullContent: returnBlock2,
+        stopReason: 'tool_use',
+        inputTokens: 90,
+        outputTokens: 45,
+      };
+      const finalResult = {
+        textContent: 'Done',
+        fullContent: [{ type: 'text', text: 'Done' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+
+      setupMultiIterationMock(
+        [
+          createMockStream([], toolUseResult1),
+          createMockStream([], toolUseResult2),
+          createMockStream([], finalResult),
+        ],
+        [returnBlock1, returnBlock2, []]
+      );
+
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'first',
+          breakLoop: { returnValue: 'first' },
+        })
+      );
+
+      const customAck = 'Got it, proceed with cleanup.';
+      const customDuplicate = 'Already captured — no more returns.';
+
+      const options = createMockOptions({
+        enabledTools: ['return'],
+        deferReturn: 'free-run',
+        returnAckMessage: customAck,
+        returnDuplicateMessage: customDuplicate,
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+      expect(result.status).toBe('complete');
+
+      type MsgShape = {
+        role: string;
+        content: { toolResults?: Array<{ content: string; is_error?: boolean }> };
+      };
+      const streamCalls = vi.mocked(apiService.sendMessageStream).mock.calls;
+
+      // Second sendMessageStream call receives context with ack tool_result
+      const secondCallMessages = streamCalls[1][0] as MsgShape[];
+      const ackMsg = secondCallMessages.find(m => m.content.toolResults?.length);
+      expect(ackMsg).toBeDefined();
+      expect(ackMsg!.content.toolResults![0].content).toBe(customAck);
+      expect(ackMsg!.content.toolResults![0].is_error).toBeUndefined();
+
+      // Third sendMessageStream call receives context with duplicate-error tool_result
+      const thirdCallMessages = streamCalls[2][0] as MsgShape[];
+      const dupMsg = thirdCallMessages.find(m => m.content.toolResults?.some(tr => tr.is_error));
+      expect(dupMsg).toBeDefined();
+      expect(dupMsg!.content.toolResults![0].content).toBe(customDuplicate);
+      expect(dupMsg!.content.toolResults![0].is_error).toBe(true);
     });
 
     it('propagates checkpoint boundary to sendMessageStream on auto-continued iteration', async () => {
@@ -1812,15 +2025,8 @@ describe('agenticLoopGenerator', () => {
           createMockStream([], endTurnResult),
           createMockStream([], finalResult),
         ],
-        [checkpointToolBlocks, checkpointToolBlocks, [], [], [], []]
+        [checkpointToolBlocks, [], []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       // Checkpoint tool returns with checkpoint flag
       vi.mocked(executeClientSideTool).mockImplementation(() =>
@@ -1895,15 +2101,8 @@ describe('agenticLoopGenerator', () => {
 
       setupMultiIterationMock(
         [createMockStream([], toolUseResult), createMockStream([], finalResult)],
-        [toolUseBlocks, toolUseBlocks, [], []]
+        [toolUseBlocks, []]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       // Tool returns with tokenTotals (simulating a minion sub-agent)
       const minionTotals = {
@@ -1943,11 +2142,18 @@ describe('agenticLoopGenerator', () => {
       );
       expect(tokenEvents.length).toBeGreaterThanOrEqual(2);
 
-      // The tool cost event should contain the minion's totals
+      // The tool cost event should contain the minion's totals and isToolCost flag
       const toolCostEvent = tokenEvents.find(e => e.tokens.cost === 0.042);
       expect(toolCostEvent).toBeDefined();
+      expect(toolCostEvent!.isToolCost).toBe(true);
       expect(toolCostEvent!.tokens.inputTokens).toBe(500);
       expect(toolCostEvent!.tokens.outputTokens).toBe(200);
+
+      // Direct API cost events should not have isToolCost
+      const apiCostEvents = tokenEvents.filter(e => e.tokens.cost !== 0.042);
+      for (const apiEvent of apiCostEvents) {
+        expect(apiEvent.isToolCost).toBeUndefined();
+      }
 
       // Overall totals should include both API and tool costs
       const finalValue = result.value;
@@ -2172,12 +2378,6 @@ describe('agenticLoopGenerator', () => {
         createMockStream([], toolUseResult) as never
       );
       vi.mocked(apiService.extractToolUseBlocks).mockReturnValue(toolUseBlocks);
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation(() =>
         mockToolGenerator({ content: 'Done', isError: false })
@@ -2268,15 +2468,8 @@ describe('agenticLoopGenerator', () => {
 
       setupMultiIterationMock(
         [createMockStream([], iter1Result), createMockStream([], iter2Result)],
-        [returnBlocks, returnBlocks, toolBlocks, toolBlocks]
+        [returnBlocks, toolBlocks]
       );
-
-      vi.mocked(apiService.buildToolResultMessage).mockReturnValue({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: { type: 'text', content: '' },
-        timestamp: new Date(),
-      });
 
       vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
         if (name === 'return') {
@@ -2296,7 +2489,7 @@ describe('agenticLoopGenerator', () => {
       let checkCount = 0;
       const options = createMockOptions({
         enabledTools: ['return', 'memory'],
-        deferReturn: true,
+        deferReturn: 'free-run',
         shouldStop: () => {
           checkCount++;
           return checkCount > 2; // false for iter1 before+after, true for iter2 before
@@ -2311,6 +2504,584 @@ describe('agenticLoopGenerator', () => {
         expect(result.returnValue).toBe('stored-val');
         expect(result.stopPoint).toBe('before_tools');
       }
+    });
+  });
+
+  describe('deferred return wind-down', () => {
+    beforeEach(() => {
+      resetMockState();
+    });
+
+    /**
+     * Helper: build streams/extracts for N tool_use iterations after a deferred return,
+     * then a final end_turn. The first iteration captures the deferred return via solo
+     * return tool; subsequent iterations use a regular tool (memory).
+     */
+    function buildDeferredReturnScenario(toolIterationsAfterReturn: number) {
+      const returnBlocks = [
+        { type: 'tool_use' as const, id: 'toolu_ret', name: 'return', input: { result: 'val' } },
+      ];
+      const memoryBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_mem',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+      ];
+
+      const streams: AsyncGenerator[] = [];
+      const extracts: unknown[][] = [];
+
+      // Iteration 1: deferred return
+      streams.push(
+        createMockStream([], {
+          textContent: '',
+          fullContent: returnBlocks,
+          stopReason: 'tool_use',
+          inputTokens: 10,
+          outputTokens: 5,
+        })
+      );
+      extracts.push(returnBlocks); // deduped within iteration
+
+      // Iterations 2..N+1: regular tool
+      for (let i = 0; i < toolIterationsAfterReturn; i++) {
+        streams.push(
+          createMockStream([], {
+            textContent: '',
+            fullContent: memoryBlocks,
+            stopReason: 'tool_use',
+            inputTokens: 10,
+            outputTokens: 5,
+          })
+        );
+        extracts.push(memoryBlocks);
+      }
+
+      // Final: end_turn
+      streams.push(
+        createMockStream([], {
+          textContent: 'done',
+          fullContent: [{ type: 'text', text: 'done' }],
+          stopReason: 'end_turn',
+          inputTokens: 10,
+          outputTokens: 5,
+        })
+      );
+      extracts.push([]);
+
+      return { streams, extracts };
+    }
+
+    it('injects soft stop message starting at round 5 after deferred return', async () => {
+      // 5 tool iterations after return (iterations 2-6), then end_turn at iteration 7.
+      // Deferred return captured at iteration 1, so round 5 = iteration 6.
+      const { streams, extracts } = buildDeferredReturnScenario(5);
+      setupMultiIterationMock(streams, extracts);
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'val',
+            breakLoop: { returnValue: 'val' },
+          });
+        }
+        return mockToolGenerator({ content: 'ok', isError: false });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: 'free-run',
+      });
+      const context = [createMockUserMessage('task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('complete');
+      if (result.value.status === 'complete') {
+        expect(result.value.returnValue).toBe('val');
+      }
+
+      // Soft stop message should appear once (at iteration 6, which is round 5)
+      const msgEvents = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'message_created' }> =>
+          e.type === 'message_created'
+      );
+      const stopMessages = msgEvents.filter(
+        e =>
+          e.message.role === 'user' &&
+          typeof e.message.content.content === 'string' &&
+          e.message.content.content.includes('You should stop')
+      );
+      expect(stopMessages).toHaveLength(1);
+    });
+
+    it('injects soft stop message every round from 5 to 9 (5 total)', async () => {
+      // 9 tool iterations after return → iterations 2-10, rounds 1-9
+      // Soft stop messages at rounds 5,6,7,8,9 = 5 messages
+      const { streams, extracts } = buildDeferredReturnScenario(9);
+      setupMultiIterationMock(streams, extracts);
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'val',
+            breakLoop: { returnValue: 'val' },
+          });
+        }
+        return mockToolGenerator({ content: 'ok', isError: false });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: 'free-run',
+      });
+      const context = [createMockUserMessage('task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('complete');
+
+      const msgEvents = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'message_created' }> =>
+          e.type === 'message_created'
+      );
+      const stopMessages = msgEvents.filter(
+        e =>
+          e.message.role === 'user' &&
+          typeof e.message.content.content === 'string' &&
+          e.message.content.content.includes('You should stop')
+      );
+      expect(stopMessages).toHaveLength(5);
+    });
+
+    it('force stops at round 10 after deferred return', async () => {
+      // 10 tool iterations after return → force stop at iteration 11 (round 10)
+      // The loop should NOT reach the final end_turn stream.
+      const { streams, extracts } = buildDeferredReturnScenario(10);
+      setupMultiIterationMock(streams, extracts);
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'val',
+            breakLoop: { returnValue: 'val' },
+          });
+        }
+        return mockToolGenerator({ content: 'ok', isError: false });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: 'free-run',
+      });
+      const context = [createMockUserMessage('task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBe('val');
+      }
+
+      // Force stop means we should NOT have reached the end_turn stream.
+      // 1 (return) + 10 (memory) = 11 API calls if it ran all tool iterations.
+      // The end_turn stream would be call #12. Force stop prevents it.
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(11);
+    });
+
+    it('pending blocks deferred return uses iteration 0 as baseline', async () => {
+      // Deferred return in pending blocks sets deferredReturnIteration = 0.
+      // Then 5 iterations of regular tools → rounds 5-5 get soft stop message.
+      // Force stop at iteration 10.
+      const memoryBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_mem',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+      ];
+
+      const pendingReturnBlocks = [
+        { type: 'tool_use' as const, id: 'toolu_p', name: 'return', input: { result: 'pval' } },
+      ];
+
+      const streams: AsyncGenerator[] = [];
+      const extracts: unknown[][] = [];
+
+      // 5 iterations of memory tool
+      for (let i = 0; i < 5; i++) {
+        streams.push(
+          createMockStream([], {
+            textContent: '',
+            fullContent: memoryBlocks,
+            stopReason: 'tool_use',
+            inputTokens: 10,
+            outputTokens: 5,
+          })
+        );
+        extracts.push(memoryBlocks);
+      }
+
+      // Final end_turn
+      streams.push(
+        createMockStream([], {
+          textContent: 'done',
+          fullContent: [{ type: 'text', text: 'done' }],
+          stopReason: 'end_turn',
+          inputTokens: 10,
+          outputTokens: 5,
+        })
+      );
+      extracts.push([]);
+
+      setupMultiIterationMock(streams, extracts);
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'pval',
+            breakLoop: { returnValue: 'pval' },
+          });
+        }
+        return mockToolGenerator({ content: 'ok', isError: false });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: 'free-run',
+        pendingToolUseBlocks: pendingReturnBlocks,
+      });
+      const context = [createMockUserMessage('task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('complete');
+      if (result.value.status === 'complete') {
+        expect(result.value.returnValue).toBe('pval');
+      }
+
+      // With deferredReturnIteration=0, iterations 5+ get soft stop messages.
+      // iterations 1-4: no message; iteration 5: message (round 5-0=5 >= 5)
+      const msgEvents = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'message_created' }> =>
+          e.type === 'message_created'
+      );
+      const stopMessages = msgEvents.filter(
+        e =>
+          e.message.role === 'user' &&
+          typeof e.message.content.content === 'string' &&
+          e.message.content.content.includes('You should stop')
+      );
+      // Iteration 5 = round 5, so exactly 1 soft stop message
+      expect(stopMessages).toHaveLength(1);
+    });
+
+    it('custom deferredForceStopRounds: 0 force stops immediately after deferred return', async () => {
+      // With forceStopRounds=0, the loop should force stop right after the deferred return
+      // capture (iteration 1) since iteration - deferredReturnIteration >= 0 is always true.
+      const returnBlocks = [
+        { type: 'tool_use' as const, id: 'toolu_ret', name: 'return', input: { result: 'val' } },
+      ];
+
+      const streams: AsyncGenerator[] = [];
+      const extracts: unknown[][] = [];
+
+      // Iteration 1: deferred return
+      streams.push(
+        createMockStream([], {
+          textContent: '',
+          fullContent: returnBlocks,
+          stopReason: 'tool_use',
+          inputTokens: 10,
+          outputTokens: 5,
+        })
+      );
+      extracts.push(returnBlocks);
+
+      // Iteration 2 would be a memory tool, but force stop should prevent it
+      const memoryBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_mem',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+      ];
+      streams.push(
+        createMockStream([], {
+          textContent: '',
+          fullContent: memoryBlocks,
+          stopReason: 'tool_use',
+          inputTokens: 10,
+          outputTokens: 5,
+        })
+      );
+      extracts.push(memoryBlocks);
+
+      setupMultiIterationMock(streams, extracts);
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'val',
+            breakLoop: { returnValue: 'val' },
+          });
+        }
+        return mockToolGenerator({ content: 'ok', isError: false });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: 'free-run',
+        deferredForceStopRounds: 0,
+      });
+      const context = [createMockUserMessage('task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBe('val');
+      }
+
+      // Only 1 API call: the deferred return iteration. Force stop prevents iteration 2.
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(1);
+    });
+
+    it('custom deferredSoftStopRounds: 2 starts soft stop messages at round 2', async () => {
+      // 3 tool iterations after return (iterations 2-4), then end_turn at iteration 5.
+      // Soft stop messages at rounds 2 and 3 (iterations 3 and 4).
+      const { streams, extracts } = buildDeferredReturnScenario(3);
+      setupMultiIterationMock(streams, extracts);
+
+      vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
+        if (name === 'return') {
+          return mockToolGenerator({
+            content: 'val',
+            breakLoop: { returnValue: 'val' },
+          });
+        }
+        return mockToolGenerator({ content: 'ok', isError: false });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: 'free-run',
+        deferredSoftStopRounds: 2,
+      });
+      const context = [createMockUserMessage('task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('complete');
+      if (result.value.status === 'complete') {
+        expect(result.value.returnValue).toBe('val');
+      }
+
+      const msgEvents = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'message_created' }> =>
+          e.type === 'message_created'
+      );
+      const stopMessages = msgEvents.filter(
+        e =>
+          e.message.role === 'user' &&
+          typeof e.message.content.content === 'string' &&
+          e.message.content.content.includes('You should stop')
+      );
+      // Rounds 2 and 3 → 2 soft stop messages
+      expect(stopMessages).toHaveLength(2);
+    });
+  });
+
+  describe('breakLoop does not override storedReturnValue', () => {
+    it('returns storedReturnValue when breakLoop fires after deferred return', async () => {
+      // Iteration 1: return tool → deferred capture of "A"
+      // Iteration 2: some tool → breakLoop with "B"
+      // Expected: loop returns "A", not "B"
+      const returnBlock = [
+        { type: 'tool_use' as const, id: 'toolu_ret', name: 'return', input: { result: 'A' } },
+      ];
+      const otherBlock = [
+        { type: 'tool_use' as const, id: 'toolu_other', name: 'memory', input: { op: 'read' } },
+      ];
+
+      const toolUseResult1 = {
+        textContent: '',
+        fullContent: returnBlock,
+        stopReason: 'tool_use',
+        inputTokens: 80,
+        outputTokens: 40,
+      };
+      const toolUseResult2 = {
+        textContent: '',
+        fullContent: otherBlock,
+        stopReason: 'tool_use',
+        inputTokens: 90,
+        outputTokens: 45,
+      };
+
+      setupMultiIterationMock(
+        [createMockStream([], toolUseResult1), createMockStream([], toolUseResult2)],
+        [returnBlock, otherBlock]
+      );
+
+      let callCount = 0;
+      vi.mocked(executeClientSideTool).mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // Return tool — deferred
+          return mockToolGenerator({
+            content: 'A',
+            breakLoop: { returnValue: 'A' },
+          });
+        }
+        // Second tool triggers breakLoop with different value
+        return mockToolGenerator({
+          content: 'B',
+          breakLoop: { returnValue: 'B' },
+        });
+      });
+
+      const options = createMockOptions({
+        enabledTools: ['return', 'memory'],
+        deferReturn: 'free-run',
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBe('A');
+      }
+    });
+  });
+
+  describe('fallbackToolExtraction', () => {
+    it('processes tool_use blocks despite wrong stopReason when enabled', async () => {
+      // API returns stopReason: 'end_turn' but content has a return tool_use block
+      const returnBlock = [
+        { type: 'tool_use' as const, id: 'toolu_fb', name: 'return', input: { result: 'val' } },
+      ];
+
+      const wrongStopResult = {
+        textContent: '',
+        fullContent: returnBlock,
+        stopReason: 'end_turn', // wrong — should be 'tool_use'
+        inputTokens: 80,
+        outputTokens: 40,
+      };
+
+      setupMultiIterationMock([createMockStream([], wrongStopResult)], [returnBlock]);
+
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'val',
+          breakLoop: { returnValue: 'val' },
+        })
+      );
+
+      const options = createMockOptions({
+        enabledTools: ['return'],
+        fallbackToolExtraction: true,
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBe('val');
+      }
+      // The return tool should have been executed
+      expect(executeClientSideTool).toHaveBeenCalled();
+    });
+
+    it('exits normally when stopReason is wrong and no tool_use blocks present', async () => {
+      // API returns stopReason: 'end_turn', no tool_use blocks → normal exit
+      const normalResult = {
+        textContent: 'Done',
+        fullContent: [{ type: 'text', text: 'Done' }],
+        stopReason: 'end_turn',
+        inputTokens: 80,
+        outputTokens: 40,
+      };
+
+      setupMultiIterationMock([createMockStream([], normalResult)], [[]]);
+
+      const options = createMockOptions({
+        enabledTools: ['return'],
+        fallbackToolExtraction: true,
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBeUndefined();
+      }
+      // No tools should have been executed
+      expect(executeClientSideTool).not.toHaveBeenCalled();
+    });
+
+    it('does not extract fallback blocks when fallbackToolExtraction is disabled', async () => {
+      // API returns stopReason: 'end_turn' with tool_use blocks, but fallback is off
+      const returnBlock = [
+        { type: 'tool_use' as const, id: 'toolu_nf', name: 'return', input: { result: 'val' } },
+      ];
+
+      const wrongStopResult = {
+        textContent: '',
+        fullContent: returnBlock,
+        stopReason: 'end_turn',
+        inputTokens: 80,
+        outputTokens: 40,
+      };
+
+      setupMultiIterationMock([createMockStream([], wrongStopResult)], [returnBlock]);
+
+      const options = createMockOptions({
+        enabledTools: ['return'],
+        // fallbackToolExtraction NOT set — defaults to false
+      });
+      const context = [createMockUserMessage('Do task')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      // Should exit normally without executing tools
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBeUndefined();
+      }
+      expect(executeClientSideTool).not.toHaveBeenCalled();
     });
   });
 
@@ -2329,6 +3100,181 @@ describe('agenticLoopGenerator', () => {
     it('uses default success icon for unknown tools', () => {
       const block = createToolResultRenderBlock('tu_1', 'unknown_tool', 'ok');
       expect(block.icon).toBe('✅');
+    });
+  });
+
+  describe('DUMMY hook + checkpoint interaction', () => {
+    beforeEach(() => {
+      resetMockState();
+      mockHookRuntime.run.mockReset();
+      mockHookRuntime.dispose.mockReset();
+    });
+
+    it('yields checkpoint_set before DUMMY user-stop exit', async () => {
+      // DUMMY intercepts with a checkpoint tool call, then returns 'user'.
+      // checkpoint_set must be yielded even though auto-continue never fires.
+      let idCounter = 0;
+      const { generateUniqueId } = await import('../../../utils/idGenerator');
+      vi.mocked(generateUniqueId).mockImplementation(prefix => `${prefix}_${++idCounter}`);
+
+      // Iteration 1: hook returns synthetic response with checkpoint tool
+      mockHookRuntime.run.mockResolvedValueOnce({
+        value: {
+          text: 'Setting checkpoint',
+          toolCalls: [{ name: 'checkpoint', input: { note: 'step1' } }],
+        },
+      });
+      // Iteration 2: hook returns 'user' (hand off to user)
+      mockHookRuntime.run.mockResolvedValueOnce({ value: 'user' });
+
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({
+          content: 'Checkpoint created',
+          isError: false,
+          checkpoint: true,
+        })
+      );
+
+      const options = createMockOptions({
+        enabledTools: ['checkpoint'],
+        toolOptions: { checkpoint: {} },
+        activeHook: 'test-hook',
+      });
+      const context = [createMockUserMessage('start task')];
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, context);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(result.value.status).toBe('soft_stopped');
+
+      const cpEvents = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'checkpoint_set' }> =>
+          e.type === 'checkpoint_set'
+      );
+      expect(cpEvents).toHaveLength(1);
+      // The checkpoint ID should reference the DUMMY assistant message
+      expect(cpEvents[0].messageId).toMatch(/^msg_assistant_/);
+    });
+  });
+
+  describe('extractHookHistory', () => {
+    function makeMsg(
+      id: string,
+      role: 'user' | 'assistant' | 'system',
+      text: string
+    ): Message<unknown> {
+      return {
+        id,
+        role,
+        content: { type: 'text', content: text },
+        timestamp: new Date(),
+      };
+    }
+
+    it('returns empty array when depth is 0', () => {
+      const msgs = [makeMsg('m1', 'user', 'hi'), makeMsg('m2', 'assistant', 'hello')];
+      expect(extractHookHistory(msgs, 0)).toEqual([]);
+    });
+
+    it('returns empty array for negative depth', () => {
+      const msgs = [makeMsg('m1', 'user', 'hi')];
+      expect(extractHookHistory(msgs, -1)).toEqual([]);
+    });
+
+    it('excludes the last message (already in hookInput)', () => {
+      const msgs = [makeMsg('m1', 'user', 'hi'), makeMsg('m2', 'assistant', 'hello')];
+      const history = extractHookHistory(msgs, 5);
+      expect(history).toHaveLength(1);
+      expect(history[0].id).toBe('m1');
+      expect(history[0].role).toBe('user');
+      expect(history[0].text).toBe('hi');
+    });
+
+    it('limits to depth entries when more messages exist', () => {
+      const msgs = [
+        makeMsg('m1', 'user', 'one'),
+        makeMsg('m2', 'assistant', 'two'),
+        makeMsg('m3', 'user', 'three'),
+        makeMsg('m4', 'assistant', 'four'),
+        makeMsg('m5', 'user', 'five'),
+      ];
+      const history = extractHookHistory(msgs, 2);
+      expect(history).toHaveLength(2);
+      expect(history[0].id).toBe('m3');
+      expect(history[1].id).toBe('m4');
+    });
+
+    it('returns all preceding messages when depth exceeds count', () => {
+      const msgs = [
+        makeMsg('m1', 'user', 'one'),
+        makeMsg('m2', 'assistant', 'two'),
+        makeMsg('m3', 'user', 'three'),
+      ];
+      const history = extractHookHistory(msgs, 50);
+      expect(history).toHaveLength(2);
+      expect(history[0].id).toBe('m1');
+      expect(history[1].id).toBe('m2');
+    });
+
+    it('includes toolCalls when present', () => {
+      const msg: Message<unknown> = {
+        id: 'm1',
+        role: 'assistant',
+        content: {
+          type: 'text',
+          content: '',
+          toolCalls: [{ type: 'tool_use', id: 'tu_1', name: 'memory', input: { action: 'view' } }],
+        },
+        timestamp: new Date(),
+      };
+      const msgs = [msg, makeMsg('m2', 'user', 'last')];
+      const history = extractHookHistory(msgs, 1);
+      expect(history[0].toolCalls).toEqual([
+        { id: 'tu_1', name: 'memory', input: { action: 'view' } },
+      ]);
+    });
+
+    it('includes toolResults when present', () => {
+      const msg: Message<unknown> = {
+        id: 'm1',
+        role: 'user',
+        content: {
+          type: 'text',
+          content: '',
+          toolResults: [
+            { type: 'tool_result', tool_use_id: 'tu_1', content: 'ok', is_error: false },
+          ],
+          renderingContent: [
+            {
+              category: 'backstage',
+              blocks: [{ type: 'tool_result', tool_use_id: 'tu_1', name: 'memory', content: 'ok' }],
+            },
+          ],
+        },
+        timestamp: new Date(),
+      };
+      const msgs = [msg, makeMsg('m2', 'assistant', 'last')];
+      const history = extractHookHistory(msgs, 1);
+      expect(history[0].toolResults).toEqual([
+        { tool_use_id: 'tu_1', name: 'memory', content: 'ok' },
+      ]);
+    });
+
+    it('omits text field for whitespace-only content', () => {
+      const msgs = [makeMsg('m1', 'user', '   '), makeMsg('m2', 'assistant', 'last')];
+      const history = extractHookHistory(msgs, 1);
+      expect(history[0].text).toBeUndefined();
+    });
+
+    it('returns empty array when only one message exists', () => {
+      const msgs = [makeMsg('m1', 'user', 'only')];
+      const history = extractHookHistory(msgs, 5);
+      expect(history).toEqual([]);
     });
   });
 });

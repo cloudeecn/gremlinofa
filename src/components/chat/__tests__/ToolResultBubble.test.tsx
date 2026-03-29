@@ -123,4 +123,26 @@ describe('ToolResultBubble', () => {
     expect(screen.queryByText(/C↑/)).not.toBeInTheDocument();
     expect(screen.queryByText(/C↓/)).not.toBeInTheDocument();
   });
+
+  it('hides simple results in focus mode', () => {
+    const message = createToolResultMessage();
+    const { container } = render(<ToolResultBubble message={message} focusMode={true} />);
+
+    // Simple tool result purple bar should be hidden
+    expect(container.querySelector('.border-purple-400')).not.toBeInTheDocument();
+  });
+
+  it('hides metadata line in focus mode', () => {
+    const message = createToolResultMessage({
+      metadata: {
+        inputTokens: 5000,
+        outputTokens: 2000,
+        messageCost: 0.042,
+      },
+    });
+
+    render(<ToolResultBubble message={message} focusMode={true} />);
+
+    expect(screen.queryByText(/\$0\.042/)).not.toBeInTheDocument();
+  });
 });

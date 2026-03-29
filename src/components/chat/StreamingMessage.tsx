@@ -4,7 +4,11 @@ import type { StreamingMessageProps } from './types';
 import BackstageView from './BackstageView';
 import BouncingDots from './BouncingDots';
 
-export default function StreamingMessage({ groups }: StreamingMessageProps) {
+export default function StreamingMessage({
+  groups,
+  focusMode,
+  dummyHookStatus,
+}: StreamingMessageProps) {
   const isMobile = useIsMobile();
 
   // Show waiting indicator when no content yet
@@ -12,6 +16,9 @@ export default function StreamingMessage({ groups }: StreamingMessageProps) {
     return (
       <div className="mb-4 px-4">
         <div className={'w-full'}>
+          {dummyHookStatus?.state === 'intercepting' && (
+            <div className="mb-1 text-xs text-green-700">✨ DUMMY System: Intercepting...</div>
+          )}
           <div className="mt-1">
             <BouncingDots />
           </div>
@@ -20,11 +27,16 @@ export default function StreamingMessage({ groups }: StreamingMessageProps) {
     );
   }
 
+  const visibleGroups = focusMode ? groups.filter(g => g.category !== 'backstage') : groups;
+
   return (
     <div className="mb-4 px-4">
       <div className={'w-full'}>
+        {dummyHookStatus?.state === 'intercepting' && (
+          <div className="mb-1 text-xs text-green-700">✨ DUMMY System: Intercepting...</div>
+        )}
         {/* Render each group */}
-        {groups.map((group, groupIndex) => (
+        {visibleGroups.map((group, groupIndex) => (
           <div key={groupIndex} className="mb-2 last:mb-0">
             {group.category === 'backstage' ? (
               <BackstageView blocks={group.blocks} defaultExpanded={false} />

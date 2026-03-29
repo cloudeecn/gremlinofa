@@ -2,7 +2,7 @@ import type { RenderingBlockGroup } from '../../types/content';
 import {
   stripMetadata,
   formatTimestamp,
-  formatTokens,
+  formatTokenGroup,
   formatTokenCount,
 } from '../../utils/messageFormatters';
 import { showAlert } from '../../utils/alerts';
@@ -14,7 +14,10 @@ import StopReasonBadge from './StopReasonBadge';
 
 export default function AssistantMessageBubble({
   message,
+  onDeleteMessage,
   isVisible,
+  focusMode,
+  disableMath,
 }: AssistantMessageBubbleProps) {
   const renderingContent = message.content.renderingContent as RenderingBlockGroup[];
 
@@ -49,11 +52,24 @@ export default function AssistantMessageBubble({
     return usage;
   };
 
+  const visibleGroups = focusMode
+    ? renderingContent.filter(g => g.category !== 'backstage')
+    : renderingContent;
+
+  const isDummy = message.content.modelFamily === 'ds01-dummy-system';
+  const dummyBrief = isDummy
+    ? (((message.metadata as Record<string, unknown> | undefined)?.dummyBrief as string) ??
+      'intercepted')
+    : undefined;
+
   return (
     <>
       {/* Assistant message content */}
       <div className="w-full">
-        {renderingContent.map((group, index) => (
+        {isDummy && dummyBrief && (
+          <div className="mb-1 text-xs text-green-700">✨ DUMMY System: {dummyBrief}</div>
+        )}
+        {visibleGroups.map((group, index) => (
           <div key={index} className="mb-2 last:mb-0">
             {group.category === 'backstage' ? (
               <BackstageView blocks={group.blocks} />
@@ -61,68 +77,91 @@ export default function AssistantMessageBubble({
               <ErrorBlockView blocks={group.blocks} />
             ) : (
               <div className="w-full bg-transparent py-2 text-gray-900">
-                <TextGroupView blocks={group.blocks} isVisible={isVisible} />
+                <TextGroupView
+                  blocks={group.blocks}
+                  isVisible={isVisible}
+                  disableMath={disableMath}
+                />
               </div>
             )}
           </div>
         ))}
       </div>
 
-      {/* Assistant metadata line */}
-      <div className="mt-1 flex w-full items-center justify-start gap-2 text-[10px] text-gray-500">
-        <span>{formatTimestamp(message.timestamp)}</span>
-        <button
-          onClick={handleCopy}
-          className="transition-colors hover:text-gray-700"
-          title="Copy message"
+      {/* Assistant metadata line (hidden in focus mode) */}
+      {!focusMode && (
+        <div
+          className={`mt-1 flex w-full items-center justify-start gap-2 text-[10px] ${isDummy ? 'text-green-700' : 'text-gray-500'}`}
         >
-          📋
-        </button>
-        <button
-          onClick={handleDumpMessage}
-          className="transition-colors hover:text-gray-700"
-          title="Copy message JSON"
-        >
-          🔍
-        </button>
+          <span>{formatTimestamp(message.timestamp)}</span>
+          <button
+            onClick={handleCopy}
+            className="transition-colors hover:text-gray-700"
+            title="Copy message"
+          >
+            📋
+          </button>
+          <button
+            onClick={handleDumpMessage}
+            className="transition-colors hover:text-gray-700"
+            title="Copy message JSON"
+          >
+            🔍
+          </button>
+          {onDeleteMessage && (
+            <button
+              onClick={() => onDeleteMessage(message.id)}
+              className="transition-colors hover:text-red-600"
+              title="Delete this message"
+            >
+              ❌
+            </button>
+          )}
 
-        {message.metadata && (
-          <>
-            <span className="text-gray-400">|</span>
+          {message.metadata && (
+            <>
+              <span className="text-gray-400">|</span>
 
-            {/* Token breakdown */}
-            <span className="flex items-center gap-1">
-              {formatTokens('↑', message.metadata.inputTokens)}
-              {message.metadata.inputTokens ? ' ' : ''}
-              {formatTokens('↓', message.metadata.outputTokens)}
-              {formatTokens(' R:', message.metadata.reasoningTokens)}
-              {formatTokens(' C↑', message.metadata.cacheCreationTokens)}
-              {formatTokens(' C↓', message.metadata.cacheReadTokens)}
-            </span>
-
-            {/* Context window and cost */}
-            {(message.metadata.contextWindowUsage ||
-              message.metadata.messageCost !== undefined) && (
-              <>
-                <span className="text-gray-400">|</span>
-                <span>
-                  {formatContextWindow()}
-                  {message.metadata.messageCost !== undefined &&
-                    ` $${message.metadata.messageCost.toFixed(3)}`}
+              {/* Token breakdown */}
+              {isDummy ? (
+                <span>✨ DUMMY</span>
+              ) : (
+                <span className="flex items-center gap-1">
+                  {formatTokenGroup('↑', message.metadata.inputTokens, [
+                    { prefix: 'C↑', value: message.metadata.cacheCreationTokens },
+                    { prefix: 'C↓', value: message.metadata.cacheReadTokens },
+                  ])}
+                  {message.metadata.inputTokens ? ' ' : ''}
+                  {formatTokenGroup('↓', message.metadata.outputTokens, [
+                    { prefix: 'R:', value: message.metadata.reasoningTokens },
+                  ])}
                 </span>
-              </>
-            )}
-          </>
-        )}
+              )}
 
-        {/* Stop reason badge for non-normal endings */}
-        {message.content.stopReason && message.content.stopReason !== 'end_turn' && (
-          <>
-            <span className="text-gray-400">|</span>
-            <StopReasonBadge stopReason={message.content.stopReason} />
-          </>
-        )}
-      </div>
+              {/* Context window and cost */}
+              {(message.metadata.contextWindowUsage ||
+                message.metadata.messageCost !== undefined) && (
+                <>
+                  <span className="text-gray-400">|</span>
+                  <span>
+                    {formatContextWindow()}
+                    {message.metadata.messageCost !== undefined &&
+                      ` $${message.metadata.messageCost.toFixed(3)}`}
+                  </span>
+                </>
+              )}
+            </>
+          )}
+
+          {/* Stop reason badge for non-normal endings */}
+          {message.content.stopReason && message.content.stopReason !== 'end_turn' && (
+            <>
+              <span className="text-gray-400">|</span>
+              <StopReasonBadge stopReason={message.content.stopReason} />
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 }

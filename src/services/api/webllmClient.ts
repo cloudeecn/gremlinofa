@@ -8,17 +8,9 @@
 import type { MLCEngine, InitProgressReport, ChatCompletionMessageParam } from '@mlc-ai/web-llm';
 import { CreateMLCEngine, ModelType, prebuiltAppConfig } from '@mlc-ai/web-llm';
 
-import type {
-  APIDefinition,
-  Message,
-  MessageStopReason,
-  Model,
-  RenderingBlockGroup,
-  ToolResultBlock,
-  ToolUseBlock,
-} from '../../types';
-import { groupAndConsolidateBlocks } from '../../types';
+import type { APIDefinition, Message, Model, ToolUseBlock } from '../../types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import { buildInlinePrefix } from './fileInjectionHelper';
 
 /**
  * Progress callback for model loading.
@@ -285,9 +277,11 @@ export class WebLLMClient implements APIClient {
       // Add conversation messages
       for (const msg of messages) {
         if (msg.role === 'user') {
-          // WebLLM doesn't support vision - just use text content
-          // If message has attachments, note it in the message
+          // WebLLM only supports text - inline any injected files and note any images
           let content = msg.content.content;
+          if (msg.content.injectedFiles?.length) {
+            content = buildInlinePrefix(msg.content.injectedFiles) + content;
+          }
           if (msg.attachments && msg.attachments.length > 0) {
             content = `[Note: ${msg.attachments.length} image(s) were attached but this local model doesn't support vision]\n\n${content}`;
           }
@@ -412,75 +406,10 @@ export class WebLLMClient implements APIClient {
   }
 
   /**
-   * Migrate old messages to new rendering format.
-   * WebLLM uses simple text-only content.
-   */
-  migrateMessageRendering(
-    fullContent: unknown,
-    stopReason: string | null
-  ): {
-    renderingContent: RenderingBlockGroup[];
-    stopReason: MessageStopReason;
-  } {
-    // WebLLM has simple text-only content: [{ type: 'text', text: string }]
-    let textContent = '';
-
-    if (Array.isArray(fullContent)) {
-      for (const block of fullContent as Array<Record<string, unknown>>) {
-        if (block.type === 'text' && typeof block.text === 'string') {
-          textContent += block.text;
-        }
-      }
-    } else if (typeof fullContent === 'string') {
-      textContent = fullContent;
-    }
-
-    const renderingContent = textContent.trim()
-      ? groupAndConsolidateBlocks([{ type: 'text', text: textContent }])
-      : [];
-
-    return {
-      renderingContent,
-      stopReason: this.mapStopReason(stopReason),
-    };
-  }
-
-  /**
-   * Map WebLLM finish reasons to MessageStopReason.
-   */
-  private mapStopReason(stopReason: string | null): MessageStopReason {
-    if (!stopReason) {
-      return 'end_turn';
-    }
-    // WebLLM uses: stop, length
-    switch (stopReason) {
-      case 'stop':
-        return 'end_turn';
-      case 'length':
-        return 'max_tokens';
-      default:
-        return stopReason;
-    }
-  }
-
-  /**
    * Extract tool_use blocks - WebLLM doesn't support tools.
    */
   extractToolUseBlocks(_fullContent: unknown): ToolUseBlock[] {
     // WebLLM doesn't support tool calling
     return [];
-  }
-
-  /**
-   * Build tool result message - WebLLM doesn't support tools.
-   */
-  buildToolResultMessage(_toolResults: ToolResultBlock[]): Message<unknown> {
-    // WebLLM doesn't support tool calling - return empty message
-    return {
-      id: '',
-      role: 'user',
-      content: { type: 'text', content: '', modelFamily: 'webllm' },
-      timestamp: new Date(),
-    };
   }
 }

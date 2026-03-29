@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { exportDataToCSV } from '../dataExport';
+import { streamExportCSVLines } from '../dataExport';
 import { importDataFromFile } from '../dataImport';
 import type {
   StorageAdapter,
@@ -18,6 +18,12 @@ import { EncryptionService } from '../../services/encryption/encryptionService';
 
 // Mock EncryptionService
 vi.mock('../../services/encryption/encryptionService');
+
+async function collectCSV(adapter: StorageAdapter, enc?: EncryptionService): Promise<string> {
+  const lines: string[] = [];
+  for await (const line of streamExportCSVLines(adapter, enc)) lines.push(line);
+  return lines.join('').replace(/\n$/, '');
+}
 
 /**
  * Helper to convert CSV string to File object
@@ -258,7 +264,7 @@ describe('Data Export/Import Roundtrip', () => {
 
   it('should export and import 210+ records with data integrity preserved', async () => {
     // Step 1: Export all data to CSV
-    const csv = await exportDataToCSV(mockExportAdapter);
+    const csv = await collectCSV(mockExportAdapter);
 
     // Verify export produced content
     const lines = csv.split('\n');
@@ -323,7 +329,7 @@ describe('Data Export/Import Roundtrip', () => {
 
   it('should handle re-import with duplicate skipping', async () => {
     // Export original data
-    const csv = await exportDataToCSV(mockExportAdapter);
+    const csv = await collectCSV(mockExportAdapter);
 
     // First import
     const file1 = csvToFile(csv);
@@ -352,7 +358,7 @@ describe('Data Export/Import Roundtrip', () => {
   });
 
   it('should correctly count records per table', async () => {
-    const csv = await exportDataToCSV(mockExportAdapter);
+    const csv = await collectCSV(mockExportAdapter);
 
     // Count records per table in exported CSV
     const lines = csv.split('\n').slice(1); // Skip header
@@ -382,7 +388,7 @@ describe('Data Export/Import Roundtrip', () => {
     });
 
     // Export
-    const csv = await exportDataToCSV(mockExportAdapter);
+    const csv = await collectCSV(mockExportAdapter);
 
     // Import
     const file = csvToFile(csv);
@@ -403,7 +409,7 @@ describe('Data Export/Import Roundtrip', () => {
     mockData[Tables.MESSAGES] = [];
     mockData[Tables.ATTACHMENTS] = [];
 
-    const csv = await exportDataToCSV(mockExportAdapter);
+    const csv = await collectCSV(mockExportAdapter);
     const file = csvToFile(csv);
     const result = await importDataFromFile(mockImportAdapter, file, 'test-cek', mockAppEncryption);
 
@@ -658,7 +664,7 @@ describe('Cross-Adapter Export/Import', () => {
     const expectedCount = Object.values(originalData).reduce((sum, arr) => sum + arr.length, 0);
 
     // Export from IndexedDB
-    const csv = await exportDataToCSV(indexedDBAdapter);
+    const csv = await collectCSV(indexedDBAdapter);
 
     // Import to RemoteStorage
     const file = csvToFile(csv);
@@ -694,7 +700,7 @@ describe('Cross-Adapter Export/Import', () => {
     const expectedCount = Object.values(originalData).reduce((sum, arr) => sum + arr.length, 0);
 
     // Export from RemoteStorage
-    const csv = await exportDataToCSV(remoteAdapter);
+    const csv = await collectCSV(remoteAdapter);
 
     // Import to IndexedDB
     const file = csvToFile(csv);
@@ -723,12 +729,12 @@ describe('Cross-Adapter Export/Import', () => {
     const expectedCount = Object.values(originalData).reduce((sum, arr) => sum + arr.length, 0);
 
     // Step 1: Export from source, import to middle
-    const csv1 = await exportDataToCSV(sourceAdapter);
+    const csv1 = await collectCSV(sourceAdapter);
     const file1 = csvToFile(csv1);
     await importDataFromFile(middleAdapter, file1, 'test-cek', mockAppEncryption);
 
     // Step 2: Export from middle, import to target
-    const csv2 = await exportDataToCSV(middleAdapter);
+    const csv2 = await collectCSV(middleAdapter);
     const file2 = csvToFile(csv2);
     const result = await importDataFromFile(targetAdapter, file2, 'test-cek', mockAppEncryption);
 
@@ -770,7 +776,7 @@ describe('Cross-Adapter Export/Import', () => {
     }
 
     // Export (should internally handle pagination)
-    const csv = await exportDataToCSV(sourceAdapter);
+    const csv = await collectCSV(sourceAdapter);
 
     // Verify CSV contains all records
     const lines = csv.split('\n');
@@ -804,7 +810,7 @@ describe('Cross-Adapter Export/Import', () => {
     });
 
     // Export and import
-    const csv = await exportDataToCSV(sourceAdapter);
+    const csv = await collectCSV(sourceAdapter);
     const file = csvToFile(csv);
     await importDataFromFile(targetAdapter, file, 'test-cek', mockAppEncryption);
 

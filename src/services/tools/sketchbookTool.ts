@@ -9,11 +9,22 @@
 import type {
   ClientSideTool,
   ToolContext,
+  ToolOptionDefinition,
   ToolOptions,
   ToolResult,
   ToolStreamEvent,
 } from '../../types';
-import * as vfs from '../vfs/vfsService';
+import * as vfs from '../vfs';
+
+const optionDefinitions: ToolOptionDefinition[] = [
+  {
+    type: 'boolean',
+    id: 'noStore',
+    label: 'No Store',
+    subtitle: 'Skip storage, just acknowledge',
+    default: false,
+  },
+];
 
 async function appendToSketchbook(
   projectId: string,
@@ -35,16 +46,21 @@ async function appendToSketchbook(
 // eslint-disable-next-line require-yield -- Simple tool: generator for interface compatibility, no streaming events
 async function* executeSketchbook(
   input: Record<string, unknown>,
-  _toolOptions?: ToolOptions,
+  toolOptions?: ToolOptions,
   context?: ToolContext
 ): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
+  if (toolOptions?.noStore) {
+    return { content: 'noted.' };
+  }
+
   if (!context?.projectId) {
     throw new Error('projectId is required');
   }
 
   const content = (input.content as string) ?? '';
+  const name = typeof input.name === 'string' && input.name ? input.name : undefined;
   const fileSlug = context.chatId ?? '_default';
-  const vfsPath = `/sketchbook/${fileSlug}.md`;
+  const vfsPath = name ? `/sketchbook/${fileSlug}-${name}.md` : `/sketchbook/${fileSlug}.md`;
 
   try {
     await appendToSketchbook(context.projectId, vfsPath, content, context.namespace);
@@ -60,6 +76,7 @@ export const sketchbookTool: ClientSideTool = {
   name: 'sketchbook',
   displayName: 'Sketchbook',
   displaySubtitle: 'Append-only notepad for drafts and working notes',
+  optionDefinitions,
 
   description:
     'A sketchbook, you can use it to think out loud, draft ideas, outline plans before committing, keep a scratch pad of intermediate results, or jot down anything worth revisiting later.',
@@ -71,6 +88,10 @@ export const sketchbookTool: ClientSideTool = {
         type: 'string',
         description: 'Text to append to the sketchbook',
       },
+      name: {
+        type: 'string',
+        description: 'Optional name for the sketchbook file (creates a separate named sketchbook)',
+      },
     },
     required: ['content'],
   },
@@ -78,7 +99,11 @@ export const sketchbookTool: ClientSideTool = {
   iconInput: '📓',
   iconOutput: '📓',
 
-  renderInput: input => (input.content as string) ?? '',
+  renderInput: input => {
+    const content = (input.content as string) ?? '';
+    const name = typeof input.name === 'string' && input.name ? input.name : undefined;
+    return name ? `Name: ${name}\n${content}` : content;
+  },
   renderOutput: () => 'noted.',
 
   execute: executeSketchbook,

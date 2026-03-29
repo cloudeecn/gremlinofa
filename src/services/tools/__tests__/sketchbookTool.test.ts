@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { sketchbookTool } from '../sketchbookTool';
-import * as vfs from '../../vfs/vfsService';
-import type { ToolContext, ToolResult } from '../../../types';
+import * as vfs from '../../vfs';
+import type { ToolContext, ToolOptions, ToolResult } from '../../../types';
 
-vi.mock('../../vfs/vfsService', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../vfs/vfsService')>();
+vi.mock('../../vfs', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../vfs')>();
   return {
     ...actual,
     exists: vi.fn(),
@@ -23,11 +23,18 @@ async function collectToolResult(
   return result.value;
 }
 
-async function executeSketchbook(content: string, context?: ToolContext): Promise<ToolResult> {
+async function executeSketchbook(
+  content: string,
+  context?: ToolContext,
+  toolOptions?: ToolOptions,
+  name?: string
+): Promise<ToolResult> {
+  const input: Record<string, unknown> = { content };
+  if (name !== undefined) input.name = name;
   return collectToolResult(
     sketchbookTool.execute(
-      { content },
-      {},
+      input,
+      toolOptions ?? {},
       context ?? { projectId: 'test-project', chatId: 'chat-123' }
     )
   );
@@ -53,12 +60,16 @@ describe('sketchbookTool', () => {
       expect(sketchbookTool.iconOutput).toBe('📓');
     });
 
-    it('has input schema with required content field', () => {
+    it('has input schema with required content field and optional name', () => {
       const schema = sketchbookTool.inputSchema;
       expect(schema).toEqual({
         type: 'object',
         properties: {
           content: {
+            type: 'string',
+            description: expect.any(String),
+          },
+          name: {
             type: 'string',
             description: expect.any(String),
           },
@@ -181,6 +192,41 @@ describe('sketchbookTool', () => {
       );
       expect(result.content).toBe('noted.');
     });
+
+    it('uses name in file path when provided', async () => {
+      (vfs.exists as Mock).mockResolvedValue(false);
+      (vfs.createFile as Mock).mockResolvedValue(undefined);
+
+      const result = await executeSketchbook('draft', undefined, undefined, 'plan');
+
+      expect(vfs.exists).toHaveBeenCalledWith(
+        'test-project',
+        '/sketchbook/chat-123-plan.md',
+        undefined
+      );
+      expect(vfs.createFile).toHaveBeenCalledWith(
+        'test-project',
+        '/sketchbook/chat-123-plan.md',
+        'draft',
+        undefined
+      );
+      expect(result.content).toBe('noted.');
+    });
+
+    it('uses default path when name is not provided', async () => {
+      (vfs.exists as Mock).mockResolvedValue(false);
+      (vfs.createFile as Mock).mockResolvedValue(undefined);
+
+      const result = await executeSketchbook('note');
+
+      expect(vfs.createFile).toHaveBeenCalledWith(
+        'test-project',
+        '/sketchbook/chat-123.md',
+        'note',
+        undefined
+      );
+      expect(result.content).toBe('noted.');
+    });
   });
 
   describe('renderInput', () => {
@@ -190,6 +236,49 @@ describe('sketchbookTool', () => {
 
     it('returns empty string for missing content', () => {
       expect(sketchbookTool.renderInput?.({})).toBe('');
+    });
+
+    it('shows name on separate line when provided', () => {
+      expect(sketchbookTool.renderInput?.({ content: 'draft', name: 'plan' })).toBe(
+        'Name: plan\ndraft'
+      );
+    });
+  });
+
+  describe('noStore option', () => {
+    it('skips VFS and returns noted when noStore is true', async () => {
+      const result = await executeSketchbook(
+        'some notes',
+        { projectId: 'test-project', chatId: 'chat-123' },
+        { noStore: true }
+      );
+
+      expect(vfs.exists).not.toHaveBeenCalled();
+      expect(vfs.createFile).not.toHaveBeenCalled();
+      expect(vfs.readFile).not.toHaveBeenCalled();
+      expect(vfs.updateFile).not.toHaveBeenCalled();
+      expect(result.content).toBe('noted.');
+      expect(result.isError).toBeFalsy();
+    });
+
+    it('does not require projectId when noStore is true', async () => {
+      const result = await executeSketchbook('notes', {} as ToolContext, { noStore: true });
+
+      expect(result.content).toBe('noted.');
+    });
+
+    it('stores normally when noStore is false', async () => {
+      (vfs.exists as Mock).mockResolvedValue(false);
+      (vfs.createFile as Mock).mockResolvedValue(undefined);
+
+      const result = await executeSketchbook(
+        'stored note',
+        { projectId: 'test-project', chatId: 'chat-123' },
+        { noStore: false }
+      );
+
+      expect(vfs.createFile).toHaveBeenCalled();
+      expect(result.content).toBe('noted.');
     });
   });
 

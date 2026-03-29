@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
-import { apiService } from '../services/api/apiService';
+import { apiService, mergeExtraModels } from '../services/api/apiService';
 import { storage } from '../services/storage';
 import type { APIDefinition, Model, Project } from '../types';
 import { AppContext, type AppContextType } from './createAppContext';
@@ -111,8 +111,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refreshModels = useCallback(
     async (apiDefinitionId: string, forceRefresh = false, skipWaitingModelRefresh = false) => {
       setIsLoadingModels(true);
+      let apiDef: APIDefinition | null | undefined;
       try {
-        const apiDef = await storage.getAPIDefinition(apiDefinitionId);
+        apiDef = await storage.getAPIDefinition(apiDefinitionId);
         if (!apiDef) {
           console.error('API definition not found:', apiDefinitionId);
           return;
@@ -123,6 +124,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const needsApiKey = apiDef.apiType !== 'webllm' && !apiDef.isLocal;
         if (needsApiKey && (!apiDef.apiKey || apiDef.apiKey.trim() === '')) {
           console.debug('Skipping model refresh for', apiDefinitionId, '- no API key configured');
+          // Still populate extra models even without API key
+          const extraModels = mergeExtraModels([], apiDef);
+          if (extraModels.length > 0) {
+            setModels(prev => new Map(prev).set(apiDefinitionId, extraModels));
+            await storage.saveModels(apiDefinitionId, extraModels);
+          }
           return;
         }
 
@@ -162,6 +169,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       } catch (error) {
         console.error('Failed to refresh models:', error);
+        // Fallback: populate extra models even when discovery fails
+        if (apiDef) {
+          const extraModels = mergeExtraModels([], apiDef);
+          if (extraModels.length > 0) {
+            setModels(prev => new Map(prev).set(apiDefinitionId, extraModels));
+          }
+        }
       } finally {
         setIsLoadingModels(false);
       }
@@ -308,6 +322,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return newCEK;
   }, []);
 
+  const clearAllModelsCache = useCallback(async () => {
+    for (const def of apiDefinitions) {
+      await storage.deleteModels(def.id);
+    }
+    setModels(new Map());
+  }, [apiDefinitions]);
+
   const handleCompressMessages = useCallback(async (): Promise<{
     total: number;
     compressed: number;
@@ -390,6 +411,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cek,
       isCEKBase32,
       convertCEKToBase32,
+      clearAllModelsCache,
       handleCompressMessages,
       storageQuota,
       refreshStorageQuota,
@@ -415,6 +437,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cek,
       isCEKBase32,
       convertCEKToBase32,
+      clearAllModelsCache,
       handleCompressMessages,
       storageQuota,
       refreshStorageQuota,

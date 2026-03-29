@@ -73,6 +73,21 @@ describe('completionStreamMapper', () => {
         expect(newState.inReasoningBlock).toBe(true);
       });
 
+      it('emits thinking.start and thinking on reasoning_content delta', () => {
+        const state = createMapperState();
+        const { chunks, state: newState } = mapCompletionChunkToStreamChunks(
+          {
+            choices: [
+              { index: 0, delta: { reasoning_content: 'Hmm let me see...' }, finish_reason: null },
+            ],
+          },
+          state
+        );
+        expect(chunks).toContainEqual({ type: 'thinking.start' });
+        expect(chunks).toContainEqual({ type: 'thinking', content: 'Hmm let me see...' });
+        expect(newState.inReasoningBlock).toBe(true);
+      });
+
       it('emits thinking.end when transitioning to content', () => {
         let state = createMapperState();
         state.inReasoningBlock = true;
@@ -191,7 +206,7 @@ describe('completionStreamMapper', () => {
         expect(chunks).toContainEqual({
           type: 'token_usage',
           inputTokens: 80, // 100 - 20 cached
-          outputTokens: 50,
+          outputTokens: 40, // 50 - 10 reasoning
           cacheReadTokens: 20,
           reasoningTokens: 10,
         });

@@ -1,7 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import * as vfsService from '../../services/vfs/vfsService';
-import { getBasename, type VersionInfo } from '../../services/vfs/vfsService';
-import { computeLcsDiff, splitLines, getDiffStats, type DiffLine } from '../../utils/lcsDiff';
+import * as vfsService from '../../services/vfs';
+import { getBasename, type VersionInfo } from '../../services/vfs';
+import {
+  computeLcsDiff,
+  splitLines,
+  getDiffStats,
+  filterDiffContext,
+  type DiffLine,
+  type DiffHunk,
+} from '../../utils/lcsDiff';
 
 export interface VfsDiffViewerProps {
   projectId: string;
@@ -42,6 +49,7 @@ export default function VfsDiffViewer({
     currentContent: '',
   });
   const [rolling, setRolling] = useState(false);
+  const [contextOnly, setContextOnly] = useState(false);
 
   // Load content for a specific version (shows diff from prev to this version)
   const loadVersionContent = useCallback(
@@ -105,11 +113,8 @@ export default function VfsDiffViewer({
         throw new Error('No version history available');
       }
 
-      // Build versions list for UI (only stored versions)
-      const versions: VersionInfo[] = [];
-      for (let v = minStoredVersion; v <= currentVersion; v++) {
-        versions.push({ version: v, createdAt: 0 }); // Timestamps not needed for UI
-      }
+      // Fetch real version list with timestamps
+      const versions = await vfsService.listVersions(projectId, fileId);
 
       setState(prev => ({
         ...prev,
@@ -180,7 +185,18 @@ export default function VfsDiffViewer({
 
   const stats = useMemo(() => getDiffStats(diff), [diff]);
 
+  const diffHunks = useMemo(
+    () => (contextOnly ? filterDiffContext(diff, 10) : null),
+    [diff, contextOnly]
+  );
+
   const filename = getBasename(path);
+
+  // Look up createdAt for the currently viewed version
+  const viewingVersionDate = useMemo(() => {
+    const info = state.versions.find(v => v.version === state.viewingVersion);
+    return info?.createdAt ?? 0;
+  }, [state.versions, state.viewingVersion]);
 
   // Navigation state
   const canPrev = state.viewingVersion > state.minStoredVersion;
@@ -243,6 +259,11 @@ export default function VfsDiffViewer({
             </button>
             <span className="min-w-[3rem] text-center text-sm font-medium text-gray-700">
               v{state.viewingVersion}
+              {viewingVersionDate > 0 && (
+                <span className="ml-1.5 font-normal text-gray-400">
+                  · {formatShortDate(viewingVersionDate)}
+                </span>
+              )}
             </span>
             <button
               type="button"
@@ -262,12 +283,24 @@ export default function VfsDiffViewer({
           <span className="text-green-600">+{stats.added}</span>
           <span className="text-red-600">-{stats.removed}</span>
           <span className="text-gray-500">{stats.unchanged} unchanged</span>
+          <button
+            type="button"
+            className={`rounded border px-1.5 py-0.5 transition-colors ${
+              contextOnly
+                ? 'border-blue-300 bg-blue-50 text-blue-700'
+                : 'border-gray-300 text-gray-500 hover:bg-gray-100'
+            }`}
+            onClick={() => setContextOnly(prev => !prev)}
+            title={contextOnly ? 'Show full diff' : 'Show only ±10 lines around changes'}
+          >
+            ±10
+          </button>
         </div>
       </div>
 
       {/* Diff display */}
       <div className="flex-1 overflow-auto bg-white">
-        <DiffDisplay diff={diff} />
+        <DiffDisplay diff={diff} hunks={diffHunks} />
       </div>
 
       {/* Action bar */}
@@ -297,6 +330,17 @@ export default function VfsDiffViewer({
   );
 }
 
+function formatShortDate(timestamp: number): string {
+  const date = new Date(timestamp);
+  const dateStr = date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+  const timeStr = date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return `${dateStr} ${timeStr}`;
+}
+
 interface HeaderProps {
   filename: string;
   onClose: () => void;
@@ -323,9 +367,10 @@ function Header({ filename, onClose }: HeaderProps) {
 
 interface DiffDisplayProps {
   diff: DiffLine[];
+  hunks: DiffHunk[] | null;
 }
 
-function DiffDisplay({ diff }: DiffDisplayProps) {
+function DiffDisplay({ diff, hunks }: DiffDisplayProps) {
   // Show "No differences" when empty or all lines are unchanged
   const hasChanges = diff.some(line => line.type !== 'same');
   if (diff.length === 0 || !hasChanges) {
@@ -336,11 +381,39 @@ function DiffDisplay({ diff }: DiffDisplayProps) {
     );
   }
 
+  // Context-only mode: render hunks with separators
+  if (hunks) {
+    return (
+      <div className="font-mono text-sm">
+        {hunks.map((hunk, hunkIdx) => (
+          <div key={hunkIdx}>
+            {hunkIdx > 0 && <HunkSeparator />}
+            {hunk.lines.map((line, lineIdx) => (
+              <DiffLineRow key={lineIdx} line={line} lineNumber={hunk.startLine + lineIdx + 1} />
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="font-mono text-sm">
       {diff.map((line, index) => (
         <DiffLineRow key={index} line={line} lineNumber={index + 1} />
       ))}
+    </div>
+  );
+}
+
+function HunkSeparator() {
+  return (
+    <div className="flex border-y border-blue-200 bg-blue-50/50 py-0.5">
+      <span className="w-12 shrink-0 border-r border-gray-200 px-2 text-right text-xs text-gray-300 select-none">
+        ···
+      </span>
+      <span className="w-5 shrink-0" />
+      <span className="flex-1 text-xs text-blue-400 select-none">···</span>
     </div>
   );
 }

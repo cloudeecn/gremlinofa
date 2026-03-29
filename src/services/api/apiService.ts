@@ -4,12 +4,9 @@ import type {
   Message,
   MessageStopReason,
   Model,
-  RenderingBlockGroup,
-  ToolResultBlock,
   ToolUseBlock,
   ToolOptions,
 } from '../../types';
-import { groupAndConsolidateBlocks } from '../../types';
 import { AnthropicClient } from './anthropicClient';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import { BedrockClient } from './bedrockClient';
@@ -20,6 +17,7 @@ import {
 } from './model_metadatas/openRouterModelMapper';
 import { OpenAIClient } from './openaiClient';
 import { ResponsesClient } from './responsesClient';
+import { GoogleClient } from './googleClient';
 import { WebLLMClient } from './webllmClient';
 
 /**
@@ -90,6 +88,28 @@ async function fetchModelsFromEndpoint(apiDefinition: APIDefinition): Promise<Mo
   return models;
 }
 
+/**
+ * Merge extraModelIds from an API definition into a discovered model list.
+ * Extra models already present in discoveredModels are skipped (deduplication).
+ * Each extra model ID is resolved via getModelMetadataFor for pricing/metadata enrichment.
+ */
+export function mergeExtraModels(discoveredModels: Model[], apiDefinition: APIDefinition): Model[] {
+  const extraIds = apiDefinition.extraModelIds;
+  if (!extraIds || extraIds.length === 0) return discoveredModels;
+
+  const existingIds = new Set(discoveredModels.map(m => m.id));
+  const extraModels: Model[] = [];
+
+  for (const modelId of extraIds) {
+    const trimmed = modelId.trim();
+    if (!trimmed || existingIds.has(trimmed)) continue;
+    existingIds.add(trimmed);
+    extraModels.push(getModelMetadataFor(apiDefinition, trimmed));
+  }
+
+  return extraModels.length > 0 ? [...discoveredModels, ...extraModels] : discoveredModels;
+}
+
 // Main API service that routes to the correct client
 class APIService {
   private clients: Map<APIType, APIClient> = new Map();
@@ -101,6 +121,7 @@ class APIService {
     this.clients.set('chatgpt', new OpenAIClient());
     this.clients.set('webllm', new WebLLMClient());
     this.clients.set('bedrock', new BedrockClient());
+    this.clients.set('google', new GoogleClient());
   }
 
   // Get the appropriate client for an API type
@@ -110,18 +131,27 @@ class APIService {
 
   // Discover models for a given API definition
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
+    // Provider doesn't support model listing — return only extra models
+    if (apiDefinition.modelsEndpointDisabled) {
+      return mergeExtraModels([], apiDefinition);
+    }
+
+    let models: Model[];
+
     // Use custom models endpoint if configured
     if (apiDefinition.modelsEndpoint) {
-      return fetchModelsFromEndpoint(apiDefinition);
+      models = await fetchModelsFromEndpoint(apiDefinition);
+    } else {
+      const client = this.getClient(apiDefinition.apiType);
+
+      if (!client) {
+        throw new Error(`Cannot get client for ${apiDefinition.apiType}`);
+      }
+
+      models = await client.discoverModels(apiDefinition);
     }
 
-    const client = this.getClient(apiDefinition.apiType);
-
-    if (!client) {
-      throw new Error(`Cannot get client for ${apiDefinition.apiType}`);
-    }
-
-    return client.discoverModels(apiDefinition);
+    return mergeExtraModels(models, apiDefinition);
   }
 
   shouldPrependPrefill(apiDefinition: APIDefinition): boolean {
@@ -184,6 +214,18 @@ class APIService {
     if (!stopReason) return 'end_turn';
 
     // Provider-specific mappings
+    if (apiType === 'google') {
+      switch (stopReason) {
+        case 'STOP':
+        case 'tool_use':
+          return 'end_turn';
+        case 'MAX_TOKENS':
+          return 'max_tokens';
+        default:
+          return stopReason;
+      }
+    }
+
     if (apiType === 'anthropic') {
       // Anthropic uses: end_turn, max_tokens, stop_sequence, tool_use
       switch (stopReason) {
@@ -214,60 +256,6 @@ class APIService {
   }
 
   /**
-   * Migrate old messages without renderingContent to the new format.
-   * Converts provider-specific fullContent to generic RenderingBlockGroup[].
-   * ONLY used during message migration - streaming uses StreamingContentAssembler.
-   *
-   * @param apiType - The API type (modelFamily) that created the content
-   * @param fullContent - Provider-specific content blocks
-   * @param stopReason - Why the message ended (from API)
-   * @returns Grouped rendering blocks and normalized stop reason
-   */
-  migrateMessageRendering(
-    apiType: APIType | undefined,
-    fullContent: unknown,
-    stopReason: string | null
-  ): {
-    renderingContent: RenderingBlockGroup[];
-    stopReason: MessageStopReason;
-  } {
-    // If no apiType, fall back to simple text-only rendering
-    if (!apiType) {
-      const textContent =
-        typeof fullContent === 'string'
-          ? fullContent.trim()
-          : Array.isArray(fullContent)
-            ? fullContent
-                .filter(
-                  (b: unknown): b is { type: string; text: string } =>
-                    typeof b === 'object' && b !== null && 'text' in b && typeof b.text === 'string'
-                )
-                .map(b => b.text)
-                .join('')
-            : '';
-
-      return {
-        renderingContent: textContent
-          ? groupAndConsolidateBlocks([{ type: 'text', text: textContent }])
-          : [],
-        stopReason: stopReason || 'end_turn',
-      };
-    }
-
-    const client = this.getClient(apiType);
-
-    if (!client) {
-      // Fallback for unknown API types
-      return {
-        renderingContent: [],
-        stopReason: stopReason || 'end_turn',
-      };
-    }
-
-    return client.migrateMessageRendering(fullContent, stopReason);
-  }
-
-  /**
    * Extract tool_use blocks from provider-specific fullContent.
    * Routes to the appropriate client based on API type.
    */
@@ -277,18 +265,6 @@ class APIService {
       return [];
     }
     return client.extractToolUseBlocks(fullContent);
-  }
-
-  /**
-   * Build tool result message in provider's expected format.
-   * Routes to the appropriate client based on API type.
-   */
-  buildToolResultMessage(apiType: APIType, toolResults: ToolResultBlock[]): Message<unknown> {
-    const client = this.getClient(apiType);
-    if (!client) {
-      throw new Error(`Cannot get client for ${apiType}`);
-    }
-    return client.buildToolResultMessage(toolResults);
   }
 }
 

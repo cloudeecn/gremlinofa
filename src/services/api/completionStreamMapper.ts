@@ -16,6 +16,8 @@ import type { StreamChunk } from './baseClient';
 export interface CompletionMapperState {
   inReasoningBlock: boolean;
   inContentBlock: boolean;
+  /** Latches true when any reasoning chunk is seen (survives block transitions) */
+  hadReasoning: boolean;
   /** Accumulated tool calls by index for emitting on finish */
   toolCalls: Map<number, { id: string; name: string; arguments: string }>;
 }
@@ -27,6 +29,7 @@ export function createMapperState(): CompletionMapperState {
   return {
     inReasoningBlock: false,
     inContentBlock: false,
+    hadReasoning: false,
     toolCalls: new Map(),
   };
 }
@@ -60,13 +63,15 @@ export function mapCompletionChunkToStreamChunks(
   const delta = choice.delta;
   const finishReason = choice.finish_reason;
 
-  // Handle reasoning content (delta.reasoning)
-  if (delta?.reasoning) {
+  // Handle reasoning content (delta.reasoning or delta.reasoning_content)
+  const reasoningText = delta?.reasoning || delta?.reasoning_content;
+  if (reasoningText) {
     if (!state.inReasoningBlock) {
       chunks.push({ type: 'thinking.start' });
       newState.inReasoningBlock = true;
+      newState.hadReasoning = true;
     }
-    chunks.push({ type: 'thinking', content: delta.reasoning });
+    chunks.push({ type: 'thinking', content: reasoningText });
   }
 
   // Handle text content (delta.content)
@@ -203,7 +208,7 @@ function createTokenUsageChunk(usage: CompletionUsage): StreamChunk {
   return {
     type: 'token_usage',
     inputTokens: inputTokens - cachedTokens,
-    outputTokens,
+    outputTokens: outputTokens - reasoningTokens,
     cacheReadTokens: cachedTokens,
     reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
   };
@@ -221,6 +226,7 @@ export interface CompletionChunk {
       role?: string;
       content?: string | null;
       reasoning?: string | null;
+      reasoning_content?: string | null;
       tool_calls?: Array<{
         index: number;
         id?: string;

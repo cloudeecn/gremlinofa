@@ -142,35 +142,6 @@ describe('WebLLMClient', () => {
     });
   });
 
-  describe('migrateMessageRendering', () => {
-    it('should convert text content to rendering groups', () => {
-      const fullContent = [{ type: 'text', text: 'Hello world!' }];
-      const result = client.migrateMessageRendering(fullContent, null);
-
-      expect(result.renderingContent.length).toBe(1);
-      expect(result.renderingContent[0].category).toBe('text');
-      expect(result.stopReason).toBe('end_turn');
-    });
-
-    it('should handle string content', () => {
-      const result = client.migrateMessageRendering('Plain string content', null);
-
-      expect(result.renderingContent.length).toBe(1);
-      expect(result.stopReason).toBe('end_turn');
-    });
-
-    it('should handle empty content', () => {
-      const result = client.migrateMessageRendering([], null);
-      expect(result.renderingContent.length).toBe(0);
-    });
-
-    it('should map stop reasons correctly', () => {
-      expect(client.migrateMessageRendering([], 'stop').stopReason).toBe('end_turn');
-      expect(client.migrateMessageRendering([], 'length').stopReason).toBe('max_tokens');
-      expect(client.migrateMessageRendering([], null).stopReason).toBe('end_turn');
-    });
-  });
-
   describe('engine state management', () => {
     it('should report initial state as not loaded', () => {
       const state = getEngineState();

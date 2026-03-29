@@ -193,6 +193,94 @@ describe('UserMessageBubble', () => {
     });
   });
 
+  describe('Injected Files', () => {
+    it('renders injected file paths as expandable bars below the bubble', () => {
+      const props = createProps({
+        message: createMessage({
+          content: {
+            type: 'text',
+            content: 'Analyze these',
+            renderingContent: [
+              {
+                category: 'text',
+                blocks: [{ type: 'text', text: 'Analyze these' }],
+              },
+              {
+                category: 'backstage',
+                blocks: [
+                  { type: 'injected_file', path: 'src/foo/bar.ts', content: 'const bar = 1;' },
+                  { type: 'injected_file', path: 'src/baz/qux.ts', content: 'const qux = 2;' },
+                ],
+              },
+            ],
+          },
+        }),
+      });
+      render(<UserMessageBubble {...props} />);
+
+      // Message text shown
+      expect(screen.getByText('Analyze these')).toBeInTheDocument();
+      // File paths shown
+      expect(screen.getByText('src/foo/bar.ts')).toBeInTheDocument();
+      expect(screen.getByText('src/baz/qux.ts')).toBeInTheDocument();
+    });
+
+    it('does not render file bars when no injected files present', () => {
+      const props = createProps({
+        message: createMessage({
+          content: {
+            type: 'text',
+            content: 'Plain message',
+            renderingContent: [
+              {
+                category: 'text',
+                blocks: [{ type: 'text', text: 'Plain message' }],
+              },
+            ],
+          },
+        }),
+      });
+      const { container } = render(<UserMessageBubble {...props} />);
+
+      expect(screen.getByText('Plain message')).toBeInTheDocument();
+      // No file bars (space-y-1 is the InjectedFilesList container)
+      expect(container.querySelector('.space-y-1')).not.toBeInTheDocument();
+    });
+
+    it('shows error styling for failed file injections', () => {
+      const props = createProps({
+        message: createMessage({
+          content: {
+            type: 'text',
+            content: 'Check this',
+            renderingContent: [
+              {
+                category: 'text',
+                blocks: [{ type: 'text', text: 'Check this' }],
+              },
+              {
+                category: 'backstage',
+                blocks: [
+                  {
+                    type: 'injected_file',
+                    path: 'missing.ts',
+                    content: 'File not found',
+                    error: true,
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      });
+      const { container } = render(<UserMessageBubble {...props} />);
+
+      expect(screen.getByText('missing.ts')).toBeInTheDocument();
+      // Error file bar has red border
+      expect(container.querySelector('.border-red-200')).toBeInTheDocument();
+    });
+  });
+
   describe('Responsive Behavior', () => {
     it('desktop: max 85% width', () => {
       mockUseIsMobile.mockReturnValue(false);

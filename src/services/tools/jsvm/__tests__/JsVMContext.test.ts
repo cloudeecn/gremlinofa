@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach, vi, type Mock, beforeEach } from 'vitest';
 import { JsVMContext } from '../JsVMContext';
-import * as vfs from '../../../vfs/vfsService';
+import * as vfs from '../../../vfs';
 
 // Mock vfsService for fs tests
-vi.mock('../../../vfs/vfsService', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../../vfs/vfsService')>();
+vi.mock('../../../vfs', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../../vfs')>();
   return {
     ...actual,
     isDirectory: vi.fn(),
@@ -558,6 +558,119 @@ describe('JsVMContext', () => {
       vm.getContext().evalCode('setTimeout(() => {})');
       vm.dispose();
       vm = null;
+    });
+  });
+
+  describe('lib script loading', () => {
+    const projectId = 'test-project';
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    /** Configure VFS mocks so specific lib directories exist with given scripts */
+    function mockLibDir(libPath: string, scripts: { name: string; content: string }[]) {
+      (vfs.isDirectory as Mock).mockImplementation((_pid: string, path: string) =>
+        Promise.resolve(path === libPath)
+      );
+      (vfs.readDir as Mock).mockImplementation((_pid: string, path: string) => {
+        if (path === libPath) {
+          return Promise.resolve(scripts.map(s => ({ name: s.name, type: 'file' })));
+        }
+        return Promise.resolve([]);
+      });
+      (vfs.readFile as Mock).mockImplementation((_pid: string, path: string) => {
+        const script = scripts.find(s => `${libPath}/${s.name}` === path);
+        return Promise.resolve(script?.content ?? '');
+      });
+    }
+
+    /** Configure VFS mocks for both /share/lib and /lib directories */
+    function mockBothLibDirs(
+      shareScripts: { name: string; content: string }[],
+      libScripts: { name: string; content: string }[]
+    ) {
+      (vfs.isDirectory as Mock).mockImplementation((_pid: string, path: string) =>
+        Promise.resolve(path === '/share/lib' || path === '/lib')
+      );
+      (vfs.readDir as Mock).mockImplementation((_pid: string, path: string) => {
+        if (path === '/share/lib')
+          return Promise.resolve(shareScripts.map(s => ({ name: s.name, type: 'file' })));
+        if (path === '/lib')
+          return Promise.resolve(libScripts.map(s => ({ name: s.name, type: 'file' })));
+        return Promise.resolve([]);
+      });
+      (vfs.readFile as Mock).mockImplementation((_pid: string, path: string) => {
+        const shareScript = shareScripts.find(s => `/share/lib/${s.name}` === path);
+        if (shareScript) return Promise.resolve(shareScript.content);
+        const libScript = libScripts.find(s => `/lib/${s.name}` === path);
+        if (libScript) return Promise.resolve(libScript.content);
+        return Promise.resolve('');
+      });
+    }
+
+    it('loads /share/lib scripts when enabled', async () => {
+      mockLibDir('/share/lib', [{ name: 'utils.js', content: 'globalThis.shared = 42;' }]);
+
+      vm = await JsVMContext.create(projectId, false, undefined, true);
+      const result = await vm.evaluate('shared');
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toBe(42);
+    });
+
+    it('loads /share/lib before /lib (order verification)', async () => {
+      mockBothLibDirs(
+        [{ name: 'a.js', content: 'globalThis.order = ["share"];' }],
+        [{ name: 'a.js', content: 'globalThis.order.push("lib");' }]
+      );
+
+      vm = await JsVMContext.create(projectId, true, undefined, true);
+      const result = await vm.evaluate('order');
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toEqual(['share', 'lib']);
+    });
+
+    it('skips /share/lib when disabled', async () => {
+      mockBothLibDirs(
+        [{ name: 'a.js', content: 'globalThis.shared = true;' }],
+        [{ name: 'a.js', content: 'globalThis.local = true;' }]
+      );
+
+      vm = await JsVMContext.create(projectId, true, undefined, false);
+
+      const sharedResult = await vm.evaluate('typeof shared');
+      expect(sharedResult.value).toBe('undefined');
+
+      const localResult = await vm.evaluate('local');
+      expect(localResult.value).toBe(true);
+    });
+
+    it('loads nothing when both disabled', async () => {
+      mockBothLibDirs(
+        [{ name: 'a.js', content: 'globalThis.shared = true;' }],
+        [{ name: 'a.js', content: 'globalThis.local = true;' }]
+      );
+
+      vm = await JsVMContext.create(projectId, false, undefined, false);
+
+      const sharedResult = await vm.evaluate('typeof shared');
+      expect(sharedResult.value).toBe('undefined');
+
+      const localResult = await vm.evaluate('typeof local');
+      expect(localResult.value).toBe('undefined');
+    });
+
+    it('captures /share/lib console output in library logs', async () => {
+      mockLibDir('/share/lib', [{ name: 'log.js', content: 'console.log("hello from share");' }]);
+
+      vm = await JsVMContext.create(projectId, false, undefined, true);
+      const logs = vm.getLibraryLogs();
+
+      expect(logs).toHaveLength(2);
+      expect(logs[0].message).toContain('log.js');
+      expect(logs[1].message).toBe('hello from share');
     });
   });
 

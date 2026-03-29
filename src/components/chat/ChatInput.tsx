@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useIsMobile } from '../../hooks/useIsMobile';
+import { useIsTouchDevice } from '../../hooks/useIsTouchDevice';
 import { useIsKeyboardVisible } from '../../hooks/useIsKeyboardVisible';
 import Spinner from '../ui/Spinner';
 import type { ChatInputProps } from './types';
@@ -21,8 +21,9 @@ export default function ChatInput({
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const isMobile = useIsMobile();
+  const isTouchDevice = useIsTouchDevice();
   const keyboardVisible = useIsKeyboardVisible();
+  const compositionJustEndedRef = useRef(false);
   const [validationError, setValidationError] = useState<string>('');
 
   // Auto-resize textarea based on content
@@ -33,10 +34,29 @@ export default function ChatInput({
     }
   }, [value]);
 
+  // Chrome fires keydown with isComposing:false AFTER compositionend,
+  // so the isComposing check alone misses the Enter that confirmed the IME candidate.
+  // This flag stays true for one frame after compositionend to catch that keydown.
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const onCompositionEnd = () => {
+      compositionJustEndedRef.current = true;
+      requestAnimationFrame(() => {
+        compositionJustEndedRef.current = false;
+      });
+    };
+    textarea.addEventListener('compositionend', onCompositionEnd);
+    return () => textarea.removeEventListener('compositionend', onCompositionEnd);
+  }, []);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // On mobile, let Enter key insert newline naturally (like RN version)
-    // On desktop, send on Enter (without Shift)
-    if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
+    // Ignore Enter during IME composition (Safari: isComposing, Chrome: compositionend guard)
+    if (e.nativeEvent.isComposing || compositionJustEndedRef.current) return;
+
+    // Touch devices (phone/tablet without keyboard): Enter inserts newline, send button to send
+    // Keyboard devices (desktop, iPad + Magic Keyboard): Enter sends, Shift+Enter for newline
+    if (e.key === 'Enter' && !e.shiftKey && !isTouchDevice) {
       e.preventDefault();
       if (value.trim() && !disabled && !isProcessing) {
         onSend();
@@ -222,7 +242,13 @@ export default function ChatInput({
                 showSendSpinner
               }
               className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
-              title={hasPendingToolCalls ? 'Resolve pending tool calls' : 'Send message (Enter)'}
+              title={
+                hasPendingToolCalls
+                  ? 'Resolve pending tool calls'
+                  : isTouchDevice
+                    ? 'Send message'
+                    : 'Send message (Enter)'
+              }
             >
               {showSendSpinner ? (
                 <Spinner size={16} colorClass="border-white" />

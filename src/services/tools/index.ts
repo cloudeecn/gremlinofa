@@ -13,6 +13,8 @@ import { returnTool } from './returnTool';
 import { minionTool } from './minionTool';
 import { sketchbookTool } from './sketchbookTool';
 import { checkpointTool } from './checkpointTool';
+import { dummyTool } from './dummyTool';
+import { metadataTool } from './metadataTool';
 
 /**
  * All available client-side tools.
@@ -27,6 +29,8 @@ const allTools = [
   minionTool,
   sketchbookTool,
   checkpointTool,
+  metadataTool,
+  dummyTool,
   returnTool,
 ];
 
@@ -49,3 +53,5 @@ export { returnTool } from './returnTool';
 export { minionTool } from './minionTool';
 export { sketchbookTool } from './sketchbookTool';
 export { checkpointTool } from './checkpointTool';
+export { metadataTool } from './metadataTool';
+export { dummyTool } from './dummyTool';

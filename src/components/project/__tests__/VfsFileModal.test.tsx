@@ -12,7 +12,7 @@ const mockListVersions = vi.fn();
 const mockGetVersion = vi.fn();
 const mockUpdateFile = vi.fn();
 
-vi.mock('../../../services/vfs/vfsService', () => ({
+vi.mock('../../../services/vfs', () => ({
   readFile: (...args: unknown[]) => mockReadFile(...args),
   readFileWithMeta: (...args: unknown[]) => mockReadFileWithMeta(...args),
   getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),

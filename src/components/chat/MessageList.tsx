@@ -16,6 +16,7 @@ const SCROLL_BUTTON_THROTTLE_MS = 200;
 export default function MessageList({
   messages,
   onAction,
+  onDeleteMessage,
   isLoading,
   streamingGroups,
   currentApiDefId,
@@ -25,9 +26,15 @@ export default function MessageList({
   onPendingToolAccept,
   suspendedAfterTools,
   onContinueAfterToolStop,
+  focusMode,
+  expandMinions,
+  disableMath,
+  alwaysAutoScroll,
+  dummyHookStatus,
 }: MessageListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
+  const prevScrollTopRef = useRef(0);
   const prevIsLoadingRef = useRef(isLoading);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [webllmLoadingState, setWebllmLoadingState] = useState<WebLLMLoadingState | null>(null);
@@ -72,6 +79,23 @@ export default function MessageList({
     }
   }, [isLoading]);
 
+  // Disable auto-scroll in focus mode (reading back, not following live output)
+  useEffect(() => {
+    if (focusMode && !alwaysAutoScroll) {
+      shouldAutoScrollRef.current = false;
+    }
+  }, [focusMode, alwaysAutoScroll]);
+
+  // When always-auto-scroll is toggled on, re-enable and snap to bottom
+  useEffect(() => {
+    if (alwaysAutoScroll) {
+      shouldAutoScrollRef.current = true;
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+      }
+    }
+  }, [alwaysAutoScroll]);
+
   // Track if user has scrolled up (disable auto-scroll) and show/hide scroll button
   // Scroll button state is throttled to reduce re-renders during fast scrolling
   const handleScroll = () => {
@@ -80,8 +104,20 @@ export default function MessageList({
     const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
     const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
 
-    // Always update auto-scroll ref immediately (no re-render)
-    shouldAutoScrollRef.current = isNearBottom;
+    // Distinguish user scrolls from DOM-growth scroll events using scroll direction.
+    // DOM growth increases scrollHeight while scrollTop stays put, so scrollTop >= prev.
+    // Only user-initiated upward scrolls should disable auto-scroll.
+    const scrolledUp = scrollTop < prevScrollTopRef.current;
+    prevScrollTopRef.current = scrollTop;
+
+    if (alwaysAutoScroll) {
+      shouldAutoScrollRef.current = true;
+    } else if (scrolledUp) {
+      shouldAutoScrollRef.current = isNearBottom;
+    } else if (isNearBottom) {
+      shouldAutoScrollRef.current = true;
+    }
+    // else: DOM grew or user scrolled down but not near bottom — keep current value
 
     // Throttle scroll button state updates
     const newShowButton = !isNearBottom;
@@ -151,7 +187,7 @@ export default function MessageList({
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="ios-scroll absolute inset-0 min-h-0 max-w-full overflow-x-hidden overflow-y-auto overscroll-y-contain bg-white"
+        className="ios-scroll absolute inset-0 min-h-0 max-w-full overflow-x-hidden overflow-y-auto overscroll-contain bg-white"
       >
         <div className="py-4">
           {/* Render all messages */}
@@ -160,20 +196,36 @@ export default function MessageList({
               key={message.id}
               message={message}
               onAction={onAction}
+              onDeleteMessage={onDeleteMessage}
               isVisible={visibleMessageIds.has(message.id)}
               onRegister={registerMessage}
               onMeasureHeight={measureHeight}
               cachedHeight={getHeight(message.id)}
+              focusMode={focusMode}
+              expandMinions={expandMinions}
+              disableMath={disableMath}
             />
           ))}
 
           {/* Render streaming message if active */}
-          {isLoading && streamingGroups.length > 0 && <StreamingMessage groups={streamingGroups} />}
+          {isLoading && streamingGroups.length > 0 && (
+            <StreamingMessage
+              groups={streamingGroups}
+              focusMode={focusMode}
+              disableMath={disableMath}
+              dummyHookStatus={dummyHookStatus}
+            />
+          )}
 
           {/* Loading indicator when no streaming content yet */}
           {isLoading && streamingGroups.length === 0 && (
             <div className="mb-4 px-4">
               <div className={'w-full'}>
+                {dummyHookStatus?.state === 'intercepting' && (
+                  <div className="mb-1 text-xs text-green-700">
+                    ✨ DUMMY System: Intercepting...
+                  </div>
+                )}
                 <div className="mt-1">
                   <BouncingDots />
                 </div>

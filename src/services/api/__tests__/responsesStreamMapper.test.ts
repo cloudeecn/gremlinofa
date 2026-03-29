@@ -343,12 +343,12 @@ data: {"valid":true}
         expect(chunks).toContainEqual({
           type: 'token_usage',
           inputTokens: 80, // 100 - 20 cached
-          outputTokens: 50,
+          outputTokens: 40, // 50 - 10 reasoning
           cacheReadTokens: 20,
           reasoningTokens: 10,
         });
         expect(newState.inputTokens).toBe(80);
-        expect(newState.outputTokens).toBe(50);
+        expect(newState.outputTokens).toBe(40);
       });
 
       it('closes open blocks on response.completed', () => {
@@ -763,7 +763,7 @@ data: {"valid":true}
       expect(chunk.type).toBe('token_usage');
       if (chunk.type === 'token_usage') {
         expect(chunk.inputTokens).toBe(80);
-        expect(chunk.outputTokens).toBe(50);
+        expect(chunk.outputTokens).toBe(40); // 50 - 10 reasoning
         expect(chunk.cacheReadTokens).toBe(20);
         expect(chunk.reasoningTokens).toBe(10);
       }

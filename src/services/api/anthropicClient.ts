@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { getProxyConfig } from './proxyConfig';
 import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import {
   BedrockClient as BedrockControlPlaneClient,
@@ -6,63 +7,93 @@ import {
   ListInferenceProfilesCommand,
   type FoundationModelSummary,
 } from '@aws-sdk/client-bedrock';
-import type {
-  APIDefinition,
-  Message,
-  MessageStopReason,
-  Model,
-  RenderingBlockGroup,
-  RenderingContentBlock,
-  ToolResultBlock,
-  ToolUseBlock,
-  WebFetchRenderBlock,
-  WebSearchRenderBlock,
-  ToolOptions,
-} from '../../types';
-
-import { groupAndConsolidateBlocks } from '../../types';
-import { generateUniqueId } from '../../utils/idGenerator';
+import type { APIDefinition, Message, Model, ToolUseBlock, ToolOptions } from '../../types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import { effectiveInjectionMode } from './fileInjectionHelper';
 import {
   createMapperState,
   mapAnthropicEventToStreamChunks,
   type SSEEvent,
 } from './anthropicStreamMapper';
 import { toolRegistry } from '../tools/clientSideTools';
-import { applyContextTidy, type FilterBlocksFn } from './contextTidy';
+import { findCheckpointIndex, findThinkingBoundary, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from './modelMetadata';
 
 /**
- * Add cache_control breakpoints to the last 2 eligible messages (walking backwards).
- * Skips thinking/redacted_thinking blocks (they don't support cache_control in the SDK).
- * Skips messages that already have a block with cache_control.
+ * Place cache_control on the last eligible block of a single message.
+ * Skips thinking/redacted_thinking and empty text blocks.
+ * Returns false (no-op) if the message already has cache_control or has no eligible block.
  */
-export function applyCacheBreakpoints(messages: Anthropic.Beta.BetaMessageParam[]): void {
-  let placed = 0;
-  for (let i = messages.length - 1; i >= 0 && placed < 2; i--) {
-    const content = messages[i].content;
-    if (typeof content === 'string' || !Array.isArray(content)) continue;
+export function placeCacheControlOnMessage(message: Anthropic.Beta.BetaMessageParam): boolean {
+  const content = message.content;
+  if (typeof content === 'string' || !Array.isArray(content)) return false;
 
-    // Skip if any block already has cache_control
-    if (content.some(b => typeof b === 'object' && 'cache_control' in b && b.cache_control))
-      continue;
+  if (content.some(b => typeof b === 'object' && 'cache_control' in b && b.cache_control))
+    return false;
 
-    // Find last non-thinking, non-empty block
-    let targetIdx = -1;
-    for (let j = content.length - 1; j >= 0; j--) {
-      const block = content[j] as { type: string; text?: string };
-      if (block.type === 'thinking' || block.type === 'redacted_thinking') continue;
-      if (block.type === 'text' && !block.text?.trim()) continue;
-      targetIdx = j;
-      break;
-    }
-    if (targetIdx === -1) continue;
-
-    content[targetIdx] = {
-      ...(content[targetIdx] as unknown as Record<string, unknown>),
+  for (let j = content.length - 1; j >= 0; j--) {
+    const block = content[j] as { type: string; text?: string };
+    if (block.type === 'thinking' || block.type === 'redacted_thinking') continue;
+    if (block.type === 'text' && !block.text?.trim()) continue;
+    content[j] = {
+      ...(content[j] as unknown as Record<string, unknown>),
       cache_control: { type: 'ephemeral' as const },
     } as (typeof content)[number];
-    placed++;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Add a cache_control breakpoint to the last eligible message (walking backwards).
+ * Skips messages that already have cache_control (e.g. from a checkpoint anchor).
+ * One breakpoint is enough — Anthropic looks back ~30 messages from any breakpoint.
+ * @param startIdx - Don't place breakpoints before this index (keeps stable prefix clean)
+ */
+export function applyCacheBreakpoints(
+  messages: Anthropic.Beta.BetaMessageParam[],
+  startIdx = 0
+): void {
+  for (let i = messages.length - 1; i >= startIdx; i--) {
+    if (placeCacheControlOnMessage(messages[i])) return;
+  }
+}
+
+/**
+ * Validate that an API response genuinely came from Anthropic.
+ * Checks cache activity (Anthropic always honors cache_control blocks) and
+ * thinking block signatures (Anthropic cryptographically signs thinking output).
+ */
+export function validateAnthropicResponse(
+  usage: {
+    input_tokens: number;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  },
+  content: Array<{ type: string; signature?: string }>
+): void {
+  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+  const cacheRead = usage.cache_read_input_tokens ?? 0;
+  if (usage.input_tokens > 4096 && cacheWrite === 0 && cacheRead === 0) {
+    throw new Error(
+      'Cache enforcement failed: sent cache_control blocks but response reported zero cache activity. ' +
+        'Your API provider is likely not routing to Anthropic. ' +
+        'Disable "Enforce genuine Anthropic" in advanced settings if intentional.'
+    );
+  }
+
+  const thinkingBlocks = content.filter(b => b.type === 'thinking');
+  if (thinkingBlocks.length > 0) {
+    const allSigned = thinkingBlocks.every(
+      b => typeof b.signature === 'string' && b.signature.length > 0
+    );
+    if (!allSigned) {
+      throw new Error(
+        'Thinking signature check failed: thinking blocks are missing cryptographic signatures. ' +
+          'Your API provider is likely not routing to Anthropic. ' +
+          'Disable "Enforce genuine Anthropic" in advanced settings if intentional.'
+      );
+    }
   }
 }
 
@@ -128,53 +159,105 @@ export function buildAnthropicBetas(options: {
 }
 
 /**
- * Anthropic-specific block filter for context tidy.
- *
- * Assistant messages: removes thinking/redacted_thinking always,
- * removes tool_use by name (collects IDs), keeps text/server_tool_use.
- * User messages: removes tool_result by collected ID,
- * keeps web_search_tool_result/web_fetch_tool_result.
+ * Combined message tidy: checkpoint filtering, thinking pruning, empty text removal.
+ * Single forward pass with direct access to Anthropic block types.
  */
-const filterAnthropicBlocks: FilterBlocksFn = (
-  fullContent,
-  removedToolNames,
-  isCheckpoint,
-  removedToolUseIds
-) => {
-  if (!Array.isArray(fullContent)) return { filtered: fullContent, newRemovedIds: [] };
+function tidyMessages(
+  messages: Message<unknown>[],
+  checkpointMessageId: string | undefined,
+  tidyToolNames: Set<string> | undefined,
+  pruneThinking: boolean,
+  pruneEmptyText: boolean
+): Message<unknown>[] {
+  const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
+  const thinkingBoundary = pruneThinking || pruneEmptyText ? findThinkingBoundary(messages) : -1;
 
-  const filtered: unknown[] = [];
-  const newRemovedIds: string[] = [];
+  if (checkpointIdx === -1 && thinkingBoundary <= 0) return messages;
 
-  for (const block of fullContent) {
-    const b = block as { type?: string; id?: string; name?: string; tool_use_id?: string };
+  const toolNames = tidyToolNames ?? new Set<string>();
+  const removedToolUseIds = new Set<string>();
+  const processUntil = Math.max(checkpointIdx, thinkingBoundary - 1);
+  const result: Message<unknown>[] = [];
 
-    // Always remove thinking blocks (even on checkpoint message)
-    if (b.type === 'thinking' || b.type === 'redacted_thinking') continue;
+  for (let i = 0; i <= processUntil; i++) {
+    const msg = messages[i];
+    const inCheckpoint = checkpointIdx >= 0 && i <= checkpointIdx;
+    const isCheckpoint = inCheckpoint && i === checkpointIdx;
+    const inThinking = thinkingBoundary > 0 && i < thinkingBoundary;
 
-    // Checkpoint message: only thinking removed, everything else preserved
-    if (isCheckpoint) {
-      filtered.push(block);
+    // Wrong modelFamily or missing fullContent — model-agnostic path
+    if (msg.content.modelFamily !== 'anthropic' || msg.content.fullContent == null) {
+      if (inCheckpoint && !isCheckpoint) {
+        const { message, newRemovedIds } = tidyAgnosticMessage(
+          msg,
+          toolNames,
+          removedToolUseIds,
+          false
+        );
+        for (const id of newRemovedIds) removedToolUseIds.add(id);
+        if (message) result.push(message);
+      } else if (inThinking) {
+        const hasText = msg.content.content.trim().length > 0;
+        const hasTools =
+          (msg.content.toolCalls?.length ?? 0) + (msg.content.toolResults?.length ?? 0) > 0;
+        if (hasText || hasTools) result.push(msg);
+      } else {
+        result.push(msg);
+      }
       continue;
     }
 
-    // tool_use — remove if name matches, collect ID
-    if (b.type === 'tool_use' && b.name && removedToolNames.has(b.name)) {
-      if (b.id) newRemovedIds.push(b.id);
-      continue;
+    // Own modelFamily with fullContent — provider-specific filtering
+    let blocks = msg.content.fullContent as {
+      type?: string;
+      id?: string;
+      name?: string;
+      tool_use_id?: string;
+      text?: string;
+    }[];
+
+    if (inCheckpoint) {
+      const filtered: typeof blocks = [];
+      for (const b of blocks) {
+        if (b.type === 'thinking' || b.type === 'redacted_thinking') continue;
+        if (isCheckpoint) {
+          filtered.push(b);
+          continue;
+        }
+        if (b.type === 'tool_use' && b.name && toolNames.has(b.name)) {
+          if (b.id) removedToolUseIds.add(b.id);
+          continue;
+        }
+        if (b.type === 'tool_result' && b.tool_use_id && removedToolUseIds.has(b.tool_use_id)) {
+          continue;
+        }
+        filtered.push(b);
+      }
+      blocks = filtered;
     }
 
-    // tool_result — remove if matching a removed tool_use ID
-    if (b.type === 'tool_result' && b.tool_use_id && removedToolUseIds.has(b.tool_use_id)) {
-      continue;
+    if (inThinking && !inCheckpoint && pruneThinking) {
+      blocks = blocks.filter(b => b.type !== 'thinking' && b.type !== 'redacted_thinking');
     }
 
-    // Keep everything else (text, server_tool_use, web_search_tool_result, web_fetch_tool_result)
-    filtered.push(block);
+    if (inThinking && pruneEmptyText) {
+      blocks = blocks.filter(b => b.type !== 'text' || (b.text?.trim()?.length ?? 0) > 0);
+    }
+
+    if (blocks.length === 0) continue;
+    if (blocks !== (msg.content.fullContent as typeof blocks)) {
+      result.push({ ...msg, content: { ...msg.content, fullContent: blocks } });
+    } else {
+      result.push(msg);
+    }
   }
 
-  return { filtered, newRemovedIds };
-};
+  for (let i = processUntil + 1; i < messages.length; i++) {
+    result.push(messages[i]);
+  }
+
+  return result;
+}
 
 export class AnthropicClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
@@ -269,11 +352,12 @@ export class AnthropicClient implements APIClient {
       }
     }
 
-    // Create Anthropic client with API key and custom baseUrl if provided
+    const proxy = getProxyConfig(apiDefinition);
     const client = new Anthropic({
       dangerouslyAllowBrowser: true,
       apiKey: apiDefinition.apiKey,
-      baseURL: bedrockInfo.url,
+      baseURL: proxy?.baseURL ?? bedrockInfo.url,
+      ...(proxy && { defaultHeaders: proxy.headers }),
     });
 
     // Use Anthropic's models API to get the latest available models
@@ -323,6 +407,7 @@ export class AnthropicClient implements APIClient {
       const bedrockInfo = parseBedrockEndpoint(apiDefinition.baseUrl);
 
       // Create appropriate client based on endpoint type
+      const proxy = bedrockInfo.isBedrock ? null : getProxyConfig(apiDefinition);
       const client: Anthropic | AnthropicBedrock = bedrockInfo.isBedrock
         ? new AnthropicBedrock({
             dangerouslyAllowBrowser: true,
@@ -336,16 +421,17 @@ export class AnthropicClient implements APIClient {
         : new Anthropic({
             dangerouslyAllowBrowser: true,
             apiKey: apiDefinition.apiKey,
-            baseURL: bedrockInfo.url,
+            baseURL: proxy?.baseURL ?? bedrockInfo.url,
+            ...(proxy && { defaultHeaders: proxy.headers }),
           });
 
-      // Apply context tidy before message conversion
-      const tidiedMessages = applyContextTidy(
+      // Tidy messages: checkpoint filtering, thinking pruning, empty text removal
+      const tidiedMessages = tidyMessages(
         messages,
         options.checkpointMessageId,
         options.tidyToolNames,
-        'anthropic',
-        filterAnthropicBlocks
+        apiDefinition.advancedSettings?.pruneThinking ?? false,
+        apiDefinition.advancedSettings?.pruneEmptyText ?? false
       ) as typeof messages;
 
       // Convert our message format to Anthropic's format
@@ -400,10 +486,37 @@ export class AnthropicClient implements APIClient {
               content,
             };
           } else {
-            // Fall back to text content (cross-model compatibility)
-            const contentBlocks: Array<
-              Anthropic.Beta.BetaTextBlockParam | Anthropic.Beta.BetaImageBlockParam
-            > = [];
+            // Cross-model reconstruction: use toolCalls/toolResults if available
+            if (msg.role === 'assistant' && msg.content.toolCalls?.length) {
+              const contentBlocks: Anthropic.Beta.BetaContentBlockParam[] = [];
+              if (msg.content.content.trim()) {
+                contentBlocks.push({ type: 'text', text: msg.content.content });
+              }
+              for (const tc of msg.content.toolCalls) {
+                contentBlocks.push({
+                  type: 'tool_use',
+                  id: tc.id,
+                  name: tc.name,
+                  input: tc.input,
+                });
+              }
+              return { role: 'assistant' as const, content: contentBlocks };
+            }
+
+            if (msg.role === 'user' && msg.content.toolResults?.length) {
+              return {
+                role: 'user' as const,
+                content: msg.content.toolResults.map(tr => ({
+                  type: 'tool_result' as const,
+                  tool_use_id: tr.tool_use_id,
+                  content: tr.content,
+                  is_error: tr.is_error,
+                })),
+              };
+            }
+
+            // Fall back to text content
+            const contentBlocks: Anthropic.Beta.BetaContentBlockParam[] = [];
 
             // Add image blocks if attachments present (for user messages)
             if (msg.role === 'user' && msg.attachments && msg.attachments.length > 0) {
@@ -416,6 +529,31 @@ export class AnthropicClient implements APIClient {
                     data: attachment.data,
                   },
                 });
+              }
+            }
+
+            // Add injected file blocks based on injection mode
+            if (msg.content.injectedFiles?.length && msg.content.injectionMode) {
+              const mode = effectiveInjectionMode(msg.content.injectionMode, 'anthropic');
+              if (mode === 'as-file') {
+                for (const file of msg.content.injectedFiles) {
+                  contentBlocks.push({
+                    type: 'document',
+                    source: {
+                      type: 'text',
+                      data: file.content,
+                      media_type: 'text/plain',
+                    },
+                    title: file.path,
+                  } as Anthropic.Beta.BetaContentBlockParam);
+                }
+              } else if (mode === 'separate-block') {
+                for (const file of msg.content.injectedFiles) {
+                  contentBlocks.push({
+                    type: 'text',
+                    text: `=== ${file.path} ===\n${file.content}`,
+                  });
+                }
               }
             }
 
@@ -435,8 +573,24 @@ export class AnthropicClient implements APIClient {
         }
       );
 
-      // Add cache breakpoints to last 2 eligible messages (before pre-fill)
-      applyCacheBreakpoints(anthropicMessages);
+      // Stable cache anchor at the last fully-tidied message (one before the tidy
+      // boundary checkpoint). In long agentic loops the boundary drifts far from
+      // the tail; without an explicit breakpoint the auto-cached window won't reach
+      // the stable prefix. Sliding breakpoints are restricted to AFTER the anchor
+      // so cache_control markers in the stable prefix stay fixed across calls.
+      let anchorEndIdx = 0;
+      if (options.checkpointMessageId) {
+        const boundaryIdx = tidiedMessages.findIndex(m => m.id === options.checkpointMessageId);
+        const anchorIdx = boundaryIdx - 1;
+        if (anchorIdx >= 0 && anchorIdx < anthropicMessages.length) {
+          if (placeCacheControlOnMessage(anthropicMessages[anchorIdx])) {
+            anchorEndIdx = anchorIdx + 1;
+          }
+        }
+      }
+
+      // Add cache breakpoint to last eligible message (before pre-fill)
+      applyCacheBreakpoints(anthropicMessages, anchorEndIdx);
 
       // Add pre-fill response if provided. Cannot pre-fill in reasoning mode.
       if (options.preFillResponse && !options.enableReasoning) {
@@ -613,9 +767,15 @@ export class AnthropicClient implements APIClient {
 
       // Use finalMessage.usage from SDK (more authoritative than mapper state)
       const usage = finalMessage.usage;
+
+      if (apiDefinition.advancedSettings?.enforceGenuineAnthropic) {
+        validateAnthropicResponse(usage, finalMessage.content);
+      }
+
       return {
         thinkingContent,
         textContent,
+        hasCoT: fullContent.some(b => b.type === 'thinking' || b.type === 'redacted_thinking'),
         fullContent,
         stopReason: finalMessage.stop_reason ?? undefined,
         inputTokens: usage.input_tokens,
@@ -667,241 +827,6 @@ export class AnthropicClient implements APIClient {
     }
   }
 
-  migrateMessageRendering(
-    fullContent: unknown,
-    stopReason: string | null
-  ): {
-    renderingContent: RenderingBlockGroup[];
-    stopReason: MessageStopReason;
-  } {
-    const blocks: RenderingContentBlock[] = [];
-
-    // Handle non-array content (legacy text-only)
-    if (!Array.isArray(fullContent)) {
-      if (typeof fullContent === 'string' && fullContent.trim()) {
-        blocks.push({ type: 'text', text: fullContent });
-      }
-      return {
-        renderingContent: groupAndConsolidateBlocks(blocks),
-        stopReason: this.mapStopReason(stopReason),
-      };
-    }
-
-    // Use Map-based tracking like StreamingContentAssembler for robust toolUseId mapping
-    const webSearchMap = new Map<string, WebSearchRenderBlock>();
-    const webFetchMap = new Map<
-      string,
-      {
-        url: string;
-        title?: string;
-      }
-    >();
-
-    for (const block of fullContent as Array<Record<string, unknown>>) {
-      const blockType = block.type as string;
-
-      switch (blockType) {
-        case 'thinking':
-          if (typeof block.thinking === 'string' && block.thinking.trim()) {
-            blocks.push({ type: 'thinking', thinking: block.thinking });
-          }
-          break;
-
-        case 'text': {
-          // Process text with citations
-          const text = block.text as string | undefined;
-          const citations = block.citations as
-            | Array<{
-                type: string;
-                url?: string;
-                title?: string;
-                cited_text?: string;
-              }>
-            | undefined;
-
-          if (typeof text === 'string' && text.trim()) {
-            // If citations present, render them as <a> tags
-            const processedText = this.renderCitations(text, citations);
-            blocks.push({ type: 'text', text: processedText });
-          }
-          break;
-        }
-
-        case 'server_tool_use': {
-          const toolId = (block.id as string) || `ws_${Date.now()}`;
-          const toolName = block.name as string | undefined;
-          const input = block.input as Record<string, unknown> | undefined;
-
-          if (toolName === 'web_search' && input?.query) {
-            // Create mutable web search block and add to blocks immediately
-            const searchBlock: WebSearchRenderBlock = {
-              type: 'web_search',
-              id: toolId,
-              query: input.query as string,
-              results: [],
-            };
-            blocks.push(searchBlock);
-            webSearchMap.set(toolId, searchBlock);
-          } else if (toolName === 'web_fetch' && input?.url) {
-            const fetchBlock: WebFetchRenderBlock = {
-              type: 'web_fetch',
-              url: input.url as string,
-            };
-            blocks.push(fetchBlock);
-            webFetchMap.set(toolId, fetchBlock);
-          }
-          break;
-        }
-
-        case 'web_search_tool_result': {
-          // Extract results and associate with web search using toolUseId
-          const toolUseId = block.tool_use_id as string | undefined;
-          const content = block.content as Array<Record<string, unknown>> | undefined;
-
-          if (content && Array.isArray(content)) {
-            let targetWebSearch: WebSearchRenderBlock | undefined;
-
-            if (toolUseId) {
-              // Try to find by explicit toolUseId first
-              targetWebSearch = webSearchMap.get(toolUseId);
-            } else {
-              // Fall back to most recent web search (sequential processing)
-              const searches = Array.from(webSearchMap.values());
-              targetWebSearch = searches[searches.length - 1];
-            }
-
-            // Simply mutate the existing block's results array
-            if (targetWebSearch) {
-              for (const result of content) {
-                if (result.type === 'web_search_result') {
-                  const title = result.title as string | undefined;
-                  const url = result.url as string | undefined;
-                  if (title && url) {
-                    targetWebSearch.results.push({ title, url });
-                  }
-                }
-              }
-              // No need to add to blocks or remove from map - the mutable block is already in blocks
-            }
-          }
-          break;
-        }
-
-        case 'web_fetch_tool_result': {
-          // Extract result and associate with web fetch using toolUseId
-          const toolUseId = block.tool_use_id as string | undefined;
-          const content = block.content as Record<string, unknown> | undefined;
-
-          if (content && toolUseId && content.type === 'web_fetch_result') {
-            const targetWebFetch = webFetchMap.get(toolUseId);
-            if (targetWebFetch) {
-              // Update the existing web_fetch block with final URL and title
-              const url = content.url as string | undefined;
-              const title = content.title as string | undefined;
-              if (url) {
-                targetWebFetch.url = url;
-              }
-              if (title) {
-                targetWebFetch.title = title;
-              }
-            }
-          }
-          break;
-        }
-
-        // Skip these block types - they don't contribute to rendering
-        case 'tool_use':
-        case 'tool_result':
-          break;
-
-        default:
-          // Unknown block types are silently ignored
-          break;
-      }
-    }
-
-    return {
-      renderingContent: groupAndConsolidateBlocks(blocks),
-      stopReason: this.mapStopReason(stopReason),
-    };
-  }
-
-  /**
-   * Render Anthropic citations as inline <a> tags.
-   */
-  private renderCitations(
-    text: string,
-    citations?: Array<{
-      type: string;
-      url?: string;
-      title?: string;
-      cited_text?: string;
-    }>
-  ): string {
-    if (!citations || citations.length === 0) {
-      return text;
-    }
-
-    // Build citation link after the text
-    // Format: text<a href="..." title="Source Title" class="citation-link">src</a>
-    const citationLinks = citations
-      .filter(c => c.type === 'web_search_result_location' && c.url)
-      .map(c => {
-        const href = this.escapeHtmlAttr(c.url || '');
-        const title = this.escapeHtmlAttr(c.title || '');
-        const cited = this.escapeHtmlAttr(c.cited_text || '');
-        return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="${title}" data-cited="${cited}" class="citation-link">src</a>`;
-      });
-
-    if (citationLinks.length === 0) {
-      return text;
-    }
-
-    // Append citation links after the text (separated by space if text doesn't end with space)
-    const needsSpace = text.length > 0 && !/\s$/.test(text);
-    return text + (needsSpace ? '' : '') + citationLinks.join(', ');
-  }
-
-  /**
-   * Escape HTML attribute value, including markdown/math special characters.
-   * Uses HTML entities to prevent markdown parser from interpreting them.
-   */
-  private escapeHtmlAttr(str: string): string {
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\$/g, '&#36;')
-      .replace(/\*/g, '&#42;')
-      .replace(/_/g, '&#95;')
-      .replace(/`/g, '&#96;')
-      .replace(/\[/g, '&#91;')
-      .replace(/\]/g, '&#93;');
-  }
-
-  /**
-   * Map Anthropic stop_reason to MessageStopReason.
-   */
-  private mapStopReason(stopReason: string | null): MessageStopReason {
-    if (!stopReason) {
-      return 'end_turn';
-    }
-    // Anthropic uses: end_turn, max_tokens, stop_sequence, tool_use
-    switch (stopReason) {
-      case 'end_turn':
-      case 'max_tokens':
-      case 'stop_sequence':
-        return stopReason;
-      case 'tool_use':
-        // Tool use is treated as normal end for rendering purposes
-        return 'end_turn';
-      default:
-        return stopReason;
-    }
-  }
-
   /**
    * Extract tool_use blocks from Anthropic fullContent.
    * Includes all tool_use blocks - unknown tools will receive error responses.
@@ -917,24 +842,5 @@ export class AnthropicClient implements APIClient {
         name: block.name as string,
         input: (block.input as Record<string, unknown>) || {},
       }));
-  }
-
-  /**
-   * Build tool result message in Anthropic's expected format.
-   * Anthropic expects tool_result blocks in user role.
-   */
-  buildToolResultMessage(toolResults: ToolResultBlock[]): Message<unknown> {
-    return {
-      id: generateUniqueId('msg_user'),
-      role: 'user',
-      content: {
-        type: 'text',
-        content: '',
-        modelFamily: 'anthropic',
-        fullContent: toolResults,
-        // renderingContent will be set by caller
-      },
-      timestamp: new Date(),
-    };
   }
 }

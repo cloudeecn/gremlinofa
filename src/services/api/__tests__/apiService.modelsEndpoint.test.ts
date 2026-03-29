@@ -157,4 +157,33 @@ describe('apiService.discoverModels with modelsEndpoint', () => {
       // We can't reliably check which URL was called without deeper mocking
     });
   });
+
+  describe('modelsEndpointDisabled', () => {
+    it('skips discovery and returns only extra models', async () => {
+      const apiDef: APIDefinition = {
+        ...createApiDef('https://models.example.com/v1/models'),
+        modelsEndpointDisabled: true,
+        extraModelIds: ['custom-model-1', 'custom-model-2'],
+      };
+
+      const models = await apiService.discoverModels(apiDef);
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(models).toHaveLength(2);
+      expect(models[0].id).toBe('custom-model-1');
+      expect(models[1].id).toBe('custom-model-2');
+    });
+
+    it('returns empty array when disabled with no extra models', async () => {
+      const apiDef: APIDefinition = {
+        ...createApiDef(undefined),
+        modelsEndpointDisabled: true,
+      };
+
+      const models = await apiService.discoverModels(apiDef);
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(models).toHaveLength(0);
+    });
+  });
 });

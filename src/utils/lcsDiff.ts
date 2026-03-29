@@ -8,6 +8,11 @@ export interface DiffLine {
   content: string;
 }
 
+export interface DiffHunk {
+  startLine: number; // 0-based index into the original diff array
+  lines: DiffLine[];
+}
+
 /**
  * Compute LCS table for two arrays of strings.
  * Returns a 2D array where lcs[i][j] = length of LCS for oldLines[0..i-1] and newLines[0..j-1]
@@ -133,4 +138,43 @@ export function getDiffStats(diff: DiffLine[]): {
   }
 
   return { added, removed, unchanged };
+}
+
+/**
+ * Filter a diff to only show hunks around changed lines, with surrounding context.
+ * Returns an array of hunks (each hunk is a contiguous slice of the diff).
+ * Overlapping or adjacent context regions are merged into a single hunk.
+ */
+export function filterDiffContext(diff: DiffLine[], contextLines: number): DiffHunk[] {
+  // Find indices of changed lines
+  const changedIndices: number[] = [];
+  for (let i = 0; i < diff.length; i++) {
+    if (diff[i].type !== 'same') {
+      changedIndices.push(i);
+    }
+  }
+
+  if (changedIndices.length === 0) return [];
+
+  // Build merged ranges: each range is [start, end] inclusive
+  const ranges: [number, number][] = [];
+  let rangeStart = Math.max(0, changedIndices[0] - contextLines);
+  let rangeEnd = Math.min(diff.length - 1, changedIndices[0] + contextLines);
+
+  for (let i = 1; i < changedIndices.length; i++) {
+    const newStart = Math.max(0, changedIndices[i] - contextLines);
+    const newEnd = Math.min(diff.length - 1, changedIndices[i] + contextLines);
+
+    if (newStart <= rangeEnd + 1) {
+      // Overlapping or adjacent — merge
+      rangeEnd = newEnd;
+    } else {
+      ranges.push([rangeStart, rangeEnd]);
+      rangeStart = newStart;
+      rangeEnd = newEnd;
+    }
+  }
+  ranges.push([rangeStart, rangeEnd]);
+
+  return ranges.map(([start, end]) => ({ startLine: start, lines: diff.slice(start, end + 1) }));
 }

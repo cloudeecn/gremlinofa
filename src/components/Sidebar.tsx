@@ -96,7 +96,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
       </div>
 
       {/* Projects List */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="ios-scroll flex-1 overflow-y-auto overscroll-y-contain">
         <div className="p-2">
           <div className="mb-2 px-2 py-1 text-xs font-medium text-gray-400">PROJECTS</div>
           {projects.length === 0 ? (

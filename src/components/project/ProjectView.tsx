@@ -9,11 +9,13 @@ import { useAlert } from '../../hooks/useAlert';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 import { processImages } from '../../utils/imageProcessor';
-import { createFile } from '../../services/vfs/vfsService';
+import { createFile } from '../../services/vfs';
 import { generateUniqueId } from '../../utils/idGenerator';
 import ModelSelector from './ModelSelector';
 import ProjectNameIconModal from './ProjectNameIconModal';
 import SystemPromptModal from './SystemPromptModal';
+import CompactModal from './CompactModal';
+import ExportProjectModal from './ExportProjectModal';
 
 // Memoized chat list item to prevent re-renders when parent state changes
 const ChatListItem = React.memo(function ChatListItem({
@@ -113,6 +115,8 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
   const [newChatApiDefId, setNewChatApiDefId] = useState<string | null>(null);
   const [newChatModelId, setNewChatModelId] = useState<string | null>(null);
   const [showNewChatModelSelector, setShowNewChatModelSelector] = useState(false);
+  const [showCompact, setShowCompact] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const settingsDropdownRef = useRef<HTMLDivElement>(null);
 
   // Reset new chat model override when project changes
@@ -273,7 +277,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
       setNewChatApiDefId(null);
       setNewChatModelId(null);
       // Navigate to chat view - useChat will auto-send the pending message
-      void navigate(`/chat/${newChat.id}`);
+      void navigate(`/chat/${newChat.id}`, { state: { pending: true } });
     }
   };
 
@@ -294,7 +298,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
       clearDraft('project-chat', projectId);
       setNewChatApiDefId(null);
       setNewChatModelId(null);
-      void navigate(`/chat/${newChat.id}`);
+      void navigate(`/chat/${newChat.id}`, { state: { pending: true } });
     }
   };
 
@@ -386,6 +390,26 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
                   <span>📁</span>
                   <span>Files</span>
                 </button>
+                <button
+                  onClick={() => {
+                    setShowSettingsDropdown(false);
+                    setShowCompact(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  <span>🗜️</span>
+                  <span>Compact Project</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSettingsDropdown(false);
+                    setShowExport(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  <span>📦</span>
+                  <span>Export Project</span>
+                </button>
               </div>
             )}
           </div>
@@ -411,6 +435,21 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
         initialValue={project.systemPrompt || ''}
         onSave={handleSystemPromptSave}
         onCancel={() => setShowSystemPrompt(false)}
+      />
+
+      {/* Compact Project Modal */}
+      <CompactModal
+        isOpen={showCompact}
+        onClose={() => setShowCompact(false)}
+        projectId={projectId}
+      />
+
+      {/* Export Project Modal */}
+      <ExportProjectModal
+        isOpen={showExport}
+        onClose={() => setShowExport(false)}
+        projectId={projectId}
+        projectName={project.name}
       />
 
       {/* New Chat Input Area */}

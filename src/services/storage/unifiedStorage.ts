@@ -13,66 +13,14 @@ import type {
   MinionChat,
   Model,
   Project,
-  ToolOptions,
 } from '../../types';
 import { clearAllDrafts } from '../../hooks/useDraftPersistence';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { encryptionService } from '../encryption/encryptionService';
 import { type StorageAdapter, Tables } from './StorageAdapter';
 import { getStorageConfig } from './storageConfig';
+import { CachedStorageAdapter } from './adapters/CachedStorageAdapter';
 import { RemoteStorageAdapter } from './adapters/RemoteStorageAdapter';
-
-/**
- * Migrate project tool settings from deprecated boolean flags to new unified format.
- * Called when loading projects from storage.
- * @returns The migrated project and whether migration occurred
- */
-function migrateProjectToolSettings(project: Project): { project: Project; migrated: boolean } {
-  // Skip if already migrated (enabledTools field exists)
-  if (project.enabledTools !== undefined) {
-    return { project, migrated: false };
-  }
-
-  const enabledTools: string[] = [];
-  const toolOptions: Record<string, ToolOptions> = {};
-
-  // Migrate memory tool
-  if (project.memoryEnabled) {
-    enabledTools.push('memory');
-    if (project.memoryUseSystemPrompt) {
-      toolOptions.memory = { useSystemPrompt: true };
-    }
-  }
-
-  // Migrate JS tool
-  if (project.jsExecutionEnabled) {
-    enabledTools.push('javascript');
-    // Note: jsLibEnabled defaults to true, so only store if explicitly false
-    if (project.jsLibEnabled === false) {
-      toolOptions.javascript = { loadLib: false };
-    }
-  }
-
-  // Migrate filesystem tool
-  if (project.fsToolEnabled) {
-    enabledTools.push('filesystem');
-  }
-
-  // Create migrated project with new fields and cleared deprecated fields
-  const migratedProject: Project = {
-    ...project,
-    enabledTools,
-    toolOptions: Object.keys(toolOptions).length > 0 ? toolOptions : undefined,
-    // Clear deprecated fields
-    memoryEnabled: undefined,
-    memoryUseSystemPrompt: undefined,
-    jsExecutionEnabled: undefined,
-    jsLibEnabled: undefined,
-    fsToolEnabled: undefined,
-  };
-
-  return { project: migratedProject, migrated: true };
-}
 
 export class UnifiedStorage {
   private adapter: StorageAdapter;
@@ -163,7 +111,9 @@ export class UnifiedStorage {
       // For remote storage, derive userId from CEK and create RemoteStorageAdapter
       console.debug('[Storage] Setting up remote storage adapter...');
       const userId = await encryptionService.deriveUserId();
-      this.adapter = new RemoteStorageAdapter(config.baseUrl, userId, config.password);
+      this.adapter = new CachedStorageAdapter(
+        new RemoteStorageAdapter(config.baseUrl, userId, config.password)
+      );
       console.debug('[Storage] Remote storage adapter created');
     }
 
@@ -171,13 +121,6 @@ export class UnifiedStorage {
     console.debug('[Storage] Initializing adapter...');
     await this.adapter.initialize();
     console.debug('[Storage] Adapter initialized');
-
-    // Migrate old memory data to VFS (idempotent, skips if no old data)
-    // Use dynamic import to avoid circular dependency: unifiedStorage -> migration -> vfsService -> storage
-    console.debug('[Storage] Running VFS migration...');
-    const { migrateAllMemories } = await import('../vfs/migration');
-    await migrateAllMemories(this.adapter);
-    console.debug('[Storage] VFS migration complete');
 
     // Create default API definitions if needed
     console.debug('[Storage] Initializing default API definitions...');
@@ -321,19 +264,11 @@ export class UnifiedStorage {
     for (const record of records) {
       try {
         const proj = await this.decrypt<Project>(record.encryptedData);
-        const projectWithDates = {
+        projects.push({
           ...proj,
           createdAt: new Date(proj.createdAt),
           lastUsedAt: new Date(proj.lastUsedAt),
-        };
-
-        // Migrate tool settings if needed
-        const { project: migratedProject, migrated } = migrateProjectToolSettings(projectWithDates);
-        if (migrated) {
-          console.debug(`[Storage] Migrating tool settings for project: ${migratedProject.name}`);
-          await this.saveProject(migratedProject);
-        }
-        projects.push(migratedProject);
+        });
       } catch (error) {
         console.error('Failed to decrypt project:', error);
       }
@@ -348,20 +283,11 @@ export class UnifiedStorage {
 
     try {
       const proj = await this.decrypt<Project>(record.encryptedData);
-      const projectWithDates = {
+      return {
         ...proj,
         createdAt: new Date(proj.createdAt),
         lastUsedAt: new Date(proj.lastUsedAt),
       };
-
-      // Migrate tool settings if needed
-      const { project: migratedProject, migrated } = migrateProjectToolSettings(projectWithDates);
-      if (migrated) {
-        console.debug(`[Storage] Migrating tool settings for project: ${migratedProject.name}`);
-        await this.saveProject(migratedProject);
-      }
-
-      return migratedProject;
     } catch (error) {
       console.error('Failed to decrypt project:', error);
       return null;
@@ -557,15 +483,15 @@ export class UnifiedStorage {
       totalCacheCreationTokens: sourceChat.totalCacheCreationTokens,
       totalCacheReadTokens: sourceChat.totalCacheReadTokens,
       totalCost: sourceChat.totalCost,
+      // Copy minion totals as-is (cumulative, never decrease)
+      minionTotalInputTokens: sourceChat.minionTotalInputTokens,
+      minionTotalOutputTokens: sourceChat.minionTotalOutputTokens,
+      minionTotalReasoningTokens: sourceChat.minionTotalReasoningTokens,
+      minionTotalCacheCreationTokens: sourceChat.minionTotalCacheCreationTokens,
+      minionTotalCacheReadTokens: sourceChat.minionTotalCacheReadTokens,
+      minionTotalCost: sourceChat.minionTotalCost,
       // Recalculate context window from copied messages
       contextWindowUsage: contextWindowUsage,
-      // DO NOT copy deprecated sink costs
-      sinkInputTokens: undefined,
-      sinkOutputTokens: undefined,
-      sinkReasoningTokens: undefined,
-      sinkCacheCreationTokens: undefined,
-      sinkCacheReadTokens: undefined,
-      sinkCost: undefined,
       // Set fork tracking fields
       isForked: true,
       forkedFromChatId: chatId,
@@ -694,6 +620,11 @@ export class UnifiedStorage {
       await this.deleteAttachments(msg.id);
       await this.adapter.delete(Tables.MESSAGES, msg.id);
     }
+  }
+
+  async deleteSingleMessage(messageId: string): Promise<void> {
+    await this.deleteAttachments(messageId);
+    await this.adapter.delete(Tables.MESSAGES, messageId);
   }
 
   async getMessageCount(chatId: string): Promise<number> {
@@ -1210,8 +1141,7 @@ export class UnifiedStorage {
       const data = JSON.parse(record.unencryptedData);
       return data.value || null;
     } catch {
-      // Fallback - try the encryptedData field for legacy compatibility
-      return record.encryptedData || null;
+      return null;
     }
   }
 

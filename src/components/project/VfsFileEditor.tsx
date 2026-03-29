@@ -1,8 +1,8 @@
 import { useState, useCallback } from 'react';
 import Spinner from '../ui/Spinner';
 import { useDraftPersistence, clearDraft } from '../../hooks/useDraftPersistence';
-import * as vfsService from '../../services/vfs/vfsService';
-import { getBasename } from '../../services/vfs/vfsService';
+import * as vfsService from '../../services/vfs';
+import { getBasename } from '../../services/vfs';
 
 export interface VfsFileEditorProps {
   projectId: string;
@@ -93,7 +93,7 @@ export default function VfsFileEditor({
       )}
 
       {/* Editor area */}
-      <div className="flex-1 overflow-y-auto bg-gray-50 p-4">
+      <div className="ios-scroll flex-1 overflow-y-auto overscroll-y-contain bg-gray-50 p-4">
         <textarea
           className="ios-scroll h-full min-h-[300px] w-full resize-none overflow-y-auto overscroll-y-contain rounded border border-gray-300 bg-white p-3 font-mono text-base text-gray-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
           value={content}

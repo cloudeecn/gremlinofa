@@ -11,7 +11,6 @@ import {
   ConverseStreamCommand,
   type ContentBlock,
   type Message as BedrockMessage,
-  type ToolResultBlock as BedrockToolResultBlock,
   type Tool,
   type SystemContentBlock,
   type ToolConfiguration,
@@ -29,20 +28,14 @@ import {
 import type {
   APIDefinition,
   Message,
-  MessageStopReason,
   Model,
   ReasoningEffort,
-  RenderingBlockGroup,
-  RenderingContentBlock,
-  ToolResultBlock,
   ToolUseBlock,
   ToolOptions,
 } from '../../types';
-
-import { groupAndConsolidateBlocks } from '../../types';
-import { generateUniqueId } from '../../utils/idGenerator';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
-import { applyContextTidy, type FilterBlocksFn } from './contextTidy';
+import { effectiveInjectionMode } from './fileInjectionHelper';
+import { findCheckpointIndex, findThinkingBoundary, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from './modelMetadata';
 import { toolRegistry } from '../tools/clientSideTools';
 import {
@@ -291,52 +284,106 @@ function base64ToUint8Array(base64: string): Uint8Array {
 export type BedrockFullContent = ContentBlock[];
 
 /**
- * Bedrock Converse API block filter for context tidy.
- * Removes reasoningContent always, toolUse by name, toolResult by ID.
+ * Combined message tidy: checkpoint filtering, thinking pruning, empty text removal.
+ * Single forward pass with direct access to Bedrock Converse block types.
  */
-const filterBedrockBlocks: FilterBlocksFn = (
-  fullContent,
-  removedToolNames,
-  isCheckpoint,
-  removedToolUseIds
-) => {
-  if (!Array.isArray(fullContent)) return { filtered: fullContent, newRemovedIds: [] };
+function tidyMessages(
+  messages: Message<unknown>[],
+  checkpointMessageId: string | undefined,
+  tidyToolNames: Set<string> | undefined,
+  pruneThinking: boolean,
+  pruneEmptyText: boolean
+): Message<unknown>[] {
+  const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
+  const thinkingBoundary = pruneThinking || pruneEmptyText ? findThinkingBoundary(messages) : -1;
 
-  const filtered: unknown[] = [];
-  const newRemovedIds: string[] = [];
+  if (checkpointIdx === -1 && thinkingBoundary <= 0) return messages;
 
-  for (const block of fullContent) {
-    const b = block as {
+  const toolNames = tidyToolNames ?? new Set<string>();
+  const removedToolUseIds = new Set<string>();
+  const processUntil = Math.max(checkpointIdx, thinkingBoundary - 1);
+  const result: Message<unknown>[] = [];
+
+  for (let i = 0; i <= processUntil; i++) {
+    const msg = messages[i];
+    const inCheckpoint = checkpointIdx >= 0 && i <= checkpointIdx;
+    const isCheckpoint = inCheckpoint && i === checkpointIdx;
+    const inThinking = thinkingBoundary > 0 && i < thinkingBoundary;
+
+    if (msg.content.modelFamily !== 'bedrock' || msg.content.fullContent == null) {
+      if (inCheckpoint && !isCheckpoint) {
+        const { message, newRemovedIds } = tidyAgnosticMessage(
+          msg,
+          toolNames,
+          removedToolUseIds,
+          false
+        );
+        for (const id of newRemovedIds) removedToolUseIds.add(id);
+        if (message) result.push(message);
+      } else if (inThinking) {
+        const hasText = msg.content.content.trim().length > 0;
+        const hasTools =
+          (msg.content.toolCalls?.length ?? 0) + (msg.content.toolResults?.length ?? 0) > 0;
+        if (hasText || hasTools) result.push(msg);
+      } else {
+        result.push(msg);
+      }
+      continue;
+    }
+
+    let blocks = msg.content.fullContent as {
       reasoningContent?: unknown;
+      text?: string;
       toolUse?: { name?: string; toolUseId?: string };
       toolResult?: { toolUseId?: string };
-    };
+    }[];
 
-    // Always remove reasoning blocks
-    if (b.reasoningContent) continue;
-
-    // Checkpoint message: only reasoning removed
-    if (isCheckpoint) {
-      filtered.push(block);
-      continue;
+    if (inCheckpoint) {
+      const filtered: typeof blocks = [];
+      for (const b of blocks) {
+        if (b.reasoningContent) continue;
+        if (isCheckpoint) {
+          filtered.push(b);
+          continue;
+        }
+        if (b.toolUse?.name && toolNames.has(b.toolUse.name)) {
+          if (b.toolUse.toolUseId) removedToolUseIds.add(b.toolUse.toolUseId);
+          continue;
+        }
+        if (b.toolResult?.toolUseId && removedToolUseIds.has(b.toolResult.toolUseId)) {
+          continue;
+        }
+        filtered.push(b);
+      }
+      blocks = filtered;
     }
 
-    // toolUse — remove if name matches
-    if (b.toolUse?.name && removedToolNames.has(b.toolUse.name)) {
-      if (b.toolUse.toolUseId) newRemovedIds.push(b.toolUse.toolUseId);
-      continue;
+    if (inThinking && !inCheckpoint && pruneThinking) {
+      blocks = blocks.filter(b => !b.reasoningContent);
     }
 
-    // toolResult — remove if matching a removed toolUse ID
-    if (b.toolResult?.toolUseId && removedToolUseIds.has(b.toolResult.toolUseId)) {
-      continue;
+    if (inThinking && pruneEmptyText) {
+      blocks = blocks.filter(b => {
+        if (typeof b.text !== 'string') return true;
+        if (b.toolUse || b.reasoningContent) return true;
+        return b.text.trim().length > 0;
+      });
     }
 
-    filtered.push(block);
+    if (blocks.length === 0) continue;
+    if (blocks !== (msg.content.fullContent as typeof blocks)) {
+      result.push({ ...msg, content: { ...msg.content, fullContent: blocks } });
+    } else {
+      result.push(msg);
+    }
   }
 
-  return { filtered, newRemovedIds };
-};
+  for (let i = processUntil + 1; i < messages.length; i++) {
+    result.push(messages[i]);
+  }
+
+  return result;
+}
 
 export class BedrockClient implements APIClient {
   /**
@@ -604,13 +651,13 @@ export class BedrockClient implements APIClient {
         ...(runtimeUrl && { endpoint: runtimeUrl }),
       });
 
-      // Apply context tidy before message conversion
-      const tidiedMessages = applyContextTidy(
+      // Tidy messages: checkpoint filtering, thinking pruning, empty text removal
+      const tidiedMessages = tidyMessages(
         messages,
         options.checkpointMessageId,
         options.tidyToolNames,
-        'bedrock',
-        filterBedrockBlocks
+        apiDefinition.advancedSettings?.pruneThinking ?? false,
+        apiDefinition.advancedSettings?.pruneEmptyText ?? false
       ) as typeof messages;
 
       // Convert messages to Bedrock format
@@ -705,6 +752,7 @@ export class BedrockClient implements APIClient {
       return {
         textContent: accumulator.getTextContent(),
         thinkingContent: accumulator.getThinkingContent(),
+        hasCoT: accumulator.hasReasoning(),
         fullContent,
         stopReason,
         inputTokens,
@@ -755,6 +803,7 @@ export class BedrockClient implements APIClient {
     return {
       textContent,
       thinkingContent,
+      hasCoT: outputContent.some(b => 'reasoningContent' in b && b.reasoningContent !== undefined),
       fullContent: outputContent,
       stopReason: response.stopReason,
       inputTokens: usage?.inputTokens ?? 0,
@@ -778,6 +827,36 @@ export class BedrockClient implements APIClient {
           role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: transformedContent,
         };
+      }
+
+      // Cross-model reconstruction: assistant with tool calls
+      if (msg.role === 'assistant' && msg.content.toolCalls?.length) {
+        const contentBlocks: ContentBlock[] = [];
+        if (msg.content.content.trim()) {
+          contentBlocks.push({ text: msg.content.content });
+        }
+        for (const tc of msg.content.toolCalls) {
+          contentBlocks.push({
+            toolUse: {
+              toolUseId: tc.id,
+              name: tc.name,
+              input: tc.input as DocumentType,
+            },
+          });
+        }
+        return { role: 'assistant' as const, content: contentBlocks };
+      }
+
+      // Cross-model reconstruction: user with tool results
+      if (msg.role === 'user' && msg.content.toolResults?.length) {
+        const contentBlocks: ContentBlock[] = msg.content.toolResults.map(tr => ({
+          toolResult: {
+            toolUseId: tr.tool_use_id,
+            content: [{ text: tr.content }],
+            status: tr.is_error ? ('error' as const) : ('success' as const),
+          },
+        }));
+        return { role: 'user' as const, content: contentBlocks };
       }
 
       // Fall back to text content
@@ -807,6 +886,29 @@ export class BedrockClient implements APIClient {
               source: { bytes },
             },
           });
+        }
+      }
+
+      // Add injected file blocks based on injection mode
+      if (msg.content.injectedFiles?.length && msg.content.injectionMode) {
+        const mode = effectiveInjectionMode(msg.content.injectionMode, 'bedrock');
+        if (mode === 'as-file') {
+          for (const file of msg.content.injectedFiles) {
+            // Bedrock document name: alphanumeric, whitespace, hyphens, parens, brackets only
+            const sanitizedName = file.path.replace(/[^a-zA-Z0-9\s\-()[\]]/g, '-');
+            const encoder = new TextEncoder();
+            contentBlocks.push({
+              document: {
+                format: 'txt',
+                name: sanitizedName,
+                source: { bytes: encoder.encode(file.content) },
+              },
+            });
+          }
+        } else if (mode === 'separate-block') {
+          for (const file of msg.content.injectedFiles) {
+            contentBlocks.push({ text: `=== ${file.path} ===\n${file.content}` });
+          }
         }
       }
 
@@ -924,64 +1026,6 @@ export class BedrockClient implements APIClient {
   }
 
   /**
-   * Migrate old messages to renderingContent format
-   */
-  migrateMessageRendering(
-    fullContent: unknown,
-    stopReason: string | null
-  ): {
-    renderingContent: RenderingBlockGroup[];
-    stopReason: MessageStopReason;
-  } {
-    const blocks: RenderingContentBlock[] = [];
-
-    if (!Array.isArray(fullContent)) {
-      if (typeof fullContent === 'string' && fullContent.trim()) {
-        blocks.push({ type: 'text', text: fullContent });
-      }
-      return {
-        renderingContent: groupAndConsolidateBlocks(blocks),
-        stopReason: this.mapStopReason(stopReason),
-      };
-    }
-
-    for (const block of fullContent as ContentBlock[]) {
-      if ('text' in block && block.text) {
-        blocks.push({ type: 'text', text: block.text });
-      } else if ('reasoningContent' in block && block.reasoningContent) {
-        const reasoning = block.reasoningContent;
-        if ('reasoningText' in reasoning && reasoning.reasoningText?.text) {
-          blocks.push({ type: 'thinking', thinking: reasoning.reasoningText.text });
-        }
-      }
-      // tool_use blocks are handled separately via extractToolUseBlocks
-    }
-
-    return {
-      renderingContent: groupAndConsolidateBlocks(blocks),
-      stopReason: this.mapStopReason(stopReason),
-    };
-  }
-
-  /**
-   * Map Bedrock stop reason to MessageStopReason
-   */
-  private mapStopReason(stopReason: string | null): MessageStopReason {
-    if (!stopReason) return 'end_turn';
-
-    switch (stopReason) {
-      case 'end_turn':
-      case 'max_tokens':
-      case 'stop_sequence':
-        return stopReason;
-      case 'tool_use':
-        return 'end_turn';
-      default:
-        return stopReason;
-    }
-  }
-
-  /**
    * Extract tool_use blocks from Bedrock fullContent
    */
   extractToolUseBlocks(fullContent: unknown): ToolUseBlock[] {
@@ -999,28 +1043,5 @@ export class BedrockClient implements APIClient {
       }
     }
     return blocks;
-  }
-
-  /**
-   * Build tool result message in Bedrock format
-   */
-  buildToolResultMessage(toolResults: ToolResultBlock[]): Message<BedrockFullContent> {
-    const bedrockToolResults: BedrockToolResultBlock[] = toolResults.map(result => ({
-      toolUseId: result.tool_use_id,
-      content: [{ text: result.content }],
-      status: result.is_error ? 'error' : 'success',
-    }));
-
-    return {
-      id: generateUniqueId('msg_user'),
-      role: 'user',
-      content: {
-        type: 'text',
-        content: '',
-        modelFamily: 'bedrock',
-        fullContent: bedrockToolResults.map(tr => ({ toolResult: tr })),
-      },
-      timestamp: new Date(),
-    };
   }
 }

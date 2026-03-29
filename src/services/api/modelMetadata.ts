@@ -7,12 +7,18 @@ import type { APIDefinition, ModelKnowledge, Model } from '../../types';
 import { ANTHROPIC_MODELS } from './model_metadatas/anthropic';
 import { OPENAI_MODELS } from './model_metadatas/openai';
 import { XAI_MODELS } from './model_metadatas/xai';
+import { GOOGLE_MODELS } from './model_metadatas/google';
+import { XIAOMI_MODELS } from './model_metadatas/xiaomi';
+import { DEEPSEEK_MODELS } from './model_metadatas/deepseek';
 
 // Combined model knowledge from all providers
 const ALL_MODEL_KNOWLEDGE: ModelKnowledge[] = [
   ...ANTHROPIC_MODELS,
   ...OPENAI_MODELS,
   ...XAI_MODELS,
+  ...GOOGLE_MODELS,
+  ...XIAOMI_MODELS,
+  ...DEEPSEEK_MODELS,
 ];
 
 // Flattened match entry with single match condition
@@ -211,6 +217,35 @@ export const getModelMetadataFor = (apiDefinition: APIDefinition, modelId: strin
     }
   }
 
+  // Try matching with provider prefix stripped (e.g., "openai/gpt-5.4" -> "gpt-5.4")
+  const slashIndex = modelId.indexOf('/');
+  if (slashIndex > 0 && slashIndex < modelId.length - 1) {
+    const strippedId = modelId.substring(slashIndex + 1);
+
+    const strippedExact = storage.exactModelIdIndex.get(strippedId);
+    if (strippedExact) {
+      return {
+        id: modelId,
+        name: modelId,
+        apiType: apiDefinition.apiType,
+        matchedMode: 'exact',
+        ...cloneKnowledgeToModel(strippedExact),
+      };
+    }
+
+    for (const { knowledge, match } of storage.modelKnowledges) {
+      if (match.modelIdFuzz && fuzzMatchModelId(strippedId, match.modelIdFuzz)) {
+        return {
+          id: modelId,
+          name: modelId,
+          apiType: apiDefinition.apiType,
+          matchedMode: 'fuzz',
+          ...cloneKnowledgeToModel(knowledge),
+        };
+      }
+    }
+  }
+
   // No match - return default with minimal info
   return {
     id: modelId,
@@ -240,6 +275,7 @@ export const clearModelKnowledgeCache = (apiDefinitionId?: string): void => {
  * Cost is unreliable when:
  * - Model's matchedMode is 'unreliable' or 'default' (unknown model)
  * - Any price is undefined when corresponding count is non-zero
+ * - Cache tokens fall back to inputPrice when cache-specific price is missing
  *
  * @param model - Model with pricing info
  * @param inputTokens - Input/prompt tokens
@@ -267,10 +303,28 @@ export function isCostUnreliable(
   // Check if any price is undefined when count is non-zero
   if (inputTokens > 0 && model.inputPrice === undefined) return true;
   if (outputTokens > 0 && model.outputPrice === undefined) return true;
-  if (reasoningTokens && reasoningTokens > 0 && model.reasoningPrice === undefined) return true;
-  if (cacheCreationTokens && cacheCreationTokens > 0 && model.cacheWritePrice === undefined)
+  if (
+    reasoningTokens &&
+    reasoningTokens > 0 &&
+    model.reasoningPrice === undefined &&
+    model.outputPrice === undefined
+  )
     return true;
-  if (cacheReadTokens && cacheReadTokens > 0 && model.cacheReadPrice === undefined) return true;
+  // Cache tokens fall back to inputPrice when cache-specific price is missing
+  if (
+    cacheCreationTokens &&
+    cacheCreationTokens > 0 &&
+    model.cacheWritePrice === undefined &&
+    model.inputPrice === undefined
+  )
+    return true;
+  if (
+    cacheReadTokens &&
+    cacheReadTokens > 0 &&
+    model.cacheReadPrice === undefined &&
+    model.inputPrice === undefined
+  )
+    return true;
   if (webSearchCount && webSearchCount > 0 && model.webSearchPrice === undefined) return true;
 
   return false;
@@ -307,14 +361,24 @@ export function calculateCost(
   if (model.outputPrice) {
     cost += (outputTokens / 1_000_000) * model.outputPrice;
   }
-  if (model.reasoningPrice && reasoningTokens) {
-    cost += (reasoningTokens / 1_000_000) * model.reasoningPrice;
+  if (reasoningTokens) {
+    const price = model.reasoningPrice ?? model.outputPrice;
+    if (price) {
+      cost += (reasoningTokens / 1_000_000) * price;
+    }
   }
-  if (model.cacheWritePrice && cacheCreationTokens) {
-    cost += (cacheCreationTokens / 1_000_000) * model.cacheWritePrice;
+  // Cache tokens use their specific price, falling back to inputPrice
+  if (cacheCreationTokens) {
+    const price = model.cacheWritePrice ?? model.inputPrice;
+    if (price) {
+      cost += (cacheCreationTokens / 1_000_000) * price;
+    }
   }
-  if (model.cacheReadPrice && cacheReadTokens) {
-    cost += (cacheReadTokens / 1_000_000) * model.cacheReadPrice;
+  if (cacheReadTokens) {
+    const price = model.cacheReadPrice ?? model.inputPrice;
+    if (price) {
+      cost += (cacheReadTokens / 1_000_000) * price;
+    }
   }
 
   // Per-request costs

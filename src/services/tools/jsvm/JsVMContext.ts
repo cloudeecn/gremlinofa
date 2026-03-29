@@ -6,7 +6,7 @@
  * - Promise/async-await support via executePendingJobs(1) per tick
  * - Common polyfills (TextEncoder, atob, etc.)
  * - Console output capture
- * - 60s execution timeout via interrupt handler
+ * - 300s execution timeout via interrupt handler
  */
 
 import {
@@ -18,7 +18,7 @@ import {
 import variant from '@jitl/quickjs-ng-wasmfile-release-sync';
 import { injectPolyfills } from './polyfills';
 import { FsBridge } from './fsPolyfill';
-import * as vfs from '../../vfs/vfsService';
+import * as vfs from '../../vfs';
 
 export type ConsoleLevel = 'LOG' | 'WARN' | 'ERROR' | 'INFO' | 'DEBUG';
 
@@ -33,7 +33,7 @@ export interface EvalResult {
   isError: boolean;
 }
 
-const TIMEOUT_MS = 60_000;
+const TIMEOUT_MS = 300_000;
 
 // Module singleton - loaded once, reused across all contexts
 let modulePromise: Promise<QuickJSWASMModule> | null = null;
@@ -52,7 +52,7 @@ async function getModule(): Promise<QuickJSWASMModule> {
  * - async/await works via Promise job queue
  * - setTimeout queues via Promise.resolve().then()
  * - clearTimeout cancels pending callbacks
- * - 60s timeout enforced via interrupt handler
+ * - 300s timeout enforced via interrupt handler
  */
 export class JsVMContext {
   private context: QuickJSContext;
@@ -75,11 +75,13 @@ export class JsVMContext {
    * @param projectId - Optional project ID to enable fs operations
    * @param loadLib - Whether to load /lib scripts on session start (default: true)
    * @param namespace - Optional VFS namespace for isolated minion personas
+   * @param loadShareLib - Whether to load /share/lib scripts (default: true)
    */
   static async create(
     projectId?: string,
     loadLib = true,
-    namespace?: string
+    namespace?: string,
+    loadShareLib = true
   ): Promise<JsVMContext> {
     const module = await getModule();
     const context = module.newContext();
@@ -94,9 +96,12 @@ export class JsVMContext {
       vm.fsBridge = new FsBridge(projectId, context, namespace);
       vm.fsBridge.injectFs();
 
-      // Load and execute /lib scripts if enabled and the directory exists
+      // Load /share/lib first (shared across namespaces), then /lib (per-project)
+      if (loadShareLib) {
+        await vm.loadLibScripts(projectId, '/share/lib', namespace);
+      }
       if (loadLib) {
-        await vm.loadLibScripts(projectId, namespace);
+        await vm.loadLibScripts(projectId, '/lib', namespace);
       }
     }
 
@@ -104,21 +109,23 @@ export class JsVMContext {
   }
 
   /**
-   * Load and execute all .js files in /lib directory.
+   * Load and execute all .js files from a given directory.
    * Scripts are executed with their filename for better stack traces.
    * Console output during library loading is captured in libraryConsoleOutput.
    */
-  private async loadLibScripts(projectId: string, namespace?: string): Promise<void> {
-    const libPath = '/lib';
-
+  private async loadLibScripts(
+    projectId: string,
+    libPath: string,
+    namespace?: string
+  ): Promise<void> {
     try {
-      // Check if /lib directory exists
+      // Check if directory exists
       const libExists = await vfs.isDirectory(projectId, libPath, namespace);
       if (!libExists) {
         return;
       }
 
-      // List files in /lib (non-recursive)
+      // List files (non-recursive)
       const entries = await vfs.readDir(projectId, libPath, false, namespace);
 
       // Filter for .js files and sort alphabetically for deterministic order
@@ -374,7 +381,7 @@ export class JsVMContext {
     for (const op of fsOps) {
       // Check timeout
       if (Date.now() > deadline) {
-        return 'Error: Execution timeout (60s)';
+        return 'Error: Execution timeout (300s)';
       }
 
       try {
@@ -407,7 +414,7 @@ export class JsVMContext {
     ) {
       // Check timeout
       if (Date.now() > deadline) {
-        return 'Error: Execution timeout (60s)';
+        return 'Error: Execution timeout (300s)';
       }
 
       // Process pending fs operations first using helper
@@ -638,7 +645,7 @@ export class JsVMContext {
     if (typeof errorValue === 'object' && errorValue !== null) {
       const err = errorValue as Record<string, unknown>;
       if (err.message === 'interrupted') {
-        return 'Error: Execution timeout (60s)';
+        return 'Error: Execution timeout (300s)';
       }
       const base = `${err.name || 'Error'}: ${err.message || String(errorValue)}`;
       const stack = typeof err.stack === 'string' ? `\n${err.stack}` : '';

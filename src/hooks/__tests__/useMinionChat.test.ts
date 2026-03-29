@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { renderHook, waitFor, act } from '@testing-library/react';
 import { useMinionChat } from '../useMinionChat';
 import type { MinionChat, Message } from '../../types';
 
@@ -7,6 +7,7 @@ vi.mock('../../services/storage', () => ({
   storage: {
     getMinionChat: vi.fn(),
     getMinionMessages: vi.fn(),
+    deleteSingleMessage: vi.fn(),
   },
 }));
 
@@ -107,5 +108,38 @@ describe('useMinionChat', () => {
     expect(result.current.minionChat).toBeNull();
     expect(result.current.messages).toEqual([]);
     expect(result.current.tokenUsage).toEqual({ input: 0, output: 0, cost: 0 });
+  });
+
+  it('deleteMessage removes a single message from state and storage', async () => {
+    vi.mocked(storage.getMinionChat).mockResolvedValue(mockMinionChat);
+    vi.mocked(storage.getMinionMessages).mockResolvedValue(mockMessages);
+    vi.mocked(storage.deleteSingleMessage).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useMinionChat('mc_1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.messages).toHaveLength(2);
+
+    await act(async () => {
+      await result.current.deleteMessage('msg_1');
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0].id).toBe('msg_2');
+    expect(storage.deleteSingleMessage).toHaveBeenCalledWith('msg_1');
+  });
+
+  it('deleteMessage is a no-op for unknown messageId', async () => {
+    vi.mocked(storage.getMinionChat).mockResolvedValue(mockMinionChat);
+    vi.mocked(storage.getMinionMessages).mockResolvedValue(mockMessages);
+
+    const { result } = renderHook(() => useMinionChat('mc_1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await result.current.deleteMessage('nonexistent');
+    });
+
+    // filter keeps all messages when none match
+    expect(result.current.messages).toHaveLength(2);
   });
 });

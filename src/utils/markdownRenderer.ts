@@ -1,5 +1,11 @@
 import DOMPurify from 'dompurify';
-import { marked, type Tokens, type TokenizerExtension, type RendererExtension } from 'marked';
+import {
+  Marked,
+  marked,
+  type Tokens,
+  type TokenizerExtension,
+  type RendererExtension,
+} from 'marked';
 import hljs from 'highlight.js';
 import { mathRenderer, shouldExtractAsMath, isValidLatex } from './mathRenderer';
 
@@ -248,6 +254,14 @@ marked.use({
   extensions: [thinkingExtension, blockMathExtension, inlineMathExtension],
 });
 
+// Second marked instance without math extensions (for "Disable Math" toggle)
+const markedNoMath = new Marked({
+  breaks: true,
+  gfm: true,
+  renderer,
+  extensions: [thinkingExtension],
+});
+
 /**
  * Parse markdown to HTML using marked library (with syntax highlighting and math)
  */
@@ -269,8 +283,10 @@ export function sanitizeHtml(html: string): string {
  * Combined markdown parsing (with hljs and math) and sanitization.
  * Math is now handled by marked extensions, so code blocks are protected automatically.
  */
-export function renderMarkdownSafe(content: string): string {
-  const html = parseMarkdown(content);
+export function renderMarkdownSafe(content: string, options?: { disableMath?: boolean }): string {
+  const html = options?.disableMath
+    ? (markedNoMath.parse(content) as string)
+    : parseMarkdown(content);
   return sanitizeHtml(html);
 }
 

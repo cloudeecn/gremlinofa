@@ -10,6 +10,20 @@ vi.mock('../../../utils/messageFormatters', () => ({
   formatTimestamp: (date: Date) => date.toISOString().split('T')[0],
   formatTokens: (label: string, count?: number) => (count ? `${label}${count}` : ''),
   formatTokenCount: (count: number) => `${(count / 1000).toFixed(1)}k`,
+  formatTokenGroup: (
+    arrow: string,
+    main?: number,
+    extras?: { prefix: string; value?: number }[]
+  ) => {
+    if (!main) return '';
+    const active = (extras || []).filter((e: { value?: number }) => e.value && e.value > 0);
+    if (active.length === 0) return `${arrow}${main}`;
+    const parts = [
+      String(main),
+      ...active.map((e: { prefix: string; value?: number }) => `${e.prefix}${e.value}`),
+    ];
+    return `${arrow}(${parts.join(', ')})`;
+  },
 }));
 
 vi.mock('../../../utils/alerts', () => ({
@@ -238,37 +252,37 @@ describe('AssistantMessageBubble', () => {
       expect(screen.getByText(/↓200/)).toBeInTheDocument();
     });
 
-    it('displays reasoning tokens', () => {
-      const metadata: MessageMetadata = { reasoningTokens: 50 };
+    it('displays reasoning tokens grouped with output', () => {
+      const metadata: MessageMetadata = { outputTokens: 200, reasoningTokens: 50 };
       const props = createProps({
         message: createMessage({ metadata }),
       });
       const { container } = render(<AssistantMessageBubble {...props} />);
 
       const metadataLine = container.querySelector('.text-\\[10px\\]');
-      expect(metadataLine?.textContent).toContain('R:50');
+      expect(metadataLine?.textContent).toContain('↓(200, R:50)');
     });
 
-    it('displays cache creation tokens', () => {
-      const metadata: MessageMetadata = { cacheCreationTokens: 30 };
+    it('displays cache creation tokens grouped with input', () => {
+      const metadata: MessageMetadata = { inputTokens: 100, cacheCreationTokens: 30 };
       const props = createProps({
         message: createMessage({ metadata }),
       });
       const { container } = render(<AssistantMessageBubble {...props} />);
 
       const metadataLine = container.querySelector('.text-\\[10px\\]');
-      expect(metadataLine?.textContent).toContain('C↑30');
+      expect(metadataLine?.textContent).toContain('↑(100, C↑30)');
     });
 
-    it('displays cache read tokens', () => {
-      const metadata: MessageMetadata = { cacheReadTokens: 40 };
+    it('displays cache read tokens grouped with input', () => {
+      const metadata: MessageMetadata = { inputTokens: 100, cacheReadTokens: 40 };
       const props = createProps({
         message: createMessage({ metadata }),
       });
       const { container } = render(<AssistantMessageBubble {...props} />);
 
       const metadataLine = container.querySelector('.text-\\[10px\\]');
-      expect(metadataLine?.textContent).toContain('C↓40');
+      expect(metadataLine?.textContent).toContain('↑(100, C↓40)');
     });
 
     it('displays context window usage', () => {
@@ -339,6 +353,81 @@ describe('AssistantMessageBubble', () => {
 
       const textContainer = container.querySelector('.bg-transparent');
       expect(textContainer).toBeInTheDocument();
+    });
+  });
+
+  describe('Focus Mode', () => {
+    it('hides backstage groups in focus mode', () => {
+      const props = createProps({
+        focusMode: true,
+        message: createMessage({
+          content: {
+            type: 'text',
+            content: '',
+            renderingContent: [
+              {
+                category: 'backstage',
+                blocks: [{ type: 'thinking', thinking: 'Thinking...' }],
+              },
+              {
+                category: 'text',
+                blocks: [{ type: 'text', text: 'Response' }],
+              },
+            ],
+          },
+        }),
+      });
+      render(<AssistantMessageBubble {...props} />);
+
+      expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
+      expect(screen.getByTestId('text-group-view')).toBeInTheDocument();
+    });
+
+    it('hides metadata line in focus mode', () => {
+      const props = createProps({
+        focusMode: true,
+        message: createMessage({
+          timestamp: new Date('2024-01-01T12:00:00Z'),
+        }),
+      });
+      render(<AssistantMessageBubble {...props} />);
+
+      expect(screen.queryByText('2024-01-01')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Copy message')).not.toBeInTheDocument();
+    });
+
+    it('still shows error groups in focus mode', () => {
+      const props = createProps({
+        focusMode: true,
+        message: createMessage({
+          content: {
+            type: 'text',
+            content: '',
+            renderingContent: [
+              {
+                category: 'error',
+                blocks: [{ type: 'error', message: 'API Error' }],
+              },
+            ],
+          },
+        }),
+      });
+      render(<AssistantMessageBubble {...props} />);
+
+      expect(screen.getByTestId('error-block-view')).toBeInTheDocument();
+    });
+
+    it('shows metadata when focus mode is off', () => {
+      const props = createProps({
+        focusMode: false,
+        message: createMessage({
+          timestamp: new Date('2024-01-01T12:00:00Z'),
+        }),
+      });
+      render(<AssistantMessageBubble {...props} />);
+
+      expect(screen.getByText('2024-01-01')).toBeInTheDocument();
+      expect(screen.getByTitle('Copy message')).toBeInTheDocument();
     });
   });
 });

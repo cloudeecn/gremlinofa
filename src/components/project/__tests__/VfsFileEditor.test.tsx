@@ -5,7 +5,7 @@ import VfsFileEditor from '../VfsFileEditor';
 // Mock vfsService
 const mockUpdateFile = vi.fn();
 
-vi.mock('../../../services/vfs/vfsService', () => ({
+vi.mock('../../../services/vfs', () => ({
   updateFile: (...args: unknown[]) => mockUpdateFile(...args),
   getBasename: (path: string) => {
     const lastSlash = path.lastIndexOf('/');

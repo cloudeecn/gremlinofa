@@ -6,6 +6,7 @@
 import { UnifiedStorage } from './unifiedStorage';
 import { IndexedDBAdapter } from './adapters/IndexedDBAdapter';
 import { RemoteStorageAdapter } from './adapters/RemoteStorageAdapter';
+import { CachedStorageAdapter } from './adapters/CachedStorageAdapter';
 import { getStorageConfig, type StorageConfig } from './storageConfig';
 
 /**
@@ -13,20 +14,21 @@ import { getStorageConfig, type StorageConfig } from './storageConfig';
  * @param config Optional storage config. If not provided, reads from localStorage.
  * Useful for creating instances with explicit config (e.g., OOBE, migration/sync)
  */
-export function createStorageAdapter(
-  config?: StorageConfig
-): IndexedDBAdapter | RemoteStorageAdapter {
+export function createStorageAdapter(config?: StorageConfig): CachedStorageAdapter {
   const resolvedConfig = config ?? getStorageConfig();
 
+  let inner;
   if (resolvedConfig.type === 'remote') {
-    return new RemoteStorageAdapter(
+    inner = new RemoteStorageAdapter(
       resolvedConfig.baseUrl,
       resolvedConfig.userId,
       resolvedConfig.password
     );
+  } else {
+    inner = new IndexedDBAdapter();
   }
 
-  return new IndexedDBAdapter();
+  return new CachedStorageAdapter(inner);
 }
 
 /**

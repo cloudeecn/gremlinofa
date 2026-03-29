@@ -3,7 +3,7 @@
  * Shows encryption key (CEK), export/import buttons, and danger zone
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useApp } from '../hooks/useApp';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { showAlert, showDestructiveConfirm } from '../utils/alerts';
@@ -16,6 +16,7 @@ import { encryptionService } from '../services/encryption/encryptionService';
 import { clearAllDrafts } from '../hooks/useDraftPersistence';
 import { ImportDataModal } from './ImportDataModal';
 import { formatStorageDisplay } from '../utils/formatBytes';
+import { importProject } from '../utils/projectImport';
 
 interface DataManagerPageProps {
   onMenuPress?: () => void;
@@ -33,8 +34,10 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
     isCEKBase32,
     convertCEKToBase32,
     handleCompressMessages,
+    clearAllModelsCache,
     storageQuota,
     refreshStorageQuota,
+    refreshProjects,
   } = useApp();
 
   const [isExporting, setIsExporting] = useState(false);
@@ -45,6 +48,9 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
   const [localCEK, setLocalCEK] = useState(cek);
   const [storageConfig, setStorageConfigState] = useState<StorageConfig | null>(null);
   const [showImportData, setShowImportData] = useState(false);
+  const [isClearingModels, setIsClearingModels] = useState(false);
+  const [isImportingProject, setIsImportingProject] = useState(false);
+  const projectFileInputRef = useRef<HTMLInputElement>(null);
   const [compressionResult, setCompressionResult] = useState<{
     total: number;
     compressed: number;
@@ -93,6 +99,16 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
     }
   };
 
+  const handleClearModelsCache = async () => {
+    try {
+      setIsClearingModels(true);
+      await clearAllModelsCache();
+      await showAlert('Done', 'Model cache cleared. Models will be re-fetched on next use.');
+    } finally {
+      setIsClearingModels(false);
+    }
+  };
+
   const handlePurge = async () => {
     const confirmed = await showDestructiveConfirm(
       '⚠️ Delete All Data',
@@ -137,6 +153,24 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
       await encryptionService.clearCEK();
       clearStorageConfig();
       window.location.reload();
+    }
+  };
+
+  const handleProjectImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset input so the same file can be re-selected
+    e.target.value = '';
+
+    try {
+      setIsImportingProject(true);
+      const { projectName } = await importProject(file);
+      await refreshProjects();
+      await showAlert('Imported', `Project "${projectName}" created.`);
+    } catch (error) {
+      await showAlert('Import Failed', error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setIsImportingProject(false);
     }
   };
 
@@ -257,6 +291,35 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
             </button>
           </section>
 
+          {/* Import Project Section */}
+          <section className="rounded-lg border border-gray-200 bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold text-gray-900">Import Project</h3>
+            <p className="mb-3 text-xs text-gray-600">
+              Import a single project from a .gremlin.json file. No encryption key needed.
+            </p>
+            <button
+              onClick={() => projectFileInputRef.current?.click()}
+              disabled={isImportingProject}
+              className="w-full rounded-lg bg-teal-500 px-4 py-2 text-sm font-medium text-white hover:bg-teal-600 disabled:cursor-not-allowed disabled:bg-gray-300"
+            >
+              {isImportingProject ? (
+                <>
+                  <div className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  <span className="ml-2">Importing...</span>
+                </>
+              ) : (
+                '📦 Import Project'
+              )}
+            </button>
+            <input
+              ref={projectFileInputRef}
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={handleProjectImport}
+            />
+          </section>
+
           {/* Compression Section */}
           <section className="rounded-lg border border-gray-200 bg-white p-4">
             <h3 className="mb-2 text-sm font-semibold text-gray-900">Storage Optimization</h3>
@@ -285,6 +348,29 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
                 {compressionResult.errors > 0 && `, ${compressionResult.errors} errors`}
               </div>
             )}
+          </section>
+
+          {/* Clear Model Cache Section */}
+          <section className="rounded-lg border border-gray-200 bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold text-gray-900">Model Cache</h3>
+            <p className="mb-3 text-xs text-gray-600">
+              Clear cached model lists for all API providers. Models will be re-fetched from each
+              provider on next use.
+            </p>
+            <button
+              onClick={handleClearModelsCache}
+              disabled={isClearingModels}
+              className="w-full rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-gray-300"
+            >
+              {isClearingModels ? (
+                <>
+                  <div className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  <span className="ml-2">Clearing...</span>
+                </>
+              ) : (
+                'Clear Model Cache'
+              )}
+            </button>
           </section>
 
           {/* Detach Remote Storage - only show when using remote storage */}

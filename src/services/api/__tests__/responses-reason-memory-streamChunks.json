@@ -2870,7 +2870,7 @@
   {
     "type": "token_usage",
     "inputTokens": 31,
-    "outputTokens": 734,
+    "outputTokens": 20,
     "cacheReadTokens": 504,
     "reasoningTokens": 714
   }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import * as vfsService from '../../services/vfs/vfsService';
-import { getBasename } from '../../services/vfs/vfsService';
+import * as vfsService from '../../services/vfs';
+import { getBasename } from '../../services/vfs';
 
 export interface VfsFileViewerProps {
   projectId: string;

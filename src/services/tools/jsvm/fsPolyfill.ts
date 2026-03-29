@@ -11,8 +11,8 @@
  */
 
 import type { QuickJSContext, QuickJSHandle } from 'quickjs-emscripten-core';
-import * as vfs from '../../vfs/vfsService';
-import { VfsError, normalizePath, isNamespacedReadonly } from '../../vfs/vfsService';
+import * as vfs from '../../vfs';
+import { VfsError, normalizePath, isNamespacedReadonly } from '../../vfs';
 
 /** Readonly paths - any write/delete to these paths throws EROFS */
 const READONLY_PATHS = ['/memories'];
@@ -128,6 +128,23 @@ export class FsBridge {
   }
 
   /**
+   * Check if a QuickJS handle is a valid defined argument
+   */
+  private isUndefinedArg(handle: QuickJSHandle | undefined): boolean {
+    return !handle || this.context.typeof(handle) === 'undefined';
+  }
+
+  /**
+   * Return an EINVAL error promise for a missing argument
+   */
+  private missingArgError(argName: string, fnName: string): QuickJSHandle {
+    return this.queueOp(async () => ({
+      ok: false,
+      error: `EINVAL: missing required argument '${argName}' for fs.${fnName}`,
+    }));
+  }
+
+  /**
    * Inject fs object into context as globalThis.fs and globalThis.__fs
    */
   injectFs(): void {
@@ -139,6 +156,7 @@ export class FsBridge {
     const readFileFn = this.context.newFunction(
       'readFile',
       (pathHandle: QuickJSHandle, encodingHandle?: QuickJSHandle) => {
+        if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'readFile');
         const path = this.context.getString(pathHandle);
         const encoding = encodingHandle ? this.context.getString(encodingHandle) : undefined;
         return this.queueOp(async () => {
@@ -186,6 +204,8 @@ export class FsBridge {
     const writeFileFn = this.context.newFunction(
       'writeFile',
       (pathHandle: QuickJSHandle, dataHandle: QuickJSHandle) => {
+        if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'writeFile');
+        if (this.isUndefinedArg(dataHandle)) return this.missingArgError('data', 'writeFile');
         const path = this.context.getString(pathHandle);
 
         // Strict Node.js behavior: only accept string or ArrayBuffer/TypedArray
@@ -259,6 +279,7 @@ export class FsBridge {
 
     // fs.exists(path) -> Promise<boolean>
     const existsFn = this.context.newFunction('exists', (pathHandle: QuickJSHandle) => {
+      if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'exists');
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         const exists = await vfs.exists(this.projectId, path, this.namespace);
@@ -270,6 +291,7 @@ export class FsBridge {
 
     // fs.mkdir(path) -> Promise<void>
     const mkdirFn = this.context.newFunction('mkdir', (pathHandle: QuickJSHandle) => {
+      if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'mkdir');
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         // Check readonly
@@ -292,6 +314,7 @@ export class FsBridge {
 
     // fs.readdir(path) -> Promise<string[]>
     const readdirFn = this.context.newFunction('readdir', (pathHandle: QuickJSHandle) => {
+      if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'readdir');
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         try {
@@ -311,6 +334,7 @@ export class FsBridge {
 
     // fs.unlink(path) -> Promise<void>
     const unlinkFn = this.context.newFunction('unlink', (pathHandle: QuickJSHandle) => {
+      if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'unlink');
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         // Check readonly
@@ -333,6 +357,7 @@ export class FsBridge {
 
     // fs.rmdir(path) -> Promise<void> (recursive)
     const rmdirFn = this.context.newFunction('rmdir', (pathHandle: QuickJSHandle) => {
+      if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'rmdir');
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         // Check readonly
@@ -357,6 +382,8 @@ export class FsBridge {
     const renameFn = this.context.newFunction(
       'rename',
       (oldPathHandle: QuickJSHandle, newPathHandle: QuickJSHandle) => {
+        if (this.isUndefinedArg(oldPathHandle)) return this.missingArgError('oldPath', 'rename');
+        if (this.isUndefinedArg(newPathHandle)) return this.missingArgError('newPath', 'rename');
         const oldPath = this.context.getString(oldPathHandle);
         const newPath = this.context.getString(newPathHandle);
         return this.queueOp(async () => {
@@ -384,6 +411,7 @@ export class FsBridge {
 
     // fs.stat(path) -> Promise<{isFile, isDirectory, size, readonly, mtime, isBinary, mime}>
     const statFn = this.context.newFunction('stat', (pathHandle: QuickJSHandle) => {
+      if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'stat');
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         try {

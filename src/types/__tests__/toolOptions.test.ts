@@ -2,8 +2,8 @@
  * Tool Options Types Tests
  *
  * Tests for the tool option type system including:
- * - Type guards (isBooleanOption, isLongtextOption, isModelOption, isModelListOption, isModelReference, isModelReferenceArray)
- * - initializeToolOptions helper
+ * - Type guards (isBooleanOption, isLongtextOption, isModelOption, isModelListOption, isSelectOption, isModelReference, isModelReferenceArray)
+ * - initializeToolOptions helper (including migrateFrom for select options)
  */
 
 import { describe, it, expect } from 'vitest';
@@ -12,6 +12,7 @@ import {
   isLongtextOption,
   isModelOption,
   isModelListOption,
+  isSelectOption,
   isModelReference,
   isModelReferenceArray,
   initializeToolOptions,
@@ -19,6 +20,7 @@ import {
   type LongtextToolOption,
   type ModelToolOption,
   type ModelListToolOption,
+  type SelectToolOption,
   type ToolOptionDefinition,
   type ToolOptions,
   type ModelReference,
@@ -50,6 +52,19 @@ describe('Tool Option Type Guards', () => {
     type: 'modellist',
     id: 'models',
     label: 'Available Models',
+  };
+
+  const selectOption: SelectToolOption = {
+    type: 'select',
+    id: 'returnMode',
+    label: 'Return Mode',
+    default: 'both',
+    choices: [
+      { value: 'no-return', label: 'No Return' },
+      { value: 'both', label: 'Both' },
+      { value: 'return-only', label: 'Return Only' },
+      { value: 'enforced', label: 'Enforced' },
+    ],
   };
 
   describe('isBooleanOption', () => {
@@ -140,6 +155,20 @@ describe('Tool Option Type Guards', () => {
 
     it('returns false for model options', () => {
       expect(isModelListOption(modelOption)).toBe(false);
+    });
+  });
+
+  describe('isSelectOption', () => {
+    it('returns true for select options', () => {
+      expect(isSelectOption(selectOption)).toBe(true);
+    });
+
+    it('returns false for boolean options', () => {
+      expect(isSelectOption(booleanOption)).toBe(false);
+    });
+
+    it('returns false for model options', () => {
+      expect(isSelectOption(modelOption)).toBe(false);
     });
   });
 
@@ -334,5 +363,114 @@ describe('initializeToolOptions', () => {
       modelId: 'claude-3',
     });
     expect(result.models).toEqual([{ apiDefinitionId: 'api_1', modelId: 'model-1' }]);
+  });
+
+  it('initializes select option with default for new projects', () => {
+    const defs: ToolOptionDefinition[] = [
+      {
+        type: 'select',
+        id: 'returnMode',
+        label: 'Return Mode',
+        default: 'both',
+        choices: [
+          { value: 'no-return', label: 'No Return' },
+          { value: 'both', label: 'Both' },
+        ],
+      },
+    ];
+    const result = initializeToolOptions(undefined, defs, {
+      apiDefinitionId: 'api_123',
+      modelId: 'claude-3',
+    });
+    expect(result.returnMode).toBe('both');
+  });
+
+  it('migrates legacy boolean to select value via migrateFrom', () => {
+    const existing: ToolOptions = { noReturnTool: true };
+    const defs: ToolOptionDefinition[] = [
+      {
+        type: 'select',
+        id: 'returnMode',
+        label: 'Return Mode',
+        default: 'both',
+        choices: [
+          { value: 'no-return', label: 'No Return' },
+          { value: 'both', label: 'Both' },
+          { value: 'return-only', label: 'Return Only' },
+        ],
+        migrateFrom: [
+          { optionId: 'noReturnTool', whenTrue: 'no-return' },
+          { optionId: 'returnOnly', whenTrue: 'return-only' },
+        ],
+      },
+    ];
+    const result = initializeToolOptions(existing, defs, {
+      apiDefinitionId: 'api_123',
+      modelId: 'claude-3',
+    });
+    expect(result.returnMode).toBe('no-return');
+  });
+
+  it('migrateFrom uses first matching rule', () => {
+    const existing: ToolOptions = { noReturnTool: true, returnOnly: true };
+    const defs: ToolOptionDefinition[] = [
+      {
+        type: 'select',
+        id: 'returnMode',
+        label: 'Return Mode',
+        default: 'both',
+        choices: [],
+        migrateFrom: [
+          { optionId: 'noReturnTool', whenTrue: 'no-return' },
+          { optionId: 'returnOnly', whenTrue: 'return-only' },
+        ],
+      },
+    ];
+    const result = initializeToolOptions(existing, defs, {
+      apiDefinitionId: 'api_123',
+      modelId: 'claude-3',
+    });
+    expect(result.returnMode).toBe('no-return');
+  });
+
+  it('migrateFrom falls back to default when no legacy booleans match', () => {
+    const existing: ToolOptions = { noReturnTool: false, returnOnly: false };
+    const defs: ToolOptionDefinition[] = [
+      {
+        type: 'select',
+        id: 'returnMode',
+        label: 'Return Mode',
+        default: 'both',
+        choices: [],
+        migrateFrom: [
+          { optionId: 'noReturnTool', whenTrue: 'no-return' },
+          { optionId: 'returnOnly', whenTrue: 'return-only' },
+        ],
+      },
+    ];
+    const result = initializeToolOptions(existing, defs, {
+      apiDefinitionId: 'api_123',
+      modelId: 'claude-3',
+    });
+    expect(result.returnMode).toBe('both');
+  });
+
+  it('preserves existing select value over migrateFrom', () => {
+    const existing: ToolOptions = { returnMode: 'enforced', noReturnTool: true };
+    const defs: ToolOptionDefinition[] = [
+      {
+        type: 'select',
+        id: 'returnMode',
+        label: 'Return Mode',
+        default: 'both',
+        choices: [],
+        migrateFrom: [{ optionId: 'noReturnTool', whenTrue: 'no-return' }],
+      },
+    ];
+    const result = initializeToolOptions(existing, defs, {
+      apiDefinitionId: 'api_123',
+      modelId: 'claude-3',
+    });
+    expect(result.returnMode).toBe('enforced');
   });
 });

@@ -1,0 +1,32 @@
+{
+  "data": [
+    {
+      "id": "deepseek-chat",
+      "name": "DeepSeek Chat",
+      "context_length": 131072,
+      "top_provider": {
+        "max_completion_tokens": 8192
+      },
+      "pricing": {
+        "prompt": "0.00000028",
+        "completion": "0.00000042",
+        "input_cache_read": "0.000000028"
+      },
+      "supported_parameters": ["temperature", "tools", "tool_choice"]
+    },
+    {
+      "id": "deepseek-reasoner",
+      "name": "DeepSeek Reasoner",
+      "context_length": 131072,
+      "top_provider": {
+        "max_completion_tokens": 65536
+      },
+      "pricing": {
+        "prompt": "0.00000028",
+        "completion": "0.00000042",
+        "input_cache_read": "0.000000028"
+      },
+      "supported_parameters": ["temperature", "tools", "tool_choice", "reasoning"]
+    }
+  ]
+}

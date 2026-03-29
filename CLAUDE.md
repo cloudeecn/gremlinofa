@@ -28,6 +28,7 @@ This is a general-purpose AI chatbot built with React (Vite).
 There are some standalone packages in this project's root.
 
 - storage-backend
+- cors-proxy
 
 In order to test compile and unit test these packages, you need to `cd <standalone-package-path>`, than run `npm run verify` and `npm run test:silent` accordingly.
 

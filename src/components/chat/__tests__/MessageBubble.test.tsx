@@ -116,23 +116,6 @@ describe('MessageBubble', () => {
       expect(wrapper).not.toBeInTheDocument();
     });
 
-    it('renders LegacyAssistantBubble for assistant messages without renderingContent', () => {
-      const props = createProps({
-        message: createMessage({
-          role: 'assistant',
-          content: {
-            type: 'text',
-            content: 'Legacy response',
-          },
-        }),
-      });
-      const { container } = render(<MessageBubble {...props} />);
-
-      // Legacy assistant should have prose class for markdown
-      const prose = container.querySelector('.prose');
-      expect(prose).toBeInTheDocument();
-    });
-
     it('passes onAction to UserMessageBubble', () => {
       const onAction = vi.fn();
       const props = createProps({
@@ -337,6 +320,138 @@ describe('MessageBubble', () => {
       rerender(<MessageBubble {...props} isVisible={false} cachedHeight={150} />);
 
       expect(observerInstance!.disconnect).toHaveBeenCalled();
+    });
+  });
+
+  describe('Injected File Routing', () => {
+    it('routes user message with injected_file blocks to UserMessageBubble (blue bubble)', () => {
+      const props = createProps({
+        message: createMessage({
+          role: 'user',
+          content: {
+            type: 'text',
+            content: 'Analyze this file',
+            renderingContent: [
+              {
+                category: 'text',
+                blocks: [{ type: 'text', text: 'Analyze this file' }],
+              },
+              {
+                category: 'backstage',
+                blocks: [
+                  {
+                    type: 'injected_file',
+                    path: 'src/foo.ts',
+                    content: 'const foo = 1;',
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      });
+      const { container } = render(<MessageBubble {...props} />);
+
+      // Should render as blue user bubble, not ToolResultBubble
+      expect(container.querySelector('.bg-blue-600')).toBeInTheDocument();
+      expect(container.querySelector('.items-end')).toBeInTheDocument();
+      // Message text should be visible
+      expect(screen.getByText('Analyze this file')).toBeInTheDocument();
+    });
+
+    it('does NOT treat injected_file blocks as tool_result (no ToolResultBubble)', () => {
+      const props = createProps({
+        message: createMessage({
+          role: 'user',
+          content: {
+            type: 'text',
+            content: 'Check these',
+            renderingContent: [
+              {
+                category: 'text',
+                blocks: [{ type: 'text', text: 'Check these' }],
+              },
+              {
+                category: 'backstage',
+                blocks: [
+                  { type: 'injected_file', path: 'a.ts', content: 'a' },
+                  { type: 'injected_file', path: 'b.ts', content: 'b' },
+                ],
+              },
+            ],
+          },
+        }),
+      });
+      const { container } = render(<MessageBubble {...props} />);
+
+      // Blue bubble present = UserMessageBubble
+      expect(container.querySelector('.bg-blue-600')).toBeInTheDocument();
+      // Text visible
+      expect(screen.getByText('Check these')).toBeInTheDocument();
+    });
+  });
+
+  describe('Focus Mode', () => {
+    it('hides tool result messages in focus mode', () => {
+      const props = createProps({
+        message: createMessage({
+          role: 'user',
+          content: {
+            type: 'text',
+            content: '',
+            renderingContent: [
+              {
+                category: 'backstage',
+                blocks: [
+                  {
+                    type: 'tool_result',
+                    name: 'memory',
+                    tool_use_id: 'tu_1',
+                    content: 'Result',
+                    status: 'complete',
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+        focusMode: true,
+      });
+      const { container } = render(<MessageBubble {...props} />);
+
+      // Should render placeholder, not the tool result content
+      const placeholder = container.querySelector('[aria-hidden="true"]');
+      expect(placeholder).toBeInTheDocument();
+    });
+
+    it('shows user messages in focus mode without metadata', () => {
+      const props = createProps({
+        message: createMessage({ role: 'user' }),
+        focusMode: true,
+      });
+      const { container } = render(<MessageBubble {...props} />);
+
+      // Blue bubble should be present
+      expect(container.querySelector('.bg-blue-600')).toBeInTheDocument();
+      // Edit button should NOT be present (metadata hidden)
+      expect(screen.queryByTitle('Edit message')).not.toBeInTheDocument();
+    });
+
+    it('shows assistant text groups in focus mode', () => {
+      const props = createProps({
+        message: createMessage({
+          role: 'assistant',
+          content: {
+            type: 'text',
+            content: 'Response',
+            renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: 'Response' }] }],
+          },
+        }),
+        focusMode: true,
+      });
+      const { container } = render(<MessageBubble {...props} />);
+
+      expect(container.querySelector('.w-full')).toBeInTheDocument();
     });
   });
 });

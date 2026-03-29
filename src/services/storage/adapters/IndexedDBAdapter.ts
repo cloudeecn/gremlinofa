@@ -90,8 +90,6 @@ export class IndexedDBAdapter implements StorageAdapter {
           Tables.MESSAGES,
           Tables.ATTACHMENTS,
           Tables.METADATA,
-          Tables.MEMORIES,
-          Tables.MEMORY_JOURNALS,
           Tables.VFS_META,
           Tables.VFS_FILES,
           Tables.VFS_VERSIONS,
@@ -336,8 +334,6 @@ export class IndexedDBAdapter implements StorageAdapter {
       Tables.MESSAGES,
       Tables.ATTACHMENTS,
       Tables.METADATA,
-      Tables.MEMORIES,
-      Tables.MEMORY_JOURNALS,
     ];
 
     const promises = tables.map(

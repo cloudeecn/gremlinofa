@@ -35,6 +35,15 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formApiKey, setFormApiKey] = useState('');
   const [formIsLocal, setFormIsLocal] = useState(false);
   const [formModelsEndpoint, setFormModelsEndpoint] = useState('');
+  const [formModelsEndpointDisabled, setFormModelsEndpointDisabled] = useState(false);
+  const [formProxyUrl, setFormProxyUrl] = useState('');
+  const [formExtraModelIds, setFormExtraModelIds] = useState('');
+  const [formPruneThinking, setFormPruneThinking] = useState(false);
+  const [formPruneEmptyText, setFormPruneEmptyText] = useState(false);
+  const [formIsSubscription, setFormIsSubscription] = useState(false);
+  const [formEnforceGenuineAnthropic, setFormEnforceGenuineAnthropic] = useState(false);
+  const [formDeFactoThinking, setFormDeFactoThinking] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   // WebGPU capability state
@@ -58,6 +67,13 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormApiKey('');
     setFormIsLocal(false);
     setFormModelsEndpoint('');
+    setFormModelsEndpointDisabled(false);
+    setFormProxyUrl('');
+    setFormExtraModelIds('');
+    setFormPruneThinking(false);
+    setFormPruneEmptyText(false);
+    setFormDeFactoThinking(false);
+    setShowAdvanced(false);
   };
 
   const apiTypes = [
@@ -65,6 +81,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     { id: 'chatgpt', name: 'OpenAI - Chat Completions', icon: '💬' },
     { id: 'anthropic', name: 'Anthropic', icon: '✨' },
     { id: 'bedrock', name: 'AWS Bedrock', icon: '☁️' },
+    { id: 'google', name: 'Google Gemini', icon: '💎' },
     { id: 'webllm', name: 'WebLLM (Local)', icon: '🏠' },
   ] as const;
 
@@ -83,6 +100,26 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormApiKey(def.apiKey);
     setFormIsLocal(def.isLocal || false);
     setFormModelsEndpoint(def.modelsEndpoint || '');
+    setFormModelsEndpointDisabled(def.modelsEndpointDisabled || false);
+    setFormProxyUrl(def.proxyUrl || '');
+    setFormExtraModelIds((def.extraModelIds || []).join('\n'));
+    setFormPruneThinking(def.advancedSettings?.pruneThinking || false);
+    setFormPruneEmptyText(def.advancedSettings?.pruneEmptyText || false);
+    setFormIsSubscription(def.advancedSettings?.isSubscription || false);
+    setFormEnforceGenuineAnthropic(def.advancedSettings?.enforceGenuineAnthropic || false);
+    setFormDeFactoThinking(def.advancedSettings?.deFactoThinking || false);
+    setShowAdvanced(false);
+  };
+
+  const handleStartAdvanced = (def: APIDefinition) => {
+    setEditingId(def.id);
+    setIsAddingNew(false);
+    setFormPruneThinking(def.advancedSettings?.pruneThinking || false);
+    setFormPruneEmptyText(def.advancedSettings?.pruneEmptyText || false);
+    setFormIsSubscription(def.advancedSettings?.isSubscription || false);
+    setFormEnforceGenuineAnthropic(def.advancedSettings?.enforceGenuineAnthropic || false);
+    setFormDeFactoThinking(def.advancedSettings?.deFactoThinking || false);
+    setShowAdvanced(true);
   };
 
   const handleStartAdd = () => {
@@ -95,6 +132,13 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormApiKey('');
     setFormIsLocal(false);
     setFormModelsEndpoint('');
+    setFormModelsEndpointDisabled(false);
+    setFormProxyUrl('');
+    setFormExtraModelIds('');
+    setFormPruneThinking(false);
+    setFormPruneEmptyText(false);
+    setFormDeFactoThinking(false);
+    setShowAdvanced(false);
   };
 
   const handleSave = useCallback(async () => {
@@ -122,6 +166,22 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
         isDefault: editingId ? apiDefinitions.find(d => d.id === editingId)?.isDefault : false,
         isLocal: formIsLocal,
         modelsEndpoint: formModelsEndpoint.trim() || undefined,
+        modelsEndpointDisabled: formModelsEndpointDisabled || undefined,
+        proxyUrl: formProxyUrl.trim() || undefined,
+        extraModelIds: formExtraModelIds.trim()
+          ? formExtraModelIds
+              .split('\n')
+              .map(s => s.trim())
+              .filter(Boolean)
+          : undefined,
+        advancedSettings:
+          formPruneThinking || formPruneEmptyText || formDeFactoThinking
+            ? {
+                ...(formPruneThinking && { pruneThinking: true }),
+                ...(formPruneEmptyText && { pruneEmptyText: true }),
+                ...(formDeFactoThinking && { deFactoThinking: true }),
+              }
+            : undefined,
         createdAt: editingId
           ? apiDefinitions.find(d => d.id === editingId)?.createdAt || new Date()
           : new Date(),
@@ -145,12 +205,58 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formIsLocal,
     formApiKey,
     formModelsEndpoint,
+    formModelsEndpointDisabled,
+    formProxyUrl,
+    formExtraModelIds,
+    formPruneThinking,
+    formPruneEmptyText,
+    formDeFactoThinking,
     editingId,
     apiDefinitions,
     formBaseUrl,
     saveAPIDefinition,
     refreshModels,
     showAlert,
+  ]);
+
+  const handleSaveAdvanced = useCallback(async () => {
+    if (!editingId) return;
+    const existing = apiDefinitions.find(d => d.id === editingId);
+    if (!existing) return;
+
+    setIsSaving(true);
+    try {
+      await saveAPIDefinition({
+        ...existing,
+        advancedSettings:
+          formPruneThinking ||
+          formPruneEmptyText ||
+          formIsSubscription ||
+          formEnforceGenuineAnthropic ||
+          formDeFactoThinking
+            ? {
+                ...(formPruneThinking && { pruneThinking: true }),
+                ...(formPruneEmptyText && { pruneEmptyText: true }),
+                ...(formIsSubscription && { isSubscription: true }),
+                ...(formEnforceGenuineAnthropic && { enforceGenuineAnthropic: true }),
+                ...(formDeFactoThinking && { deFactoThinking: true }),
+              }
+            : undefined,
+        updatedAt: new Date(),
+      });
+      handleCancel();
+    } finally {
+      setIsSaving(false);
+    }
+  }, [
+    editingId,
+    apiDefinitions,
+    formPruneThinking,
+    formPruneEmptyText,
+    formIsSubscription,
+    formEnforceGenuineAnthropic,
+    formDeFactoThinking,
+    saveAPIDefinition,
   ]);
 
   const handleDelete = async (def: APIDefinition) => {
@@ -242,6 +348,11 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                               ) : (
                                 <div className="text-xs text-gray-400 italic">(default)</div>
                               )}
+                              {def.proxyUrl && (
+                                <div className="text-xs text-indigo-600">
+                                  via proxy: {def.proxyUrl}
+                                </div>
+                              )}
                             </div>
                           </div>
                           <span
@@ -258,6 +369,12 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                             Edit
                           </button>
                           <button
+                            onClick={() => handleStartAdvanced(def)}
+                            className="rounded border border-gray-400 px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                          >
+                            Advanced
+                          </button>
+                          <button
                             onClick={() => handleDelete(def)}
                             className="rounded border border-red-600 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
                           >
@@ -265,6 +382,100 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           </button>
                         </div>
                       </>
+                    ) : showAdvanced ? (
+                      // Advanced settings form
+                      <div>
+                        <div className="mb-4 text-base font-semibold text-gray-900">
+                          Advanced: {getApiDefinitionIcon(def)} {getApiTypeDisplayName(def.apiType)}
+                        </div>
+
+                        <label className="mb-2 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={formPruneThinking}
+                            onChange={e => setFormPruneThinking(e.target.checked)}
+                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">
+                            Prune previous thinking blocks
+                          </span>
+                        </label>
+                        <p className="mb-3 ml-6 text-xs text-gray-500">
+                          Strips thinking/reasoning from older messages. Enable if your provider
+                          rejects thinking blocks.
+                        </p>
+
+                        <label className="mb-2 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={formPruneEmptyText}
+                            onChange={e => setFormPruneEmptyText(e.target.checked)}
+                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">Prune empty text blocks</span>
+                        </label>
+                        <p className="mb-3 ml-6 text-xs text-gray-500">
+                          Removes empty text blocks from older messages.
+                        </p>
+
+                        <label className="mb-2 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={formIsSubscription}
+                            onChange={e => setFormIsSubscription(e.target.checked)}
+                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">Subscription service</span>
+                        </label>
+                        <p className="mb-3 ml-6 text-xs text-gray-500">
+                          Flat-rate subscription — all usage is tracked as $0.
+                        </p>
+
+                        <label className="mb-2 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={formDeFactoThinking}
+                            onChange={e => setFormDeFactoThinking(e.target.checked)}
+                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">De facto thinking mode</span>
+                        </label>
+                        <p className="mb-3 ml-6 text-xs text-gray-500">
+                          Sends {'{'}thinking: {'{'}type: enabled/disabled{'}'}
+                          {'}'} in request body. Used by DeepSeek, Kimi, MiMo, and other providers.
+                        </p>
+
+                        <label className="mb-2 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={formEnforceGenuineAnthropic}
+                            onChange={e => setFormEnforceGenuineAnthropic(e.target.checked)}
+                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">Enforce genuine Anthropic</span>
+                        </label>
+                        <p className="mb-4 ml-6 text-xs text-gray-500">
+                          Rejects responses with zero cache activity or unsigned thinking blocks —
+                          catches API routers silently forwarding to non-Anthropic providers.
+                        </p>
+
+                        <div className="flex justify-end gap-2">
+                          <button
+                            onClick={handleCancel}
+                            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={handleSaveAdvanced}
+                            disabled={isSaving}
+                            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
+                          >
+                            {isSaving && <Spinner size={14} colorClass="border-white" />}
+                            Save
+                          </button>
+                        </div>
+                      </div>
                     ) : (
                       // Inline edit mode
                       <div>
@@ -378,11 +589,53 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         </label>
                         <input
                           type="text"
-                          className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                          className={`mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formModelsEndpointDisabled ? 'cursor-not-allowed bg-gray-100 text-gray-400' : ''}`}
                           placeholder="SDK default"
                           value={formModelsEndpoint}
                           onChange={e => setFormModelsEndpoint(e.target.value)}
+                          disabled={formModelsEndpointDisabled}
                         />
+                        <label className="mb-4 flex items-center gap-2 text-sm text-gray-600">
+                          <input
+                            type="checkbox"
+                            checked={formModelsEndpointDisabled}
+                            onChange={e => setFormModelsEndpointDisabled(e.target.checked)}
+                            className="rounded border-gray-300"
+                          />
+                          Models endpoint not supported
+                        </label>
+
+                        <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                          Extra Model IDs (Optional)
+                        </label>
+                        <textarea
+                          className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                          placeholder="one-model-id-per-line"
+                          rows={3}
+                          value={formExtraModelIds}
+                          onChange={e => setFormExtraModelIds(e.target.value)}
+                        />
+                        <p className="mb-4 text-xs text-gray-500">
+                          Add model IDs not listed by the provider (one per line)
+                        </p>
+
+                        {def.apiType !== 'bedrock' && def.apiType !== 'webllm' && (
+                          <>
+                            <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                              CORS Proxy URL (Optional)
+                            </label>
+                            <input
+                              type="text"
+                              className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                              placeholder="e.g., https://myserver.com/cors-proxy"
+                              value={formProxyUrl}
+                              onChange={e => setFormProxyUrl(e.target.value)}
+                            />
+                            <p className="mb-4 text-xs text-gray-500">
+                              Routes API traffic through a CORS proxy server
+                            </p>
+                          </>
+                        )}
 
                         <div className="flex justify-end gap-2">
                           <button
@@ -409,159 +662,273 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
               {/* Add New Form */}
               {isAddingNew && (
                 <div className="rounded-lg border border-gray-200 bg-white p-4">
-                  <div className="mb-4 text-base font-semibold text-gray-900">
-                    Add New API Definition
-                  </div>
+                  {showAdvanced ? (
+                    // Advanced settings form
+                    <div>
+                      <div className="mb-4 flex items-center gap-2">
+                        <button
+                          onClick={() => setShowAdvanced(false)}
+                          className="text-sm text-blue-600 hover:text-blue-800"
+                        >
+                          ← Back
+                        </button>
+                        <span className="text-base font-semibold text-gray-900">
+                          Advanced Settings
+                        </span>
+                      </div>
 
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700">API Type</label>
-                  <div className="mb-3 grid grid-cols-2 gap-2">
-                    {apiTypes.map(type => (
-                      <button
-                        key={type.id}
-                        onClick={() => setFormApiType(type.id)}
-                        className={`flex items-center justify-center rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                          formApiType === type.id
-                            ? 'border-blue-600 bg-blue-50 text-blue-900'
-                            : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
-                        }`}
-                      >
-                        <span className="mr-2">{type.icon}</span>
-                        {type.name}
-                      </button>
-                    ))}
-                  </div>
-                  {formApiType === 'bedrock' && (
-                    <p className="mb-3 text-xs text-gray-500">
-                      💡 You can also choose "Anthropic" to use Claude models in Bedrock.
-                    </p>
-                  )}
-
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700">Name *</label>
-                  <input
-                    type="text"
-                    className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                    placeholder="e.g., xAI, OpenRouter, My OpenAI"
-                    value={formName}
-                    onChange={e => setFormName(e.target.value)}
-                  />
-
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                    Icon (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                    placeholder={getApiTypeDefaultIcon(formApiType)}
-                    value={formIcon}
-                    onChange={e => setFormIcon(e.target.value)}
-                    maxLength={2}
-                  />
-
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                    Base URL (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    className={`w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formApiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
-                    placeholder="Leave empty for provider default"
-                    value={formBaseUrl}
-                    onChange={e => setFormBaseUrl(e.target.value)}
-                  />
-                  {formApiType === 'anthropic' && (
-                    <p className="mb-3 text-xs text-gray-500">
-                      You can enter{' '}
-                      <code className="rounded bg-gray-100 px-1">bedrock:&lt;region&gt;</code> to
-                      use Claude models in Bedrock
-                    </p>
-                  )}
-                  {formApiType === 'bedrock' && (
-                    <p className="mb-3 text-xs text-gray-500">
-                      You can enter just a region (e.g.,{' '}
-                      <code className="rounded bg-gray-100 px-1">us-west-2</code>) instead of the
-                      full URL
-                    </p>
-                  )}
-
-                  {requiresApiKey(formApiType) ? (
-                    <>
-                      {/* Local provider checkbox */}
-                      <label className="mb-3 flex cursor-pointer items-center">
+                      <label className="mb-2 flex cursor-pointer items-center">
                         <input
                           type="checkbox"
-                          checked={formIsLocal}
-                          onChange={e => setFormIsLocal(e.target.checked)}
+                          checked={formPruneThinking}
+                          onChange={e => setFormPruneThinking(e.target.checked)}
                           className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                         />
                         <span className="text-sm text-gray-700">
-                          🏠 Local provider (API key optional)
+                          Prune previous thinking blocks
                         </span>
+                      </label>
+                      <p className="mb-3 ml-6 text-xs text-gray-500">
+                        Strips thinking/reasoning from older messages. Enable if your provider
+                        rejects thinking blocks.
+                      </p>
+
+                      <label className="mb-2 flex cursor-pointer items-center">
+                        <input
+                          type="checkbox"
+                          checked={formPruneEmptyText}
+                          onChange={e => setFormPruneEmptyText(e.target.checked)}
+                          className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">Prune empty text blocks</span>
+                      </label>
+                      <p className="mb-3 ml-6 text-xs text-gray-500">
+                        Removes empty text blocks from older messages.
+                      </p>
+
+                      <label className="mb-2 flex cursor-pointer items-center">
+                        <input
+                          type="checkbox"
+                          checked={formDeFactoThinking}
+                          onChange={e => setFormDeFactoThinking(e.target.checked)}
+                          className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">De facto thinking mode</span>
+                      </label>
+                      <p className="ml-6 text-xs text-gray-500">
+                        Sends {'{'}thinking: {'{'}type: enabled/disabled{'}'}
+                        {'}'} in request body. Used by DeepSeek, Kimi, MiMo, and other providers.
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mb-4 text-base font-semibold text-gray-900">
+                        Add New API Definition
+                      </div>
+
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                        API Type
+                      </label>
+                      <div className="mb-3 grid grid-cols-2 gap-2">
+                        {apiTypes.map(type => (
+                          <button
+                            key={type.id}
+                            onClick={() => setFormApiType(type.id)}
+                            className={`flex items-center justify-center rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                              formApiType === type.id
+                                ? 'border-blue-600 bg-blue-50 text-blue-900'
+                                : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                            }`}
+                          >
+                            <span className="mr-2">{type.icon}</span>
+                            {type.name}
+                          </button>
+                        ))}
+                      </div>
+                      {formApiType === 'bedrock' && (
+                        <p className="mb-3 text-xs text-gray-500">
+                          💡 You can also choose "Anthropic" to use Claude models in Bedrock.
+                        </p>
+                      )}
+
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                        Name *
+                      </label>
+                      <input
+                        type="text"
+                        className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        placeholder="e.g., xAI, OpenRouter, My OpenAI"
+                        value={formName}
+                        onChange={e => setFormName(e.target.value)}
+                      />
+
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                        Icon (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        placeholder={getApiTypeDefaultIcon(formApiType)}
+                        value={formIcon}
+                        onChange={e => setFormIcon(e.target.value)}
+                        maxLength={2}
+                      />
+
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                        Base URL (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        className={`w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formApiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
+                        placeholder="Leave empty for provider default"
+                        value={formBaseUrl}
+                        onChange={e => setFormBaseUrl(e.target.value)}
+                      />
+                      {formApiType === 'anthropic' && (
+                        <p className="mb-3 text-xs text-gray-500">
+                          You can enter{' '}
+                          <code className="rounded bg-gray-100 px-1">bedrock:&lt;region&gt;</code>{' '}
+                          to use Claude models in Bedrock
+                        </p>
+                      )}
+                      {formApiType === 'bedrock' && (
+                        <p className="mb-3 text-xs text-gray-500">
+                          You can enter just a region (e.g.,{' '}
+                          <code className="rounded bg-gray-100 px-1">us-west-2</code>) instead of
+                          the full URL
+                        </p>
+                      )}
+
+                      {requiresApiKey(formApiType) ? (
+                        <>
+                          {/* Local provider checkbox */}
+                          <label className="mb-3 flex cursor-pointer items-center">
+                            <input
+                              type="checkbox"
+                              checked={formIsLocal}
+                              onChange={e => setFormIsLocal(e.target.checked)}
+                              className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span className="text-sm text-gray-700">
+                              🏠 Local provider (API key optional)
+                            </span>
+                          </label>
+
+                          <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                            API Key {formIsLocal ? '(Optional)' : '*'}
+                          </label>
+                          <input
+                            type="password"
+                            className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                            placeholder="Enter your API key"
+                            value={formApiKey}
+                            onChange={e => setFormApiKey(e.target.value)}
+                          />
+                        </>
+                      ) : hasWebGPU ? (
+                        <div className="mb-4 space-y-2">
+                          <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
+                            🏠 Local model - no API key required. Models run entirely on your device
+                            using WebGPU.
+                          </div>
+                          {webgpuCapabilities?.adapterInfo && (
+                            <div className="rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
+                              <span className="font-medium">GPU:</span>{' '}
+                              {webgpuCapabilities.adapterInfo.description !== 'Unknown'
+                                ? webgpuCapabilities.adapterInfo.description
+                                : `${webgpuCapabilities.adapterInfo.vendor} ${webgpuCapabilities.adapterInfo.device}`}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="mb-4 rounded-lg border border-yellow-300 bg-yellow-50 p-3 text-sm text-yellow-800">
+                          <div className="mb-1 font-medium">⚠️ WebGPU Not Available</div>
+                          <p className="mb-2">
+                            Local models require WebGPU which isn't supported in your browser.
+                          </p>
+                          <p className="text-xs">
+                            Supported browsers: {getSupportedBrowsers().join(', ')}
+                          </p>
+                        </div>
+                      )}
+
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                        Models Endpoint (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        className={`mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formModelsEndpointDisabled ? 'cursor-not-allowed bg-gray-100 text-gray-400' : ''}`}
+                        placeholder="SDK default"
+                        value={formModelsEndpoint}
+                        onChange={e => setFormModelsEndpoint(e.target.value)}
+                        disabled={formModelsEndpointDisabled}
+                      />
+                      <label className="mb-4 flex items-center gap-2 text-sm text-gray-600">
+                        <input
+                          type="checkbox"
+                          checked={formModelsEndpointDisabled}
+                          onChange={e => setFormModelsEndpointDisabled(e.target.checked)}
+                          className="rounded border-gray-300"
+                        />
+                        Models endpoint not supported
                       </label>
 
                       <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                        API Key {formIsLocal ? '(Optional)' : '*'}
+                        Extra Model IDs (Optional)
                       </label>
-                      <input
-                        type="password"
-                        className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                        placeholder="Enter your API key"
-                        value={formApiKey}
-                        onChange={e => setFormApiKey(e.target.value)}
+                      <textarea
+                        className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        placeholder="one-model-id-per-line"
+                        rows={3}
+                        value={formExtraModelIds}
+                        onChange={e => setFormExtraModelIds(e.target.value)}
                       />
-                    </>
-                  ) : hasWebGPU ? (
-                    <div className="mb-4 space-y-2">
-                      <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
-                        🏠 Local model - no API key required. Models run entirely on your device
-                        using WebGPU.
-                      </div>
-                      {webgpuCapabilities?.adapterInfo && (
-                        <div className="rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
-                          <span className="font-medium">GPU:</span>{' '}
-                          {webgpuCapabilities.adapterInfo.description !== 'Unknown'
-                            ? webgpuCapabilities.adapterInfo.description
-                            : `${webgpuCapabilities.adapterInfo.vendor} ${webgpuCapabilities.adapterInfo.device}`}
-                        </div>
+                      <p className="mb-4 text-xs text-gray-500">
+                        Add model IDs not listed by the provider (one per line)
+                      </p>
+
+                      {formApiType !== 'bedrock' && formApiType !== 'webllm' && (
+                        <>
+                          <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                            CORS Proxy URL (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                            placeholder="e.g., https://myserver.com/cors-proxy"
+                            value={formProxyUrl}
+                            onChange={e => setFormProxyUrl(e.target.value)}
+                          />
+                          <p className="mb-4 text-xs text-gray-500">
+                            Routes API traffic through a CORS proxy server
+                          </p>
+                        </>
                       )}
-                    </div>
-                  ) : (
-                    <div className="mb-4 rounded-lg border border-yellow-300 bg-yellow-50 p-3 text-sm text-yellow-800">
-                      <div className="mb-1 font-medium">⚠️ WebGPU Not Available</div>
-                      <p className="mb-2">
-                        Local models require WebGPU which isn't supported in your browser.
-                      </p>
-                      <p className="text-xs">
-                        Supported browsers: {getSupportedBrowsers().join(', ')}
-                      </p>
-                    </div>
+
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => setShowAdvanced(true)}
+                          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                        >
+                          Advanced
+                        </button>
+                        <button
+                          onClick={handleCancel}
+                          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleSave}
+                          disabled={isSaving}
+                          className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
+                        >
+                          {isSaving && <Spinner size={14} colorClass="border-white" />}
+                          Add
+                        </button>
+                      </div>
+                    </>
                   )}
-
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                    Models Endpoint (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                    placeholder="SDK default"
-                    value={formModelsEndpoint}
-                    onChange={e => setFormModelsEndpoint(e.target.value)}
-                  />
-
-                  <div className="flex justify-end gap-2">
-                    <button
-                      onClick={handleCancel}
-                      className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSave}
-                      disabled={isSaving}
-                      className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
-                    >
-                      {isSaving && <Spinner size={14} colorClass="border-white" />}
-                      Add
-                    </button>
-                  </div>
                 </div>
               )}
 

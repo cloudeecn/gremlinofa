@@ -34,6 +34,7 @@ describe('useApp', () => {
       handleExport: vi.fn().mockResolvedValue(undefined),
       handleImport: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [] }),
       handleMigrate: vi.fn().mockResolvedValue({ imported: 0, skipped: 0, errors: [] }),
+      clearAllModelsCache: vi.fn().mockResolvedValue(undefined),
       handleCompressMessages: vi
         .fn()
         .mockResolvedValue({ total: 0, compressed: 0, skipped: 0, errors: 0 }),

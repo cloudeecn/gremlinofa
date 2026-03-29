@@ -87,23 +87,6 @@ describe('apiService WebLLM integration', () => {
     });
   });
 
-  describe('message rendering migration', () => {
-    it('should migrate WebLLM message rendering', () => {
-      const fullContent = [{ type: 'text', text: 'Hello from local model!' }];
-      const result = apiService.migrateMessageRendering('webllm', fullContent, 'stop');
-
-      expect(result.renderingContent.length).toBeGreaterThan(0);
-      expect(result.stopReason).toBe('end_turn');
-    });
-
-    it('should handle empty WebLLM content', () => {
-      const result = apiService.migrateMessageRendering('webllm', [], null);
-
-      expect(result.renderingContent.length).toBe(0);
-      expect(result.stopReason).toBe('end_turn');
-    });
-  });
-
   describe('model discovery', () => {
     it('should discover WebLLM models without API key', async () => {
       // WebLLM should work without an API key

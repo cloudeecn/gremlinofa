@@ -1,10 +1,9 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChat } from '../../hooks/useChat';
 import { useApp } from '../../hooks/useApp';
-import { useIsMobile } from '../../hooks/useIsMobile';
 import { showAlert, showDestructiveConfirm } from '../../utils/alerts';
-import { formatTokens, stripMetadata } from '../../utils/messageFormatters';
+import { formatTokenGroup, stripMetadata } from '../../utils/messageFormatters';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 import { processImages } from '../../utils/imageProcessor';
 import { storage } from '../../services/storage';
@@ -19,10 +18,10 @@ import { MinionChatOverlayContext } from './MinionChatOverlayContext';
 
 interface ChatViewProps {
   chatId: string;
-  onMenuPress?: () => void;
+  initialPending?: boolean;
 }
 
-export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
+export default function ChatView({ chatId, initialPending }: ChatViewProps) {
   const navigate = useNavigate();
   const [inputMessage, setInputMessage] = useState('');
   // Store processed attachments (MessageAttachment[]) instead of raw Files
@@ -43,12 +42,27 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   const [isRenamingChat, setIsRenamingChat] = useState(false);
   const [renameChatText, setRenameChatText] = useState('');
   const [isSavingRename, setIsSavingRename] = useState(false);
-
-  // Detect mobile (same breakpoint as sidebar: 768px) - responsive to window resize
-  const isMobile = useIsMobile();
+  const [focusMode, setFocusMode] = useState(false);
+  const [expandMinions, setExpandMinions] = useState(false);
+  const [disableMath, setDisableMath] = useState(false);
+  const [alwaysAutoScroll, setAlwaysAutoScroll] = useState(false);
+  const [showViewMenu, setShowViewMenu] = useState(false);
+  const viewMenuRef = useRef<HTMLDivElement>(null);
 
   // Get API definitions for icon display
   const { apiDefinitions } = useApp();
+
+  // Close view menu when clicking outside
+  useEffect(() => {
+    if (!showViewMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (viewMenuRef.current && !viewMenuRef.current.contains(e.target as Node)) {
+        setShowViewMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showViewMenu]);
 
   // Memoize callbacks to prevent unnecessary re-renders
   const handleMessagesLoaded = React.useCallback(
@@ -142,16 +156,17 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     chat,
     messages,
     isLoading,
+    loopPhase,
+    showContinueBanner,
     tokenUsage,
+    minionTokenUsage,
     currentApiDefId,
     currentModelId,
     parentApiDefId,
     parentModelId,
     streamingGroups,
-    hasReceivedFirstChunk,
     unresolvedToolCalls,
     softStopRequested,
-    suspendedAfterTools,
     sendMessage,
     editMessage,
     copyMessage,
@@ -162,9 +177,11 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     resendFromMessage,
     requestSoftStop,
     continueAfterToolStop,
+    dummyHookStatus,
   } = useChat({
     chatId: chatId,
     callbacks,
+    initialPending,
   });
 
   // Handle message actions
@@ -343,14 +360,12 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         <div className="border-b border-gray-200 bg-white">
           <div className="safe-area-inset-top" />
           <div className="flex h-14 items-center px-4">
-            {isMobile && onMenuPress && (
-              <button
-                onClick={onMenuPress}
-                className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
-              >
-                <span className="text-2xl text-gray-700">☰</span>
-              </button>
-            )}
+            <button
+              onClick={handleClose}
+              className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
+            >
+              <span className="text-2xl text-gray-700">←</span>
+            </button>
             <div className="flex min-w-0 flex-1 flex-col justify-center">
               <button
                 onClick={handleStartRename}
@@ -371,29 +386,121 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
                 {currentModelId || 'No model'} ▼
               </button>
             </div>
-            <button
-              onClick={handleClose}
-              className="-mr-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
-            >
-              <span className="text-2xl text-gray-600">✕</span>
-            </button>
+            {/* View menu */}
+            <div ref={viewMenuRef} className="relative">
+              <button
+                onClick={() => setShowViewMenu(prev => !prev)}
+                className="flex h-11 w-11 items-center justify-center text-gray-600 hover:text-gray-900"
+              >
+                <span className="text-xl">⋯</span>
+              </button>
+              {showViewMenu && (
+                <div className="absolute top-full right-0 z-10 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                  <button
+                    onClick={() => setFocusMode(prev => !prev)}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                  >
+                    <span className="w-5 text-center">{focusMode ? '✓' : ''}</span>
+                    <span>Focus Mode</span>
+                  </button>
+                  <button
+                    onClick={() => setExpandMinions(prev => !prev)}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                  >
+                    <span className="w-5 text-center">{expandMinions ? '✓' : ''}</span>
+                    <span>Expand Minions</span>
+                  </button>
+                  <button
+                    onClick={() => setDisableMath(prev => !prev)}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                  >
+                    <span className="w-5 text-center">{disableMath ? '✓' : ''}</span>
+                    <span>Disable Math</span>
+                  </button>
+                  <button
+                    onClick={() => setAlwaysAutoScroll(prev => !prev)}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                  >
+                    <span className="w-5 text-center">{alwaysAutoScroll ? '✓' : ''}</span>
+                    <span>Always Auto Scroll</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Info Bar */}
-        <div className="flex items-center justify-end border-b border-gray-200 bg-white px-4 py-1">
-          <div className="text-[10px] text-gray-600">
-            {formatTokens('↑', tokenUsage.input)} {formatTokens('↓', tokenUsage.output)}
-            {formatTokens(' R:', tokenUsage.reasoning)}
-            {formatTokens(' C↑', tokenUsage.cacheCreation)}
-            {formatTokens(' C↓', tokenUsage.cacheRead)} ${tokenUsage.cost?.toFixed(3) || '0.000'}
-            {chat.costUnreliable && (
-              <span className="ml-1 text-yellow-600" title="Cost calculation may be inaccurate">
-                (unreliable)
-              </span>
-            )}
-          </div>
-        </div>
+        {(() => {
+          const minionCost = minionTokenUsage.cost ?? 0;
+          const hasMinionData =
+            minionTokenUsage.input > 0 || minionTokenUsage.output > 0 || minionCost > 0;
+          return (
+            <div className="flex flex-col items-end border-b border-gray-200 bg-white px-4 py-1">
+              <div className="text-[10px] text-gray-600">
+                {chat.activeHook && <span className="text-green-600">● </span>}
+                {hasMinionData ? (
+                  <>
+                    {formatTokenGroup('↑', tokenUsage.input - minionTokenUsage.input, [
+                      {
+                        prefix: 'C↑',
+                        value:
+                          (tokenUsage.cacheCreation ?? 0) - (minionTokenUsage.cacheCreation ?? 0) ||
+                          undefined,
+                      },
+                      {
+                        prefix: 'C↓',
+                        value:
+                          (tokenUsage.cacheRead ?? 0) - (minionTokenUsage.cacheRead ?? 0) ||
+                          undefined,
+                      },
+                    ])}{' '}
+                    {formatTokenGroup('↓', tokenUsage.output - minionTokenUsage.output, [
+                      {
+                        prefix: 'R:',
+                        value:
+                          (tokenUsage.reasoning ?? 0) - (minionTokenUsage.reasoning ?? 0) ||
+                          undefined,
+                      },
+                    ])}
+                    {' $'}
+                    {((tokenUsage.cost || 0) - minionCost).toFixed(3)}
+                  </>
+                ) : (
+                  <>
+                    {formatTokenGroup('↑', tokenUsage.input, [
+                      { prefix: 'C↑', value: tokenUsage.cacheCreation },
+                      { prefix: 'C↓', value: tokenUsage.cacheRead },
+                    ])}{' '}
+                    {formatTokenGroup('↓', tokenUsage.output, [
+                      { prefix: 'R:', value: tokenUsage.reasoning },
+                    ])}{' '}
+                    ${tokenUsage.cost?.toFixed(3) || '0.000'}
+                  </>
+                )}
+                {chat.costUnreliable && (
+                  <span className="ml-1 text-yellow-600" title="Cost calculation may be inaccurate">
+                    (unreliable)
+                  </span>
+                )}
+              </div>
+              {hasMinionData && (
+                <div className="text-[10px] text-purple-600">
+                  minion:{' '}
+                  {formatTokenGroup('↑', minionTokenUsage.input, [
+                    { prefix: 'C↑', value: minionTokenUsage.cacheCreation },
+                    { prefix: 'C↓', value: minionTokenUsage.cacheRead },
+                  ])}{' '}
+                  {formatTokenGroup('↓', minionTokenUsage.output, [
+                    { prefix: 'R:', value: minionTokenUsage.reasoning },
+                  ])}
+                  {' $'}
+                  {minionCost.toFixed(3)}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Message List */}
         <MessageList
@@ -406,8 +513,13 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           pendingToolCount={unresolvedToolCalls?.length}
           onPendingToolReject={() => resolvePendingToolCalls('stop')}
           onPendingToolAccept={() => resolvePendingToolCalls('continue')}
-          suspendedAfterTools={suspendedAfterTools}
+          suspendedAfterTools={showContinueBanner}
           onContinueAfterToolStop={continueAfterToolStop}
+          focusMode={focusMode}
+          expandMinions={expandMinions}
+          disableMath={disableMath}
+          alwaysAutoScroll={alwaysAutoScroll}
+          dummyHookStatus={dummyHookStatus}
         />
 
         {/* Chat Input */}
@@ -421,10 +533,10 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           onRemoveAttachment={handleRemoveAttachment}
           maxAttachments={10}
           isProcessing={isProcessingAttachments}
-          showSendSpinner={isLoading && !hasReceivedFirstChunk}
+          showSendSpinner={loopPhase === 'pending'}
           hasPendingToolCalls={!!unresolvedToolCalls && unresolvedToolCalls.length > 0}
           softStopRequested={softStopRequested}
-          onRequestSoftStop={isLoading ? requestSoftStop : undefined}
+          onRequestSoftStop={loopPhase !== 'idle' ? requestSoftStop : undefined}
         />
 
         {/* Model Selector Modal */}

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { HashRouter, Routes, Route, useParams } from 'react-router-dom';
+import { HashRouter, Routes, Route, useParams, useLocation, useNavigate } from 'react-router-dom';
 import { AppProvider } from './contexts/AppContext';
 import { AlertProvider } from './contexts/AlertProvider';
 import { ErrorProvider } from './contexts/ErrorProvider';
@@ -92,10 +92,7 @@ function AppContent() {
             element={<ProjectSettingsViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
           />
           <Route path="/project/:projectId/vfs/*" element={<VfsManagerViewRoute />} />
-          <Route
-            path="/chat/:chatId"
-            element={<ChatViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
-          />
+          <Route path="/chat/:chatId" element={<ChatViewRoute />} />
           <Route
             path="/attachments"
             element={<AttachmentManagerView onMenuPress={() => setIsMobileSidebarOpen(true)} />}
@@ -204,11 +201,22 @@ function VfsManagerViewRoute() {
   );
 }
 
-function ChatViewRoute({ onMenuPress }: { onMenuPress?: () => void }) {
+function ChatViewRoute() {
   const { chatId } = useParams<{ chatId: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const initialPending = !!(location.state as Record<string, unknown>)?.pending;
+
+  // Clear pending flag from history so page refresh doesn't re-trigger loading state
+  useEffect(() => {
+    if (initialPending) {
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [initialPending, location.pathname, navigate]);
+
   if (!chatId) return null;
   // key={chatId} forces remount when switching chats, preventing stale state issues
-  return <ChatView key={chatId} chatId={chatId} onMenuPress={onMenuPress} />;
+  return <ChatView key={chatId} chatId={chatId} initialPending={initialPending} />;
 }
 
 function App() {

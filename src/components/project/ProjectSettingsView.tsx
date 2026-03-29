@@ -7,9 +7,11 @@ import type { Project, APIType, ToolOptions, ModelReference, ToolOptionValue } f
 import {
   isBooleanOption,
   isNumberOption,
+  isTextOption,
   isLongtextOption,
   isModelOption,
   isModelListOption,
+  isSelectOption,
   isModelReference,
   isModelReferenceArray,
   initializeToolOptions,
@@ -87,6 +89,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   >(project?.reasoningSummary);
   const [disableStream, setDisableStream] = useState(project?.disableStream || false);
   const [extendedContext, setExtendedContext] = useState(project?.extendedContext || false);
+  const [noLineNumbers, setNoLineNumbers] = useState(project?.noLineNumbers || false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [temperature, setTemperature] = useState(project?.temperature?.toString() || '');
@@ -145,6 +148,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setSelectedModelId(project.modelId || null);
       setDisableStream(project.disableStream || false);
       setExtendedContext(project.extendedContext || false);
+      setNoLineNumbers(project.noLineNumbers || false);
     }
   }, [project]);
 
@@ -258,18 +262,13 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         // Unified tool format
         enabledTools: enabledTools.length > 0 ? enabledTools : undefined,
         toolOptions: Object.keys(toolOptionsState).length > 0 ? toolOptionsState : undefined,
-        // Clear deprecated fields
-        memoryEnabled: undefined,
-        memoryUseSystemPrompt: undefined,
-        jsExecutionEnabled: undefined,
-        jsLibEnabled: undefined,
-        fsToolEnabled: undefined,
         reasoningEffort,
         reasoningSummary,
         temperature: temperature === '' ? null : parseFloat(temperature),
         maxOutputTokens: parseInt(maxOutputTokens) || 1536,
         disableStream: disableStream || undefined,
         extendedContext: extendedContext || undefined,
+        noLineNumbers: noLineNumbers || undefined,
         lastUsedAt: new Date(),
       };
 
@@ -304,6 +303,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     maxOutputTokens,
     disableStream,
     extendedContext,
+    noLineNumbers,
     updateProject,
     projectId,
     navigate,
@@ -995,6 +995,27 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                         tool.optionDefinitions.length > 0 && (
                           <div className="mt-2 ml-4 space-y-3 border-l-2 border-gray-200 pl-4">
                             {tool.optionDefinitions.map(opt => {
+                              // visibleWhen: skip if sibling option doesn't match
+                              if (opt.visibleWhen) {
+                                const { optionId, value } = opt.visibleWhen;
+                                const siblingDef = tool.optionDefinitions?.find(
+                                  o => o.id === optionId
+                                );
+                                const siblingDefault =
+                                  siblingDef && 'default' in siblingDef
+                                    ? siblingDef.default
+                                    : undefined;
+                                const current = getToolOptionValue(
+                                  tool.name,
+                                  optionId,
+                                  siblingDefault as ToolOptionValue
+                                );
+                                const matches = Array.isArray(value)
+                                  ? (value as ReadonlyArray<unknown>).includes(current)
+                                  : current === value;
+                                if (!matches) return null;
+                              }
+
                               // Boolean option - checkbox
                               if (isBooleanOption(opt)) {
                                 return (
@@ -1021,6 +1042,42 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                                       }
                                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                                     />
+                                  </div>
+                                );
+                              }
+
+                              // Select option - segmented button group
+                              if (isSelectOption(opt)) {
+                                const raw = getToolOptionValue(tool.name, opt.id, opt.default);
+                                const selectedValue = typeof raw === 'string' ? raw : opt.default;
+                                return (
+                                  <div key={opt.id}>
+                                    <div className="mb-1">
+                                      <span className="text-sm font-medium text-gray-900">
+                                        {opt.label}
+                                      </span>
+                                      {opt.subtitle && (
+                                        <p className="text-xs text-gray-500">{opt.subtitle}</p>
+                                      )}
+                                    </div>
+                                    <div className="flex flex-wrap gap-1">
+                                      {opt.choices.map(choice => (
+                                        <button
+                                          key={choice.value}
+                                          type="button"
+                                          onClick={() =>
+                                            setToolOptionValue(tool.name, opt.id, choice.value)
+                                          }
+                                          className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                                            selectedValue === choice.value
+                                              ? 'border-blue-500 bg-blue-50 text-blue-700'
+                                              : 'border-gray-300 bg-white text-gray-600 hover:border-gray-400'
+                                          }`}
+                                        >
+                                          {choice.label}
+                                        </button>
+                                      ))}
+                                    </div>
                                   </div>
                                 );
                               }
@@ -1211,6 +1268,37 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                                 );
                               }
 
+                              // Text option - inline text input
+                              if (isTextOption(opt)) {
+                                const value = getToolOptionValue(tool.name, opt.id, opt.default);
+                                const textValue = typeof value === 'string' ? value : '';
+                                return (
+                                  <div key={opt.id}>
+                                    <div className="mb-1">
+                                      <label
+                                        htmlFor={`tool-${tool.name}-${opt.id}`}
+                                        className="text-sm font-medium text-gray-900"
+                                      >
+                                        {opt.label}
+                                      </label>
+                                      {opt.subtitle && (
+                                        <p className="text-xs text-gray-500">{opt.subtitle}</p>
+                                      )}
+                                    </div>
+                                    <input
+                                      id={`tool-${tool.name}-${opt.id}`}
+                                      type="text"
+                                      value={textValue}
+                                      onChange={e =>
+                                        setToolOptionValue(tool.name, opt.id, e.target.value)
+                                      }
+                                      placeholder={opt.placeholder}
+                                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                    />
+                                  </div>
+                                );
+                              }
+
                               return null;
                             })}
                           </div>
@@ -1335,6 +1423,28 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                         (2x input, 1.5x output)
                       </p>
                     )}
+                  </div>
+
+                  {/* No Line Numbers */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label
+                        htmlFor="noLineNumbers"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        No Line Numbers
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        Strip line number prefixes from filesystem and memory tool output
+                      </p>
+                    </div>
+                    <input
+                      id="noLineNumbers"
+                      type="checkbox"
+                      checked={noLineNumbers}
+                      onChange={e => setNoLineNumbers(e.target.checked)}
+                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
                   </div>
                 </div>
               )}

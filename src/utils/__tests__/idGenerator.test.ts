@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { generateUniqueId } from '../idGenerator';
+import { generateChecksummedId, generateUniqueId, validateIdChecksum } from '../idGenerator';
 
 describe('idGenerator', () => {
   describe('generateUniqueId', () => {
@@ -173,6 +173,76 @@ describe('idGenerator', () => {
 
       // Should only contain alphanumeric and underscore
       expect(id).toMatch(/^[a-z0-9_]+$/);
+    });
+  });
+
+  describe('generateChecksummedId', () => {
+    it('produces IDs with 34-char random+checksum portion', () => {
+      const id = generateChecksummedId('minion');
+      expect(id).toMatch(/^minion_[a-z2-7]{34}$/);
+    });
+
+    it('produces unique IDs', () => {
+      const ids = new Set<string>();
+      for (let i = 0; i < 1000; i++) ids.add(generateChecksummedId('test'));
+      expect(ids.size).toBe(1000);
+    });
+
+    it('passes its own checksum validation', () => {
+      for (let i = 0; i < 50; i++) {
+        expect(validateIdChecksum(generateChecksummedId('minion'))).toBe('valid');
+      }
+    });
+  });
+
+  describe('validateIdChecksum', () => {
+    it('returns valid for a correct checksummed ID', () => {
+      const id = generateChecksummedId('minion');
+      expect(validateIdChecksum(id)).toBe('valid');
+    });
+
+    it('returns invalid when the last 2 chars are tampered', () => {
+      const id = generateChecksummedId('minion');
+      // Flip the last character
+      const lastChar = id[id.length - 1];
+      const flipped = lastChar === 'a' ? 'b' : 'a';
+      const tampered = id.slice(0, -1) + flipped;
+      expect(validateIdChecksum(tampered)).toBe('invalid');
+    });
+
+    it('returns invalid when a middle character is substituted', () => {
+      const id = generateChecksummedId('minion');
+      const midIdx = Math.floor(id.length / 2);
+      const midChar = id[midIdx];
+      const replacement = midChar === 'a' ? 'b' : 'a';
+      const tampered = id.slice(0, midIdx) + replacement + id.slice(midIdx + 1);
+      expect(validateIdChecksum(tampered)).toBe('invalid');
+    });
+
+    it('detects transposition (position-dependent)', () => {
+      const id = generateChecksummedId('minion');
+      const arr = [...id];
+      // Swap two adjacent chars in the random portion
+      const swapIdx = 'minion_'.length + 5;
+      if (arr[swapIdx] !== arr[swapIdx + 1]) {
+        [arr[swapIdx], arr[swapIdx + 1]] = [arr[swapIdx + 1], arr[swapIdx]];
+        expect(validateIdChecksum(arr.join(''))).toBe('invalid');
+      }
+    });
+
+    it('returns no_checksum for legacy 32-char IDs', () => {
+      const legacyId = generateUniqueId('minion'); // 32 chars after prefix
+      expect(validateIdChecksum(legacyId)).toBe('no_checksum');
+    });
+
+    it('returns no_checksum for IDs without underscore', () => {
+      expect(validateIdChecksum('nounderscore')).toBe('no_checksum');
+    });
+
+    it('returns invalid for wrong-length random parts (not 32 or 34)', () => {
+      expect(validateIdChecksum('minion_abc')).toBe('no_checksum'); // too short
+      expect(validateIdChecksum('minion_' + 'a'.repeat(35))).toBe('invalid'); // 35 chars
+      expect(validateIdChecksum('minion_' + 'a'.repeat(36))).toBe('invalid'); // 36 chars
     });
   });
 });

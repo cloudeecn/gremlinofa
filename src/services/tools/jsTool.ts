@@ -101,12 +101,13 @@ async function* executeJavaScript(
     };
   }
 
-  // Get loadLib option (UI initializes to true when tool is enabled)
+  // Get lib loading options (UI initializes to true when tool is enabled)
   // Cast to boolean since toolOptions values can be boolean | string | ModelReference
   const loadLib = toolOptions?.loadLib === true;
+  const loadShareLib = toolOptions?.loadShareLib === true;
 
   // Create fresh context for this execution
-  const vm = await JsVMContext.create(context.projectId, loadLib, context.namespace);
+  const vm = await JsVMContext.create(context.projectId, loadLib, context.namespace, loadShareLib);
 
   try {
     // Wrap code in async IIFE so await works at top level and return value is captured
@@ -156,6 +157,13 @@ export const jsTool: ClientSideTool = {
       subtitle: 'Auto-load .js files from /lib when JS session starts',
       default: true,
     },
+    {
+      type: 'boolean',
+      id: 'loadShareLib',
+      label: 'Load /share/lib Scripts',
+      subtitle: 'Auto-load .js files from /share/lib (shared across namespaces)',
+      default: true,
+    },
   ],
   description: `
 Execute JavaScript in a QuickJS sandbox (ES2023). Code runs inside an async function body, so use \`return\` to output values and \`await\` is supported at top level.
@@ -170,7 +178,7 @@ Execute JavaScript in a QuickJS sandbox (ES2023). Code runs inside an async func
   - halt(message): Immediately stops execution and outputs message at ERROR level.
   - Limitations: No fetch or DOM. setInterval runs once only. No ES modules.
   - Each call runs in a fresh context. Variables do NOT persist between calls. To persist data, use the fs API to write to files.
-  - If /lib directory exists and contains .js files, they are pre-loaded as utilities (e.g., lodash UMD builds).
+  - If /share/lib exists, its .js files are pre-loaded first (shared across namespaces). Then /lib scripts are loaded (per-project).
   - Output example: \`return 1 + 1\` → 2`,
   iconInput: '📜',
   renderInput: renderJsInput,

@@ -32,13 +32,58 @@ describe('returnTool', () => {
       expect(desc).not.toContain('stored');
     });
 
-    it('should have deferred description when deferReturn is true', () => {
+    it('should have free-run description when deferReturn is free-run', () => {
       const desc = (returnTool.description as (opts: Record<string, unknown>) => string)({
-        deferReturn: true,
+        deferReturn: 'free-run',
       });
       expect(desc).toContain('Store a result');
       expect(desc).toContain('continues after this call');
       expect(desc).toContain('delivered when you finish');
+    });
+
+    it('should have auto-ack description when deferReturn is auto-ack', () => {
+      const desc = (returnTool.description as (opts: Record<string, unknown>) => string)({
+        deferReturn: 'auto-ack',
+      });
+      expect(desc).toContain('stored');
+      expect(desc).toContain('acknowledge');
+      expect(desc).toContain('ends your current turn');
+    });
+
+    it('should have enforced description when returnMode is enforced', () => {
+      const desc = (returnTool.description as (opts: Record<string, unknown>) => string)({
+        returnMode: 'enforced',
+      });
+      expect(desc).toContain('MUST call this tool');
+    });
+
+    it('should have enforced description when returnMode is auto-enforced', () => {
+      const desc = (returnTool.description as (opts: Record<string, unknown>) => string)({
+        returnMode: 'auto-enforced',
+      });
+      expect(desc).toContain('MUST call this tool');
+    });
+
+    it('should have return-only description when returnMode is return-only', () => {
+      const desc = (returnTool.description as (opts: Record<string, unknown>) => string)({
+        returnMode: 'return-only',
+      });
+      expect(desc).toContain('preferred way');
+    });
+
+    it('should have default description when returnMode is both', () => {
+      const desc = (returnTool.description as (opts: Record<string, unknown>) => string)({
+        returnMode: 'both',
+      });
+      expect(desc).toContain('ends your current turn');
+    });
+
+    it('should prioritize deferReturn over returnMode', () => {
+      const desc = (returnTool.description as (opts: Record<string, unknown>) => string)({
+        deferReturn: 'free-run',
+        returnMode: 'enforced',
+      });
+      expect(desc).toContain('Store a result');
     });
 
     it('should have correct input schema', () => {

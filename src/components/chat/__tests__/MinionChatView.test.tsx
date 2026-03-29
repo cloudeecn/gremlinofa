@@ -15,14 +15,27 @@ vi.mock('../../../hooks/useMinionChat', () => ({
   useMinionChat: (...args: unknown[]) => mockUseMinionChat(...args),
 }));
 
-// Mock MessageList
+// Mock MessageList — capture onDeleteMessage
+let capturedOnDeleteMessage: ((messageId: string) => void) | undefined;
 vi.mock('../MessageList', () => ({
-  default: ({ messages, onAction }: { messages: Message<unknown>[]; onAction?: unknown }) => (
-    <div data-testid="message-list">
-      <span data-testid="message-count">{messages.length}</span>
-      <span data-testid="has-on-action">{onAction ? 'true' : 'false'}</span>
-    </div>
-  ),
+  default: ({
+    messages,
+    onAction,
+    onDeleteMessage,
+  }: {
+    messages: Message<unknown>[];
+    onAction?: unknown;
+    onDeleteMessage?: (messageId: string) => void;
+  }) => {
+    capturedOnDeleteMessage = onDeleteMessage;
+    return (
+      <div data-testid="message-list">
+        <span data-testid="message-count">{messages.length}</span>
+        <span data-testid="has-on-action">{onAction ? 'true' : 'false'}</span>
+        <span data-testid="has-on-delete">{onDeleteMessage ? 'true' : 'false'}</span>
+      </div>
+    );
+  },
 }));
 
 const mockMinionChat: MinionChat = {
@@ -57,6 +70,8 @@ const mockTokenUsage: TokenUsage = {
   cost: 0.05,
 };
 
+const mockDeleteMessage = vi.fn();
+
 function renderView(minionChatId = 'mc_test', onMenuPress?: () => void, onClose?: () => void) {
   return render(
     <MemoryRouter>
@@ -68,11 +83,14 @@ function renderView(minionChatId = 'mc_test', onMenuPress?: () => void, onClose?
 describe('MinionChatView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    capturedOnDeleteMessage = undefined;
+    mockDeleteMessage.mockResolvedValue(undefined);
     mockUseMinionChat.mockReturnValue({
       minionChat: mockMinionChat,
       messages: mockMessages,
       isLoading: false,
       tokenUsage: mockTokenUsage,
+      deleteMessage: mockDeleteMessage,
     });
   });
 
@@ -89,11 +107,12 @@ describe('MinionChatView', () => {
     expect(screen.getByText(/\$0\.050/)).toBeInTheDocument();
   });
 
-  it('renders MessageList without onAction (read-only)', () => {
+  it('renders MessageList without onAction but with onDeleteMessage', () => {
     renderView();
     expect(screen.getByTestId('message-list')).toBeInTheDocument();
     expect(screen.getByTestId('message-count').textContent).toBe('2');
     expect(screen.getByTestId('has-on-action').textContent).toBe('false');
+    expect(screen.getByTestId('has-on-delete').textContent).toBe('true');
   });
 
   it('does not render ChatInput', () => {
@@ -122,6 +141,7 @@ describe('MinionChatView', () => {
       messages: [],
       isLoading: false,
       tokenUsage: mockTokenUsage,
+      deleteMessage: mockDeleteMessage,
     });
     renderView();
     expect(screen.getByText('(unreliable)')).toBeInTheDocument();
@@ -139,5 +159,10 @@ describe('MinionChatView', () => {
     renderView('mc_test', undefined, onClose);
     fireEvent.click(screen.getByText('✕'));
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('passes onDeleteMessage to MessageList', () => {
+    renderView();
+    expect(capturedOnDeleteMessage).toBeTypeOf('function');
   });
 });

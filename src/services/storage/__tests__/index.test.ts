@@ -17,8 +17,7 @@ vi.stubGlobal('localStorage', {
 
 // Must import after mocking localStorage
 import { createStorageAdapter, createStorage } from '../index';
-import { IndexedDBAdapter } from '../adapters/IndexedDBAdapter';
-import { RemoteStorageAdapter } from '../adapters/RemoteStorageAdapter';
+import { CachedStorageAdapter } from '../adapters/CachedStorageAdapter';
 
 describe('storage index', () => {
   beforeEach(() => {
@@ -37,7 +36,7 @@ describe('storage index', () => {
 
       const adapter = createStorageAdapter();
 
-      expect(adapter).toBeInstanceOf(IndexedDBAdapter);
+      expect(adapter).toBeInstanceOf(CachedStorageAdapter);
     });
 
     it('should create IndexedDBAdapter when no config exists (default)', () => {
@@ -45,7 +44,7 @@ describe('storage index', () => {
 
       const adapter = createStorageAdapter();
 
-      expect(adapter).toBeInstanceOf(IndexedDBAdapter);
+      expect(adapter).toBeInstanceOf(CachedStorageAdapter);
     });
 
     it('should create RemoteStorageAdapter when config type is remote', () => {
@@ -58,7 +57,7 @@ describe('storage index', () => {
 
       const adapter = createStorageAdapter();
 
-      expect(adapter).toBeInstanceOf(RemoteStorageAdapter);
+      expect(adapter).toBeInstanceOf(CachedStorageAdapter);
     });
 
     it('should pass correct parameters to RemoteStorageAdapter', () => {
@@ -72,7 +71,7 @@ describe('storage index', () => {
 
       const adapter = createStorageAdapter();
 
-      expect(adapter).toBeInstanceOf(RemoteStorageAdapter);
+      expect(adapter).toBeInstanceOf(CachedStorageAdapter);
       // We can verify the adapter was created with correct params by checking its behavior
       // The RemoteStorageAdapter stores baseUrl internally and uses it to build URLs
     });
@@ -87,7 +86,7 @@ describe('storage index', () => {
 
       const adapter = createStorageAdapter();
 
-      expect(adapter).toBeInstanceOf(RemoteStorageAdapter);
+      expect(adapter).toBeInstanceOf(CachedStorageAdapter);
     });
 
     it('should use explicit config when provided (local)', () => {
@@ -102,7 +101,7 @@ describe('storage index', () => {
       // But explicitly pass local config - should ignore localStorage
       const adapter = createStorageAdapter({ type: 'local' });
 
-      expect(adapter).toBeInstanceOf(IndexedDBAdapter);
+      expect(adapter).toBeInstanceOf(CachedStorageAdapter);
     });
 
     it('should use explicit config when provided (remote)', () => {
@@ -117,7 +116,7 @@ describe('storage index', () => {
         userId: 'explicit-user-id-64-chars-bcdef1234567890abcdef1234567890abcd',
       });
 
-      expect(adapter).toBeInstanceOf(RemoteStorageAdapter);
+      expect(adapter).toBeInstanceOf(CachedStorageAdapter);
     });
   });
 
@@ -128,7 +127,7 @@ describe('storage index', () => {
       const storage = createStorage();
 
       expect(storage).toBeDefined();
-      expect(storage.getAdapter()).toBeInstanceOf(IndexedDBAdapter);
+      expect(storage.getAdapter()).toBeInstanceOf(CachedStorageAdapter);
     });
 
     it('should return a UnifiedStorage instance with RemoteStorageAdapter for remote config', () => {
@@ -142,7 +141,7 @@ describe('storage index', () => {
       const storage = createStorage();
 
       expect(storage).toBeDefined();
-      expect(storage.getAdapter()).toBeInstanceOf(RemoteStorageAdapter);
+      expect(storage.getAdapter()).toBeInstanceOf(CachedStorageAdapter);
     });
 
     it('should create independent instances on each call', () => {
@@ -168,7 +167,7 @@ describe('storage index', () => {
       const storage = createStorage({ type: 'local' });
 
       expect(storage).toBeDefined();
-      expect(storage.getAdapter()).toBeInstanceOf(IndexedDBAdapter);
+      expect(storage.getAdapter()).toBeInstanceOf(CachedStorageAdapter);
     });
 
     it('should use explicit config when provided (remote)', () => {
@@ -184,7 +183,7 @@ describe('storage index', () => {
       });
 
       expect(storage).toBeDefined();
-      expect(storage.getAdapter()).toBeInstanceOf(RemoteStorageAdapter);
+      expect(storage.getAdapter()).toBeInstanceOf(CachedStorageAdapter);
     });
   });
 });

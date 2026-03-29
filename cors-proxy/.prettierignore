@@ -1,0 +1,14 @@
+# Dependencies
+node_modules
+package-lock.json
+
+# Build outputs
+dist
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.*
+
+# Git
+.git

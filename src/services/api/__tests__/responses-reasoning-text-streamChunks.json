@@ -170,7 +170,7 @@
   {
     "type": "token_usage",
     "inputTokens": 399,
-    "outputTokens": 107,
+    "outputTokens": 38,
     "cacheReadTokens": 0,
     "reasoningTokens": 69
   }

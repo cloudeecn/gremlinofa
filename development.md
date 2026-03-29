@@ -16,7 +16,7 @@ Keep it factual, concise, current state only.
 
 ## Project Overview
 
-GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web application built with React and Vite that supports multiple AI providers (ChatGPT compatible, Anthropic) with project-based organization and chat management.
+GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web application built with React and Vite that supports multiple AI providers (ChatGPT compatible, Anthropic, Google Gemini, AWS Bedrock) with project-based organization and chat management.
 
 **Tech Stack:** React • TypeScript • Vite • React Router • Tailwind CSS • IndexedDB • AES-256-GCM encryption • React Context API • PWA
 
@@ -26,15 +26,16 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 - [x] Project & chat management with cascading deletion
 - [x] Project settings (system prompt, pre-fill, model, temperature, reasoning, web search, message format)
-- [x] Chat with streaming responses, message editing, forking, resend, and cost tracking
-- [x] Message rendering (Markdown, syntax highlighting, LaTeX math with horizontal scroll, thinking blocks, citations, code block copy)
+- [x] Chat with streaming responses, message editing, forking, resend, and cost tracking (separate minion token/cost tracking in info bar)
+- [x] Message rendering (Markdown, syntax highlighting, LaTeX math with disable-math toggle, thinking blocks, citations, code block copy, word-break on non-code containers)
 - [x] Image attachments (resize, compress, multi-select, preview, lightbox)
-- [x] Virtual scrolling for long message histories with scroll-to-bottom button
-- [x] API clients (OpenAI Responses, OpenAI Chat Completions, Anthropic) with streaming
+- [x] Virtual scrolling for long message histories with scroll-to-bottom button and hysteresis bounce protection
+- [x] API clients (OpenAI Responses, OpenAI Chat Completions, Anthropic, Google Gemini, Bedrock) with streaming and cross-model tool call reconstruction
 - [x] Model discovery and caching per API definition
 - [x] Pricing system with per-message cost snapshots
 - [x] Encrypted storage (IndexedDB + AES-256-GCM)
 - [x] Data export/import with re-encryption support
+- [x] Project export/import (.gremlin.json bundles — portable, decrypted, hand-craftable)
 - [x] PWA with offline support and install prompt
 - [x] Responsive layout (desktop two-panel, mobile drawer)
 - [x] Draft persistence (localStorage with auto-save)
@@ -45,6 +46,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 - [x] Configure build optimization (conditional base path, PWA denylist for /dev)
 - [x] Production source maps with runtime mapping for readable stack traces
+- [x] CORS proxy backend (`cors-proxy/` - Express, SSE streaming) with per-API-definition proxy URL
 - [ ] Bundle size analysis (chunk splitting for large KaTeX/highlight.js bundles)
 
 **PWA**
@@ -81,17 +83,28 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [ ] Background API support (responses continue after navigation)
 - [x] Soft stop for agentic loop (stop button halts at next tool boundary)
 - [ ] Abort ongoing API calls
+- [x] Focus mode (⋯ menu: hides backstage, tool results, metadata; shows only user text/images + assistant text)
+- [x] Expand minions (⋯ menu: inline minion name/model/input/output without collapsed bar)
+- [x] Disable Math toggle (⋯ menu: renders `$...$` as literal text instead of KaTeX)
+- [x] Always Auto Scroll (⋯ menu: keeps auto-scroll active regardless of scroll position)
+- [x] DUMMY System (LLM-registered JS hooks intercept the agentic loop before API calls — synthetic responses, user handoff, or passthrough; async hooks and top-level await supported)
 
 **API & Pricing**
 
 - [ ] API key validation
+- [x] Advanced settings per API definition (collapsible section in Settings)
+  - [x] Prune previous thinking blocks (strips thinking/reasoning from historical messages for providers that reject them)
+  - [x] Prune empty text blocks (removes empty text blocks from historical messages)
+  - [x] Enforce genuine Anthropic (rejects responses with zero cache activity or unsigned thinking blocks)
+  - [x] De facto thinking mode (sends `{thinking: {type: enabled/disabled}}` for DeepSeek, Kimi, MiMo, etc. — settable per model metadata or per provider)
 - [x] Pricing display in Model Selector
-- [ ] Cache pricing display
+- [x] Cache pricing fallback (cache tokens priced at inputPrice when no cache-specific price)
+- [x] Cache pricing display
 - [ ] Script to automatically parse pricing data from api provider's pricing page
 
 **Statistics & Display**
 
-- [x] Token display formatting (##.#k format)
+- [x] Token display formatting (##.#k format, grouped by direction: `↑(123, C↑101, C↓202) ↓(456, R:789)`)
 - [x] Cost display precision (3 decimals)
 - [x] Chat-level token totals (cumulative)
 - [x] Context window usage (recalculated)
@@ -99,7 +112,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Incremental cost/token persistence during agent loop (crash-resilient)
 - [x] Fork tracking and cost analysis
 - [x] Tool call cost tracking (minion sub-agent costs flow into chat totals)
-- [x] Minion chat view (read-only overlay, accessible via "View Chat" button in tool result; main chat continues streaming underneath)
+- [x] Minion chat view (overlay, accessible via "View Chat" button in tool result; main chat continues streaming underneath; per-message delete for manual restoration)
 
 **Documentation**
 
@@ -117,7 +130,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 - [x] Core services tested (encryption, compression, storage, CSV helper, data export/import, markdownRenderer)
 - [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useIsKeyboardVisible, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager, usePreferences, useMinionChat)
-- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, LegacyAssistantBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, ToolResultBubble, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView, MinionChatView)
+- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, ToolResultBubble, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView, MinionChatView)
 - [x] Error components tested (ErrorView, ErrorFloatingButton)
 - [x] OOBE components tested (OOBEScreen, OOBEComplete)
 - [x] Integration tests (import/export roundtrip with 210+ records, duplicate handling, CSV special characters)
@@ -125,6 +138,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Cross-adapter E2E roundtrip tests (fake-indexeddb + live storage-backend, real encryption)
 - [x] WebLLM client unit tests (webllmClient, webllmModelInfo, apiService.webllm)
 - [x] WebGPU capability detection tests
+- [x] DUMMY System tests (dummyHookRuntime, dummyTool)
 - [x] Remote storage E2E tests (RemoteStorageAdapter against real storage-backend)
 - [ ] E2E tests (full app)
 
@@ -132,7 +146,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 ### API Definitions
 
-- Multiple API definitions per provider type (APIType: `responses_api`, `chatgpt`, `anthropic`, `webllm`)
+- Multiple API definitions per provider type (APIType: `responses_api`, `chatgpt`, `anthropic`, `webllm`, `ds01-dummy-system`)
 - Each definition: name, icon (optional emoji), baseUrl (optional), apiKey (not required for WEBLLM or when `isLocal` is true)
 - `isLocal` flag marks non-WebLLM providers that don't need API keys (e.g., local LLM servers)
 - `modelsEndpoint` (optional) - Custom URL for fetching models list without authentication
@@ -156,15 +170,18 @@ Projects organize chats with shared settings:
 - **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
 - **Web search** toggle
 - **Message format**: three modes (user message / with metadata / use template)
-- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook, Checkpoint
+- **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook, Checkpoint, Metadata, DUMMY
 - **Advanced** (collapsed): temperature, max output tokens (default: 1536), disable streaming, extended context (1M)
+- **Tool option `visibleWhen`**: conditional visibility — options can depend on sibling option values (e.g., deferred return settings only shown when deferReturn is on)
 
 ### Chats
 
 - Organized under projects, inherit project settings
 - Can override API definition/model per chat
 - Store message history with metadata (tokens, model, timestamps)
-- Track sink cost (accumulated from deleted messages)
+- Track cumulative token totals
+- `summary?: string` — AI-settable chat summary (via metadata tool)
+- `activeHook?: string` — DUMMY System hook name active for this chat
 
 ### Attachments
 
@@ -407,7 +424,7 @@ Only these components are aware of provider SDK types. All other code uses unifi
 
 | Component                | Per-API?    | Purpose                                                                              |
 | ------------------------ | ----------- | ------------------------------------------------------------------------------------ |
-| `APIClient`              | Yes         | `anthropicClient`, `openaiClient`, `responsesClient`, `webllmClient`                 |
+| `APIClient`              | Yes         | `anthropicClient`, `openaiClient`, `responsesClient`, `googleClient`, `webllmClient` |
 | `StreamMapper`           | Yes         | Converts SDK stream events to unified `StreamChunk` types                            |
 | `FullContentAccumulator` | When needed | Builds `fullContent` from streaming chunks when SDK doesn't provide `finalMessage()` |
 
@@ -472,15 +489,17 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   - `toolOptions?: Record<string, ToolOptions>` - Per-tool options keyed by tool name
   - `ToolOptions = Record<string, ToolOptionValue>` where `ToolOptionValue = boolean | string | ModelReference | ModelReference[]`
   - `ModelReference = { apiDefinitionId: string; modelId: string }` for model selection options
-  - `ToolOptionDefinition` is a discriminated union with four types:
+  - `ToolOptionDefinition` is a discriminated union:
     - `BooleanToolOption`: `{ type: 'boolean'; id; label; subtitle?; default: boolean }`
+    - `NumberToolOption`: `{ type: 'number'; id; label; subtitle?; default: number; min?; max? }`
+    - `TextToolOption`: `{ type: 'text'; id; label; subtitle?; default: string; placeholder? }`
     - `LongtextToolOption`: `{ type: 'longtext'; id; label; subtitle?; default: string; placeholder? }`
+    - `SelectToolOption`: `{ type: 'select'; id; label; subtitle?; default: string; choices; migrateFrom? }`
     - `ModelToolOption`: `{ type: 'model'; id; label; subtitle? }` (no default, prepopulated from project)
     - `ModelListToolOption`: `{ type: 'modellist'; id; label; subtitle? }` (initialized to `[]`)
-  - Type guards: `isBooleanOption()`, `isLongtextOption()`, `isModelOption()`, `isModelListOption()`, `isModelReference()`, `isModelReferenceArray()`
+  - All option types support `visibleWhen?: { optionId: string; value: ToolOptionValue | ToolOptionValue[] }` — conditional visibility based on sibling option value
+  - Type guards: `isBooleanOption()`, `isNumberOption()`, `isTextOption()`, `isLongtextOption()`, `isSelectOption()`, `isModelOption()`, `isModelListOption()`, `isModelReference()`, `isModelReferenceArray()`
   - `initializeToolOptions(existing, optionDefs, projectContext)` - Initializes options with defaults, preserves existing values
-  - Migration: Storage layer auto-migrates old boolean flags on project load (see `migrateProjectToolSettings()` in `unifiedStorage.ts`)
-  - Legacy fields (`memoryEnabled`, `jsExecutionEnabled`, etc.) cleared after migration
 - **Persisted rendering**: Tool render functions are called at message save time, not render time:
   - `ToolUseRenderBlock.renderedInput` and `ToolUseRenderBlock.icon` populated in `useChat` after `finalize()`
   - `ToolResultRenderBlock.renderedContent` and `ToolResultRenderBlock.icon` populated when creating tool result blocks
@@ -495,10 +514,11 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 - `memory` tool provides persistent virtual filesystem (see Memory Tool section below), dynamically registered/unregistered per project; two modes:
   - **Native mode (default)**: Uses Anthropic's `memory_20250818` shorthand via `apiOverrides`
   - **System prompt mode**: Injects memory listing + README.md into system prompt (toggle in Project Settings)
+  - **No Hand Holding option**: Skips the usage manual from system prompt injection, only emits file listing + README (for capable models that already know the tool)
 - Agentic loop in `useChat.ts` handles `stop_reason: 'tool_use'`:
   1. Extract `tool_use` blocks from `fullContent`
   2. Execute client-side tools locally
-  3. Build `tool_result` messages with `renderingContent`
+  3. Build `tool_result` messages
   4. Save intermediate messages to storage + update UI state
   5. Send continuation request
   6. Loop until `stop_reason !== 'tool_use'` or max iterations (50)
@@ -506,13 +526,13 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   1. `unresolvedToolCalls` detected via `getUnresolvedToolCalls()` in `useChat.ts`
   2. `PendingToolCallsBanner` shows in MessageList with Reject/Accept buttons
   3. User actions:
-     - **Reject button**: Sends error "Token limit reached, ask user to continue"
+     - **Reject button**: Sends error "User rejected the tool call"
      - **Accept button**: Delegates tool execution to the agentic loop (`pendingToolUseBlocks`) for streamed execution with live status updates
      - **User sends message**: Sends reject response along with user's message
   4. ChatInput send button enabled even with empty input when pending tools exist
-- Intermediate messages persisted with proper `renderingContent`:
+- Intermediate messages persisted with `renderingContent`:
   - Assistant messages with `tool_use` render in `BackstageView` as expandable "Calling [tool_name]" blocks
-  - User messages with `tool_result` render via `ToolResultBubble` (detected by `fullContent` containing `tool_result` blocks)
+  - User messages with `tool_result` render via `ToolResultBubble` (detected by `content.toolResults` being set)
 
 **Pricing:**
 
@@ -530,7 +550,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 **Content Types** (`src/types/content.ts`):
 
 - `RenderingBlockGroup` with category (backstage/text/error)
-- Block types: `ThinkingRenderBlock`, `TextRenderBlock`, `WebSearchRenderBlock`, `WebFetchRenderBlock`, `ToolUseRenderBlock`, `ToolResultRenderBlock`, `ToolInfoRenderBlock` (with `displayName`, `apiDefinitionId`, `modelId`), `ErrorRenderBlock`
+- Block types: `ThinkingRenderBlock`, `TextRenderBlock`, `WebSearchRenderBlock`, `WebFetchRenderBlock`, `ToolUseRenderBlock`, `ToolResultRenderBlock`, `ToolInfoRenderBlock` (with `displayName`, `apiDefinitionId`, `modelId`), `InjectedFileRenderBlock` (path, content, error flag), `ErrorRenderBlock`
 - `RenderingBlockGroup.isToolGenerated?: boolean` — marks tool-generated content for distinct styling
 - `ToolResultRenderBlock.renderingGroups?: RenderingBlockGroup[]` — nested content from tool's internal work (e.g., minion sub-agent)
 - Citations pre-rendered as `<a class="citation-link" data-cited="...">` tags
@@ -557,7 +577,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 - Text consolidation: consecutive text blocks reused instead of creating new ones
 - Citation handling: `citations_delta` events accumulated during text blocks, rendered as `<a>` tags on block end
 - `finalize()` returns deep copy for storage; `finalizeWithError()` appends error block
-- `migrateMessageRendering()` on clients retained only for migrating old messages without `renderingContent`
+- Old messages without `renderingContent` are rendered via `AssistantMessageBubble` which falls back to markdown rendering of the `content` field
 
 **Component Structure:**
 
@@ -566,12 +586,11 @@ MessageList.tsx                    # Container with virtual scrolling
 ├── MessageBubble.tsx              # Container with virtual scrolling logic, delegates rendering
 │   ├── UserMessageBubble.tsx      # User messages (blue bubble, attachments, edit/fork/copy/dump JSON)
 │   ├── ToolResultBubble.tsx       # Tool result messages (role: USER with tool_result blocks, delete action)
-│   ├── AssistantMessageBubble.tsx # Assistant messages with renderingContent (new format)
+│   ├── AssistantMessageBubble.tsx # Assistant messages (renderingContent or markdown fallback)
 │   │   ├── BackstageView          # Collapsible thinking/search/fetch/tool_use/tool_result
 │   │   ├── ErrorBlockView         # Collapsible error with stack trace
 │   │   ├── TextGroupView          # Text with citations
 │   │   └── StopReasonBadge        # Stop reason display
-│   └── LegacyAssistantBubble.tsx  # Legacy assistant messages (markdown fallback)
 └── StreamingMessage.tsx           # In-progress responses
 ```
 
@@ -606,11 +625,12 @@ MessageList.tsx                    # Container with virtual scrolling
 
 ### Virtual Scrolling
 
-- `useVirtualScroll` hook with IntersectionObserver (5 screen heights buffer)
-- **Scroll container as root**: Observer uses the scroll container element as `root` instead of viewport, ensuring accurate intersection detection in nested scroll contexts
+- `useVirtualScroll` hook with two IntersectionObservers (hysteresis bounce protection)
+- **Two-observer hysteresis**: Outer observer (5 screens) virtualizes on exit, inner observer (4 screens) re-renders on entry. Messages between 4–5 screens keep their current state, preventing rapid toggling at the boundary. `initializedIdsRef` tracks first-detection to distinguish initial mount from re-entry.
+- **Scroll container as root**: Observers use the scroll container element as `root` instead of viewport, ensuring accurate intersection detection in nested scroll contexts
 - **Buffer calculation**: Uses pixel-based `rootMargin` (`containerHeight * bufferScreens`px) instead of percentages for reliable cross-browser behavior
 - **Minimum buffer**: 600px minimum container height ensures reasonable buffer on small screens
-- **Pending registration queue**: Handles race condition where ref callbacks fire before observer is ready
+- **Pending registration queue**: Handles race condition where ref callbacks fire before observers are ready
 - Height caching: measured synchronously on mount, tracked via ResizeObserver
 - Placeholders: render `<div style={{height: cachedHeight}}>` when offscreen
 - Flicker-free: messages render fully → measure → hide if outside buffer
@@ -749,7 +769,7 @@ Features:
 - **Directory tree**: Expand/collapse directories, lazy loading, file sizes
 - **File viewer**: Read-only content display with version badge, binary file preview (images rendered, others show download button), MIME type badge
 - **File editor**: Edit with draft persistence (`vfs-editor` place), auto-versioning on save (text files only)
-- **Diff viewer**: Compare versions with LCS diff algorithm, rollback support
+- **Diff viewer**: Compare versions with LCS diff algorithm, rollback support, revision timestamps from `listVersions()`, context-only mode (±10 lines toggle via `filterDiffContext`)
 - **Delete**: Soft-delete files and directories (recursive)
 - **Download**: UTF-8 text files download as `.txt`, binary files download with original MIME type
 - **Create**: Create empty text files and directories from directory panel
@@ -794,20 +814,23 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 **Files:**
 
 - `src/services/tools/memoryTool.ts` - Tool implementation with `MemoryToolInstance` class
-- `src/services/vfs/vfsService.ts` - VFS backend with tree structure and versioning
+- `src/services/vfs/index.ts` - Barrel re-export (all callers import from here)
+- `src/services/vfs/vfsFacade.ts` - Locked wrappers + compound operations (`appendFile`, `copyFile`, `deletePath`, `createFileGuarded`, `ensureDirAndWrite`)
+- `src/services/vfs/vfsService.ts` - Unlocked VFS internals with tree structure and versioning
 
 **Commands (Anthropic spec compliant):**
 
-| Command       | Parameters                           | Description                                                                   |
-| ------------- | ------------------------------------ | ----------------------------------------------------------------------------- |
-| `view`        | `path`, `view_range?`                | View directory listing (with file sizes) or file contents (with line numbers) |
-| `create`      | `path`, `file_text`                  | Create new file (error if exists)                                             |
-| `str_replace` | `path`, `old_str`, `new_str`         | Replace unique string (error if not found or multiple matches)                |
-| `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (0-indexed)                                      |
-| `delete`      | `path`                               | Delete file or directory (soft delete)                                        |
-| `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                                |
-| `mkdir`       | `path`                               | Create a new directory                                                        |
-| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists                    |
+| Command       | Parameters                           | Description                                                                         |
+| ------------- | ------------------------------------ | ----------------------------------------------------------------------------------- |
+| `view`        | `path`, `view_range?`                | View directory listing (with file sizes) or file contents (with line numbers)       |
+| `create`      | `path`, `file_text`, `overwrite?`    | Create new file (error if exists). `overwrite` replaces existing                    |
+| `str_replace` | `path`, `old_str`, `new_str?`        | Replace unique string. Omitting `new_str` deletes matched text                      |
+| `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (0-indexed)                                            |
+| `delete`      | `path`                               | Delete file or directory (soft delete)                                              |
+| `rename`      | `old_path`, `new_path`, `overwrite?` | Rename/move file. Errors if destination exists unless `overwrite: true`             |
+| `mkdir`       | `path`                               | Create a new directory                                                              |
+| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists                          |
+| `view-all`    | `paths`                              | Batch read multiple files, returns concatenated content with `=== path ===` headers |
 
 **VFS Architecture:**
 
@@ -822,7 +845,7 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
   - `/share` — read-only for namespaced callers (main agent has write access). Enforced via `assertWritable()` in VFS core, throws `VfsError('READONLY')`.
   - `/sharerw` — read-write for all, including namespaced callers. Enables minion-to-minion collaboration.
 - **Mount root protection**: `/share` directory root cannot be deleted or renamed (throws `INVALID_PATH`). `/sharerw` has no root protection — the main agent can delete it if needed.
-- **Concurrency control**: Per-project promise chain (`treeLock.ts`) serializes all VFS operations — both reads and writes. `strReplace` and `insert` use internal primitives directly (no re-entrant calls to exported functions). Prevents lost-update race conditions and TOCTOU bugs when parallel tool calls access the same project's tree.
+- **Concurrency control**: Facade layer (`vfsFacade.ts`) acquires a per-project promise chain (`treeLock.ts`) once per operation, including compound multi-step operations like `appendFile`, `copyFile`, `deletePath`. All callers import from `vfs/index.ts` barrel (never `vfsService` directly). `vfsService.ts` contains unlocked internal functions. Prevents lost-update race conditions and TOCTOU bugs.
 
 **Storage Tables:**
 
@@ -830,14 +853,7 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 - `vfs_files`: Current file content (parentId = projectId)
 - `vfs_versions`: Historical snapshots (parentId = fileId)
 - VFS data cleaned up automatically when project is deleted
-
-**Migration:**
-
-Old memory system data (`memories`, `memory_journals` tables) is automatically migrated to VFS on app startup via `UnifiedStorage.initialize()`. Migration is idempotent - skips projects that already have VFS data. Process:
-
-1. Replay journal entries chronologically (builds version history in VFS)
-2. Compare VFS state with current `memories` table and sync differences
-3. Delete old `memories` and `memory_journals` records after successful migration
+- **Compact Project**: Accessible from project gear dropdown (🗜️). Purges soft-deleted nodes and orphans older than 1 week, then prunes historical revisions using tiered retention: all <24h, hourly 24h–3d, daily 3d–30d, weekly 30d–1yr, discard >1yr. Renumbers remaining revisions sequentially. Done screen shows cleanup results plus post-compact summary (tree nodes, files, revisions).
 
 **Instance Management:**
 
@@ -879,16 +895,17 @@ Client-side tool that provides LLM access to the project's virtual filesystem. S
 
 **Commands:**
 
-| Command       | Parameters                           | Description                                                       |
-| ------------- | ------------------------------------ | ----------------------------------------------------------------- |
-| `view`        | `path`, `view_range?`                | View directory listing, text file (with line numbers), or dataUrl |
-| `create`      | `path`, `file_text`                  | Create new file (accepts text or dataUrl for binary)              |
-| `str_replace` | `path`, `old_str`, `new_str`         | Replace unique string (text files only)                           |
-| `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (text files only)                    |
-| `delete`      | `path`                               | Delete file or directory (soft delete)                            |
-| `rename`      | `old_path`, `new_path`               | Rename/move file (error if destination exists)                    |
-| `mkdir`       | `path`                               | Create a new directory                                            |
-| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists        |
+| Command       | Parameters                           | Description                                                                         |
+| ------------- | ------------------------------------ | ----------------------------------------------------------------------------------- |
+| `view`        | `path`, `view_range?`                | View directory listing, text file (with line numbers), or dataUrl                   |
+| `create`      | `path`, `file_text`, `overwrite?`    | Create new file (accepts text or dataUrl for binary). `overwrite` replaces existing |
+| `str_replace` | `path`, `old_str`, `new_str?`        | Replace unique string (text files only). Omitting `new_str` deletes matched text    |
+| `insert`      | `path`, `insert_line`, `insert_text` | Insert text at specific line (text files only)                                      |
+| `delete`      | `path`                               | Delete file or directory (soft delete)                                              |
+| `rename`      | `old_path`, `new_path`, `overwrite?` | Rename/move file. Errors if destination exists unless `overwrite: true`             |
+| `mkdir`       | `path`                               | Create a new directory                                                              |
+| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists                          |
+| `view-all`    | `paths`                              | Batch read multiple files, returns concatenated content with `=== path ===` headers |
 
 **Binary File Support:**
 
@@ -1055,20 +1072,22 @@ Filesystem operations are async and resolved during the QuickJS event loop. Each
 - Promise handle creation and resolution
 - Result marshalling between JS host and QuickJS context
 
-**Library Preloading (`/lib`):**
+**Library Preloading (`/share/lib` and `/lib`):**
 
-Each tool call loads and executes all `.js` files in the `/lib` directory (if it exists and project.jsLibEnabled is true):
+Each tool call loads `.js` files from two directories (when enabled):
+
+1. `/share/lib` — shared across VFS namespaces, loaded first (controlled by `loadShareLib` option)
+2. `/lib` — per-project, loaded second (controlled by `loadLib` option)
+
+Both follow the same loading behavior:
 
 - Lists all `.js` files, sorts alphabetically for deterministic order
 - Executes each script with the filename parameter for proper stack traces
-- Library output (console logs) only shown on first JS call in each agentic loop
 - Headers like `=== Output of library X.js ===` are omitted for libraries with no output
 - Use for: loading utility libraries (lodash, date-fns UMD builds), custom helpers, polyfills
 - Errors logged to console but don't prevent tool execution
 
-**Agentic Loop Integration:**
-
-Library output is always shown (no first-call tracking). The `loadLib` option controls whether `/lib` scripts are loaded.
+Library output is always shown (no first-call tracking).
 
 **Instance Management:**
 
@@ -1092,36 +1111,52 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 
 **Input Parameters:**
 
-| Parameter      | Type     | Required             | Description                                                                            |
-| -------------- | -------- | -------------------- | -------------------------------------------------------------------------------------- |
-| `action`       | string   | No                   | `'message'` (default) or `'retry'`. Retry rolls back to checkpoint and re-executes.    |
-| `message`      | string   | For `message` action | Task to send to minion. For `retry`: omit to re-send original, or provide replacement. |
-| `minionChatId` | string   | For `retry` action   | Existing minion chat ID to continue or retry                                           |
-| `enableWeb`    | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)       |
-| `enabledTools` | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                   |
-| `persona`      | string   | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is enabled.  |
-| `model`        | string   | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` + `models` configured. |
-| `displayName`  | string   | No                   | Display name shown in the UI for this minion call. If omitted, persona name is used.   |
+| Parameter      | Type     | Required             | Description                                                                                         |
+| -------------- | -------- | -------------------- | --------------------------------------------------------------------------------------------------- |
+| `action`       | string   | No                   | `'message'` (default) or `'retry'`. Retry rolls back to savepoint and re-executes.                  |
+| `message`      | string   | For `message` action | Task to send to minion. For `retry`: omit to re-send original, or provide replacement.              |
+| `minionChatId` | string   | For `retry` action   | Existing minion chat ID to continue or retry                                                        |
+| `enableWeb`    | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)                    |
+| `enabledTools` | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                                |
+| `persona`      | string   | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is not `off`.             |
+| `model`        | string   | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` is not `off` + `models` configured. |
+| `displayName`  | string   | No                   | Display name shown in the UI for this minion call. If omitted, persona name is used.                |
+| `injectFiles`  | string[] | No                   | VFS file paths to inject as context. Injection method controlled by `fileInjectionMode` option.     |
 
 **Tool Options:**
 
 - `systemPrompt` (longtext) - Instructions for minion sub-agents
 - `model` (ModelReference) - Model for delegated tasks (can use cheaper model)
-- `models` (ModelReference[]) - Models the LLM can choose from when calling minions. When non-empty and `namespacedMinion` is enabled, adds `model` input parameter with enum of `apiDefId:modelId` strings. LLM omitting `model` falls back to default `model` option.
+- `models` (ModelReference[]) - Models the LLM can choose from when calling minions. When non-empty and `namespacedMinion` is not `off`, adds `model` input parameter with enum of `apiDefId:modelId` strings. LLM omitting `model` falls back to default `model` option.
 - `allowWebSearch` (boolean, default: false) - Project-level gate for minion web search. Must be enabled for `enableWeb` to work. When disabled, `enableWeb` parameter and web search mention are omitted from the schema/description sent to the LLM.
-- `returnOnly` (boolean, default: false) - When return tool provides a result and accumulated text exists, suppress text from the result JSON (only return the explicit result)
-- `noReturnTool` (boolean, default: false) - Remove the return tool from minion toolset
+- `returnMode` (select: `no-return`/`both`/`return-only`/`enforced`/`auto-enforced`, default: `both`) - Controls return tool behavior and output format. Migrates from legacy `noReturnTool` and `returnOnly` booleans.
+  - `no-return` — Remove return tool from minion toolset
+  - `both` — Return tool available + text capture. Result as JSON `{ text, stopReason, hasCoT, minionChatId, result? }`
+  - `return-only` — Only return value captured; text suppressed when return tool used. Falls back to text if return not called.
+  - `enforced` — Return must be called; warning if not
+  - `auto-enforced` — Like `enforced` but auto-retries up to `AUTO_ENFORCE_MAX_RETRIES` (2) times with a reminder message before giving up
+  - Non-`both` modes use simplified format: `<minionChatId>id</minionChatId>\n[<hasCoT />]\ncontent` (`<hasCoT />` self-closing tag present only when true)
 - `disableReasoning` (boolean, default: false) - Turn off reasoning/thinking for minion calls regardless of project settings
-- `deferReturn` (boolean, default: false) - Return tool stores result without breaking the agentic loop. The loop continues until natural completion, then returns the stored value. Multiple calls overwrite (last wins). Sets `deferReturn` on `AgenticLoopOptions` and injects it into the return tool's options so its description reflects the mode.
-- `namespacedMinion` (boolean, default: false) - Isolate each persona into its own VFS namespace. When enabled, adds `persona` input parameter and system prompt with available personas list.
+- `deferReturn` (boolean, default: false, visibleWhen returnMode != no-return) - Return tool stores result without breaking the agentic loop. The loop continues until natural completion, then returns the stored value. Multiple calls overwrite (last wins). Sets `deferReturn` on `AgenticLoopOptions` and injects it into the return tool's options so its description reflects the mode.
+- `deferredSoftStopRounds` (number, default: 5, visibleWhen deferReturn) - Rounds after deferred return before injecting stop messages
+- `deferredForceStopRounds` (number, default: 10, visibleWhen deferReturn) - Rounds after deferred return before force-stopping the loop
+- `returnAckMessage` (text, visibleWhen deferReturn) - Message sent when deferred return stores a result
+- `returnDuplicateMessage` (text, visibleWhen deferReturn) - Error sent when return is called again after a result is stored
+- `returnEnforceMessage` (text, visibleWhen returnMode=auto-enforced) - Message sent when auto-enforced mode retries because return was not called
+- `fileInjectionMode` (select: `inline`/`separate-block`/`as-file`, default: `inline`) - How injected files are sent to the minion LLM. `inline` prepends file text into the message string. `separate-block` sends each file as a separate text content block. `as-file` uses native document/file blocks (Anthropic `BetaRequestDocumentBlock`, OpenAI `file` part, Bedrock `DocumentBlock`). Google falls back to `separate-block`; WebLLM falls back to `inline`.
+- `namespacedMinion` (select: `off`/`persona`/`all`, default: `off`) - Controls persona and VFS namespace behavior. Migrates from legacy boolean (`true` → `all`).
+  - `off` — No persona parameter, no namespace. Minions use configured system prompt.
+  - `persona` — Persona parameter available. Only minions called with an explicit non-default persona get VFS namespace (`/minions/<persona>/`) and persona prompts. Default/no-persona minions behave like `off` (root VFS, configured system prompt, no `_global.md`).
+  - `all` — Everyone namespaced. Default persona maps to `/minions/default/`, reads `_global.md`.
 
-**Persona System (namespacedMinion):**
+**Persona System (namespacedMinion `persona` or `all`):**
 
-When `namespacedMinion` is enabled, each minion gets VFS namespace isolation based on its persona:
+When `namespacedMinion` is not `off`, `persona` input parameter and system prompt injection are enabled:
 
 - Persona files stored at `/minions/<name>.md` in root VFS. Content becomes the minion's system prompt.
-- `/minions/_global.md` (optional) — content prepended to the system prompt for all personas (including default). Read from root VFS before persona-specific prompt.
-- `persona` input parameter selects a persona (omit for `default`). Each persona maps to namespace `/minions/<persona>`.
+- `/minions/_global.md` (optional) — content prepended to the system prompt for namespaced personas. Read from root VFS before persona-specific prompt.
+- `persona` input parameter selects a persona (omit for `default`). Namespaced personas map to namespace `/minions/<persona>`.
+- In `persona` mode, default/no-persona minions stay in root VFS with no namespace and no `_global.md`.
 - Namespace flows through the agentic loop: `AgenticLoopOptions.namespace` → `ToolContext.namespace` → all VFS calls in memory, filesystem, and JavaScript tools.
 - A persona's `/memories/README.md` resolves to `/minions/<persona>/memories/README.md` in VFS storage.
 - `/share` paths bypass namespace prefixing — read-only for namespaced minions (main agent writes, minions read).
@@ -1134,7 +1169,7 @@ Minion's available tools are computed as: `(requestedTools ∩ projectTools) - m
 
 - Defaults to `['return']` when `enabledTools` is omitted on first call (caller must explicitly grant tools). On continuation, stored `enabledTools` are used as fallback when not re-specified.
 - Can't spawn nested minions (self-exclusion)
-- `return` tool always available for explicit result signaling
+- `return` tool available unless `returnMode` is `no-return`
 - Requested tools validated against project tools — error returned if any tool is not available
 - Uses intersection with project tools (can't access tools not enabled for project)
 
@@ -1143,18 +1178,18 @@ Minion's available tools are computed as: `(requestedTools ∩ projectTools) - m
 Minion conversations stored separately for debugging visibility:
 
 - `getMinionChat(id)` / `getMinionChats(parentChatId)` / `saveMinionChat()`
-- `getMinionMessages(minionChatId)` / `saveMinionMessage()`
+- `getMinionMessages(minionChatId)` / `saveMinionMessage()` / `deleteSingleMessage(messageId)`
 - Cascade deletion when parent chat is deleted
-- `checkpoint?: string` field stores last message ID before minion run (used by retry action for rollback). New chats start with `CHECKPOINT_START` sentinel (`'_start'`) to enable first-run retry.
+- `savepoint?: string` field stores last message ID of the last successful run (for rollback). New chats start with `SAVEPOINT_START` sentinel (`'_start'`). Savepoint advances only after successful execution, never before. On retry, `rollbackToSavepoint()` helper handles message slicing, content stashing (including `renderingContent` for file bars), token subtraction, and message deletion. Three-state semantics: `undefined` = legacy chat (no rollback), `SAVEPOINT_START` = new chat (rollback = delete all), `'msg_xxx'` = normal (rollback = delete after).
+- `autoRollback` tool option: when enabled, `action` is hidden from schema and on continuation the system auto-detects messages after savepoint and rolls them back before proceeding. When disabled (default), explicit `action: 'retry'` is available.
 - Persisted settings: `displayName`, `persona`, `apiDefinitionId`, `modelId`, `enabledTools` — stored on creation and updated on continuation. Enables stored-model and stored-tools fallback when continuing without re-specifying them.
 
 **Result Handling:**
 
-- Return JSON content: `{ text, stopReason, minionChatId, result? }`
-  - `text` — concatenated text from ALL assistant messages in the turn (joined by `\n\n`)
-  - `stopReason` — last assistant message's stop reason (`tool_use` mapped to `end_turn` when return tool triggered completion)
-  - `minionChatId` — for continuing the conversation
-  - `result` — only present when return tool was used (explicit return value)
+- Result content depends on return mode:
+  - `both` mode: JSON `{ text, stopReason, minionChatId, result? }` — `text` is concatenated assistant text, `result` only present when return tool was used
+  - All other modes: simplified `<minionChatId>id</minionChatId>\ncontent` — content is return value, warning, or text depending on mode
+  - `renderMinionOutput()` handles both formats for UI display (backward-compatible with legacy JSON)
 - `renderingGroups` on ToolResult carries nested display content:
   - First group: `ToolInfoRenderBlock` with task description (`input`), sub-chat reference (`chatId`), optional `persona` name, `displayName`, `apiDefinitionId`, and `modelId`
   - Remaining groups: accumulated rendering from sub-agent messages (marked `isToolGenerated: true`)
@@ -1168,9 +1203,11 @@ Minion conversations stored separately for debugging visibility:
 
 The `executeMinion` function has three ordered phases with distinct error recovery guidance:
 
-1. **Phase 1** (load + checkpoint): Validate inputs, load/create chat, retry rollback, save checkpoint. Errors append "Resend to reattempt." — no meaningful state change occurred.
-2. **Phase 2** (validation): Check web search, model, project, API def, tools. Errors append "Resend with the message to reattempt." — checkpoint is saved but no user message yet.
+1. **Phase 1** (load + savepoint): Validate inputs, load/create chat, retry rollback. Errors append "Resend to reattempt." — no meaningful state change occurred.
+2. **Phase 2** (validation): Check web search, model, project, API def, tools. Errors append "Resend to reattempt." — savepoint is unchanged, no user message yet.
 3. **Phase 3** (execution): Check pendingReturnToolUse, build/save user message, run agentic loop. Errors here can be retried via `action: 'retry'`.
+
+All error `content` is passed through `truncateError()` (200 char limit + `...`) to avoid wasting parent LLM context tokens on long error messages (model lists, stack traces, etc.).
 
 **Return Tool Resumption:**
 
@@ -1187,6 +1224,7 @@ The `executeMinion` function has three ordered phases with distinct error recove
 - Header shows: `displayName` (if set, otherwise persona name if non-default) before expand icon, last-block activity icon (💭/🔧/💬/etc.) after expand icon
 - Settings info line (persona, API icon, model ID) shown at top of expanded content
 - Blue box for task input (from `ToolInfoRenderBlock`), green/red box for final result
+- Injected files shown as collapsible bars below user message bubble in minion chat (via `InjectedFileRenderBlock` blocks) and between blue input box and activity groups in tool result view (via `ToolInfoRenderBlock.injectedFiles`)
 - Activity groups (backstage/text) rendered with `isToolGenerated` styling
 - "View Chat" button opens overlay over ChatView (when `chatId` present and `MinionChatOverlayContext` provided), "Copy JSON" for debugging
 - `ToolResultBubble` hides timestamp/cost/actions line while any tool result is still pending/running
@@ -1215,7 +1253,8 @@ Internal tool available only to minions for explicit result signaling:
 - `internal: true` flag hides from ProjectSettings UI
 - Returns `breakLoop: { returnValue }` to stop agentic loop
 - Used by minions to signal task completion with specific result
-- **Deferred mode** (`deferReturn` option on minion tool): Return tool stores the value without breaking the loop. The agentic loop replies with "Recorded. Stop and user will call you back." and continues until natural completion. Works both solo and in parallel with other tools. Duplicate deferred calls are rejected with an error. Dynamic description changes based on mode.
+- **Mode-aware description**: Description sent to the model varies by `returnMode` (injected by minionTool). `enforced`/`auto-enforced` → "MUST call", `return-only` → "preferred way", `both` → standard. `deferReturn` takes priority.
+- **Deferred mode** (`deferReturn` option on minion tool): Return tool stores the value without breaking the loop. The agentic loop replies with configurable ack message and continues until natural completion. Works both solo and in parallel with other tools. Duplicate deferred calls are rejected with configurable error. Two-phase wind-down with configurable thresholds (all via minion tool options).
 
 ### Checkpoint Tool
 
@@ -1245,7 +1284,8 @@ AI calls checkpoint(note) → tool returns with checkpoint: true → flag propag
 **Flag propagation** (`agenticLoopGenerator.ts`):
 
 - `executeToolsParallel` → `executeToolUseBlocks` → main loop's `checkpointSet` variable
-- Auto-continue handled entirely inside `runAgenticLoop`: when `checkpointSet && stopReason !== 'tool_use'`, yields `checkpoint_set` event, creates a continue user message, yields it, resets flag, and `continue`s the loop
+- `checkpoint_set` event yielded immediately when checkpoint is recorded (not deferred to auto-continue), ensuring IDs are persisted regardless of how the loop exits (DUMMY user-stop, soft stop, etc.)
+- Auto-continue handled inside `runAgenticLoop`: when `checkpointSet && stopReason !== 'tool_use'`, creates a continue user message, yields it, resets flag, and `continue`s the loop
 - Continue text read from `toolOptions.checkpoint?.continueMessage` (falls back to `'please continue'`)
 - Local `checkpointMessageIds` array tracks all checkpoint IDs within the generator loop — pushed when `checkpointSet = true` (points to assistant messages containing checkpoint tool_use). The tidy boundary is computed from this array using `keepSegments`
 - Consumer (`useChat.ts`) handles `checkpoint_set` event by accumulating IDs to `checkpointMessageIds` on the `Chat` object
@@ -1260,17 +1300,67 @@ AI calls checkpoint(note) → tool returns with checkpoint: true → flag propag
 - `keepSegments=1`: preserve one previous segment as reference
 - `keepSegments > count`: boundary clamps to first checkpoint
 
-**Context Tidy** (`src/services/api/contextTidy.ts`):
+**Message Tidy** (`src/services/api/contextTidy.ts` + per-client `tidyMessages()`):
 
-When `checkpointMessageId` (the computed boundary) is set, messages older than the checkpoint get selectively trimmed before each API call:
+Each API client owns a `tidyMessages()` function that combines three concerns in a single forward pass:
 
-- Thinking/reasoning blocks always removed from pre-checkpoint messages
-- Tool blocks (`tool_use` + matching `tool_result`) removed per tidy option toggles
-- The checkpoint message itself: only thinking removed, tool blocks preserved
-- Messages newer than checkpoint are untouched
-- Messages with mismatched `modelFamily` or missing `fullContent` are skipped
-- Each API client calls `applyContextTidy()` with a provider-specific `FilterBlocksFn` before message conversion
+1. **Checkpoint filtering**: when `checkpointMessageId` is set, messages older than the checkpoint get thinking blocks removed and tool blocks (`tool_use` + matching `tool_result`) stripped per tidy option toggles. The checkpoint message itself: only thinking removed, tool blocks preserved.
+2. **Thinking pruning** (per-definition `advancedSettings.pruneThinking`): strips thinking/reasoning blocks from messages before the last text user message. Messages in the current agentic loop keep their thinking. Google: also strips `thoughtSignature` from remaining parts.
+3. **Empty text pruning** (per-definition `advancedSettings.pruneEmptyText`): removes empty/whitespace text blocks from messages before the last text user message.
+4. **Genuine Anthropic enforcement** (per-definition `advancedSettings.enforceGenuineAnthropic`): post-response validation in `anthropicClient.ts` via `validateAnthropicResponse()`. Checks: (a) if input_tokens > 4096 and both cache_creation/read are zero → not genuine Anthropic; (b) if thinking blocks exist but lack cryptographic `signature` field → not genuine Anthropic. Both checks throw, caught by existing error handler.
+
+Messages with mismatched `modelFamily` or missing `fullContent` are handled via shared helpers in `contextTidy.ts` (`findCheckpointIndex`, `findThinkingBoundary`, `tidyAgnosticMessage`).
+
 - Tool name derivation: `deriveTidyToolNames()` maps checkpoint option IDs to tool names, defaulting to true (tidy enabled). Also checks legacy `swipe*` keys for backward compatibility with persisted data
+- **Cache anchor**: Anthropic client places a stable `cache_control` breakpoint on the message after the checkpoint boundary (the tool_result), and restricts `applyCacheBreakpoints` sliding breakpoints to messages AFTER the anchor (`startIdx` parameter). This keeps the stable prefix free of shifting `cache_control` markers — since Anthropic's cache hash is cumulative and includes `cache_control`, markers moving between calls would cause hash mismatches. Uses `placeCacheControlOnMessage()` helper (extracted from `applyCacheBreakpoints`).
+- **thinkingKeepTurns interaction**: API-level `context_management` with `clear_thinking` / `thinking_turns` strips thinking server-side. Between consecutive calls, new assistant turns cause the server to strip more old thinking, changing the effective cached prefix. When using checkpoint, configure `thinkingKeepTurns = -1` (keep all) so thinking is fully managed client-side by `tidyMessages()`.
+
+### Metadata Tool
+
+Gives the LLM control over chat-level metadata via `src/services/tools/metadataTool.ts`.
+
+- `set_chat_title(title)` — rename the current chat
+- `set_chat_summary(summary)` — set/clear summary (stored as `Chat.summary`)
+- `list_recent_chats(count?)` — list titles and summaries of recent chats in current project
+
+**Signal flow**: `set_chat_title`/`set_chat_summary` return `chatMetadata` in `ToolResult` → `executeToolsParallel` accumulates → `executeToolsPhased` yields `chat_metadata_updated` event → `consumeAgenticLoop` merges into `currentChat`, saves, and updates React state.
+
+### DUMMY System (Dynamic Un-inferencing Mock-Message Yielding System)
+
+LLM-registered JS hooks that intercept the agentic loop before each model API call. A hook can short-circuit with a synthetic response, hand control to the user, or pass through to the real API.
+
+**Tool (`src/services/tools/dummyTool.ts`):**
+
+- `register(name)` — verifies `/hooks/<name>.js` on VFS, returns `activeHook` signal on `ToolResult` (propagates through agentic loop pipeline → `active_hook_changed` event → React state + storage)
+- `unregister` — returns `activeHook: null` signal (same pipeline, disposes runtime mid-loop)
+- `template` — generates `/hooks/example.js` and `/hooks/hook-chain.example.js`
+- `optionDefinitions`: `hookContextDepth` (number, 0–50, default 0) — controls how many previous messages are included in hook input's `history` array
+- System prompt documents hook signature, return types, and template command
+
+**Hook Runtime (`src/services/agentic/dummyHookRuntime.ts`):**
+
+- Loads hook from VFS `/hooks/<name>.js`, evaluates in QuickJS sandbox (no lib injection)
+- Hook function signature: `function(lastMessage, iteration)` where `lastMessage` (`HookInput`) has `chatId?`, `messageId?`, `text?`, `toolResults?`, and `history?` fields
+- `history` is a sliding window of condensed previous messages (`HookInputMessage[]`), controlled by the `hookContextDepth` tool option (default 0 = no history)
+- Each `HookInputMessage` includes `id`, `role`, `text?`, `toolCalls?` (with `id`/`name`/`input`), `toolResults?` (with `tool_use_id`/`name`/`content`) — stripped of rendering/metadata/attachments
+- Returns `undefined` (passthrough), `"user"` (stop loop), or `{ text, toolCalls?, brief? }` (synthetic response)
+- Error in hook → synthetic error message, loop completes (shared no-tools path)
+
+**Model-Agnostic Tool Call Storage:**
+
+`MessageContent` carries `toolCalls?: ToolUseBlock[]` and `toolResults?: ToolResultBlock[]` alongside provider-specific `fullContent`. Tool result messages are built directly at call sites (no `buildToolResultMessage` on API clients) — they set `content.toolResults` as the primary payload with `modelFamily` for routing. Each API client's `convertMessages` reads `toolResults` for new messages and `fullContent` for legacy stored chats. `ToolResultBlock` includes `name?: string` so providers like Google can set `functionResponse.name` without lookups.
+
+**Rendering:**
+
+- Synthetic messages use `modelFamily: 'ds01-dummy-system'`, zero tokens
+- Synthetic messages show a small green label line (`text-xs text-green-700`) with brief text. Green `●` dot (`text-green-600`) in info bar when hook active
+- Status line in MessageList shows hook state during loading: "Hooked: <name>" (gray), "Intercepting (<name>)" (green), "Hook error: <msg>" (red)
+- Events carry `hookName` and optional `error`; `useChat` tracks `DummyHookStatus` state
+
+**Error handling:**
+
+- Hook errors (runtime exceptions, unexpected return types) produce a synthetic error message; the shared no-tools path returns `complete`
+- The error message surfaces in the status line so the user knows something went wrong
 
 ### Agentic Loop
 
@@ -1291,6 +1381,7 @@ The agentic loop is implemented as an async generator in `src/services/agentic/a
 - `collectAgenticLoop(gen)` - Helper to consume generator and get final result
 - `createTokenTotals()` - Re-exported from `src/utils/tokenTotals.ts`
 - `addTokens(target, source)` - Re-exported from `src/utils/tokenTotals.ts`
+- `extractHookHistory(messages, depth)` - Build condensed history window for hook input
 - `populateToolRenderFields(groups)` - Add rendered display fields to tool blocks
 - `createToolResultRenderBlock(...)` - Create tool result render block with display fields
 - `loadAttachmentsForMessages(messages)` - Load attachments and handle missing attachment notes
@@ -1371,9 +1462,18 @@ type AgenticLoopResult =
 
 - `pendingToolUseBlocks?: ToolUseBlock[]` — pre-existing tool_use blocks to execute before the first API call (used by `resolvePendingToolCalls` continue mode)
 - `pendingTrailingContext?: Message<unknown>[]` — already-saved messages injected after tool results (e.g., user follow-up message)
-- `deferReturn?: boolean` — when true, the return tool stores its value without breaking the loop. The stored value is delivered as `returnValue` when the loop ends naturally. Duplicate deferred returns are rejected (first value wins). Works both solo and in parallel with other tools.
+- `deferReturn?: boolean` — when true, the return tool stores its value without breaking the loop. The stored value is delivered as `returnValue` when the loop ends naturally. Duplicate deferred returns are rejected (first value wins). Works both solo and in parallel with other tools. Two-phase wind-down prevents runaway loops: soft stop messages injected at configurable rounds after capture, force stop at configurable round.
+- `deferredSoftStopRounds?: number` — rounds after deferred return before injecting stop messages (default: 5). Configurable via project settings advanced section.
+- `deferredForceStopRounds?: number` — rounds after deferred return before force-stopping the loop (default: 10). Set to 0 for immediate hard-stop at tool result boundary.
+- `returnAckMessage?: string` — message sent to the model when deferred return stores a result (default: "Recorded. Stop and user will call you back."). Configurable via project settings advanced section.
+- `returnDuplicateMessage?: string` — error sent when deferred return is called again after a result is already stored (default: "The previous return has been recorded already. Please stop and user will call back."). Configurable via project settings advanced section.
+- `fallbackToolExtraction?: boolean` — when true, extract tool_use blocks from response content even when `stopReason !== 'tool_use'`. Handles third-party APIs that return wrong stopReason. Enabled by default in minion loops. Main loop left unchanged (user handles via "resolve pending tool call" UI).
+
+**`breakLoop` and `storedReturnValue` priority:** When a deferred return has already been captured (`storedReturnValue` is set), any subsequent `breakLoop` exit uses `storedReturnValue` instead of `breakLoop.returnValue`. This prevents a duplicate return (bypassing the duplicate check due to API quirks) from overriding the first captured value.
 
 **Integration with useChat.ts:**
+
+Chat loop state is managed by a single `loopPhase` enum (`'idle' | 'pending' | 'streaming'`). `isLoading` and `showContinueBanner` are derived. `pending` = user action triggered, async prep in progress; `streaming` = receiving chunks. All entry points (`sendMessage`, `resolvePendingToolCalls`, `resendFromMessage`, `continueAfterToolStop`, pending state on load) set `pending` before async work and `idle` after `consumeAgenticLoop` returns (via `try/finally`). The `first_chunk` event transitions `pending → streaming`. The continue banner is derived: `loopPhase === 'idle' && lastMessage is tool_result`.
 
 - `sendMessage` - Thin wrapper: reads state → builds context → calls `runAgenticLoop`
 - `resolvePendingToolCalls` stop mode: builds error tool results immediately → calls `runAgenticLoop`
@@ -1554,7 +1654,7 @@ When using web search + memory tool together, citations in assistant messages ma
 
 ## Future Considerations
 
-1. [x] **OpenAI/xAI Thinking** - Implement `migrateMessageRendering` thinking support when providers expose thinking
+1. [x] **OpenAI/xAI Thinking** - Streaming thinking support for providers that expose thinking tokens
 2. [x] **Code Execution** - Add `CodeExecutionRenderBlock` for agentic features
 3. [x] **Custom Tools** - Extend block types beyond web search/fetch
 4. **Citation Tooltips** - Hover tooltips for `data-cited` content

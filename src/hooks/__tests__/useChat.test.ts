@@ -127,10 +127,6 @@ describe('useChat', () => {
       outputPrice: 10,
       contextWindow: 128000,
     });
-    vi.mocked(apiService.migrateMessageRendering).mockReturnValue({
-      renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: 'test' }] }],
-      stopReason: 'end_turn',
-    });
     vi.mocked(apiService.shouldPrependPrefill).mockReturnValue(false);
     vi.mocked(apiService.mapStopReason).mockReturnValue('end_turn');
     vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
@@ -155,6 +151,20 @@ describe('useChat', () => {
       expect(storage.getProject).toHaveBeenCalledWith('proj_123');
       expect(storage.getMessages).toHaveBeenCalledWith('chat_123');
       expect(storage.getAPIDefinition).toHaveBeenCalledWith('api_123');
+    });
+
+    it('should initialize loopPhase to pending when initialPending is true', () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks, initialPending: true })
+      );
+      expect(result.current.loopPhase).toBe('pending');
+    });
+
+    it('should initialize loopPhase to idle by default', () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      expect(result.current.loopPhase).toBe('idle');
     });
 
     it('should call onMessagesLoaded callback', async () => {
@@ -193,59 +203,6 @@ describe('useChat', () => {
           output: 50,
           cost: 0.001,
         });
-      });
-    });
-  });
-
-  describe('Chat Migration', () => {
-    it('should migrate old chats to new token tracking', async () => {
-      const oldChat: Chat = {
-        ...mockChat,
-        totalCost: undefined,
-        sinkInputTokens: 50,
-        sinkOutputTokens: 25,
-        sinkCost: 0.0005,
-      };
-      vi.mocked(storage.getChat).mockResolvedValue(oldChat);
-
-      renderHook(() => useChat({ chatId: 'chat_123', callbacks: mockCallbacks }));
-
-      await waitFor(() => {
-        expect(storage.saveChat).toHaveBeenCalledWith(
-          expect.objectContaining({
-            totalInputTokens: expect.any(Number),
-            totalOutputTokens: expect.any(Number),
-            totalCost: expect.any(Number),
-            sinkInputTokens: undefined,
-            sinkOutputTokens: undefined,
-            sinkCost: undefined,
-          })
-        );
-      });
-    });
-
-    it('should migrate message contextWindowUsage', async () => {
-      const oldChat = { ...mockChat, contextWindowUsageMigrated: false };
-      const messageWithoutCWU = {
-        ...mockAssistantMessage,
-        metadata: {
-          ...mockAssistantMessage.metadata!,
-          contextWindowUsage: undefined,
-        },
-      };
-
-      vi.mocked(storage.getChat).mockResolvedValue(oldChat);
-      vi.mocked(storage.getMessages).mockResolvedValue([messageWithoutCWU]);
-
-      renderHook(() => useChat({ chatId: 'chat_123', callbacks: mockCallbacks }));
-
-      await waitFor(() => {
-        expect(storage.saveMessage).toHaveBeenCalled();
-        expect(storage.saveChat).toHaveBeenCalledWith(
-          expect.objectContaining({
-            contextWindowUsageMigrated: true,
-          })
-        );
       });
     });
   });
@@ -791,18 +748,6 @@ describe('useChat', () => {
       vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([
         { type: 'tool_use', id: 'tool_1', name: 'ping', input: {} },
       ]);
-      // Mock buildToolResultMessage to return API-specific formatted message
-      vi.mocked(apiService.buildToolResultMessage).mockImplementation((apiType, toolResults) => ({
-        id: 'msg_tool_result',
-        role: 'user',
-        content: {
-          type: 'text',
-          content: '',
-          modelFamily: apiType,
-          fullContent: toolResults,
-        },
-        timestamp: new Date(),
-      }));
     });
 
     it('should detect unresolved tool calls', async () => {
@@ -847,11 +792,11 @@ describe('useChat', () => {
           expect.objectContaining({
             role: 'user',
             content: expect.objectContaining({
-              fullContent: expect.arrayContaining([
+              toolResults: expect.arrayContaining([
                 expect.objectContaining({
                   type: 'tool_result',
                   is_error: true,
-                  content: expect.stringContaining('Error, ask user to continue'),
+                  content: expect.stringContaining('User rejected the tool call'),
                 }),
               ]),
             }),
@@ -895,7 +840,7 @@ describe('useChat', () => {
           expect.objectContaining({
             role: 'user',
             content: expect.objectContaining({
-              fullContent: expect.arrayContaining([
+              toolResults: expect.arrayContaining([
                 expect.objectContaining({
                   type: 'tool_result',
                   // ping tool returns pong, not an error
@@ -941,7 +886,7 @@ describe('useChat', () => {
           expect.objectContaining({
             role: 'user',
             content: expect.objectContaining({
-              fullContent: expect.arrayContaining([
+              toolResults: expect.arrayContaining([
                 expect.objectContaining({
                   type: 'tool_result',
                   is_error: true,
@@ -996,7 +941,7 @@ describe('useChat', () => {
           expect.objectContaining({
             role: 'user',
             content: expect.objectContaining({
-              fullContent: expect.arrayContaining([
+              toolResults: expect.arrayContaining([
                 expect.objectContaining({
                   type: 'tool_result',
                 }),

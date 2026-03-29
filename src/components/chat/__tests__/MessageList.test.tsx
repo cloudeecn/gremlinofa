@@ -339,6 +339,128 @@ describe('MessageList', () => {
         expect(screen.getByTestId('streaming-message')).toBeInTheDocument();
       });
     });
+
+    it('should not disable auto-scroll when DOM grows (scrollHeight increases, scrollTop unchanged)', () => {
+      vi.useFakeTimers();
+
+      const { container, rerender } = render(
+        <MessageList
+          messages={[createMessage('msg-1')]}
+          onAction={mockOnAction}
+          isLoading={true}
+          streamingGroups={createStreamingGroups('Initial')}
+          currentApiDefId={null}
+          currentModelId={null}
+        />
+      );
+
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+
+      // Start near bottom — auto-scroll is active
+      Object.defineProperty(scrollContainer, 'scrollTop', {
+        value: 500,
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(scrollContainer, 'scrollHeight', {
+        value: 1000,
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(scrollContainer, 'clientHeight', {
+        value: 500,
+        writable: true,
+        configurable: true,
+      });
+
+      // Initial scroll to establish prevScrollTop
+      fireEvent.scroll(scrollContainer);
+      vi.advanceTimersByTime(250);
+
+      // Simulate DOM growth: scrollHeight jumps but scrollTop stays the same
+      // This makes isNearBottom false (1500 - 500 - 500 = 500 > 100)
+      Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1500, configurable: true });
+
+      fireEvent.scroll(scrollContainer);
+      vi.advanceTimersByTime(250);
+
+      // Auto-scroll should still be active — DOM growth must not disable it
+      rerender(
+        <MessageList
+          messages={[createMessage('msg-1')]}
+          onAction={mockOnAction}
+          isLoading={true}
+          streamingGroups={createStreamingGroups('Much larger content now')}
+          currentApiDefId={null}
+          currentModelId={null}
+        />
+      );
+
+      // If auto-scroll stayed active, scrollTop gets set to scrollHeight
+      expect(scrollContainer.scrollTop).toBe(scrollContainer.scrollHeight);
+
+      vi.useRealTimers();
+    });
+
+    it('should disable auto-scroll when user scrolls up away from bottom', () => {
+      vi.useFakeTimers();
+
+      const { container, rerender } = render(
+        <MessageList
+          messages={[createMessage('msg-1')]}
+          onAction={mockOnAction}
+          isLoading={true}
+          streamingGroups={createStreamingGroups('Initial')}
+          currentApiDefId={null}
+          currentModelId={null}
+        />
+      );
+
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+
+      // Start at bottom
+      Object.defineProperty(scrollContainer, 'scrollTop', {
+        value: 500,
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(scrollContainer, 'scrollHeight', {
+        value: 1000,
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(scrollContainer, 'clientHeight', {
+        value: 500,
+        writable: true,
+        configurable: true,
+      });
+
+      fireEvent.scroll(scrollContainer);
+      vi.advanceTimersByTime(250);
+
+      // User scrolls up — scrollTop decreases, far from bottom
+      Object.defineProperty(scrollContainer, 'scrollTop', { value: 100, configurable: true });
+
+      fireEvent.scroll(scrollContainer);
+      vi.advanceTimersByTime(250);
+
+      // Auto-scroll should be disabled — new messages shouldn't snap to bottom
+      rerender(
+        <MessageList
+          messages={[createMessage('msg-1'), createMessage('msg-2')]}
+          onAction={mockOnAction}
+          isLoading={true}
+          streamingGroups={createStreamingGroups('Updated')}
+          currentApiDefId={null}
+          currentModelId={null}
+        />
+      );
+
+      // scrollTop should NOT be set to scrollHeight (auto-scroll was disabled)
+      expect(scrollContainer.scrollTop).not.toBe(scrollContainer.scrollHeight);
+
+      vi.useRealTimers();
+    });
   });
 
   describe('Virtual Scrolling Integration', () => {
@@ -423,7 +545,7 @@ describe('MessageList', () => {
       expect(scrollContainer).toBeInTheDocument();
     });
 
-    it('should have overscroll-y-contain to prevent scroll chaining', () => {
+    it('should have overscroll-contain to prevent scroll chaining', () => {
       const { container } = render(
         <MessageList
           messages={[]}
@@ -435,7 +557,7 @@ describe('MessageList', () => {
         />
       );
 
-      const scrollContainer = container.querySelector('.overscroll-y-contain');
+      const scrollContainer = container.querySelector('.overscroll-contain');
       expect(scrollContainer).toBeInTheDocument();
     });
 
@@ -593,6 +715,125 @@ describe('MessageList', () => {
 
       clearTimeoutSpy.mockRestore();
       vi.useRealTimers();
+    });
+  });
+
+  describe('Always Auto Scroll', () => {
+    it('should keep auto-scrolling after user scrolls up when alwaysAutoScroll is enabled', () => {
+      vi.useFakeTimers();
+
+      const { container, rerender } = render(
+        <MessageList
+          messages={[createMessage('msg-1')]}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+          alwaysAutoScroll={true}
+        />
+      );
+
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+      // Simulate user scrolled far from bottom
+      Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, writable: true });
+      Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, writable: true });
+      Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, writable: true });
+
+      fireEvent.scroll(scrollContainer);
+      vi.advanceTimersByTime(250);
+
+      // Even though far from bottom, auto-scroll should still work on new messages
+      rerender(
+        <MessageList
+          messages={[createMessage('msg-1'), createMessage('msg-2')]}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+          alwaysAutoScroll={true}
+        />
+      );
+
+      // scrollTop should be set to scrollHeight (auto-scroll triggered)
+      expect(scrollContainer.scrollTop).toBe(scrollContainer.scrollHeight);
+
+      vi.useRealTimers();
+    });
+
+    it('should not disable auto-scroll in focus mode when alwaysAutoScroll is enabled', () => {
+      vi.useFakeTimers();
+
+      const { container, rerender } = render(
+        <MessageList
+          messages={[createMessage('msg-1')]}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+          alwaysAutoScroll={true}
+          focusMode={true}
+        />
+      );
+
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+      Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, writable: true });
+      Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, writable: true });
+      Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, writable: true });
+
+      // Add a new message - should still auto-scroll despite focus mode
+      rerender(
+        <MessageList
+          messages={[createMessage('msg-1'), createMessage('msg-2')]}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+          alwaysAutoScroll={true}
+          focusMode={true}
+        />
+      );
+
+      expect(scrollContainer.scrollTop).toBe(scrollContainer.scrollHeight);
+
+      vi.useRealTimers();
+    });
+
+    it('should snap to bottom when alwaysAutoScroll is toggled on', () => {
+      const { container, rerender } = render(
+        <MessageList
+          messages={[createMessage('msg-1')]}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+          alwaysAutoScroll={false}
+        />
+      );
+
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+      Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, writable: true });
+      Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, writable: true });
+      Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, writable: true });
+
+      // Toggle on
+      rerender(
+        <MessageList
+          messages={[createMessage('msg-1')]}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+          alwaysAutoScroll={true}
+        />
+      );
+
+      expect(scrollContainer.scrollTop).toBe(scrollContainer.scrollHeight);
     });
   });
 

@@ -5,6 +5,7 @@ import { renderMarkdownSafe } from '../../utils/markdownRenderer';
 export interface TextGroupViewProps {
   blocks: RenderingContentBlock[];
   isVisible?: boolean;
+  disableMath?: boolean;
 }
 
 /**
@@ -12,13 +13,13 @@ export interface TextGroupViewProps {
  * Handles both text and error blocks.
  * Syntax highlighting is done during markdown parsing (marked → hljs → DOMPurify).
  */
-export default function TextGroupView({ blocks }: TextGroupViewProps) {
+export default function TextGroupView({ blocks, disableMath }: TextGroupViewProps) {
   if (blocks.length === 0) return null;
 
   return (
     <div className="text-group-view">
       {blocks.map((block, index) => (
-        <TextBlock key={index} block={block} />
+        <TextBlock key={index} block={block} disableMath={disableMath} />
       ))}
     </div>
   );
@@ -26,18 +27,20 @@ export default function TextGroupView({ blocks }: TextGroupViewProps) {
 
 interface TextBlockProps {
   block: RenderingContentBlock;
+  disableMath?: boolean;
 }
 
-function TextBlock({ block }: TextBlockProps) {
+function TextBlock({ block, disableMath }: TextBlockProps) {
   switch (block.type) {
     case 'text':
-      return <TextSegment block={block} />;
+      return <TextSegment block={block} disableMath={disableMath} />;
     case 'error':
       return <ErrorSegment block={block} />;
     case 'thinking':
     case 'web_search':
     case 'web_fetch':
     case 'tool_use':
+    case 'injected_file':
     case 'tool_info':
     case 'tool_result':
     default:
@@ -47,9 +50,10 @@ function TextBlock({ block }: TextBlockProps) {
 
 interface TextSegmentProps {
   block: TextRenderBlock;
+  disableMath?: boolean;
 }
 
-function TextSegment({ block }: TextSegmentProps) {
+function TextSegment({ block, disableMath }: TextSegmentProps) {
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     if (target.classList.contains('code-copy-button')) {
@@ -72,7 +76,7 @@ function TextSegment({ block }: TextSegmentProps) {
     <div
       className="prose prose-sm max-w-none text-[15px] leading-relaxed"
       onClick={handleClick}
-      dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(block.text) }}
+      dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(block.text, { disableMath }) }}
     />
   );
 }

@@ -13,7 +13,7 @@
  */
 
 import { apiService } from '../api/apiService';
-import { calculateCost, isCostUnreliable, getModelMetadataFor } from '../api/modelMetadata';
+import { calculateCost, isCostUnreliable } from '../api/modelMetadata';
 import { storage } from '../storage';
 import { StreamingContentAssembler } from '../streaming/StreamingContentAssembler';
 import { executeClientSideTool, toolRegistry } from '../tools/clientSideTools';
@@ -36,12 +36,18 @@ import type {
 import { type ToolResultRenderBlock, type ToolUseRenderBlock } from '../../types/content';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { createTokenTotals, addTokens, hasTokenUsage } from '../../utils/tokenTotals';
+import { DummyHookRuntime, type HookInput, type HookInputMessage } from './dummyHookRuntime';
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 const MAX_ITERATIONS = 999;
+
+/** Rounds after deferred return capture before injecting "please stop" messages */
+const DEFERRED_SOFT_STOP_ROUNDS = 5;
+/** Rounds after deferred return capture before force-stopping the loop */
+const DEFERRED_FORCE_STOP_ROUNDS = 10;
 
 /** Maps checkpoint tidy option IDs to tool names */
 const TIDY_OPTION_TO_TOOL: Record<string, string> = {
@@ -90,6 +96,7 @@ export interface AgenticLoopOptions {
   toolOptions: Record<string, ToolOptions>;
   disableStream: boolean;
   extendedContext: boolean;
+  noLineNumbers?: boolean;
 
   // VFS namespace for isolated minion personas
   namespace?: string;
@@ -110,15 +117,35 @@ export interface AgenticLoopOptions {
   // (e.g., a user follow-up message saved by the caller)
   pendingTrailingContext?: Message<unknown>[];
 
-  // When true, the return tool stores its value without breaking the loop.
-  // The stored value is returned when the loop ends naturally.
-  deferReturn?: boolean;
+  // How the return tool interacts with the agentic loop:
+  // - 'no' / undefined: return breaks the loop immediately
+  // - 'auto-ack': return stores result, appends assistant ack message, then breaks the loop
+  // - 'free-run': return stores result without breaking the loop (old deferred mode)
+  deferReturn?: 'no' | 'auto-ack' | 'free-run';
+
+  // When true, extract tool_use blocks from content even when stopReason !== 'tool_use'.
+  // Third-party APIs may return wrong stopReason; this prevents early exit when tools are present.
+  fallbackToolExtraction?: boolean;
+
+  // Configurable deferred return wind-down thresholds (free-run only)
+  deferredSoftStopRounds?: number;
+  deferredForceStopRounds?: number;
+
+  // Configurable return tool messages
+  returnAckMessage?: string;
+  returnDuplicateMessage?: string;
+
+  // Assistant text appended after auto-ack return (put in model's mouth)
+  autoAckMessage?: string;
 
   // Checkpoint message IDs from previous checkpoints — enables context tidy
   checkpointMessageIds?: string[];
 
   // Soft stop: checked at tool boundaries, returns soft_stopped when true
   shouldStop?: () => boolean;
+
+  // DUMMY System: active hook file name (loaded from /hooks/<name>.js on VFS)
+  activeHook?: string;
 }
 
 /**
@@ -129,7 +156,7 @@ export type AgenticLoopEvent =
   | { type: 'streaming_chunk'; groups: RenderingBlockGroup[] }
   | { type: 'streaming_end' }
   | { type: 'message_created'; message: Message<unknown> }
-  | { type: 'tokens_consumed'; tokens: TokenTotals }
+  | { type: 'tokens_consumed'; tokens: TokenTotals; isToolCost?: boolean }
   | { type: 'first_chunk' }
   | { type: 'pending_tool_result'; message: Message<unknown> }
   | {
@@ -137,7 +164,11 @@ export type AgenticLoopEvent =
       toolUseId: string;
       block: Partial<ToolResultRenderBlock>;
     }
-  | { type: 'checkpoint_set'; messageId: string };
+  | { type: 'checkpoint_set'; messageId: string }
+  | { type: 'dummy_hook_start'; hookName: string }
+  | { type: 'dummy_hook_end'; result: 'passthrough' | 'user_stop' | 'intercepted' }
+  | { type: 'active_hook_changed'; hookName: string | null }
+  | { type: 'chat_metadata_updated'; name?: string; summary?: string };
 
 /**
  * Final result returned when loop completes.
@@ -147,18 +178,21 @@ export type AgenticLoopResult =
       status: 'complete';
       messages: Message<unknown>[];
       tokens: TokenTotals;
+      hasCoT?: boolean;
       returnValue?: string;
     }
   | {
       status: 'error';
       messages: Message<unknown>[];
       tokens: TokenTotals;
+      hasCoT?: boolean;
       error: Error;
     }
   | {
       status: 'max_iterations';
       messages: Message<unknown>[];
       tokens: TokenTotals;
+      hasCoT?: boolean;
       returnValue?: string;
     }
   | {
@@ -166,6 +200,7 @@ export type AgenticLoopResult =
       stopPoint: 'before_tools' | 'after_tools';
       messages: Message<unknown>[];
       tokens: TokenTotals;
+      hasCoT?: boolean;
       returnValue?: string;
     };
 
@@ -214,14 +249,34 @@ function mergeToolUseInputFromFullContent(
     inputMap.set(toolBlock.id, toolBlock.input);
   }
 
+  const existingIds = new Set<string>();
   for (const group of groups) {
     for (const block of group.blocks) {
       if (block.type === 'tool_use') {
         const toolUseBlock = block as ToolUseRenderBlock;
+        existingIds.add(toolUseBlock.id);
         const correctInput = inputMap.get(toolUseBlock.id);
         if (correctInput && Object.keys(toolUseBlock.input).length === 0) {
           toolUseBlock.input = correctInput;
         }
+      }
+    }
+  }
+
+  // Recover tool_use blocks that the streaming assembler missed entirely
+  for (const toolBlock of toolUseBlocks) {
+    if (!existingIds.has(toolBlock.id)) {
+      const newBlock: ToolUseRenderBlock = {
+        type: 'tool_use',
+        id: toolBlock.id,
+        name: toolBlock.name,
+        input: toolBlock.input,
+      };
+      const lastGroup = groups[groups.length - 1];
+      if (lastGroup?.category === 'backstage') {
+        lastGroup.blocks.push(newBlock);
+      } else {
+        groups.push({ category: 'backstage', blocks: [newBlock] });
       }
     }
   }
@@ -249,6 +304,90 @@ function populateToolRenderFields(groups: RenderingBlockGroup[]): void {
   }
 }
 
+// ============================================================================
+// DUMMY System Types & Helpers
+// ============================================================================
+
+/**
+ * Return type for DUMMY System hook functions.
+ * - undefined: pass through to model API
+ * - 'user': stop the loop, hand control to user
+ * - object: synthetic assistant response
+ */
+export type DummyHookResult =
+  | undefined
+  | 'user'
+  | {
+      text: string;
+      toolCalls?: { id?: string; name: string; input: Record<string, unknown> }[];
+      brief?: string;
+    };
+
+/**
+ * Build a synthetic assistant message for DUMMY System hook interceptions.
+ * Uses 'ds01-dummy-system' modelFamily so API clients reconstruct via toolCalls/toolResults.
+ */
+function buildDummyAssistantMessage(
+  text: string,
+  toolCalls?: { id?: string; name: string; input: Record<string, unknown> }[],
+  brief?: string
+): Message<unknown> {
+  // Generate IDs for tool calls missing them
+  const resolvedToolCalls: ToolUseBlock[] | undefined = toolCalls?.map(tc => ({
+    type: 'tool_use' as const,
+    id: tc.id || generateUniqueId('toolu'),
+    name: tc.name,
+    input: tc.input,
+  }));
+
+  // Build rendering content
+  const renderingContent: RenderingBlockGroup[] = [];
+  if (text.trim()) {
+    renderingContent.push({
+      category: 'text',
+      blocks: [{ type: 'text', text }],
+    });
+  }
+  if (resolvedToolCalls?.length) {
+    const toolUseRenderBlocks: ToolUseRenderBlock[] = resolvedToolCalls.map(tc => ({
+      type: 'tool_use' as const,
+      id: tc.id,
+      name: tc.name,
+      input: tc.input,
+    }));
+    renderingContent.push({
+      category: 'backstage',
+      blocks: toolUseRenderBlocks,
+    });
+  }
+
+  populateToolRenderFields(renderingContent);
+
+  return {
+    id: generateUniqueId('msg_assistant'),
+    role: 'assistant',
+    content: {
+      type: 'text',
+      content: text,
+      modelFamily: 'ds01-dummy-system',
+      fullContent: undefined,
+      toolCalls: resolvedToolCalls,
+      renderingContent,
+      stopReason: resolvedToolCalls?.length ? 'tool_use' : 'end_turn',
+    },
+    timestamp: new Date(),
+    metadata: {
+      model: 'DUMMY',
+      inputTokens: 0,
+      outputTokens: 0,
+      messageCost: 0,
+      contextWindow: 0,
+      contextWindowUsage: 0,
+      dummyBrief: brief ?? 'intercepted',
+    } as Record<string, unknown>,
+  };
+}
+
 /**
  * Create a tool_result render block with pre-rendered display fields.
  * Optionally accepts renderingGroups from tool's internal work.
@@ -273,6 +412,86 @@ function createToolResultRenderBlock(
     renderingGroups,
     tokenTotals,
   };
+}
+
+/**
+ * Extract model-agnostic hook input from the last message in the context.
+ */
+function extractHookInput(msg: Message<unknown>): HookInput {
+  const hookInput: HookInput = {};
+
+  if (msg.content.content?.trim()) {
+    hookInput.text = msg.content.content;
+  }
+
+  if (msg.content.toolResults?.length) {
+    hookInput.toolResults = msg.content.toolResults.map(tr => {
+      // Resolve tool name from renderingContent if available
+      const name =
+        (
+          msg.content.renderingContent
+            ?.flatMap(g => g.blocks)
+            .find(
+              b =>
+                b.type === 'tool_result' &&
+                (b as ToolResultRenderBlock).tool_use_id === tr.tool_use_id
+            ) as ToolResultRenderBlock | undefined
+        )?.name ?? 'unknown';
+      return {
+        tool_use_id: tr.tool_use_id,
+        name,
+        content: tr.content,
+        is_error: tr.is_error,
+      };
+    });
+  }
+
+  return hookInput;
+}
+
+/**
+ * Build condensed history from the last N messages (excluding the final one,
+ * which is already represented in hookInput's text/toolResults fields).
+ */
+export function extractHookHistory(
+  messages: Message<unknown>[],
+  depth: number
+): HookInputMessage[] {
+  if (depth <= 0) return [];
+  const startIdx = Math.max(0, messages.length - 1 - depth);
+  const slice = messages.slice(startIdx, messages.length - 1);
+  return slice.map(msg => {
+    const entry: HookInputMessage = { id: msg.id, role: msg.role };
+    if (msg.content.content?.trim()) entry.text = msg.content.content;
+    if (msg.content.toolCalls?.length) {
+      entry.toolCalls = msg.content.toolCalls.map(tc => ({
+        id: tc.id,
+        name: tc.name,
+        input: tc.input,
+      }));
+    }
+    if (msg.content.toolResults?.length) {
+      entry.toolResults = msg.content.toolResults.map(tr => {
+        const name =
+          (
+            msg.content.renderingContent
+              ?.flatMap(g => g.blocks)
+              .find(
+                b =>
+                  b.type === 'tool_result' &&
+                  (b as ToolResultRenderBlock).tool_use_id === tr.tool_use_id
+              ) as ToolResultRenderBlock | undefined
+          )?.name ?? 'unknown';
+        return {
+          tool_use_id: tr.tool_use_id,
+          name,
+          content: tr.content,
+          ...(tr.is_error ? { is_error: true } : {}),
+        };
+      });
+    }
+    return entry;
+  });
 }
 
 /**
@@ -405,6 +624,9 @@ function buildAssistantMessage(
     iterTokens.cacheCreationTokens +
     iterTokens.cacheReadTokens;
 
+  // Extract model-agnostic tool_use blocks for cross-model reconstruction
+  const extractedToolCalls = apiService.extractToolUseBlocks(apiType, result.fullContent);
+
   return {
     id: generateUniqueId('msg_assistant'),
     role: 'assistant',
@@ -413,6 +635,7 @@ function buildAssistantMessage(
       content: result.textContent,
       modelFamily: apiType,
       fullContent: result.fullContent,
+      toolCalls: extractedToolCalls.length > 0 ? extractedToolCalls : undefined,
       renderingContent,
       stopReason,
     },
@@ -441,7 +664,18 @@ function buildToolResultMessage(
   toolResults: ToolResultBlock[],
   toolResultRenderBlocks: ToolResultRenderBlock[]
 ): Message<unknown> {
-  const toolResultMessage = apiService.buildToolResultMessage(apiType, toolResults);
+  const toolResultMessage: Message<unknown> = {
+    id: generateUniqueId('msg_user'),
+    role: 'user',
+    content: {
+      type: 'text',
+      content: '',
+      modelFamily: apiType,
+    },
+    timestamp: new Date(),
+  };
+
+  toolResultMessage.content.toolResults = toolResults;
 
   toolResultMessage.content.renderingContent = [
     { category: 'backstage' as const, blocks: toolResultRenderBlocks },
@@ -509,7 +743,13 @@ async function* executeToolsParallel(
   toolContext: ToolContext
 ): AsyncGenerator<
   AgenticLoopEvent,
-  { results: ParallelToolResult[]; breakLoop?: { returnValue?: string }; checkpoint?: boolean },
+  {
+    results: ParallelToolResult[];
+    breakLoop?: { returnValue?: string };
+    checkpoint?: boolean;
+    activeHook?: string | null;
+    chatMetadata?: { name?: string; summary?: string };
+  },
   void
 > {
   const activeGens: ActiveToolGen[] = blocks.map((toolUse, index) => {
@@ -533,14 +773,32 @@ async function* executeToolsParallel(
     };
   }
 
-  // Kick off first .next() for each generator
+  // Kick off first .next() for each generator, with per-tool-name stagger
+  const toolStartCount = new Map<string, number>();
   for (const ag of activeGens) {
+    const throttleMs = toolRegistry.get(ag.toolUse.name)?.parallelThrottleMs;
+    if (throttleMs) {
+      const count = toolStartCount.get(ag.toolUse.name) ?? 0;
+      if (count > 0) {
+        console.debug(
+          '[agenticLoopGen] Throttling',
+          ag.toolUse.name,
+          'launch by',
+          throttleMs,
+          'ms'
+        );
+        await new Promise(resolve => setTimeout(resolve, throttleMs));
+      }
+      toolStartCount.set(ag.toolUse.name, count + 1);
+    }
     ag.pendingNext = safeGenNext(ag);
   }
 
   const results: (ParallelToolResult | null)[] = new Array(blocks.length).fill(null);
   let breakLoop: { returnValue?: string } | undefined;
   let checkpointSet = false;
+  let activeHookChanged: string | null | undefined;
+  let chatMetadata: { name?: string; summary?: string } | undefined;
 
   // Race loop: process events from whichever generator resolves first
   while (activeGens.some(ag => !ag.done)) {
@@ -556,6 +814,10 @@ async function* executeToolsParallel(
         breakLoop = toolResult.breakLoop;
       }
       if (toolResult.checkpoint) checkpointSet = true;
+      if (toolResult.activeHook !== undefined) activeHookChanged = toolResult.activeHook;
+      if (toolResult.chatMetadata) {
+        chatMetadata = { ...chatMetadata, ...toolResult.chatMetadata };
+      }
 
       const renderBlock = createToolResultRenderBlock(
         ag.toolUse.id,
@@ -571,6 +833,7 @@ async function* executeToolsParallel(
         toolResult: {
           type: 'tool_result',
           tool_use_id: ag.toolUse.id,
+          name: ag.toolUse.name,
           content: toolResult.content,
           is_error: toolResult.isError,
         },
@@ -599,6 +862,8 @@ async function* executeToolsParallel(
     results: results.filter((r): r is ParallelToolResult => r !== null),
     breakLoop,
     checkpoint: checkpointSet || undefined,
+    activeHook: activeHookChanged,
+    chatMetadata,
   };
 }
 
@@ -622,13 +887,17 @@ async function* executeToolUseBlocks(
   toolContext: ToolContext,
   messages: Message<unknown>[],
   totals: TokenTotals,
-  deferReturn?: boolean,
-  hasStoredReturn?: boolean
+  deferReturn?: 'no' | 'auto-ack' | 'free-run',
+  hasStoredReturn?: boolean,
+  returnAckMessage?: string,
+  returnDuplicateMessage?: string,
+  autoAckMessage?: string
 ): AsyncGenerator<
   AgenticLoopEvent,
   | { breakLoop: { returnValue?: string } }
   | { deferredReturn: string }
   | { checkpoint: true }
+  | { activeHook: string | null }
   | undefined,
   void
 > {
@@ -640,9 +909,10 @@ async function* executeToolUseBlocks(
   if (returnToolIndex !== -1 && toolUseBlocks.length === 1) {
     const returnBlock = toolUseBlocks[0];
 
-    // Reject duplicate deferred return calls without executing the tool
-    if (deferReturn && hasStoredReturn) {
+    // Reject duplicate deferred/auto-ack return calls without executing the tool
+    if ((deferReturn === 'auto-ack' || deferReturn === 'free-run') && hasStoredReturn) {
       const errorContent =
+        returnDuplicateMessage ??
         'The previous return has been recorded already. Please stop and user will call back.';
       const renderBlock = createToolResultRenderBlock(
         returnBlock.id,
@@ -653,7 +923,13 @@ async function* executeToolUseBlocks(
       renderBlock.status = 'error';
 
       const toolResultBlocks: ToolResultBlock[] = [
-        { type: 'tool_result', tool_use_id: returnBlock.id, content: errorContent, is_error: true },
+        {
+          type: 'tool_result',
+          tool_use_id: returnBlock.id,
+          name: returnBlock.name,
+          content: errorContent,
+          is_error: true,
+        },
       ];
       const toolResultMsg = buildToolResultMessage(apiType, toolResultBlocks, [renderBlock]);
       messages.push(toolResultMsg);
@@ -673,10 +949,9 @@ async function* executeToolUseBlocks(
     while (!iterResult.done) iterResult = await gen.next();
     const toolResult = iterResult.value;
 
-    if (deferReturn) {
-      // Deferred mode: store value, build normal tool_result, continue loop
+    if (deferReturn === 'auto-ack' || deferReturn === 'free-run') {
       const returnValue = toolResult.breakLoop?.returnValue ?? toolResult.content;
-      const storedContent = 'Recorded. Stop and user will call you back.';
+      const storedContent = returnAckMessage ?? 'Recorded. Stop and user will call you back.';
 
       const renderBlock = createToolResultRenderBlock(
         returnBlock.id,
@@ -690,6 +965,7 @@ async function* executeToolUseBlocks(
         {
           type: 'tool_result',
           tool_use_id: returnBlock.id,
+          name: returnBlock.name,
           content: storedContent,
         },
       ];
@@ -698,6 +974,27 @@ async function* executeToolUseBlocks(
       messages.push(toolResultMsg);
       yield { type: 'message_created', message: toolResultMsg };
 
+      if (deferReturn === 'auto-ack') {
+        // Auto-ack: append synthetic assistant message, then break
+        const ackText = autoAckMessage || 'Will do.';
+        const assistantMsg: Message<unknown> = {
+          id: generateUniqueId('msg_assistant'),
+          role: 'assistant',
+          content: {
+            type: 'text',
+            content: ackText,
+            modelFamily: apiType,
+            fullContent: undefined,
+            renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: ackText }] }],
+          },
+          timestamp: new Date(),
+        };
+        messages.push(assistantMsg);
+        yield { type: 'message_created', message: assistantMsg };
+        return { breakLoop: { returnValue } };
+      }
+
+      // Free-run: store value, continue loop
       return { deferredReturn: returnValue };
     }
 
@@ -713,11 +1010,12 @@ async function* executeToolUseBlocks(
     const returnBlock = toolUseBlocks[returnToolIndex];
     executableBlocks = toolUseBlocks.filter((_, i) => i !== returnToolIndex);
 
-    if (deferReturn) {
+    if (deferReturn === 'auto-ack' || deferReturn === 'free-run') {
       if (hasStoredReturn) {
-        // Duplicate deferred — error (same as solo duplicate at line 636)
+        // Duplicate deferred/auto-ack — error (same as solo duplicate above)
         console.debug('[agenticLoopGen] Duplicate deferred return in parallel — error');
         const errorContent =
+          returnDuplicateMessage ??
           'The previous return has been recorded already. Please stop and user will call back.';
         const renderBlock = createToolResultRenderBlock(
           returnBlock.id,
@@ -730,6 +1028,7 @@ async function* executeToolUseBlocks(
           toolResult: {
             type: 'tool_result',
             tool_use_id: returnBlock.id,
+            name: returnBlock.name,
             content: errorContent,
             is_error: true,
           },
@@ -750,7 +1049,7 @@ async function* executeToolUseBlocks(
         const toolResult = iterResult.value;
         deferredReturnValue = toolResult.breakLoop?.returnValue ?? toolResult.content;
 
-        const storedContent = 'Recorded. Stop and user will call you back.';
+        const storedContent = returnAckMessage ?? 'Recorded. Stop and user will call you back.';
         const renderBlock = createToolResultRenderBlock(
           returnBlock.id,
           returnBlock.name,
@@ -762,6 +1061,7 @@ async function* executeToolUseBlocks(
           toolResult: {
             type: 'tool_result',
             tool_use_id: returnBlock.id,
+            name: returnBlock.name,
             content: storedContent,
           },
           renderBlock,
@@ -783,6 +1083,7 @@ async function* executeToolUseBlocks(
         toolResult: {
           type: 'tool_result',
           tool_use_id: returnBlock.id,
+          name: returnBlock.name,
           content: errorContent,
           is_error: true,
         },
@@ -825,6 +1126,7 @@ async function* executeToolUseBlocks(
   const pendingToolResults: ToolResultBlock[] = toolUseBlocks.map(toolUse => ({
     type: 'tool_result' as const,
     tool_use_id: toolUse.id,
+    name: toolUse.name,
     content: '',
   }));
   const pendingMsg = buildToolResultMessage(apiType, pendingToolResults, pendingRenderBlocks);
@@ -847,6 +1149,8 @@ async function* executeToolUseBlocks(
 
   let breakLoopResult: { returnValue?: string } | undefined;
   let checkpointSet = false;
+  let activeHookChanged: string | null | undefined;
+  let chatMetadata: { name?: string; summary?: string } | undefined;
 
   // --- Phase 1: simple tools ---
   if (simpleBlocks.length > 0) {
@@ -863,6 +1167,8 @@ async function* executeToolUseBlocks(
       breakLoopResult = phase1.breakLoop;
     }
     if (phase1.checkpoint) checkpointSet = true;
+    if (phase1.activeHook !== undefined) activeHookChanged = phase1.activeHook;
+    if (phase1.chatMetadata) chatMetadata = { ...chatMetadata, ...phase1.chatMetadata };
   }
 
   // --- Phase 2: complex tools (skip if phase 1 triggered breakLoop) ---
@@ -880,6 +1186,8 @@ async function* executeToolUseBlocks(
       breakLoopResult = phase2.breakLoop;
     }
     if (phase2.checkpoint) checkpointSet = true;
+    if (phase2.activeHook !== undefined) activeHookChanged = phase2.activeHook;
+    if (phase2.chatMetadata) chatMetadata = { ...chatMetadata, ...phase2.chatMetadata };
   }
 
   if (breakLoopResult) {
@@ -927,17 +1235,45 @@ async function* executeToolUseBlocks(
       costUnreliable: toolTotals.costUnreliable || undefined,
     };
     addTokens(totals, toolTotals);
-    yield { type: 'tokens_consumed', tokens: toolTotals };
+    yield { type: 'tokens_consumed', tokens: toolTotals, isToolCost: true };
   }
 
   messages.push(toolResultMsg);
   yield { type: 'message_created', message: toolResultMsg };
 
+  // Yield chat metadata update event (passive — doesn't affect loop control)
+  if (chatMetadata) {
+    yield { type: 'chat_metadata_updated', ...chatMetadata };
+  }
+
   if (checkpointSet) {
     return { checkpoint: true };
   }
 
+  if (activeHookChanged !== undefined) {
+    return { activeHook: activeHookChanged };
+  }
+
   if (deferredReturnValue !== undefined) {
+    if (deferReturn === 'auto-ack') {
+      // Auto-ack parallel: append synthetic assistant message, then break
+      const ackText = autoAckMessage || 'Will do.';
+      const assistantMsg: Message<unknown> = {
+        id: generateUniqueId('msg_assistant'),
+        role: 'assistant',
+        content: {
+          type: 'text',
+          content: ackText,
+          modelFamily: apiType,
+          fullContent: undefined,
+          renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: ackText }] }],
+        },
+        timestamp: new Date(),
+      };
+      messages.push(assistantMsg);
+      yield { type: 'message_created', message: assistantMsg };
+      return { breakLoop: { returnValue: deferredReturnValue } };
+    }
     return { deferredReturn: deferredReturnValue };
   }
 
@@ -962,22 +1298,40 @@ export async function* runAgenticLoop(
 ): AsyncGenerator<AgenticLoopEvent, AgenticLoopResult, void> {
   const { apiDef, model, projectId, chatId, enabledTools, toolOptions } = options;
 
-  // Gate extended context on whether the effective model actually supports it
-  const effectiveExtendedContext =
-    options.extendedContext && !!getModelMetadataFor(apiDef, model.id).supportsExtendedContext;
+  // Gate extended context on whether the effective model actually supports it.
+  // Use model.supportsExtendedContext directly — the model object already carries correct metadata
+  // from discovery (resolved via baseModelId). Re-resolving by model.id breaks for Bedrock
+  // inference profiles whose IDs (e.g. us.anthropic.claude-...) don't match fuzz patterns.
+  const effectiveExtendedContext = options.extendedContext && !!model.supportsExtendedContext;
 
   // Build tool execution context
-  const toolContext = { projectId, chatId, namespace: options.namespace };
+  const toolContext = {
+    projectId,
+    chatId,
+    namespace: options.namespace,
+    noLineNumbers: options.noLineNumbers,
+  };
 
   // Copy to avoid mutating caller's array (React state safety)
   const messages = [...context];
   const totals = createTokenTotals();
   let iteration = 0;
   let storedReturnValue: string | undefined;
+  let deferredReturnIteration: number | undefined;
+  let loopHasCoT = false;
   let checkpointSet = false;
+  const softStopRounds = options.deferredSoftStopRounds ?? DEFERRED_SOFT_STOP_ROUNDS;
+  const forceStopRounds = options.deferredForceStopRounds ?? DEFERRED_FORCE_STOP_ROUNDS;
   const checkpointMessageIds = options.checkpointMessageIds
     ? [...options.checkpointMessageIds]
     : [];
+
+  // DUMMY System: load hook runtime if active (mutable — register/unregister can swap at runtime)
+  let activeHookName: string | null = options.activeHook ?? null;
+  let hookRuntime = activeHookName
+    ? await DummyHookRuntime.load(projectId, options.namespace, activeHookName)
+    : null;
+  const hookContextDepth = (toolOptions.dummy?.hookContextDepth as number) ?? 0;
 
   try {
     // Handle pre-existing tool_use blocks before the first API call
@@ -995,21 +1349,36 @@ export async function* runAgenticLoop(
         messages,
         totals,
         options.deferReturn,
-        storedReturnValue !== undefined
+        storedReturnValue !== undefined,
+        options.returnAckMessage,
+        options.returnDuplicateMessage,
+        options.autoAckMessage
       );
 
       if (breakResult && 'deferredReturn' in breakResult) {
         storedReturnValue = breakResult.deferredReturn;
+        deferredReturnIteration = 0;
         // Continue loop — don't return yet
       } else if (breakResult && 'checkpoint' in breakResult) {
         checkpointSet = true;
         // Continue loop — checkpoint will be included in final result
+      } else if (breakResult && 'activeHook' in breakResult) {
+        hookRuntime?.dispose();
+        activeHookName = breakResult.activeHook;
+        hookRuntime = activeHookName
+          ? await DummyHookRuntime.load(projectId, options.namespace, activeHookName)
+          : null;
+        yield { type: 'active_hook_changed', hookName: activeHookName };
       } else if (breakResult?.breakLoop) {
+        if (storedReturnValue !== undefined) {
+          console.debug('[agenticLoopGen] breakLoop ignored: deferred return already captured');
+        }
         return {
           status: 'complete',
           messages,
           tokens: totals,
-          returnValue: breakResult.breakLoop.returnValue,
+          hasCoT: loopHasCoT || undefined,
+          returnValue: storedReturnValue ?? breakResult.breakLoop.returnValue,
         };
       }
 
@@ -1026,170 +1395,289 @@ export async function* runAgenticLoop(
       iteration++;
       console.debug('[agenticLoopGen] Iteration:', iteration);
 
-      yield { type: 'streaming_start' };
+      let hookIntercepted = false;
+      let assistantMessage!: Message<unknown>;
+      let fallbackExtractedBlocks: ToolUseBlock[] | undefined;
+      let toolUseBlocks: ToolUseBlock[];
 
-      // Load attachments for user messages
-      const messagesWithAttachments = await loadAttachmentsForMessages(messages);
+      // DUMMY System: hook intercept before API call
+      if (hookRuntime) {
+        const hookName = activeHookName!;
+        yield { type: 'dummy_hook_start', hookName };
+        const lastMsg = messages[messages.length - 1];
+        const hookInput = extractHookInput(lastMsg);
+        hookInput.chatId = chatId;
+        hookInput.messageId = lastMsg.id;
+        if (hookContextDepth > 0) {
+          hookInput.history = extractHookHistory(messages, hookContextDepth);
+        }
+        const { value: hookResult, error: hookError } = await hookRuntime.run(hookInput, iteration);
 
-      // Compute tidy boundary: the checkpoint ID that marks where trimming starts.
-      // keepSegments: -1 = keep all (disable tidy), 0 = tidy everything before latest, N = keep N previous segments.
-      const keepSegments = (toolOptions.checkpoint?.keepSegments as number) ?? 0;
-      let tidyBoundaryId: string | undefined;
-      if (keepSegments !== -1 && checkpointMessageIds.length > 0) {
-        const boundaryIdx = Math.max(0, checkpointMessageIds.length - 1 - keepSegments);
-        tidyBoundaryId = checkpointMessageIds[boundaryIdx];
-      }
-
-      // Build stream options
-      const streamOptions = {
-        temperature: options.temperature,
-        maxTokens: options.maxTokens,
-        enableReasoning: options.enableReasoning,
-        reasoningBudgetTokens: options.reasoningBudgetTokens,
-        thinkingKeepTurns: options.thinkingKeepTurns,
-        reasoningEffort: options.reasoningEffort,
-        reasoningSummary: options.reasoningSummary,
-        systemPrompt: options.systemPrompt,
-        preFillResponse: iteration === 1 ? options.preFillResponse : undefined,
-        webSearchEnabled: options.webSearchEnabled,
-        enabledTools,
-        toolOptions,
-        disableStream: options.disableStream,
-        extendedContext: effectiveExtendedContext,
-        checkpointMessageId: tidyBoundaryId,
-        tidyToolNames: deriveTidyToolNames(toolOptions),
-      };
-
-      // Create assembler for streaming
-      const assembler = new StreamingContentAssembler({
-        getToolIcon: (toolName: string) => toolRegistry.get(toolName)?.iconInput,
-      });
-
-      // Start API stream
-      const stream = apiService.sendMessageStream(
-        messagesWithAttachments,
-        model.id,
-        apiDef,
-        streamOptions
-      );
-
-      let hasFirstChunk = false;
-      let isFirstContentChunk = true;
-
-      // Process stream chunks
-      let streamNext = await stream.next();
-      while (!streamNext.done) {
-        const chunk = streamNext.value;
-
-        if (!hasFirstChunk) {
-          hasFirstChunk = true;
-          yield { type: 'first_chunk' };
+        if (hookResult === 'user') {
+          yield { type: 'dummy_hook_end', result: 'user_stop' };
+          return {
+            status: 'soft_stopped',
+            stopPoint: 'after_tools',
+            messages,
+            tokens: totals,
+            hasCoT: loopHasCoT || undefined,
+            returnValue: storedReturnValue,
+          };
         }
 
-        // Handle prefill prepending for first content chunk
-        if (
-          chunk.type === 'content' &&
-          isFirstContentChunk &&
-          iteration === 1 &&
-          options.preFillResponse &&
-          apiService.shouldPrependPrefill(apiDef)
-        ) {
-          assembler.pushChunk({
-            type: 'content',
-            content: options.preFillResponse + chunk.content,
-          });
-          isFirstContentChunk = false;
+        if (hookResult && typeof hookResult === 'object') {
+          yield { type: 'dummy_hook_end', result: 'intercepted' };
+          assistantMessage = buildDummyAssistantMessage(
+            hookResult.text,
+            hookResult.toolCalls,
+            hookResult.brief
+          );
+          messages.push(assistantMessage);
+          yield { type: 'message_created', message: assistantMessage };
+          hookIntercepted = true;
+        } else if (hookError) {
+          yield { type: 'dummy_hook_end', result: 'intercepted' };
+          const errorText = `Hook error:\n\`\`\`\n${hookError}\n\`\`\``;
+          assistantMessage = buildDummyAssistantMessage(errorText, undefined, 'hook error');
+          messages.push(assistantMessage);
+          yield { type: 'message_created', message: assistantMessage };
+          hookIntercepted = true;
         } else {
-          assembler.pushChunk(chunk);
+          yield { type: 'dummy_hook_end', result: 'passthrough' };
         }
-
-        if (chunk.type === 'content') {
-          isFirstContentChunk = false;
-        }
-
-        yield { type: 'streaming_chunk', groups: assembler.getGroups() };
-        streamNext = await stream.next();
       }
 
-      yield { type: 'streaming_end' };
+      if (!hookIntercepted) {
+        yield { type: 'streaming_start' };
 
-      // Get final result
-      const result = streamNext.done ? streamNext.value : null;
+        // Load attachments for user messages
+        const messagesWithAttachments = await loadAttachmentsForMessages(messages);
 
-      if (!result) {
-        // Stream returned no result - create error message
-        const errorRenderingContent = assembler.finalizeWithError({
-          message: 'Stream returned no result',
+        // Compute tidy boundary: the checkpoint ID that marks where trimming starts.
+        // keepSegments: -1 = keep all (disable tidy), 0 = tidy everything before latest, N = keep N previous segments.
+        const keepSegments = (toolOptions.checkpoint?.keepSegments as number) ?? 0;
+        let tidyBoundaryId: string | undefined;
+        if (keepSegments !== -1 && checkpointMessageIds.length > 0) {
+          const boundaryIdx = Math.max(0, checkpointMessageIds.length - 1 - keepSegments);
+          tidyBoundaryId = checkpointMessageIds[boundaryIdx];
+        }
+
+        // Build stream options
+        const streamOptions = {
+          temperature: options.temperature,
+          maxTokens: options.maxTokens,
+          enableReasoning: options.enableReasoning,
+          reasoningBudgetTokens: options.reasoningBudgetTokens,
+          thinkingKeepTurns: options.thinkingKeepTurns,
+          reasoningEffort: options.reasoningEffort,
+          reasoningSummary: options.reasoningSummary,
+          systemPrompt: options.systemPrompt,
+          preFillResponse: iteration === 1 ? options.preFillResponse : undefined,
+          webSearchEnabled: options.webSearchEnabled,
+          enabledTools,
+          toolOptions,
+          disableStream: options.disableStream,
+          extendedContext: effectiveExtendedContext,
+          checkpointMessageId: tidyBoundaryId,
+          tidyToolNames: deriveTidyToolNames(toolOptions),
+        };
+
+        // Create assembler for streaming
+        const assembler = new StreamingContentAssembler({
+          getToolIcon: (toolName: string) => toolRegistry.get(toolName)?.iconInput,
         });
 
-        const errorMessage: Message<unknown> = {
-          id: generateUniqueId('msg_assistant'),
-          role: 'assistant',
-          content: {
-            type: 'text',
-            content: '',
-            modelFamily: apiDef.apiType,
-            renderingContent: errorRenderingContent,
-            stopReason: 'error',
-          },
-          timestamp: new Date(),
-        };
+        // Start API stream
+        const stream = apiService.sendMessageStream(
+          messagesWithAttachments,
+          model.id,
+          apiDef,
+          streamOptions
+        );
 
-        messages.push(errorMessage);
-        yield { type: 'message_created', message: errorMessage };
+        let hasFirstChunk = false;
+        let isFirstContentChunk = true;
 
-        return {
-          status: 'error',
-          messages,
-          tokens: totals,
-          error: new Error('Stream returned no result'),
-        };
-      }
+        // Process stream chunks
+        let streamNext = await stream.next();
+        while (!streamNext.done) {
+          const chunk = streamNext.value;
 
-      // Extract tokens and calculate cost
-      const iterTokens = extractIterationTokens(result, model);
-      addTokens(totals, iterTokens);
-      yield { type: 'tokens_consumed', tokens: iterTokens };
+          if (!hasFirstChunk) {
+            hasFirstChunk = true;
+            yield { type: 'first_chunk' };
+          }
 
-      // Build and record assistant message
-      const assistantMessage = buildAssistantMessage(
-        result,
-        assembler,
-        apiDef.apiType,
-        model.id,
-        iterTokens
-      );
+          // Handle prefill prepending for first content chunk
+          if (
+            chunk.type === 'content' &&
+            isFirstContentChunk &&
+            iteration === 1 &&
+            options.preFillResponse &&
+            apiService.shouldPrependPrefill(apiDef)
+          ) {
+            assembler.pushChunk({
+              type: 'content',
+              content: options.preFillResponse + chunk.content,
+            });
+            isFirstContentChunk = false;
+          } else {
+            assembler.pushChunk(chunk);
+          }
 
-      // Fill context window from model metadata (extended context overrides to 1M)
-      if (assistantMessage.metadata) {
-        assistantMessage.metadata.contextWindow = effectiveExtendedContext
-          ? 1_000_000
-          : model.contextWindow || 0;
-      }
+          if (chunk.type === 'content') {
+            isFirstContentChunk = false;
+          }
 
-      messages.push(assistantMessage);
-      yield { type: 'message_created', message: assistantMessage };
+          yield { type: 'streaming_chunk', groups: assembler.getGroups() };
+          streamNext = await stream.next();
+        }
 
-      // Check for API error (result.error is set but stopReason is undefined)
-      if (result.error) {
-        return {
-          status: 'error',
-          messages,
-          tokens: totals,
-          error: new Error(result.error.message),
-        };
-      }
+        yield { type: 'streaming_end' };
 
-      // Check stop reason
-      if (result.stopReason !== 'tool_use') {
-        // Checkpoint auto-continue: instead of returning, send a continue message
-        // and let the loop re-enter for a fresh API call
-        if (checkpointSet) {
-          console.debug('[agenticLoopGen] Checkpoint auto-continue');
-          yield {
-            type: 'checkpoint_set',
-            messageId: checkpointMessageIds[checkpointMessageIds.length - 1],
+        // Get final result
+        const result = streamNext.done ? streamNext.value : null;
+
+        if (!result) {
+          // Stream returned no result - create error message
+          const errorRenderingContent = assembler.finalizeWithError({
+            message: 'Stream returned no result',
+          });
+
+          const errorMessage: Message<unknown> = {
+            id: generateUniqueId('msg_assistant'),
+            role: 'assistant',
+            content: {
+              type: 'text',
+              content: '',
+              modelFamily: apiDef.apiType,
+              renderingContent: errorRenderingContent,
+              stopReason: 'error',
+            },
+            timestamp: new Date(),
           };
+
+          messages.push(errorMessage);
+          yield { type: 'message_created', message: errorMessage };
+
+          return {
+            status: 'error',
+            messages,
+            tokens: totals,
+            hasCoT: loopHasCoT || undefined,
+            error: new Error('Stream returned no result'),
+          };
+        }
+
+        // Track chain-of-thought across iterations
+        if (result.hasCoT) loopHasCoT = true;
+
+        // Extract tokens and calculate cost
+        const iterTokens = extractIterationTokens(result, model);
+        if (apiDef.advancedSettings?.isSubscription) {
+          iterTokens.cost = 0;
+          iterTokens.costUnreliable = false;
+        }
+        addTokens(totals, iterTokens);
+        yield { type: 'tokens_consumed', tokens: iterTokens };
+
+        // Build and record assistant message
+        assistantMessage = buildAssistantMessage(
+          result,
+          assembler,
+          apiDef.apiType,
+          model.id,
+          iterTokens
+        );
+
+        // Fill context window from model metadata (extended context overrides to 1M)
+        if (assistantMessage.metadata) {
+          assistantMessage.metadata.contextWindow = effectiveExtendedContext
+            ? 1_000_000
+            : model.contextWindow || 0;
+        }
+
+        messages.push(assistantMessage);
+        yield { type: 'message_created', message: assistantMessage };
+
+        // Check for API error (result.error is set but stopReason is undefined)
+        if (result.error) {
+          return {
+            status: 'error',
+            messages,
+            tokens: totals,
+            hasCoT: loopHasCoT || undefined,
+            error: new Error(result.error.message),
+          };
+        }
+
+        // Check stop reason — fallback extraction for minion loops with wrong stopReason
+        if (result.stopReason !== 'tool_use') {
+          let hasToolBlocks = false;
+          if (options.fallbackToolExtraction) {
+            fallbackExtractedBlocks = apiService.extractToolUseBlocks(
+              apiDef.apiType,
+              result.fullContent
+            );
+            hasToolBlocks = fallbackExtractedBlocks.length > 0;
+            if (hasToolBlocks) {
+              console.debug(
+                '[agenticLoopGen] Fallback: found',
+                fallbackExtractedBlocks.length,
+                'tool_use block(s) despite stopReason:',
+                result.stopReason
+              );
+            }
+          }
+
+          if (!hasToolBlocks) {
+            // Checkpoint auto-continue: instead of returning, send a continue message
+            // and let the loop re-enter for a fresh API call
+            if (checkpointSet) {
+              console.debug('[agenticLoopGen] Checkpoint auto-continue');
+              const continueText =
+                (toolOptions.checkpoint?.continueMessage as string) || 'please continue';
+              const continueMsg: Message<string> = {
+                id: generateUniqueId('msg_user'),
+                role: 'user',
+                content: {
+                  type: 'text',
+                  content: continueText,
+                  renderingContent: [
+                    { category: 'text', blocks: [{ type: 'text', text: continueText }] },
+                  ],
+                },
+                timestamp: new Date(),
+              };
+              messages.push(continueMsg);
+              yield { type: 'message_created', message: continueMsg };
+              checkpointSet = false;
+              continue; // Re-enter the while loop for a new API call
+            }
+
+            return {
+              status: 'complete',
+              messages,
+              tokens: totals,
+              hasCoT: loopHasCoT || undefined,
+              returnValue: storedReturnValue,
+            };
+          }
+        }
+
+        // Extract tool blocks from API response
+        toolUseBlocks =
+          fallbackExtractedBlocks ??
+          apiService.extractToolUseBlocks(apiDef.apiType, result.fullContent);
+      } else {
+        // Hook path: tool blocks from synthetic message
+        toolUseBlocks = (assistantMessage.content.toolCalls ?? []) as ToolUseBlock[];
+      }
+
+      // Shared: no tool calls — complete or checkpoint auto-continue
+      if (toolUseBlocks.length === 0) {
+        if (checkpointSet) {
+          console.debug('[agenticLoopGen] Checkpoint auto-continue (shared)');
           const continueText =
             (toolOptions.checkpoint?.continueMessage as string) || 'please continue';
           const continueMsg: Message<string> = {
@@ -1207,13 +1695,13 @@ export async function* runAgenticLoop(
           messages.push(continueMsg);
           yield { type: 'message_created', message: continueMsg };
           checkpointSet = false;
-          continue; // Re-enter the while loop for a new API call
+          continue;
         }
-
         return {
           status: 'complete',
           messages,
           tokens: totals,
+          hasCoT: loopHasCoT || undefined,
           returnValue: storedReturnValue,
         };
       }
@@ -1226,16 +1714,9 @@ export async function* runAgenticLoop(
           stopPoint: 'before_tools',
           messages,
           tokens: totals,
+          hasCoT: loopHasCoT || undefined,
           returnValue: storedReturnValue,
         };
-      }
-
-      // Execute tools
-      const toolUseBlocks = apiService.extractToolUseBlocks(apiDef.apiType, result.fullContent);
-
-      if (toolUseBlocks.length === 0) {
-        console.debug('[agenticLoopGen] No tool_use blocks found, completing');
-        return { status: 'complete', messages, tokens: totals };
       }
 
       const breakResult = yield* executeToolUseBlocks(
@@ -1247,22 +1728,55 @@ export async function* runAgenticLoop(
         messages,
         totals,
         options.deferReturn,
-        storedReturnValue !== undefined
+        storedReturnValue !== undefined,
+        options.returnAckMessage,
+        options.returnDuplicateMessage,
+        options.autoAckMessage
       );
 
       if (breakResult && 'deferredReturn' in breakResult) {
         storedReturnValue = breakResult.deferredReturn;
+        if (deferredReturnIteration === undefined) {
+          deferredReturnIteration = iteration;
+        }
         // Continue loop — don't break
       } else if (breakResult && 'checkpoint' in breakResult) {
         checkpointSet = true;
         checkpointMessageIds.push(assistantMessage.id);
-        // Continue loop — checkpoint will be included in final result
+        yield { type: 'checkpoint_set', messageId: assistantMessage.id };
+        // Continue loop — checkpoint triggers auto-continue at end_turn
+      } else if (breakResult && 'activeHook' in breakResult) {
+        hookRuntime?.dispose();
+        activeHookName = breakResult.activeHook;
+        hookRuntime = activeHookName
+          ? await DummyHookRuntime.load(projectId, options.namespace, activeHookName)
+          : null;
+        yield { type: 'active_hook_changed', hookName: activeHookName };
       } else if (breakResult?.breakLoop) {
+        if (storedReturnValue !== undefined) {
+          console.debug('[agenticLoopGen] breakLoop ignored: deferred return already captured');
+        }
         return {
           status: 'complete',
           messages,
           tokens: totals,
-          returnValue: breakResult.breakLoop.returnValue,
+          hasCoT: loopHasCoT || undefined,
+          returnValue: storedReturnValue ?? breakResult.breakLoop.returnValue,
+        };
+      }
+
+      // Force stop: deferred return captured too many rounds ago
+      if (
+        deferredReturnIteration !== undefined &&
+        iteration - deferredReturnIteration >= forceStopRounds
+      ) {
+        console.debug('[agenticLoopGen] Deferred return force stop at iteration', iteration);
+        return {
+          status: 'complete',
+          messages,
+          tokens: totals,
+          hasCoT: loopHasCoT || undefined,
+          returnValue: storedReturnValue,
         };
       }
 
@@ -1274,8 +1788,29 @@ export async function* runAgenticLoop(
           stopPoint: 'after_tools',
           messages,
           tokens: totals,
+          hasCoT: loopHasCoT || undefined,
           returnValue: storedReturnValue,
         };
+      }
+
+      // Soft nudge: inject "please stop" message after deferred return threshold
+      if (
+        deferredReturnIteration !== undefined &&
+        iteration - deferredReturnIteration >= softStopRounds
+      ) {
+        const stopText = 'You should stop and user will call you back.';
+        const stopMsg: Message<string> = {
+          id: generateUniqueId('msg_user'),
+          role: 'user',
+          content: {
+            type: 'text',
+            content: stopText,
+            renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: stopText }] }],
+          },
+          timestamp: new Date(),
+        };
+        messages.push(stopMsg);
+        yield { type: 'message_created', message: stopMsg };
       }
 
       // Continue loop with updated context
@@ -1286,6 +1821,7 @@ export async function* runAgenticLoop(
       status: 'max_iterations',
       messages,
       tokens: totals,
+      hasCoT: loopHasCoT || undefined,
       returnValue: storedReturnValue,
     };
   } catch (error) {
@@ -1296,8 +1832,11 @@ export async function* runAgenticLoop(
       status: 'error',
       messages,
       tokens: totals,
+      hasCoT: loopHasCoT || undefined,
       error: errorObj,
     };
+  } finally {
+    hookRuntime?.dispose();
   }
 }
 

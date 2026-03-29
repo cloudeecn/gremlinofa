@@ -5,41 +5,57 @@ import type { RefObject } from 'react';
 
 // Note: The hook uses MIN_VIEWPORT_HEIGHT = 600 internally
 
+/** Captured observer instance with its callback and options */
+interface CapturedObserver {
+  callback: IntersectionObserverCallback;
+  options: IntersectionObserverInit | undefined;
+  observe: ReturnType<typeof vi.fn>;
+  unobserve: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+}
+
 describe('useVirtualScroll', () => {
-  let mockObserver: {
-    observe: ReturnType<typeof vi.fn>;
-    unobserve: ReturnType<typeof vi.fn>;
-    disconnect: ReturnType<typeof vi.fn>;
-  };
-  let observerCallback: IntersectionObserverCallback;
-  let observerOptions: IntersectionObserverInit | undefined;
+  let capturedObservers: CapturedObserver[];
   let mockScrollContainer: HTMLDivElement;
   let mockScrollContainerRef: RefObject<HTMLDivElement>;
 
-  beforeEach(() => {
-    // Reset observerOptions from previous tests
-    observerOptions = undefined;
+  /** Get outer observer (first created, larger rootMargin) */
+  const getOuterObserver = () => capturedObservers[0];
+  /** Get inner observer (second created, smaller rootMargin) */
+  const getInnerObserver = () => capturedObservers[1];
 
-    // Create mock scroll container with clientHeight
+  /** Fire an intersection entry on a specific observer */
+  const fireEntry = (observer: CapturedObserver, element: HTMLElement, isIntersecting: boolean) => {
+    observer.callback(
+      [{ target: element, isIntersecting } as unknown as IntersectionObserverEntry],
+      {} as IntersectionObserver
+    );
+  };
+
+  beforeEach(() => {
+    capturedObservers = [];
+
     mockScrollContainer = document.createElement('div');
     Object.defineProperty(mockScrollContainer, 'clientHeight', { value: 800 });
     mockScrollContainerRef = { current: mockScrollContainer };
 
-    // Mock IntersectionObserver
-    mockObserver = {
-      observe: vi.fn(),
-      unobserve: vi.fn(),
-      disconnect: vi.fn(),
-    };
-
     global.IntersectionObserver = class IntersectionObserver {
       constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
-        observerCallback = callback;
-        observerOptions = options;
+        const captured: CapturedObserver = {
+          callback,
+          options,
+          observe: vi.fn(),
+          unobserve: vi.fn(),
+          disconnect: vi.fn(),
+        };
+        capturedObservers.push(captured);
+        this.observe = captured.observe;
+        this.unobserve = captured.unobserve;
+        this.disconnect = captured.disconnect;
       }
-      observe = mockObserver.observe;
-      unobserve = mockObserver.unobserve;
-      disconnect = mockObserver.disconnect;
+      observe: ReturnType<typeof vi.fn>;
+      unobserve: ReturnType<typeof vi.fn>;
+      disconnect: ReturnType<typeof vi.fn>;
       takeRecords = vi.fn();
       root = null;
       rootMargin = '';
@@ -62,25 +78,26 @@ describe('useVirtualScroll', () => {
       expect(typeof result.current.getHeight).toBe('function');
     });
 
-    it('should add elements to IntersectionObserver when registerMessage is called', () => {
+    it('should add elements to both IntersectionObservers when registerMessage is called', () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
 
-      expect(mockObserver.observe).toHaveBeenCalledWith(mockElement);
+      expect(getOuterObserver().observe).toHaveBeenCalledWith(mockElement);
+      expect(getInnerObserver().observe).toHaveBeenCalledWith(mockElement);
       expect(mockElement.getAttribute('data-message-id')).toBe('msg-1');
     });
 
-    it('should remove elements from IntersectionObserver when registerMessage is called with null', () => {
+    it('should remove elements from both observers when registerMessage is called with null', () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
-      expect(mockObserver.observe).toHaveBeenCalledWith(mockElement);
 
       result.current.registerMessage('msg-1', null);
-      expect(mockObserver.unobserve).toHaveBeenCalledWith(mockElement);
+      expect(getOuterObserver().unobserve).toHaveBeenCalledWith(mockElement);
+      expect(getInnerObserver().unobserve).toHaveBeenCalledWith(mockElement);
     });
 
     it('should replace old elements when registerMessage is called with same messageId', () => {
@@ -90,11 +107,12 @@ describe('useVirtualScroll', () => {
       const newElement = document.createElement('div');
 
       result.current.registerMessage('msg-1', oldElement);
-      expect(mockObserver.observe).toHaveBeenCalledWith(oldElement);
-
       result.current.registerMessage('msg-1', newElement);
-      expect(mockObserver.unobserve).toHaveBeenCalledWith(oldElement);
-      expect(mockObserver.observe).toHaveBeenCalledWith(newElement);
+
+      expect(getOuterObserver().unobserve).toHaveBeenCalledWith(oldElement);
+      expect(getInnerObserver().unobserve).toHaveBeenCalledWith(oldElement);
+      expect(getOuterObserver().observe).toHaveBeenCalledWith(newElement);
+      expect(getInnerObserver().observe).toHaveBeenCalledWith(newElement);
     });
 
     it('should store height in cache when measureHeight is called', () => {
@@ -121,189 +139,258 @@ describe('useVirtualScroll', () => {
     });
   });
 
-  describe('Virtual Scrolling Specific', () => {
+  describe('Two-Observer Setup', () => {
     // With container clientHeight of 800px:
-    // bufferScreens=1 -> 800 * 1 = 800px
-    // bufferScreens=2 -> 800 * 2 = 1600px
-    // bufferScreens=5 -> 800 * 5 = 4000px
+    // bufferScreens=5 -> outer: 4000px, inner: 3200px
+    // bufferScreens=2 -> outer: 1600px, inner: 800px
+    // bufferScreens=1 -> outer: 800px, inner: 0px (degenerate, but valid)
 
-    it('should create IntersectionObserver with correct pixel rootMargin for bufferScreens=1', () => {
-      renderHook(() => useVirtualScroll(mockScrollContainerRef, 1));
-
-      expect(observerOptions).toEqual({
-        root: mockScrollContainer, // Uses scroll container as root
-        rootMargin: '800px 0px', // 800px container * 1 buffer
-        threshold: 0,
-      });
+    it('should create two IntersectionObservers', () => {
+      renderHook(() => useVirtualScroll(mockScrollContainerRef));
+      expect(capturedObservers).toHaveLength(2);
     });
 
-    it('should create IntersectionObserver with correct pixel rootMargin for bufferScreens=2', () => {
-      renderHook(() => useVirtualScroll(mockScrollContainerRef, 2));
-
-      expect(observerOptions).toEqual({
-        root: mockScrollContainer,
-        rootMargin: '1600px 0px', // 800px container * 2 buffers
-        threshold: 0,
-      });
-    });
-
-    it('should create IntersectionObserver with default bufferScreens=5 when not specified', () => {
+    it('should create outer observer with bufferScreens rootMargin and inner with bufferScreens-1', () => {
       renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
-      expect(observerOptions).toEqual({
+      expect(getOuterObserver().options).toEqual({
         root: mockScrollContainer,
-        rootMargin: '4000px 0px', // 800px container * 5 buffers
+        rootMargin: '4000px 0px', // 800 * 5
         threshold: 0,
       });
+      expect(getInnerObserver().options).toEqual({
+        root: mockScrollContainer,
+        rootMargin: '3200px 0px', // 800 * 4
+        threshold: 0,
+      });
+    });
+
+    it('should create correct rootMargins for bufferScreens=2', () => {
+      renderHook(() => useVirtualScroll(mockScrollContainerRef, 2));
+
+      expect(getOuterObserver().options?.rootMargin).toBe('1600px 0px'); // 800 * 2
+      expect(getInnerObserver().options?.rootMargin).toBe('800px 0px'); // 800 * 1
+    });
+
+    it('should create correct rootMargins for bufferScreens=1', () => {
+      renderHook(() => useVirtualScroll(mockScrollContainerRef, 1));
+
+      expect(getOuterObserver().options?.rootMargin).toBe('800px 0px'); // 800 * 1
+      expect(getInnerObserver().options?.rootMargin).toBe('0px 0px'); // 800 * 0
     });
 
     it('should use minimum height (600) when container clientHeight is smaller', () => {
-      // Create a smaller container
       const smallContainer = document.createElement('div');
       Object.defineProperty(smallContainer, 'clientHeight', { value: 400 });
       const smallRef = { current: smallContainer };
 
       renderHook(() => useVirtualScroll(smallRef, 1));
 
-      expect(observerOptions).toEqual({
-        root: smallContainer,
-        rootMargin: '600px 0px', // MIN_VIEWPORT_HEIGHT (600) * 1 buffer
-        threshold: 0,
-      });
+      expect(getOuterObserver().options?.rootMargin).toBe('600px 0px'); // MIN_VIEWPORT_HEIGHT * 1
+      expect(getInnerObserver().options?.rootMargin).toBe('0px 0px'); // MIN_VIEWPORT_HEIGHT * 0
     });
 
-    it('should add elements entering viewport to visibleMessageIds', async () => {
+    it('should use scroll container as root for both observers', () => {
+      renderHook(() => useVirtualScroll(mockScrollContainerRef));
+
+      expect(getOuterObserver().options?.root).toBe(mockScrollContainer);
+      expect(getInnerObserver().options?.root).toBe(mockScrollContainer);
+    });
+  });
+
+  describe('Visibility via Inner Observer', () => {
+    it('should add elements entering inner zone to visibleMessageIds', async () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
 
-      // Simulate element entering viewport
-      const entry: Partial<IntersectionObserverEntry> = {
-        target: mockElement,
-        isIntersecting: true,
-      };
-
-      observerCallback(
-        [entry as unknown as IntersectionObserverEntry],
-        mockObserver as unknown as IntersectionObserver
-      );
+      fireEntry(getInnerObserver(), mockElement, true);
 
       await waitFor(() => {
         expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
       });
     });
 
-    it('should remove elements leaving buffer zone from visibleMessageIds', async () => {
+    it('should handle multiple elements entering inner zone', async () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
-      const mockElement = document.createElement('div');
-      result.current.registerMessage('msg-1', mockElement);
+      const el1 = document.createElement('div');
+      const el2 = document.createElement('div');
+      const el3 = document.createElement('div');
 
-      // Simulate element entering viewport
-      observerCallback(
+      result.current.registerMessage('msg-1', el1);
+      result.current.registerMessage('msg-2', el2);
+      result.current.registerMessage('msg-3', el3);
+
+      getInnerObserver().callback(
         [
-          {
-            target: mockElement,
-            isIntersecting: true,
-          } as unknown as IntersectionObserverEntry,
+          { target: el1, isIntersecting: true } as unknown as IntersectionObserverEntry,
+          { target: el2, isIntersecting: true } as unknown as IntersectionObserverEntry,
+          { target: el3, isIntersecting: true } as unknown as IntersectionObserverEntry,
         ],
-        mockObserver as unknown as IntersectionObserver
+        {} as IntersectionObserver
       );
 
       await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
-
-      // Simulate element leaving viewport
-      observerCallback(
-        [
-          {
-            target: mockElement,
-            isIntersecting: false,
-          } as unknown as IntersectionObserverEntry,
-        ],
-        mockObserver as unknown as IntersectionObserver
-      );
-
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
-      });
-    });
-
-    it('should handle multiple elements being visible simultaneously', async () => {
-      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
-
-      const element1 = document.createElement('div');
-      const element2 = document.createElement('div');
-      const element3 = document.createElement('div');
-
-      result.current.registerMessage('msg-1', element1);
-      result.current.registerMessage('msg-2', element2);
-      result.current.registerMessage('msg-3', element3);
-
-      // Simulate all elements entering viewport
-      observerCallback(
-        [
-          { target: element1, isIntersecting: true } as unknown as IntersectionObserverEntry,
-          { target: element2, isIntersecting: true } as unknown as IntersectionObserverEntry,
-          { target: element3, isIntersecting: true } as unknown as IntersectionObserverEntry,
-        ],
-        mockObserver as unknown as IntersectionObserver
-      );
-
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-        expect(result.current.visibleMessageIds.has('msg-2')).toBe(true);
-        expect(result.current.visibleMessageIds.has('msg-3')).toBe(true);
         expect(result.current.visibleMessageIds.size).toBe(3);
       });
     });
+  });
 
-    it('should update visibleMessageIds Set correctly with multiple intersection changes', async () => {
+  describe('Virtualization via Outer Observer', () => {
+    it('should remove elements leaving outer zone from visibleMessageIds', async () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
-      const element1 = document.createElement('div');
-      const element2 = document.createElement('div');
+      const mockElement = document.createElement('div');
+      result.current.registerMessage('msg-1', mockElement);
 
-      result.current.registerMessage('msg-1', element1);
-      result.current.registerMessage('msg-2', element2);
-
-      // First batch: msg-1 enters, msg-2 leaves
-      observerCallback(
-        [
-          { target: element1, isIntersecting: true } as unknown as IntersectionObserverEntry,
-          { target: element2, isIntersecting: false } as unknown as IntersectionObserverEntry,
-        ],
-        mockObserver as unknown as IntersectionObserver
-      );
-
+      // Make visible via inner observer
+      fireEntry(getInnerObserver(), mockElement, true);
       await waitFor(() => {
         expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-        expect(result.current.visibleMessageIds.has('msg-2')).toBe(false);
       });
 
-      // Second batch: msg-1 leaves, msg-2 enters
-      observerCallback(
-        [
-          { target: element1, isIntersecting: false } as unknown as IntersectionObserverEntry,
-          { target: element2, isIntersecting: true } as unknown as IntersectionObserverEntry,
-        ],
-        mockObserver as unknown as IntersectionObserver
-      );
-
+      // Virtualize via outer observer
+      fireEntry(getOuterObserver(), mockElement, false);
       await waitFor(() => {
         expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
-        expect(result.current.visibleMessageIds.has('msg-2')).toBe(true);
       });
     });
 
-    it('should disconnect observer on cleanup', () => {
+    it('should make initially detected messages visible (first mount in 4–5 screen zone)', async () => {
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+
+      const mockElement = document.createElement('div');
+      result.current.registerMessage('msg-1', mockElement);
+
+      // Outer observer fires true for the first time → initial detection
+      fireEntry(getOuterObserver(), mockElement, true);
+
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
+      });
+    });
+  });
+
+  describe('Hysteresis Behavior', () => {
+    it('should ignore re-entry into outer zone after initialization (bounce protection)', async () => {
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+
+      const mockElement = document.createElement('div');
+      result.current.registerMessage('msg-1', mockElement);
+
+      // 1. Initial mount in inner zone → visible
+      fireEntry(getInnerObserver(), mockElement, true);
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
+      });
+
+      // 2. Scroll away — leaves outer zone → virtualized
+      fireEntry(getOuterObserver(), mockElement, false);
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
+      });
+
+      // 3. Scroll back to 4–5 screen range — outer fires true, but already initialized → ignored
+      fireEntry(getOuterObserver(), mockElement, true);
+
+      // Wait a tick and verify it stayed invisible
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
+      });
+    });
+
+    it('should re-render when re-entering inner zone after virtualization', async () => {
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+
+      const mockElement = document.createElement('div');
+      result.current.registerMessage('msg-1', mockElement);
+
+      // 1. Make visible
+      fireEntry(getInnerObserver(), mockElement, true);
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
+      });
+
+      // 2. Virtualize
+      fireEntry(getOuterObserver(), mockElement, false);
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
+      });
+
+      // 3. Re-enter inner zone → visible again
+      fireEntry(getInnerObserver(), mockElement, true);
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
+      });
+    });
+
+    it('should not toggle state when rapidly bouncing at outer boundary', async () => {
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+
+      const mockElement = document.createElement('div');
+      result.current.registerMessage('msg-1', mockElement);
+
+      // Initial detection
+      fireEntry(getInnerObserver(), mockElement, true);
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
+      });
+
+      // Virtualize
+      fireEntry(getOuterObserver(), mockElement, false);
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
+      });
+
+      // Rapid bounce: outer true → outer false → outer true (all within one batch)
+      fireEntry(getOuterObserver(), mockElement, true); // ignored (initialized)
+      fireEntry(getOuterObserver(), mockElement, false); // virtualize
+      fireEntry(getOuterObserver(), mockElement, true); // ignored (initialized)
+
+      // The last effective update was the false, but the true after it is ignored,
+      // so the pending update should be false
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
+      });
+    });
+
+    it('should reset initialization tracking when unregistering a message', async () => {
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+
+      const mockElement = document.createElement('div');
+      result.current.registerMessage('msg-1', mockElement);
+
+      // Initialize
+      fireEntry(getOuterObserver(), mockElement, true);
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
+      });
+
+      // Unregister — clears initialization tracking
+      result.current.registerMessage('msg-1', null);
+
+      // Re-register with new element
+      const newElement = document.createElement('div');
+      result.current.registerMessage('msg-1', newElement);
+
+      // Outer true should work as initial detection again (not ignored)
+      fireEntry(getOuterObserver(), newElement, true);
+      await waitFor(() => {
+        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
+      });
+    });
+  });
+
+  describe('Lifecycle', () => {
+    it('should disconnect both observers on cleanup', () => {
       const { unmount } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
       unmount();
 
-      expect(mockObserver.disconnect).toHaveBeenCalled();
+      expect(getOuterObserver().disconnect).toHaveBeenCalled();
+      expect(getInnerObserver().disconnect).toHaveBeenCalled();
     });
 
     it('should clear batching interval on unmount (no state updates after unmount)', async () => {
@@ -314,23 +401,17 @@ describe('useVirtualScroll', () => {
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
 
-      // Trigger a visibility change that gets queued
-      observerCallback(
-        [{ target: mockElement, isIntersecting: true } as unknown as IntersectionObserverEntry],
-        mockObserver as unknown as IntersectionObserver
-      );
+      fireEntry(getInnerObserver(), mockElement, true);
 
-      // Unmount before the interval fires
       unmount();
 
-      // Advance past the sync interval - should not cause errors
+      // Advance past the sync interval — should not cause errors
       vi.advanceTimersByTime(500);
 
-      // Test passes if no "state update on unmounted component" errors occur
       vi.useRealTimers();
     });
 
-    it('should clear and recreate interval when bufferScreens changes', () => {
+    it('should clear and recreate observers when bufferScreens changes', () => {
       vi.useFakeTimers();
       const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
 
@@ -338,25 +419,37 @@ describe('useVirtualScroll', () => {
         initialProps: { ref: mockScrollContainerRef, buffer: 2 },
       });
 
-      // Change bufferScreens - should clear old interval and create new one
+      // Should have 2 observers initially
+      expect(capturedObservers).toHaveLength(2);
+
       rerender({ ref: mockScrollContainerRef, buffer: 3 });
 
+      // Old observers disconnected, new ones created (total 4 captured)
       expect(clearIntervalSpy).toHaveBeenCalled();
+      expect(capturedObservers).toHaveLength(4);
 
       clearIntervalSpy.mockRestore();
       vi.useRealTimers();
     });
+
+    it('should wait for scroll container ref before creating observers', () => {
+      const nullRef = { current: null };
+
+      renderHook(() => useVirtualScroll(nullRef));
+
+      expect(capturedObservers).toHaveLength(0);
+    });
   });
 
   describe('Pending Registration Queue', () => {
-    it('should observe elements registered after observer is ready', () => {
+    it('should observe elements registered after observers are ready', () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
-      // Register an element (observer is ready after renderHook)
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
 
-      expect(mockObserver.observe).toHaveBeenCalledWith(mockElement);
+      expect(getOuterObserver().observe).toHaveBeenCalledWith(mockElement);
+      expect(getInnerObserver().observe).toHaveBeenCalledWith(mockElement);
       expect(mockElement.getAttribute('data-message-id')).toBe('msg-1');
     });
 
@@ -373,27 +466,12 @@ describe('useVirtualScroll', () => {
         result.current.registerMessage(`msg-${i}`, el);
       });
 
-      expect(mockObserver.observe).toHaveBeenCalledTimes(3);
+      expect(getOuterObserver().observe).toHaveBeenCalledTimes(3);
+      expect(getInnerObserver().observe).toHaveBeenCalledTimes(3);
       elements.forEach(el => {
-        expect(mockObserver.observe).toHaveBeenCalledWith(el);
+        expect(getOuterObserver().observe).toHaveBeenCalledWith(el);
+        expect(getInnerObserver().observe).toHaveBeenCalledWith(el);
       });
-    });
-  });
-
-  describe('Scroll Container Ref', () => {
-    it('should wait for scroll container ref before creating observer', () => {
-      const nullRef = { current: null };
-
-      renderHook(() => useVirtualScroll(nullRef));
-
-      // Observer should not be created when ref is null
-      expect(observerOptions).toBeUndefined();
-    });
-
-    it('should use scroll container as root for IntersectionObserver', () => {
-      renderHook(() => useVirtualScroll(mockScrollContainerRef));
-
-      expect(observerOptions?.root).toBe(mockScrollContainer);
     });
   });
 });

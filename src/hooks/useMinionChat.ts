@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { storage } from '../services/storage';
 import type { MinionChat, Message, TokenUsage } from '../types';
 
@@ -7,6 +7,7 @@ export interface UseMinionChatResult {
   messages: Message<unknown>[];
   isLoading: boolean;
   tokenUsage: TokenUsage;
+  deleteMessage: (messageId: string) => Promise<void>;
 }
 
 export function useMinionChat(minionChatId: string): UseMinionChatResult {
@@ -57,5 +58,10 @@ export function useMinionChat(minionChatId: string): UseMinionChatResult {
     };
   }, [minionChat]);
 
-  return { minionChat, messages, isLoading, tokenUsage };
+  const deleteMessage = useCallback(async (messageId: string) => {
+    setMessages(prev => prev.filter(m => m.id !== messageId));
+    await storage.deleteSingleMessage(messageId);
+  }, []);
+
+  return { minionChat, messages, isLoading, tokenUsage, deleteMessage };
 }

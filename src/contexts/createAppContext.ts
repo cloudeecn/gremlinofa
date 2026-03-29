@@ -42,6 +42,7 @@ export interface AppContextType {
     sourceCEK: string,
     onProgress?: ImportProgressCallback
   ) => Promise<{ imported: number; skipped: number; errors: string[] }>;
+  clearAllModelsCache: () => Promise<void>;
   handleCompressMessages: () => Promise<{
     total: number;
     compressed: number;

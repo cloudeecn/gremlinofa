@@ -19,7 +19,6 @@ const EXPORT_TABLES = [
   Tables.MINION_CHATS,
   Tables.MESSAGES,
   Tables.ATTACHMENTS,
-  Tables.MEMORIES,
 ];
 
 /**
@@ -128,30 +127,6 @@ export async function* streamExportCSVLines(
   }
 
   console.debug('[DataExport] Streaming export complete!');
-}
-
-/**
- * Legacy: Export all data to CSV format (non-streaming)
- * Kept for backwards compatibility with existing tests
- * For large databases, use streamExportCSVLines() instead
- *
- * @param adapter - Storage adapter for direct database access
- * @param encryptionService - Optional encryption service to include default API definitions with credentials
- * @returns CSV string with all data
- */
-export async function exportDataToCSV(
-  adapter: StorageAdapter,
-  encryptionService?: EncryptionService
-): Promise<string> {
-  const lines: string[] = [];
-
-  for await (const line of streamExportCSVLines(adapter, encryptionService)) {
-    lines.push(line);
-  }
-
-  // Join without extra newlines since each line already has \n
-  // Trim trailing newline for backward compatibility with tests
-  return lines.join('').replace(/\n$/, '');
 }
 
 /**

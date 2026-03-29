@@ -65,7 +65,7 @@ vi.mock('../../../utils/idGenerator', () => ({
   generateUniqueId: vi.fn((prefix: string) => `${prefix}_${++fileCounter}`),
 }));
 
-import { createFile, deleteFile, readDir, mkdir } from '../vfsService';
+import { createFile, deleteFile, readDir, mkdir } from '..';
 
 const PROJECT_ID = 'test_project';
 

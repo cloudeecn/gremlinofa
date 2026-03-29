@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { getProxyConfig } from './proxyConfig';
 import type { ChatCompletionCreateParams, ChatCompletionTool } from 'openai/resources/index.mjs';
 import type {
   APIDefinition,
@@ -6,17 +7,13 @@ import type {
   MessageStopReason,
   Model,
   ReasoningEffort,
-  RenderingBlockGroup,
-  ToolResultBlock,
   ToolUseBlock,
   ToolOptions,
 } from '../../types';
-
-import { groupAndConsolidateBlocks } from '../../types';
-import { generateUniqueId } from '../../utils/idGenerator';
 import { mapReasoningEffort } from '../../utils/reasoningEffort';
 import { toolRegistry } from '../tools/clientSideTools';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import { effectiveInjectionMode } from './fileInjectionHelper';
 import {
   CompletionFullContentAccumulator,
   createFullContentFromMessage,
@@ -27,7 +24,7 @@ import {
   createMapperState,
   mapCompletionChunkToStreamChunks,
 } from './completionStreamMapper';
-import { applyContextTidy, type FilterBlocksFn } from './contextTidy';
+import { findCheckpointIndex, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from './modelMetadata';
 import { storage } from '../storage';
 import {
@@ -36,62 +33,118 @@ import {
 } from './model_metadatas/openRouterModelMapper';
 
 /**
- * OpenAI Chat Completions block filter for context tidy.
+ * Checkpoint-only message tidy for OpenAI Chat Completions.
+ * No thinking blocks — only tool filtering via checkpoint.
  *
- * Assistant messages have object fullContent (CompletionMessage) with tool_calls[].
- * User tool result messages have array fullContent with { type: 'tool_result', tool_call_id }.
- * No thinking blocks in fullContent — only tool filtering needed.
+ * OpenAI fullContent is either:
+ * - Object (CompletionMessage) with optional tool_calls[] for assistant messages
+ * - Array of { type: 'tool_result', tool_call_id } for user tool result messages
  */
-const filterOpenAIBlocks: FilterBlocksFn = (
-  fullContent,
-  removedToolNames,
-  isCheckpoint,
-  removedToolUseIds
-) => {
-  // Checkpoint message: no filtering (no thinking blocks in OpenAI fullContent)
-  if (isCheckpoint) return { filtered: fullContent, newRemovedIds: [] };
+function tidyMessages(
+  messages: Message<unknown>[],
+  checkpointMessageId: string | undefined,
+  tidyToolNames: Set<string> | undefined
+): Message<unknown>[] {
+  const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
+  if (checkpointIdx === -1) return messages;
 
-  // Array fullContent = tool result message
-  if (Array.isArray(fullContent)) {
-    const filtered = fullContent.filter((item: unknown) => {
-      const i = item as { type?: string; tool_call_id?: string };
-      if (i.type === 'tool_result' && i.tool_call_id && removedToolUseIds.has(i.tool_call_id)) {
+  const toolNames = tidyToolNames ?? new Set<string>();
+  const removedToolUseIds = new Set<string>();
+  const result: Message<unknown>[] = [];
+
+  for (let i = 0; i <= checkpointIdx; i++) {
+    const msg = messages[i];
+    const isCheckpoint = i === checkpointIdx;
+
+    // Wrong modelFamily or missing fullContent
+    if (msg.content.modelFamily !== 'chatgpt' || msg.content.fullContent == null) {
+      if (isCheckpoint) {
+        result.push(msg);
+        continue;
+      }
+      const { message, newRemovedIds } = tidyAgnosticMessage(
+        msg,
+        toolNames,
+        removedToolUseIds,
+        false
+      );
+      for (const id of newRemovedIds) removedToolUseIds.add(id);
+      if (message) result.push(message);
+      continue;
+    }
+
+    // Checkpoint message: no filtering needed (no thinking blocks)
+    if (isCheckpoint) {
+      result.push(msg);
+      continue;
+    }
+
+    const fullContent = msg.content.fullContent;
+
+    // Array fullContent = tool result message
+    if (Array.isArray(fullContent)) {
+      const filtered = fullContent.filter((item: unknown) => {
+        const it = item as { type?: string; tool_call_id?: string };
+        return !(
+          it.type === 'tool_result' &&
+          it.tool_call_id &&
+          removedToolUseIds.has(it.tool_call_id)
+        );
+      });
+      if (filtered.length === 0) continue;
+      if (filtered.length !== fullContent.length) {
+        result.push({ ...msg, content: { ...msg.content, fullContent: filtered } });
+      } else {
+        result.push(msg);
+      }
+      continue;
+    }
+
+    // Object fullContent = CompletionMessage with optional tool_calls
+    const cmsg = fullContent as {
+      tool_calls?: Array<{ id: string; function: { name: string } }>;
+    };
+    if (!cmsg.tool_calls?.length) {
+      result.push(msg);
+      continue;
+    }
+
+    const keptCalls = cmsg.tool_calls.filter(tc => {
+      if (toolNames.has(tc.function.name)) {
+        removedToolUseIds.add(tc.id);
         return false;
       }
       return true;
     });
-    return { filtered, newRemovedIds: [] };
-  }
 
-  // Object fullContent = CompletionMessage with optional tool_calls
-  const msg = fullContent as { tool_calls?: Array<{ id: string; function: { name: string } }> };
-  if (!msg.tool_calls?.length) return { filtered: fullContent, newRemovedIds: [] };
-
-  const newRemovedIds: string[] = [];
-  const keptCalls = msg.tool_calls.filter(tc => {
-    if (removedToolNames.has(tc.function.name)) {
-      newRemovedIds.push(tc.id);
-      return false;
+    if (keptCalls.length === 0) {
+      const { tool_calls: _, ...rest } = cmsg;
+      result.push({ ...msg, content: { ...msg.content, fullContent: rest } });
+    } else if (keptCalls.length !== cmsg.tool_calls.length) {
+      result.push({
+        ...msg,
+        content: { ...msg.content, fullContent: { ...cmsg, tool_calls: keptCalls } },
+      });
+    } else {
+      result.push(msg);
     }
-    return true;
-  });
-
-  // If all tool_calls removed, return content-only message (or null if empty)
-  if (keptCalls.length === 0) {
-    const { tool_calls: _, ...rest } = msg;
-    return { filtered: rest, newRemovedIds };
   }
 
-  return { filtered: { ...msg, tool_calls: keptCalls }, newRemovedIds };
-};
+  for (let i = checkpointIdx + 1; i < messages.length; i++) {
+    result.push(messages[i]);
+  }
+
+  return result;
+}
 
 export class OpenAIClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
-    // Create OpenAI client with API key and custom baseUrl if provided
+    const proxy = getProxyConfig(apiDefinition);
     const client = new OpenAI({
       dangerouslyAllowBrowser: true,
       apiKey: apiDefinition.apiKey,
-      baseURL: apiDefinition.baseUrl || undefined,
+      baseURL: proxy?.baseURL ?? (apiDefinition.baseUrl || undefined),
+      ...(proxy && { defaultHeaders: proxy.headers }),
     });
 
     // Get all models from the API
@@ -183,20 +236,19 @@ export class OpenAIClient implements APIClient {
     }
   ): AsyncGenerator<StreamChunk, StreamResult<CompletionMessage>, unknown> {
     try {
-      // Create OpenAI client with API key and custom baseUrl if provided
+      const proxy = getProxyConfig(apiDefinition);
       const client = new OpenAI({
         dangerouslyAllowBrowser: true,
         apiKey: apiDefinition.apiKey,
-        baseURL: apiDefinition.baseUrl || undefined,
+        baseURL: proxy?.baseURL ?? (apiDefinition.baseUrl || undefined),
+        ...(proxy && { defaultHeaders: proxy.headers }),
       });
 
-      // Apply context tidy before message conversion
-      const tidiedMessages = applyContextTidy(
+      // Tidy messages: checkpoint-based tool filtering
+      const tidiedMessages = tidyMessages(
         messages,
         options.checkpointMessageId,
-        options.tidyToolNames,
-        'chatgpt',
-        filterOpenAIBlocks
+        options.tidyToolNames
       );
 
       // Convert our message format to OpenAI's format
@@ -213,6 +265,18 @@ export class OpenAIClient implements APIClient {
       // Add conversation messages
       tidiedMessages.forEach(msg => {
         if (msg.role === 'user') {
+          // Cross-model reconstruction: use toolResults if available
+          if (msg.content.toolResults?.length) {
+            for (const tr of msg.content.toolResults) {
+              openaiMessages.push({
+                role: 'tool',
+                tool_call_id: tr.tool_use_id,
+                content: tr.content,
+              });
+            }
+            return;
+          }
+
           // Check if message contains tool_result blocks in fullContent (for agentic loop continuation)
           if (msg.content.fullContent && Array.isArray(msg.content.fullContent)) {
             const fullContent = msg.content.fullContent as Array<Record<string, unknown>>;
@@ -230,18 +294,46 @@ export class OpenAIClient implements APIClient {
             }
           }
 
-          // Check if message has attachments (images)
-          if (msg.attachments && msg.attachments.length > 0) {
+          // Build user message content — may need array form for attachments or injected files
+          const hasAttachments = msg.attachments && msg.attachments.length > 0;
+          const hasInjectedFiles = msg.content.injectedFiles?.length && msg.content.injectionMode;
+          const injMode = hasInjectedFiles
+            ? effectiveInjectionMode(msg.content.injectionMode!, 'chatgpt')
+            : undefined;
+
+          if (hasAttachments || (hasInjectedFiles && injMode !== 'inline')) {
             const contentParts: OpenAI.ChatCompletionContentPart[] = [];
 
             // Add images first
-            for (const attachment of msg.attachments) {
-              contentParts.push({
-                type: 'image_url',
-                image_url: {
-                  url: `data:${attachment.mimeType};base64,${attachment.data}`,
-                },
-              });
+            if (hasAttachments) {
+              for (const attachment of msg.attachments!) {
+                contentParts.push({
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:${attachment.mimeType};base64,${attachment.data}`,
+                  },
+                });
+              }
+            }
+
+            // Add injected file blocks
+            if (hasInjectedFiles && injMode === 'as-file') {
+              for (const file of msg.content.injectedFiles!) {
+                contentParts.push({
+                  type: 'file',
+                  file: {
+                    file_data: `data:text/plain;base64,${btoa(unescape(encodeURIComponent(file.content)))}`,
+                    filename: file.path,
+                  },
+                } as OpenAI.ChatCompletionContentPart);
+              }
+            } else if (hasInjectedFiles && injMode === 'separate-block') {
+              for (const file of msg.content.injectedFiles!) {
+                contentParts.push({
+                  type: 'text',
+                  text: `=== ${file.path} ===\n${file.content}`,
+                });
+              }
             }
 
             // Add text content
@@ -255,13 +347,30 @@ export class OpenAIClient implements APIClient {
               content: contentParts,
             });
           } else {
-            // Text-only message
+            // Text-only message (inline injection already baked into content)
             openaiMessages.push({
               role: 'user',
               content: msg.content.content,
             });
           }
         } else if (msg.role === 'assistant') {
+          // Cross-model reconstruction: use toolCalls if available and not own modelFamily
+          if (msg.content.modelFamily !== 'chatgpt' && msg.content.toolCalls?.length) {
+            openaiMessages.push({
+              role: 'assistant',
+              content: msg.content.content || null,
+              tool_calls: msg.content.toolCalls.map(tc => ({
+                id: tc.id,
+                type: 'function' as const,
+                function: {
+                  name: tc.name,
+                  arguments: JSON.stringify(tc.input),
+                },
+              })),
+            });
+            return;
+          }
+
           // Handle new CompletionMessage fullContent format
           const fullContent = msg.content.fullContent as CompletionMessage | undefined;
           if (fullContent && typeof fullContent === 'object' && !Array.isArray(fullContent)) {
@@ -338,7 +447,7 @@ export class OpenAIClient implements APIClient {
 
       // Get model metadata for reasoning configuration
       const model = await storage.getModel(apiDefinition.id, modelId);
-      this.applyReasoning(requestParams, options, model);
+      this.applyReasoning(requestParams, options, model, apiDefinition);
 
       // Track token usage and finish reason
       let inputTokens = 0;
@@ -404,6 +513,7 @@ export class OpenAIClient implements APIClient {
 
         return {
           textContent,
+          hasCoT: mapperState.hadReasoning,
           fullContent,
           stopReason: this.mapStopReason(finishReason),
           inputTokens,
@@ -464,6 +574,7 @@ export class OpenAIClient implements APIClient {
 
         return {
           textContent,
+          hasCoT: reasoningTokens > 0,
           fullContent,
           stopReason: this.mapStopReason(finishReason),
           inputTokens,
@@ -519,14 +630,28 @@ export class OpenAIClient implements APIClient {
       enableReasoning?: boolean;
       reasoningEffort?: ReasoningEffort;
     },
-    model?: Model
+    model?: Model,
+    apiDefinition?: APIDefinition
   ) {
     const effort = options.reasoningEffort;
+    const useDeFactoThinking =
+      model?.deFactoThinking || apiDefinition?.advancedSettings?.deFactoThinking;
 
     if (options.temperature) requestParams.temperature = options.temperature;
 
     // Skip reasoning if explicitly disabled or model doesn't support it
     if (options.enableReasoning === false || model?.reasoningMode === 'none') {
+      if (useDeFactoThinking) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (requestParams as any)['thinking'] = { type: 'disabled' };
+      }
+      return;
+    }
+
+    // De facto thinking: inject { thinking: { type: "enabled" } } and skip standard params
+    if (useDeFactoThinking) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (requestParams as any)['thinking'] = { type: 'enabled' };
       return;
     }
 
@@ -547,43 +672,6 @@ export class OpenAIClient implements APIClient {
 
   protected systemPromptRole(_modelId: string): 'developer' | 'system' {
     return 'system';
-  }
-
-  migrateMessageRendering(
-    fullContent: unknown,
-    stopReason: string | null
-  ): {
-    renderingContent: RenderingBlockGroup[];
-    stopReason: MessageStopReason;
-  } {
-    let textContent = '';
-
-    // Handle new CompletionMessage format
-    if (fullContent && typeof fullContent === 'object' && !Array.isArray(fullContent)) {
-      const msg = fullContent as CompletionMessage;
-      textContent = msg.content || '';
-    }
-    // Handle legacy array format
-    else if (Array.isArray(fullContent)) {
-      for (const block of fullContent as Array<Record<string, unknown>>) {
-        if (block.type === 'text' && typeof block.text === 'string') {
-          textContent += block.text;
-        }
-      }
-    }
-    // Handle plain string
-    else if (typeof fullContent === 'string') {
-      textContent = fullContent;
-    }
-
-    const renderingContent = textContent.trim()
-      ? groupAndConsolidateBlocks([{ type: 'text', text: textContent }])
-      : [];
-
-    return {
-      renderingContent,
-      stopReason: this.mapStopReason(stopReason),
-    };
   }
 
   /**
@@ -644,30 +732,6 @@ export class OpenAIClient implements APIClient {
       }
     }
     return [];
-  }
-
-  /**
-   * Build tool result message in OpenAI Chat Completions expected format.
-   * OpenAI uses separate tool messages (role: 'tool') for each result.
-   * We store them as a single user message with tool_results for our internal format.
-   */
-  buildToolResultMessage(toolResults: ToolResultBlock[]): Message<unknown> {
-    return {
-      id: generateUniqueId('msg_user'),
-      role: 'user',
-      content: {
-        type: 'text',
-        content: '',
-        modelFamily: 'chatgpt',
-        fullContent: toolResults.map(tr => ({
-          type: 'tool_result',
-          tool_call_id: tr.tool_use_id,
-          content: tr.content,
-          is_error: tr.is_error,
-        })),
-      },
-      timestamp: new Date(),
-    };
   }
 
   /**

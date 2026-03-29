@@ -352,6 +352,13 @@ export class BedrockFullContentAccumulator {
   }
 
   /**
+   * Whether any reasoning block (text or redacted) was finalized.
+   */
+  hasReasoning(): boolean {
+    return this.blocks.some(b => 'reasoningContent' in b && b.reasoningContent !== undefined);
+  }
+
+  /**
    * Get accumulated thinking content (for thinkingContent in StreamResult).
    */
   getThinkingContent(): string | undefined {

@@ -69,7 +69,7 @@ import {
   insert,
   clearVfs,
   VfsError,
-} from '../vfsService';
+} from '..';
 
 const PROJECT = 'test-project';
 const NS = '/minions/coder';

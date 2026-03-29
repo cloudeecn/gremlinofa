@@ -194,8 +194,6 @@ export const Tables = {
   MINION_CHATS: 'minion_chats',
   MESSAGES: 'messages',
   ATTACHMENTS: 'attachments',
-  MEMORIES: 'memories',
-  MEMORY_JOURNALS: 'memory_journals',
   METADATA: 'app_metadata',
   VFS_META: 'vfs_meta',
   VFS_FILES: 'vfs_files',

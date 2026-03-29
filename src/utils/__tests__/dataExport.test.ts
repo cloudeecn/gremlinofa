@@ -3,7 +3,13 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { exportDataToCSV } from '../dataExport';
+import { streamExportCSVLines } from '../dataExport';
+
+async function collectCSV(adapter: StorageAdapter): Promise<string> {
+  const lines: string[] = [];
+  for await (const line of streamExportCSVLines(adapter)) lines.push(line);
+  return lines.join('').replace(/\n$/, '');
+}
 import type { StorageAdapter, ExportPage, ExportRow } from '../../services/storage/StorageAdapter';
 import { Tables } from '../../services/storage/StorageAdapter';
 
@@ -28,12 +34,12 @@ describe('dataExport', () => {
     };
   });
 
-  describe('exportDataToCSV', () => {
+  describe('streamExportCSVLines', () => {
     it('should export data with correct CSV header', async () => {
       // Mock empty database
       setupMockDatabase({});
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
 
       expect(csv.split('\n')[0]).toBe(
         'tableName,id,encryptedData,timestamp,parentId,unencryptedData'
@@ -67,7 +73,7 @@ describe('dataExport', () => {
         ],
       });
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
       const lines = csv.split('\n');
 
       // Check order: header, metadata, api_definitions, projects, chats, messages
@@ -86,7 +92,7 @@ describe('dataExport', () => {
         ],
       });
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
 
       // Should only include user-defined API definition
       expect(csv).toContain('user-api-1');
@@ -105,7 +111,7 @@ describe('dataExport', () => {
         ],
       });
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
       const lines = csv.split('\n');
 
       const chatLine = lines[1];
@@ -127,7 +133,7 @@ describe('dataExport', () => {
         ],
       });
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
       const lines = csv.split('\n');
 
       // Should not throw and should include the record
@@ -145,7 +151,7 @@ describe('dataExport', () => {
         ],
       });
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
 
       // CSV should properly escape the data
       expect(csv).toContain('"data with ""quotes"" and, commas"');
@@ -160,7 +166,7 @@ describe('dataExport', () => {
         [Tables.MESSAGES]: [],
       });
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
 
       // Should only have header
       expect(csv.split('\n').length).toBe(1);
@@ -176,7 +182,7 @@ describe('dataExport', () => {
         ],
       });
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
       const lines = csv.split('\n');
 
       expect(lines.length).toBe(4); // header + 3 projects
@@ -196,7 +202,7 @@ describe('dataExport', () => {
         ],
       });
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
 
       // JSON string should be CSV-escaped (quotes doubled and wrapped)
       expect(csv).toContain('"{""value"":""test-value""}"');
@@ -223,7 +229,7 @@ describe('dataExport', () => {
         }
       );
 
-      const csv = await exportDataToCSV(mockAdapter);
+      const csv = await collectCSV(mockAdapter);
       const lines = csv.split('\n');
 
       // Should have all 250 records + header
@@ -249,7 +255,7 @@ describe('dataExport', () => {
         getStorageQuota: vi.fn().mockResolvedValue(null),
       };
 
-      const csv = await exportDataToCSV(genericAdapter);
+      const csv = await collectCSV(genericAdapter);
 
       // Should work without errors
       expect(csv.split('\n')[0]).toContain('tableName');

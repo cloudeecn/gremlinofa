@@ -20,7 +20,7 @@ const mockGetFileMeta = vi.fn();
 const mockDeleteFile = vi.fn();
 const mockRmdir = vi.fn();
 
-vi.mock('../../../services/vfs/vfsService', () => ({
+vi.mock('../../../services/vfs', () => ({
   readDir: (...args: unknown[]) => mockReadDir(...args),
   readFileWithMeta: (...args: unknown[]) => mockReadFileWithMeta(...args),
   getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),

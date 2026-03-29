@@ -339,10 +339,14 @@ function ModelSelectorContent({
                     <div
                       className={`mt-1 text-xs font-medium ${isDisabled ? 'text-gray-500' : 'text-green-700'}`}
                     >
-                      {isWebLLM ? '🏠 Free' : `💰 ${priceDisplay}`}
+                      {isWebLLM
+                        ? '🏠 Free'
+                        : selectedApiDef?.advancedSettings?.isSubscription
+                          ? '📋 Subscription'
+                          : `💰 ${priceDisplay}`}
                     </div>
                     {/* Unreliable pricing warning */}
-                    {isUnreliable && (
+                    {isUnreliable && !selectedApiDef?.advancedSettings?.isSubscription && (
                       <div className="mt-1 text-xs text-yellow-600">
                         ⚠️ Cost calculation may be inaccurate for this model
                       </div>

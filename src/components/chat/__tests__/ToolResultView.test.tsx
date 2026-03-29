@@ -385,7 +385,7 @@ describe('ToolResultView', () => {
       expect(screen.getByText('$0.042')).toBeInTheDocument();
     });
 
-    it('hides cost when tokenTotals has zero cost', () => {
+    it('shows $0.000 when tokenTotals has zero cost', () => {
       const zeroCostBlock: ToolResultRenderBlock = {
         ...complexBlock,
         tokenTotals: {
@@ -400,7 +400,7 @@ describe('ToolResultView', () => {
         },
       };
       renderWithOverlay(<ToolResultView block={zeroCostBlock} />);
-      expect(screen.queryByText('$0.000')).not.toBeInTheDocument();
+      expect(screen.getByText('$0.000')).toBeInTheDocument();
     });
 
     it('hides cost when no tokenTotals', () => {
@@ -481,6 +481,114 @@ describe('ToolResultView', () => {
       expect(screen.getByText('✨')).toBeInTheDocument();
       // Model ID displayed
       expect(screen.getByText('claude-3-5-sonnet')).toBeInTheDocument();
+    });
+
+    describe('injected files', () => {
+      const injectedFiles = [
+        { path: '/src/main.ts', content: '     1\tconst x = 1;' },
+        { path: '/README.md', content: '     1\t# Hello' },
+      ];
+
+      const blockWithFiles: ToolResultRenderBlock = {
+        type: 'tool_result',
+        name: 'minion',
+        tool_use_id: 'tu_inject',
+        content: 'Done',
+        icon: '🤖',
+        status: 'complete',
+        renderingGroups: [
+          {
+            category: 'backstage',
+            blocks: [
+              {
+                type: 'tool_info',
+                input: 'Analyze code',
+                chatId: 'minion_files',
+                injectedFiles,
+              },
+            ],
+          },
+        ],
+      };
+
+      it('renders injected file bars when expanded', () => {
+        renderWithOverlay(<ToolResultView block={blockWithFiles} />);
+        fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+
+        expect(screen.getByText('/src/main.ts')).toBeInTheDocument();
+        expect(screen.getByText('/README.md')).toBeInTheDocument();
+      });
+
+      it('file bars start collapsed (content hidden)', () => {
+        renderWithOverlay(<ToolResultView block={blockWithFiles} />);
+        fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+
+        // File paths visible but content hidden
+        expect(screen.getByText('/src/main.ts')).toBeInTheDocument();
+        expect(screen.queryByText('const x = 1;', { exact: false })).not.toBeInTheDocument();
+      });
+
+      it('clicking a file bar expands to show content', () => {
+        const { container } = renderWithOverlay(<ToolResultView block={blockWithFiles} />);
+        fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+
+        // Click the first file bar to expand it
+        fireEvent.click(screen.getByText('/src/main.ts'));
+        // Content rendered in a <pre> inside the file bar
+        const pres = container.querySelectorAll('pre');
+        const fileContentPre = Array.from(pres).find(p => p.textContent?.includes('const x = 1'));
+        expect(fileContentPre).toBeTruthy();
+      });
+
+      it('shows error styling for failed file reads', () => {
+        const errorFiles = [{ path: '/missing.ts', content: 'File not found', error: true }];
+        const errorBlock: ToolResultRenderBlock = {
+          ...blockWithFiles,
+          renderingGroups: [
+            {
+              category: 'backstage',
+              blocks: [
+                {
+                  type: 'tool_info',
+                  input: 'task',
+                  chatId: 'minion_err',
+                  injectedFiles: errorFiles,
+                },
+              ],
+            },
+          ],
+        };
+        const { container } = renderWithOverlay(<ToolResultView block={errorBlock} />);
+        fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+
+        expect(screen.getByText('/missing.ts')).toBeInTheDocument();
+        // Error file bar has red border
+        const errorBar = container.querySelector('.border-red-200');
+        expect(errorBar).toBeInTheDocument();
+      });
+
+      it('does not render file bars when no injectedFiles', () => {
+        const noFilesBlock: ToolResultRenderBlock = {
+          ...blockWithFiles,
+          renderingGroups: [
+            {
+              category: 'backstage',
+              blocks: [
+                {
+                  type: 'tool_info',
+                  input: 'task',
+                  chatId: 'minion_nofiles',
+                },
+              ],
+            },
+          ],
+        };
+        renderWithOverlay(<ToolResultView block={noFilesBlock} />);
+        fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+
+        // No file bars rendered
+        expect(screen.queryByText('📄')).not.toBeInTheDocument();
+      });
     });
   });
 });

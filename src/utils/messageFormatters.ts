@@ -17,6 +17,27 @@ export function formatTokens(prefix: string, tokens?: number): string {
 }
 
 /**
+ * Format a token group with an arrow and optional extras.
+ * Returns `↑123` when no extras, `↑(123, C↑101, C↓202)` when extras exist.
+ */
+export function formatTokenGroup(
+  arrow: string,
+  main: number | undefined,
+  extras: { prefix: string; value: number | undefined }[]
+): string {
+  if (main == null) return '';
+  const activeExtras = extras.filter(e => e.value && e.value > 0);
+  if (activeExtras.length === 0) {
+    return `${arrow}${formatTokenCount(main)}`;
+  }
+  const parts = [
+    formatTokenCount(main),
+    ...activeExtras.map(e => `${e.prefix}${formatTokenCount(e.value!)}`),
+  ];
+  return `${arrow}(${parts.join(', ')})`;
+}
+
+/**
  * Format message timestamp (12-hour format with AM/PM)
  */
 export function formatTimestamp(timestamp: Date): string {

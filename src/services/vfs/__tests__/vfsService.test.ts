@@ -486,6 +486,26 @@ describe('VFS Rename Operations', () => {
       code: 'PATH_NOT_FOUND',
     });
   });
+
+  it('overwrites existing destination when overwrite is true', async () => {
+    await createFile(projectId, '/src.txt', 'source content');
+    await createFile(projectId, '/dest.txt', 'old content');
+
+    await rename(projectId, '/src.txt', '/dest.txt', undefined, true);
+
+    expect(await exists(projectId, '/src.txt')).toBe(false);
+    expect(await exists(projectId, '/dest.txt')).toBe(true);
+    expect(await readFile(projectId, '/dest.txt')).toBe('source content');
+  });
+
+  it('still throws without overwrite when destination exists', async () => {
+    await createFile(projectId, '/src.txt', 'source');
+    await createFile(projectId, '/dest.txt', 'dest');
+
+    await expect(rename(projectId, '/src.txt', '/dest.txt')).rejects.toMatchObject({
+      code: 'DESTINATION_EXISTS',
+    });
+  });
 });
 
 describe('VFS Delete-Then-Create-Child Bug Fix', () => {

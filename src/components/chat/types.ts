@@ -1,41 +1,54 @@
 import type { Message, MessageAttachment } from '../../types';
 import type { RenderingBlockGroup } from '../../types/content';
-
+import type { DummyHookStatus } from '../../hooks/useChat';
 export interface MessageBubbleProps {
   message: Message<unknown>;
   onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
+  onDeleteMessage?: (messageId: string) => void;
   isVisible: boolean;
   onRegister: (messageId: string, element: HTMLElement | null) => void;
   onMeasureHeight: (messageId: string, height: number) => void;
   cachedHeight?: number;
+  focusMode?: boolean;
+  expandMinions?: boolean;
+  disableMath?: boolean;
 }
 
 export interface UserMessageBubbleProps {
   message: Message<unknown>;
   attachments: MessageAttachment[];
   onAction?: (action: 'copy' | 'fork' | 'edit' | 'resend', messageId: string) => void;
+  onDeleteMessage?: (messageId: string) => void;
+  focusMode?: boolean;
 }
 
 export interface AssistantMessageBubbleProps {
   message: Message<unknown>;
+  onDeleteMessage?: (messageId: string) => void;
   isVisible: boolean;
-}
-
-export interface LegacyAssistantBubbleProps {
-  message: Message<unknown>;
+  focusMode?: boolean;
+  disableMath?: boolean;
 }
 
 export interface StreamingMessageProps {
   groups: RenderingBlockGroup[];
+  focusMode?: boolean;
+  disableMath?: boolean;
+  dummyHookStatus?: DummyHookStatus | null;
 }
 
 export interface MessageListProps {
   messages: Message<unknown>[];
   onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
+  onDeleteMessage?: (messageId: string) => void;
   isLoading: boolean;
   streamingGroups: RenderingBlockGroup[];
   currentApiDefId: string | null;
   currentModelId: string | null;
+  focusMode?: boolean;
+  expandMinions?: boolean;
+  disableMath?: boolean;
+  alwaysAutoScroll?: boolean;
   /** Number of pending tool calls (for banner display) */
   pendingToolCount?: number;
   /** Callback when user clicks Reject on pending tool calls */
@@ -46,6 +59,8 @@ export interface MessageListProps {
   suspendedAfterTools?: boolean;
   /** Callback to continue after tool-stop suspension */
   onContinueAfterToolStop?: () => void;
+  /** DUMMY System hook status during streaming */
+  dummyHookStatus?: DummyHookStatus | null;
 }
 
 export interface ChatInputProps {

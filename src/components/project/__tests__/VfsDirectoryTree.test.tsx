@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import VfsDirectoryTree from '../VfsDirectoryTree';
-import type { DirEntry } from '../../../services/vfs/vfsService';
+import type { DirEntry } from '../../../services/vfs';
 
 // Mock vfsService
 const mockReadDir = vi.fn();
 
-vi.mock('../../../services/vfs/vfsService', () => ({
+vi.mock('../../../services/vfs', () => ({
   readDir: (...args: unknown[]) => mockReadDir(...args),
 }));
 

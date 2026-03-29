@@ -1,0 +1,28 @@
+[Unit]
+Description=GremlinOFA CORS Proxy - API proxy for browser CORS bypass
+Documentation=https://github.com/your-repo/gremlinofa
+After=network.target
+
+[Service]
+Type=simple
+User=gremlinofa
+Group=gremlinofa
+WorkingDirectory=/opt/gremlinofa-cors-proxy
+ExecStart=/usr/bin/node /opt/gremlinofa-cors-proxy/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/gremlinofa-cors-proxy
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gremlinofa-cors-proxy
+
+[Install]
+WantedBy=multi-user.target

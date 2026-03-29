@@ -3,7 +3,7 @@ import Modal from '../ui/Modal';
 import VfsFileViewer from './VfsFileViewer';
 import VfsFileEditor from './VfsFileEditor';
 import VfsDiffViewer from './VfsDiffViewer';
-import * as vfsService from '../../services/vfs/vfsService';
+import * as vfsService from '../../services/vfs';
 import { useAlert } from '../../hooks/useAlert';
 
 export interface VfsFileModalProps {

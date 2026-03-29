@@ -11,6 +11,7 @@ import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
 import { useMinionChatOverlay } from './MinionChatOverlayContext';
 import BackstageView from './BackstageView';
 import TextGroupView from './TextGroupView';
+import { InjectedFilesList } from './InjectedFilesList';
 
 export interface ToolResultViewProps {
   block: ToolResultRenderBlock;
@@ -57,7 +58,7 @@ function SimpleToolResult({ block }: { block: ToolResultRenderBlock }) {
       </button>
 
       {isExpanded && (
-        <pre className="ml-4 overflow-x-auto rounded bg-gray-100 p-2 text-xs whitespace-pre-wrap text-gray-700">
+        <pre className="ml-4 rounded bg-gray-100 p-2 text-xs break-all whitespace-pre-wrap text-gray-700">
           {renderedContent}
         </pre>
       )}
@@ -82,6 +83,7 @@ function getBlockIcon(block: RenderingContentBlock): string {
       return block.icon ?? (block.is_error ? '❌' : '✅');
     case 'error':
       return '❌';
+    case 'injected_file':
     case 'tool_info':
     case 'text':
     default:
@@ -132,6 +134,7 @@ function getLastActivityPreview(groups: RenderingBlockGroup[]): string {
           return `Searched: "${block.query}"`;
         case 'web_fetch':
           return `Fetched: ${block.title || block.url}`;
+        case 'injected_file':
         case 'tool_info':
         case 'error':
           break;
@@ -212,7 +215,7 @@ function ComplexToolResult({
             ) : (
               <span className="min-w-0 flex-1 overflow-hidden"></span>
             )}
-            {toolCost != null && toolCost > 0 && (
+            {toolCost != null && (
               <span className="shrink-0 text-xs font-normal text-purple-500">
                 ${toolCost.toFixed(3)}
               </span>
@@ -241,10 +244,15 @@ function ComplexToolResult({
           {/* Tool info input in blue box */}
           {toolInfo?.input && (
             <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2">
-              <pre className="overflow-x-auto text-sm whitespace-pre-wrap text-blue-800">
+              <pre className="text-sm break-all whitespace-pre-wrap text-blue-800">
                 {toolInfo.input}
               </pre>
             </div>
+          )}
+
+          {/* Injected files */}
+          {toolInfo?.injectedFiles && toolInfo.injectedFiles.length > 0 && (
+            <InjectedFilesList files={toolInfo.injectedFiles} />
           )}
 
           {/* Activity groups */}
@@ -280,7 +288,7 @@ function ComplexToolResult({
               }`}
             >
               <pre
-                className={`overflow-x-auto text-sm whitespace-pre-wrap ${
+                className={`text-sm break-all whitespace-pre-wrap ${
                   isError ? 'text-red-800' : 'text-green-800'
                 }`}
               >
@@ -332,4 +340,72 @@ function extractToolInfo(groups: RenderingBlockGroup[]): ToolInfoRenderBlock | u
     }
   }
   return undefined;
+}
+
+/**
+ * Inline minion view — shows persona, model, input, and output without
+ * the collapsed header bar or activity groups. Used by "Expand Minions" toggle.
+ */
+export function FocusedMinionView({ block }: { block: ToolResultRenderBlock }) {
+  const { apiDefinitions } = useApp();
+
+  const groups = block.renderingGroups ?? [];
+  const toolInfo = extractToolInfo(groups);
+  const isError = block.is_error;
+  const hasResult = block.content;
+
+  const apiDefIcon = toolInfo?.apiDefinitionId
+    ? (() => {
+        const apiDef = apiDefinitions.find(d => d.id === toolInfo.apiDefinitionId);
+        return apiDef ? getApiDefinitionIcon(apiDef) : undefined;
+      })()
+    : undefined;
+
+  return (
+    <div className="space-y-2 rounded-lg border border-purple-200 bg-purple-50/50 px-4 py-3">
+      {/* Header: persona + API icon + model */}
+      {toolInfo && (toolInfo.persona || toolInfo.apiDefinitionId || toolInfo.modelId) && (
+        <div className="flex items-center gap-1.5 text-xs text-gray-500">
+          {toolInfo.persona && toolInfo.persona !== 'default' && (
+            <span className="font-medium text-purple-600">
+              {toolInfo.displayName ?? toolInfo.persona}
+            </span>
+          )}
+          {apiDefIcon && <span>{apiDefIcon}</span>}
+          {toolInfo.modelId && <span className="text-gray-400">{toolInfo.modelId}</span>}
+        </div>
+      )}
+
+      {/* Input in blue box */}
+      {toolInfo?.input && (
+        <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2">
+          <pre className="text-sm break-all whitespace-pre-wrap text-blue-800">
+            {toolInfo.input}
+          </pre>
+        </div>
+      )}
+
+      {/* Injected files */}
+      {toolInfo?.injectedFiles && toolInfo.injectedFiles.length > 0 && (
+        <InjectedFilesList files={toolInfo.injectedFiles} />
+      )}
+
+      {/* Result in green/red box */}
+      {hasResult && (
+        <div
+          className={`rounded border px-3 py-2 ${
+            isError ? 'border-red-300 bg-red-50' : 'border-green-300 bg-green-50'
+          }`}
+        >
+          <pre
+            className={`text-sm break-all whitespace-pre-wrap ${
+              isError ? 'text-red-800' : 'text-green-800'
+            }`}
+          >
+            {block.renderedContent ?? block.content}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
 }

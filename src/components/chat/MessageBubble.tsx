@@ -5,16 +5,19 @@ import { storage } from '../../services/storage';
 import type { MessageBubbleProps } from './types';
 import UserMessageBubble from './UserMessageBubble';
 import AssistantMessageBubble from './AssistantMessageBubble';
-import LegacyAssistantBubble from './LegacyAssistantBubble';
 import ToolResultBubble from './ToolResultBubble';
 
 export default function MessageBubble({
   message,
   onAction,
+  onDeleteMessage,
   isVisible,
   onRegister,
   onMeasureHeight,
   cachedHeight,
+  focusMode,
+  expandMinions,
+  disableMath,
 }: MessageBubbleProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
@@ -97,13 +100,24 @@ export default function MessageBubble({
     );
   }
 
-  // Check if we have renderingContent (new format) vs legacy format
   const renderingContent = message.content.renderingContent as RenderingBlockGroup[] | undefined;
-  const hasRenderingContent = !isUser && renderingContent && renderingContent.length > 0;
 
   // Detect tool_result message via renderingContent (normalized format works for all APIs)
   const isToolResult =
     isUser && renderingContent?.some(group => group.blocks.some(b => b.type === 'tool_result'));
+
+  // In focus mode, hide tool result messages unless expandMinions is on and they have complex results
+  if (focusMode && isToolResult) {
+    const hasComplexResults =
+      expandMinions &&
+      renderingContent
+        ?.flatMap(g => g.blocks)
+        .some(b => b.type === 'tool_result' && b.renderingGroups && b.renderingGroups.length > 0);
+
+    if (!hasComplexResults) {
+      return <div ref={measureRef} className="mb-4 px-4" aria-hidden="true" />;
+    }
+  }
 
   return (
     <div
@@ -111,14 +125,34 @@ export default function MessageBubble({
       className={`mb-4 px-4 ${isUser && !isToolResult ? 'flex flex-col items-end' : ''}`}
     >
       {isUser && !isToolResult && (
-        <UserMessageBubble message={message} attachments={attachments} onAction={onAction} />
+        <UserMessageBubble
+          message={message}
+          attachments={attachments}
+          onAction={focusMode ? undefined : onAction}
+          onDeleteMessage={onDeleteMessage}
+          focusMode={focusMode}
+        />
       )}
 
-      {isToolResult && <ToolResultBubble message={message} onAction={onAction} />}
+      {isToolResult && (
+        <ToolResultBubble
+          message={message}
+          onAction={focusMode ? undefined : onAction}
+          onDeleteMessage={onDeleteMessage}
+          focusMode={focusMode}
+          expandMinions={expandMinions}
+        />
+      )}
 
-      {hasRenderingContent && <AssistantMessageBubble message={message} isVisible={isVisible} />}
-
-      {!isUser && !hasRenderingContent && <LegacyAssistantBubble message={message} />}
+      {!isUser && (
+        <AssistantMessageBubble
+          message={message}
+          onDeleteMessage={onDeleteMessage}
+          isVisible={isVisible}
+          focusMode={focusMode}
+          disableMath={disableMath}
+        />
+      )}
     </div>
   );
 }

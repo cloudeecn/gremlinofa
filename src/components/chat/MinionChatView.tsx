@@ -1,7 +1,9 @@
+import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMinionChat } from '../../hooks/useMinionChat';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import { formatTokens } from '../../utils/messageFormatters';
+import { formatTokenGroup } from '../../utils/messageFormatters';
+import { showDestructiveConfirm } from '../../utils/alerts';
 import MessageList from './MessageList';
 
 interface MinionChatViewProps {
@@ -17,7 +19,8 @@ export default function MinionChatView({
 }: MinionChatViewProps) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const { minionChat, messages, isLoading, tokenUsage } = useMinionChat(minionChatId);
+  const { minionChat, messages, isLoading, tokenUsage, deleteMessage } =
+    useMinionChat(minionChatId);
 
   const handleBack = () => {
     if (onClose) {
@@ -38,6 +41,20 @@ export default function MinionChatView({
       navigate('/');
     }
   };
+
+  const handleDeleteMessage = useCallback(
+    async (messageId: string) => {
+      const confirmed = await showDestructiveConfirm(
+        'Delete Message',
+        'Delete this message from the minion chat?',
+        'Delete'
+      );
+      if (confirmed) {
+        await deleteMessage(messageId);
+      }
+    },
+    [deleteMessage]
+  );
 
   return (
     <div className="flex h-full flex-col bg-white">
@@ -75,10 +92,14 @@ export default function MinionChatView({
       {/* Info Bar */}
       <div className="flex items-center justify-end border-b border-gray-200 bg-white px-4 py-1">
         <div className="text-[10px] text-gray-600">
-          {formatTokens('↑', tokenUsage.input)} {formatTokens('↓', tokenUsage.output)}
-          {formatTokens(' R:', tokenUsage.reasoning)}
-          {formatTokens(' C↑', tokenUsage.cacheCreation)}
-          {formatTokens(' C↓', tokenUsage.cacheRead)} ${tokenUsage.cost?.toFixed(3) || '0.000'}
+          {formatTokenGroup('↑', tokenUsage.input, [
+            { prefix: 'C↑', value: tokenUsage.cacheCreation },
+            { prefix: 'C↓', value: tokenUsage.cacheRead },
+          ])}{' '}
+          {formatTokenGroup('↓', tokenUsage.output, [
+            { prefix: 'R:', value: tokenUsage.reasoning },
+          ])}{' '}
+          ${tokenUsage.cost?.toFixed(3) || '0.000'}
           {minionChat?.costUnreliable && (
             <span className="ml-1 text-yellow-600" title="Cost calculation may be inaccurate">
               (unreliable)
@@ -87,9 +108,10 @@ export default function MinionChatView({
         </div>
       </div>
 
-      {/* Message List — read-only (no onAction) */}
+      {/* Message List */}
       <MessageList
         messages={messages}
+        onDeleteMessage={handleDeleteMessage}
         isLoading={isLoading}
         streamingGroups={[]}
         currentApiDefId={null}

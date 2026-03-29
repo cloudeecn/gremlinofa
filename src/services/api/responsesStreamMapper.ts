@@ -287,14 +287,14 @@ export function mapResponsesEventToStreamChunks(
         const reasoningTokens = (outputDetails?.reasoning_tokens as number) || 0;
 
         newState.inputTokens = inputTokens - cachedTokens;
-        newState.outputTokens = outputTokens;
+        newState.outputTokens = outputTokens - reasoningTokens;
         newState.cacheReadTokens = cachedTokens;
         newState.reasoningTokens = reasoningTokens;
 
         chunks.push({
           type: 'token_usage',
           inputTokens: inputTokens - cachedTokens,
-          outputTokens,
+          outputTokens: outputTokens - reasoningTokens,
           cacheReadTokens: cachedTokens,
           reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
         });
@@ -494,7 +494,7 @@ export function createTokenUsageChunk(usage: {
   return {
     type: 'token_usage',
     inputTokens: inputTokens - cachedTokens,
-    outputTokens,
+    outputTokens: outputTokens - reasoningTokens,
     cacheReadTokens: cachedTokens,
     reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
   };

@@ -52,6 +52,7 @@ export default function BackstageView({
         return `${block.icon ?? (block.is_error ? '❌' : '✅')}`;
       case 'error':
         return '❌';
+      case 'injected_file':
       case 'tool_info':
       case 'text':
       default:
@@ -77,6 +78,7 @@ export default function BackstageView({
         return lastBlock.renderedInput ?? JSON.stringify(lastBlock.input);
       case 'tool_result':
         return lastBlock.renderedContent ?? lastBlock.content;
+      case 'injected_file':
       case 'tool_info':
       case 'text':
       case 'error':
@@ -186,6 +188,7 @@ function BackstageBlock({ block }: BackstageBlockProps) {
       return <ToolUseSegment block={block} />;
     case 'tool_result':
       return <ToolResultSegment block={block} />;
+    case 'injected_file':
     case 'tool_info':
     case 'text':
     case 'error':
@@ -303,7 +306,7 @@ function ToolUseSegment({ block }: ToolUseSegmentProps) {
       </div>
 
       {hasInput && inputExpanded && (
-        <pre className="ml-4 overflow-x-auto rounded bg-gray-100 p-2 text-xs text-gray-700">
+        <pre className="ml-4 rounded bg-gray-100 p-2 text-xs break-all whitespace-pre-wrap text-gray-700">
           {renderedInput}
         </pre>
       )}

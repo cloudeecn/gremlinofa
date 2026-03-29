@@ -7,6 +7,8 @@ const API_TYPE_DISPLAY_NAMES: Record<APIType, string> = {
   anthropic: 'Anthropic',
   webllm: 'WebLLM',
   bedrock: 'Bedrock',
+  google: 'Google Gemini',
+  'ds01-dummy-system': 'DUMMY',
 };
 
 /** Default emoji icons for API types */
@@ -16,6 +18,8 @@ const API_TYPE_DEFAULT_ICONS: Record<APIType, string> = {
   anthropic: '✨',
   webllm: '🏠',
   bedrock: '☁️',
+  google: '💎',
+  'ds01-dummy-system': '✨',
 };
 
 /** Get the display name for an API type */

@@ -20,10 +20,17 @@ import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 
 import { IndexedDBAdapter } from '../../services/storage/adapters/IndexedDBAdapter';
 import { RemoteStorageAdapter } from '../../services/storage/adapters/RemoteStorageAdapter';
+import type { StorageAdapter } from '../../services/storage/StorageAdapter';
 import { Tables } from '../../services/storage/StorageAdapter';
 import { EncryptionService } from '../../services/encryption/encryptionService';
-import { exportDataToCSV } from '../dataExport';
+import { streamExportCSVLines } from '../dataExport';
 import { importDataFromFile } from '../dataImport';
+
+async function collectCSV(adapter: StorageAdapter): Promise<string> {
+  const lines: string[] = [];
+  for await (const line of streamExportCSVLines(adapter)) lines.push(line);
+  return lines.join('').replace(/\n$/, '');
+}
 
 // Polyfill FileReader for Node.js environment (needed by csvHelper.ts)
 class NodeFileReader {
@@ -269,7 +276,7 @@ describe('Cross-Adapter E2E Roundtrip', () => {
       );
 
       // Export from IndexedDB
-      const csv = await exportDataToCSV(indexedDBAdapter);
+      const csv = await collectCSV(indexedDBAdapter);
       expect(csv).toContain('proj-idb-1');
       expect(csv).toContain('chat-idb-1');
       expect(csv).toContain('msg-idb-1');
@@ -331,7 +338,7 @@ describe('Cross-Adapter E2E Roundtrip', () => {
       });
 
       // Export and import
-      const csv = await exportDataToCSV(indexedDBAdapter);
+      const csv = await collectCSV(indexedDBAdapter);
       const file = createFileFromCSV(csv);
       await importDataFromFile(remoteAdapter, file, TEST_CEK, encryptionService);
 
@@ -369,7 +376,7 @@ describe('Cross-Adapter E2E Roundtrip', () => {
       );
 
       // Export from Remote Storage
-      const csv = await exportDataToCSV(remoteAdapter);
+      const csv = await collectCSV(remoteAdapter);
       expect(csv).toContain('proj-remote-1');
       expect(csv).toContain('chat-remote-1');
 
@@ -419,7 +426,7 @@ describe('Cross-Adapter E2E Roundtrip', () => {
       );
 
       // Step 1: IndexedDB → Remote
-      const csv1 = await exportDataToCSV(indexedDBAdapter);
+      const csv1 = await collectCSV(indexedDBAdapter);
       await importDataFromFile(remoteAdapter, createFileFromCSV(csv1), TEST_CEK, encryptionService);
 
       // Clear IndexedDB
@@ -427,7 +434,7 @@ describe('Cross-Adapter E2E Roundtrip', () => {
       expect(await indexedDBAdapter.count(Tables.PROJECTS)).toBe(0);
 
       // Step 2: Remote → IndexedDB (back to original)
-      const csv2 = await exportDataToCSV(remoteAdapter);
+      const csv2 = await collectCSV(remoteAdapter);
       await importDataFromFile(
         indexedDBAdapter,
         createFileFromCSV(csv2),
@@ -477,7 +484,7 @@ describe('Cross-Adapter E2E Roundtrip', () => {
       expect(await indexedDBAdapter.count(Tables.MESSAGES)).toBe(250);
 
       // Export from IndexedDB (should use pagination internally)
-      const csv = await exportDataToCSV(indexedDBAdapter);
+      const csv = await collectCSV(indexedDBAdapter);
       const lineCount = csv.split('\n').filter(line => line.includes('msg-large-')).length;
       expect(lineCount).toBe(250);
 
@@ -524,7 +531,7 @@ describe('Cross-Adapter E2E Roundtrip', () => {
       );
 
       // Export from IndexedDB (data encrypted with source CEK)
-      const csv = await exportDataToCSV(indexedDBAdapter);
+      const csv = await collectCSV(indexedDBAdapter);
 
       // Import to Remote Storage with different CEK (app's encryptionService)
       // This should re-encrypt the data
@@ -582,7 +589,7 @@ describe('Cross-Adapter E2E Roundtrip', () => {
       );
 
       // Export and import
-      const csv = await exportDataToCSV(indexedDBAdapter);
+      const csv = await collectCSV(indexedDBAdapter);
       const result = await importDataFromFile(
         remoteAdapter,
         createFileFromCSV(csv),

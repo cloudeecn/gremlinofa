@@ -26,6 +26,7 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 
 - Anthropic (attachments, interleaved thinking, web search/fetch/citations)
 - OpenAI (both chat completions and responses APIs, with reasoning/web search and attachments)
+- Google Gemini (native thinking, Google Search grounding, function calling)
 - AWS Bedrock (Converse API plus Claude via Anthropic SDK)
 - Any ChatGPT-compatible API (xAI, OpenRouter, local models, whatever)
 - WebLLM (run models locally via WebGPU - free, private, no API key needed)
@@ -64,6 +65,7 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 - All data encrypted locally (AES-256-GCM)
 - 52-character encryption key (auto-generated, base32 for easy typing)
 - Export/import with re-encryption support
+- Single-project export/import (`.gremlin.json` — portable, hand-craftable bundles)
 
 ## Getting Started
 
@@ -301,16 +303,30 @@ All tools persist data in the project's encrypted VFS. **Filesystem Manager** le
 
 Your AI can spawn other AIs. The minion system lets your primary model delegate tasks to sub-agents that run their own agentic loops — with their own tools, their own conversation history, and their own streaming output.
 
-- **Pick a cheaper model** — Delegate research to Haiku while Opus handles the thinking. Your wallet will thank you. With multi-model selection, the orchestrating model picks the right model for each minion at invocation time.
-- **Namespace personas** — Give minions persistent identities. Each persona gets its own VFS sandbox (`/minions/<name>`), a custom system prompt (`/minions/<name>.md`), and shared instructions via `/minions/_global.md`. The `/share` directory bypasses namespacing so personas can collaborate on shared artifacts.
-- **Minion swarm** — Multiple minions run in parallel within a single turn. The orchestrator fires off a batch, results interleave as they complete, and phased execution ensures simple tools (memory, js) finish before complex ones (minions) start. It's concurrent delegation, not sequential waiting.
+- **Pick a cheaper model** — Delegate research to Haiku while Opus handles the thinking. Your wallet will thank you.
 - **Scoped tool access** — Minions inherit the project's client-side tools. The main model can narrow it down per-task, and minions can't spawn other minions (we learned that lesson so you don't have to)
-- **Conversation control** — The main model decides: start a fresh minion or pick up an existing one. Minion chats persist with their settings (model, persona, tools), so multi-turn delegation just works.
-- **Inspect while streaming** — Pop open a minion's full conversation in an overlay without leaving your main chat. Watch sub-agents work in real-time, or collapse and check back later.
+- **Conversation control** — The main model decides: start a fresh minion or pick up an existing one. Minion chats persist, so multi-turn delegation just works.
+- **Real-time streaming** — Watch sub-agents work in a collapsible view, or collapse and check back when they're done
 - **Cost tracking** — Sub-agent costs roll up into your chat totals. No hidden bills.
 - **Optional web search** — Gate web access per-project. When enabled, the primary model can grant minions web search on a per-task basis.
 
-**Use cases:** Have Opus dispatch a swarm of Haiku minions to research different angles simultaneously. Set up named personas — a "researcher" for web lookups, an "analyst" for data crunching — each with tailored instructions and their own workspace. Or just enjoy watching LLMs talk to each other — we don't judge.
+**Use cases:** Have Opus delegate web research to a Haiku minion and synthesize the results. Run parallel searches from different angles. Let a cheap model handle memory file housekeeping. Or just enjoy watching LLMs talk to each other — we don't judge.
+
+### DUMMY System ✨
+
+Named after a [certain plug system](https://evangelion.fandom.com/wiki/Dummy_System) that bypasses the pilot when they won't cooperate — except here, the AI _volunteers_ to be overridden.
+
+The DUMMY system (Dynamic Un-inferencing Mock-Message Yielding System) lets LLMs register JavaScript hooks that intercept the agentic loop _before_ each API call — synthesizing responses, handing control back to you, or just letting things pass through.
+
+- **Skip the API call** — Hook returns a synthetic response and the loop continues without burning tokens. Deterministic patterns don't need a round trip to the cloud.
+- **Hand control back** — Hook returns `"user"` and the loop stops. The AI decides when it's done, no soft-stop button needed.
+- **Passthrough** — Hook returns nothing, API call proceeds normally. Not every iteration needs intervention.
+- **Tool calls included** — Synthetic responses can trigger tool calls just like real ones. Your hook can update memory, write files, whatever — then keep going.
+- **QuickJS sandbox** — Hooks run isolated with async/await support, VFS read access, and a 120s timeout. No DOM, no network, no footguns.
+- **History context** — Configurable sliding window of previous messages, so hooks can make decisions based on conversation flow, not just the last message.
+- **Hot-swappable** — Register and unregister hooks mid-conversation. The AI picks its own automation strategy as the task evolves.
+
+**The pitch:** An agentic loop that calls the API 15 times to do 3 interesting things and 12 obvious ones is wasting your money. DUMMY lets the model front-load the boring decisions into a JS function and only phone home when it actually needs to think.
 
 ### Remote Storage 🔄
 

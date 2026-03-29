@@ -13,7 +13,7 @@ interface UseVirtualScrollReturn {
   getHeight: (messageId: string) => number | undefined;
 }
 
-/** Pending registration that arrived before observer was ready */
+/** Pending registration that arrived before observers were ready */
 interface PendingRegistration {
   messageId: string;
   element: HTMLElement;
@@ -21,27 +21,34 @@ interface PendingRegistration {
 
 /**
  * Hook for managing virtual scrolling of messages.
- * Tracks which messages are visible (within viewport + buffer) and caches their heights.
+ * Uses two IntersectionObservers with asymmetric thresholds (hysteresis) to prevent
+ * bounce at the buffer boundary. Messages virtualize when leaving the outer zone
+ * and re-render when entering the inner zone, with a dead zone in between.
  *
- * @param scrollContainerRef - Ref to the scroll container element (required for proper buffer calculation)
- * @param bufferScreens - Number of screen heights to buffer above/below viewport (default: 5)
+ * @param scrollContainerRef - Ref to the scroll container element
+ * @param bufferScreens - Number of screen heights for the outer buffer (default: 5). Inner buffer is bufferScreens - 1.
  */
 export function useVirtualScroll(
   scrollContainerRef: RefObject<HTMLDivElement | null>,
   bufferScreens: number = 5
 ): UseVirtualScrollReturn {
   const [visibleMessageIds, setVisibleMessageIds] = useState<Set<string>>(new Set());
-  const observerRef = useRef<IntersectionObserver | null>(null);
+  const outerObserverRef = useRef<IntersectionObserver | null>(null);
+  const innerObserverRef = useRef<IntersectionObserver | null>(null);
   const elementMapRef = useRef<Map<string, HTMLElement>>(new Map());
   const heightsRef = useRef<Map<string, number>>(new Map());
+
+  // Tracks messages that have had their initial outer-observer detection,
+  // so we can distinguish first-mount from re-entry in the hysteresis zone
+  const initializedIdsRef = useRef<Set<string>>(new Set());
 
   // Pending visibility updates accumulated between sync intervals
   const pendingUpdatesRef = useRef<Map<string, boolean>>(new Map());
 
-  // Queue for registrations that arrived before observer was ready
+  // Queue for registrations that arrived before observers were ready
   const pendingRegistrationsRef = useRef<PendingRegistration[]>([]);
 
-  // Initialize IntersectionObserver with batched updates
+  // Initialize two IntersectionObservers with batched updates
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
     if (!scrollContainer) {
@@ -49,13 +56,14 @@ export function useVirtualScroll(
       return;
     }
 
-    // Use scroll container height for buffer calculation (more accurate than window.innerHeight)
     const containerHeight = Math.max(scrollContainer.clientHeight, MIN_VIEWPORT_HEIGHT);
-    const rootMarginPx = Math.round(containerHeight * bufferScreens);
-    const rootMarginValue = `${rootMarginPx}px 0px`;
+    const outerMarginPx = Math.round(containerHeight * bufferScreens);
+    const innerMarginPx = Math.round(containerHeight * (bufferScreens - 1));
+    const outerRootMargin = `${outerMarginPx}px 0px`;
+    const innerRootMargin = `${innerMarginPx}px 0px`;
 
     console.debug(
-      `[VirtualScroll] Creating observer with root: scrollContainer, rootMargin: ${rootMarginValue}`,
+      `[VirtualScroll] Creating observers — outer: ${outerRootMargin}, inner: ${innerRootMargin}`,
       `(container: ${scrollContainer.clientHeight}px, buffer: ${bufferScreens}x)`
     );
 
@@ -79,94 +87,117 @@ export function useVirtualScroll(
       });
     };
 
-    // Set up interval for batched updates
     const intervalId = setInterval(applyPendingUpdates, VISIBILITY_SYNC_INTERVAL_MS);
 
-    const observer = new IntersectionObserver(
+    // Outer observer (bufferScreens zone): handles virtualization and initial detection
+    const outerObserver = new IntersectionObserver(
       entries => {
-        // Accumulate updates in pending map instead of immediately updating state
         entries.forEach(entry => {
           const messageId = entry.target.getAttribute('data-message-id');
-          if (messageId) {
-            const isIntersecting = entry.isIntersecting;
-            pendingUpdatesRef.current.set(messageId, isIntersecting);
+          if (!messageId) return;
 
-            // Debug logging to verify buffer behavior
-            if (isIntersecting) {
-              console.debug(
-                `[VirtualScroll] Message ${messageId} ENTERING buffer zone`,
-                entry.boundingClientRect
-              );
-            } else {
-              console.debug(
-                `[VirtualScroll] Message ${messageId} LEAVING buffer zone`,
-                entry.boundingClientRect
-              );
-            }
+          if (!entry.isIntersecting) {
+            // Left the outer zone → virtualize
+            pendingUpdatesRef.current.set(messageId, false);
+            console.debug('[VirtualScroll] Message %s LEAVING outer zone', messageId);
+          } else if (!initializedIdsRef.current.has(messageId)) {
+            // First detection within outer zone → render (handles 4–5 screen initial mount)
+            initializedIdsRef.current.add(messageId);
+            pendingUpdatesRef.current.set(messageId, true);
+            console.debug('[VirtualScroll] Message %s INITIAL detection in outer zone', messageId);
           }
+          // else: re-entering outer zone after initialization → ignore (hysteresis)
         });
       },
       {
-        root: scrollContainer, // Use scroll container as root for accurate buffer calculation
-        rootMargin: rootMarginValue,
+        root: scrollContainer,
+        rootMargin: outerRootMargin,
         threshold: 0,
       }
     );
 
-    observerRef.current = observer;
+    // Inner observer (bufferScreens-1 zone): handles re-rendering after virtualization
+    const innerObserver = new IntersectionObserver(
+      entries => {
+        entries.forEach(entry => {
+          const messageId = entry.target.getAttribute('data-message-id');
+          if (!messageId) return;
 
-    // Process any registrations that arrived before observer was ready
+          if (entry.isIntersecting) {
+            // Entered inner zone → render
+            initializedIdsRef.current.add(messageId);
+            pendingUpdatesRef.current.set(messageId, true);
+            console.debug('[VirtualScroll] Message %s ENTERING inner zone', messageId);
+          }
+          // Leaving inner zone → ignore (outer observer handles virtualization)
+        });
+      },
+      {
+        root: scrollContainer,
+        rootMargin: innerRootMargin,
+        threshold: 0,
+      }
+    );
+
+    outerObserverRef.current = outerObserver;
+    innerObserverRef.current = innerObserver;
+
+    // Process any registrations that arrived before observers were ready
     const pending = pendingRegistrationsRef.current;
     if (pending.length > 0) {
       console.debug(`[VirtualScroll] Processing ${pending.length} pending registrations`);
       for (const { messageId, element } of pending) {
         element.setAttribute('data-message-id', messageId);
         elementMapRef.current.set(messageId, element);
-        observer.observe(element);
+        outerObserver.observe(element);
+        innerObserver.observe(element);
       }
       pendingRegistrationsRef.current = [];
     }
 
     return () => {
       clearInterval(intervalId);
-      observerRef.current?.disconnect();
-      observerRef.current = null;
+      outerObserverRef.current?.disconnect();
+      innerObserverRef.current?.disconnect();
+      outerObserverRef.current = null;
+      innerObserverRef.current = null;
     };
   }, [scrollContainerRef, bufferScreens]);
 
-  // Register a message element for observation
+  // Register a message element for observation on both observers
   const registerMessage = useCallback((messageId: string, element: HTMLElement | null) => {
-    const observer = observerRef.current;
+    const outerObserver = outerObserverRef.current;
+    const innerObserver = innerObserverRef.current;
 
     // Unobserve and remove old element if it exists
     const oldElement = elementMapRef.current.get(messageId);
-    if (oldElement && observer) {
-      observer.unobserve(oldElement);
-    }
     if (oldElement) {
+      outerObserver?.unobserve(oldElement);
+      innerObserver?.unobserve(oldElement);
       elementMapRef.current.delete(messageId);
     }
 
     // Handle new element registration
     if (element) {
-      if (observer) {
-        // Observer ready - register immediately
+      if (outerObserver && innerObserver) {
         element.setAttribute('data-message-id', messageId);
         elementMapRef.current.set(messageId, element);
-        observer.observe(element);
+        outerObserver.observe(element);
+        innerObserver.observe(element);
       } else {
-        // Observer not ready - queue for later
+        // Observers not ready — queue for later
         pendingRegistrationsRef.current.push({ messageId, element });
       }
+    } else {
+      // Unregistering — remove from initialized tracking
+      initializedIdsRef.current.delete(messageId);
     }
   }, []);
 
-  // Store measured height for a message
   const measureHeight = useCallback((messageId: string, height: number) => {
     heightsRef.current.set(messageId, height);
   }, []);
 
-  // Get stored height for a message
   const getHeight = useCallback((messageId: string): number | undefined => {
     return heightsRef.current.get(messageId);
   }, []);

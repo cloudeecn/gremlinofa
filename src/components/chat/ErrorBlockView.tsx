@@ -93,7 +93,7 @@ function ErrorSegment({ block }: ErrorSegmentProps) {
 
       {/* Stack trace */}
       {block.stack && (
-        <div className="mt-2 overflow-x-auto rounded bg-gray-100 p-2">
+        <div className="mt-2 rounded bg-gray-100 p-2 break-all">
           <div className="mb-1 flex items-center gap-2">
             {mappedStack && (
               <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700">

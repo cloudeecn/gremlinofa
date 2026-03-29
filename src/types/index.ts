@@ -23,7 +23,14 @@ import type { ChatCompletionTool } from 'openai/resources/index.mjs';
 import type OpenAI from 'openai';
 import type { Tool as BedrockTool } from '@aws-sdk/client-bedrock-runtime';
 
-export type APIType = 'anthropic' | 'chatgpt' | 'responses_api' | 'webllm' | 'bedrock';
+export type APIType =
+  | 'anthropic'
+  | 'chatgpt'
+  | 'responses_api'
+  | 'webllm'
+  | 'bedrock'
+  | 'google'
+  | 'ds01-dummy-system';
 
 /** Type-safe tool definition overrides for each API type */
 export interface APIToolOverrides {
@@ -32,6 +39,7 @@ export interface APIToolOverrides {
   responses_api?: OpenAI.Responses.Tool;
   webllm?: void;
   bedrock?: BedrockTool;
+  google?: unknown;
 }
 
 export interface APIDefinition {
@@ -44,6 +52,16 @@ export interface APIDefinition {
   isDefault?: boolean; // Mark as default (non-deletable) definition
   isLocal?: boolean; // Local provider - API key is optional (e.g., Ollama, LM Studio)
   modelsEndpoint?: string; // Custom endpoint for fetching models list (no auth)
+  modelsEndpointDisabled?: boolean; // Skip model discovery — only use extraModelIds
+  proxyUrl?: string; // CORS proxy URL — when set, SDK traffic routes through this proxy
+  extraModelIds?: string[]; // Manually-added model IDs not returned by provider discovery
+  advancedSettings?: {
+    pruneThinking?: boolean; // Strip thinking/reasoning blocks from messages before latest user message
+    pruneEmptyText?: boolean; // Strip empty text blocks from messages before latest user message
+    isSubscription?: boolean; // Flat-rate subscription — all cost tracked as $0
+    enforceGenuineAnthropic?: boolean; // Reject responses with zero cache activity or unsigned thinking blocks
+    deFactoThinking?: boolean; // Send { thinking: { type: "enabled" | "disabled" } } in request body (DeepSeek, Kimi, MiMo, etc.)
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -122,6 +140,9 @@ export interface ModelMetadata {
    * - grok-3-mini: ['low', 'high']
    */
   supportedReasoningEfforts?: ReasoningEffort[];
+
+  /** Uses de facto { thinking: { type: "enabled" | "disabled" } } parameter (DeepSeek, MiMo, Kimi, etc.) */
+  deFactoThinking?: boolean;
 
   // === Feature Support ===
   /** Accepts temperature parameter (some reasoning models ignore it) */
@@ -206,22 +227,12 @@ export interface Project {
   enabledTools?: string[]; // ['memory', 'javascript', 'filesystem']
   toolOptions?: Record<string, ToolOptions>; // Per-tool options, e.g., { memory: { useSystemPrompt: true } }
 
-  // === DEPRECATED tool fields (kept for migration only) ===
-  /** @deprecated Use enabledTools.includes('memory') instead */
-  memoryEnabled?: boolean;
-  /** @deprecated Use toolOptions.memory.useSystemPrompt instead */
-  memoryUseSystemPrompt?: boolean;
-  /** @deprecated Use enabledTools.includes('javascript') instead */
-  jsExecutionEnabled?: boolean;
-  /** @deprecated Use toolOptions.javascript.loadLib instead */
-  jsLibEnabled?: boolean;
-  /** @deprecated Use enabledTools.includes('filesystem') instead */
-  fsToolEnabled?: boolean;
-
   // Disable streaming (use non-streaming API calls)
   disableStream?: boolean;
   // Extended context window (1M tokens, Anthropic beta)
   extendedContext?: boolean;
+  // Strip line numbers from filesystem/memory tool output
+  noLineNumbers?: boolean;
 }
 
 // Chat pending state types
@@ -238,6 +249,7 @@ export interface Chat {
   id: string;
   projectId: string;
   name: string;
+  summary?: string;
   createdAt: Date;
   lastModifiedAt: Date;
   // Overrides (null = use project default)
@@ -252,19 +264,17 @@ export interface Chat {
   totalCacheCreationTokens?: number;
   totalCacheReadTokens?: number;
   totalCost?: number;
+  // Cumulative totals for minion (sub-agent) costs only
+  minionTotalInputTokens?: number;
+  minionTotalOutputTokens?: number;
+  minionTotalReasoningTokens?: number;
+  minionTotalCacheCreationTokens?: number;
+  minionTotalCacheReadTokens?: number;
+  minionTotalCost?: number;
   // Current context window usage (recalculated, can decrease)
   contextWindowUsage?: number;
-  // Flag for one-time contextWindowUsage migration
-  contextWindowUsageMigrated?: boolean;
   // True if any message has unreliable cost calculation
   costUnreliable?: boolean;
-  // DEPRECATED: Sink costs kept for migration only, not used in calculations
-  sinkInputTokens?: number;
-  sinkOutputTokens?: number;
-  sinkReasoningTokens?: number;
-  sinkCacheCreationTokens?: number;
-  sinkCacheReadTokens?: number;
-  sinkCost?: number;
   // Fork tracking
   isForked?: boolean;
   forkedFromChatId?: string;
@@ -276,6 +286,8 @@ export interface Chat {
   checkpointMessageId?: string;
   // Checkpoint message IDs for context tidy (accumulated per checkpoint call)
   checkpointMessageIds?: string[];
+  // DUMMY System: active hook file name (e.g., 'auto-search')
+  activeHook?: string;
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system';
@@ -285,10 +297,14 @@ export interface MessageContent<T> {
   content: string; // Pure text for display (from StreamResult.textContent)
   modelFamily?: APIType; // Which API created this message
   fullContent?: T; // Provider-specific blocks (for caching/replay)
+  toolCalls?: ToolUseBlock[]; // Model-agnostic tool_use blocks (for cross-model reconstruction)
+  toolResults?: ToolResultBlock[]; // Model-agnostic tool_result blocks (for cross-model reconstruction)
   renderingContent?: RenderingBlockGroup[]; // Pre-grouped blocks for UI rendering
   attachmentIds?: string[]; // References to attachment records
   originalAttachmentCount?: number; // Number of attachments when message was sent (for tracking deleted attachments)
   stopReason?: MessageStopReason; // Why message ended (end_turn, max_tokens, etc.)
+  injectedFiles?: Array<{ path: string; content: string }>; // Files for API-client-level block construction
+  injectionMode?: 'inline' | 'separate-block' | 'as-file'; // How API client should render injectedFiles
 }
 
 // Attachment types
@@ -362,6 +378,7 @@ export interface ToolUseBlock {
 export interface ToolResultBlock {
   type: 'tool_result';
   tool_use_id: string;
+  name?: string;
   content: string;
   is_error?: boolean;
 }
@@ -375,6 +392,10 @@ export interface ToolResult {
   };
   /** Signal that a checkpoint was set — triggers auto-continue after turn ends */
   checkpoint?: boolean;
+  /** Signal to change the active DUMMY hook for this chat (string = activate, null = deactivate) */
+  activeHook?: string | null;
+  /** Chat metadata changes to propagate (name/summary updates via metadata tool) */
+  chatMetadata?: { name?: string; summary?: string };
   /** Nested rendering groups from tool's internal work (transferred to ToolResultRenderBlock) */
   renderingGroups?: RenderingBlockGroup[];
   /** Token/cost totals incurred by this tool (e.g., minion sub-agent API costs) */
@@ -412,8 +433,8 @@ interface BaseToolOption {
   id: string;
   label: string;
   subtitle?: string;
-  /** @deprecated Use subtitle instead */
-  description?: string;
+  /** Only show this option when a sibling option matches the given value(s) */
+  visibleWhen?: { optionId: string; value: ToolOptionValue | ToolOptionValue[] };
 }
 
 /** Boolean toggle option (existing behavior) */
@@ -448,13 +469,31 @@ export interface ModelListToolOption extends BaseToolOption {
   type: 'modellist';
 }
 
+/** Single-line text option (inline input) */
+export interface TextToolOption extends BaseToolOption {
+  type: 'text';
+  default: string;
+  placeholder?: string;
+}
+
+/** Select option (single choice from predefined values) */
+export interface SelectToolOption extends BaseToolOption {
+  type: 'select';
+  default: string;
+  choices: { value: string; label: string }[];
+  /** Map legacy boolean option IDs to select values for backward compat */
+  migrateFrom?: { optionId: string; whenTrue: string }[];
+}
+
 /** Discriminated union of all tool option types */
 export type ToolOptionDefinition =
   | BooleanToolOption
   | NumberToolOption
+  | TextToolOption
   | LongtextToolOption
   | ModelToolOption
-  | ModelListToolOption;
+  | ModelListToolOption
+  | SelectToolOption;
 
 /**
  * Type guard: check if option is a boolean option
@@ -468,6 +507,13 @@ export function isBooleanOption(opt: ToolOptionDefinition): opt is BooleanToolOp
  */
 export function isNumberOption(opt: ToolOptionDefinition): opt is NumberToolOption {
   return opt.type === 'number';
+}
+
+/**
+ * Type guard: check if option is a text option
+ */
+export function isTextOption(opt: ToolOptionDefinition): opt is TextToolOption {
+  return opt.type === 'text';
 }
 
 /**
@@ -489,6 +535,13 @@ export function isModelOption(opt: ToolOptionDefinition): opt is ModelToolOption
  */
 export function isModelListOption(opt: ToolOptionDefinition): opt is ModelListToolOption {
   return opt.type === 'modellist';
+}
+
+/**
+ * Type guard: check if option is a select option
+ */
+export function isSelectOption(opt: ToolOptionDefinition): opt is SelectToolOption {
+  return opt.type === 'select';
 }
 
 /**
@@ -549,6 +602,17 @@ export function initializeToolOptions(
       // If project has no model, leave undefined - UI will require selection
     } else if (opt.type === 'modellist') {
       result[opt.id] = [];
+    } else if (opt.type === 'select' && opt.migrateFrom) {
+      // Check legacy boolean keys before applying default
+      let migrated = false;
+      for (const rule of opt.migrateFrom) {
+        if (result[rule.optionId] === true) {
+          result[opt.id] = rule.whenTrue;
+          migrated = true;
+          break;
+        }
+      }
+      if (!migrated) result[opt.id] = opt.default;
     } else {
       result[opt.id] = opt.default;
     }
@@ -562,6 +626,7 @@ export interface ToolContext {
   projectId: string;
   chatId?: string;
   namespace?: string;
+  noLineNumbers?: boolean;
 }
 
 /** Context passed to system prompt functions for dynamic generation */
@@ -605,6 +670,8 @@ export interface ClientSideTool {
   internal?: boolean;
   /** Complex tools run in a later phase after simple tools complete (e.g., minion sub-agents) */
   complex?: boolean;
+  /** Delay (ms) between launching parallel calls of this same tool. First call starts immediately. */
+  parallelThrottleMs?: number;
   /** Tool description - can be static string or function for dynamic content */
   description: string | ((options: ToolOptions) => string);
   /** Input schema - can be static or function for dynamic content */
@@ -645,12 +712,6 @@ export interface ClientSideTool {
   iconInput?: string;
   /** Icon for tool_result blocks (emoji/unicode). Default:  or L based on error state */
   iconOutput?: string;
-
-  // === DEPRECATED fields (kept for migration) ===
-  /** @deprecated Use getApiOverride() instead */
-  apiOverrides?: Partial<APIToolOverrides>;
-  /** @deprecated No longer used - tools are included based on enabledTools list */
-  alwaysEnabled?: boolean;
 }
 
 // Minion Chat types
@@ -668,8 +729,8 @@ export interface MinionChat {
   totalCost?: number;
   contextWindowUsage?: number;
   costUnreliable?: boolean;
-  /** Last message ID before this minion run started (for future rollback) */
-  checkpoint?: string;
+  /** Last message ID of the last successful run (for rollback on retry) */
+  savepoint?: string;
   /** Display name set by the LLM for UI labeling */
   displayName?: string;
   /** Persona name used for this minion chat */

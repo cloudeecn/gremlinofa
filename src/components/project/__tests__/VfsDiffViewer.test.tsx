@@ -7,12 +7,14 @@ const mockGetFileId = vi.fn();
 const mockGetFileMeta = vi.fn();
 const mockGetVersion = vi.fn();
 const mockUpdateFile = vi.fn();
+const mockListVersions = vi.fn();
 
-vi.mock('../../../services/vfs/vfsService', () => ({
+vi.mock('../../../services/vfs', () => ({
   getFileId: (...args: unknown[]) => mockGetFileId(...args),
   getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),
   getVersion: (...args: unknown[]) => mockGetVersion(...args),
   updateFile: (...args: unknown[]) => mockUpdateFile(...args),
+  listVersions: (...args: unknown[]) => mockListVersions(...args),
   getBasename: (path: string) => {
     const lastSlash = path.lastIndexOf('/');
     return lastSlash === -1 ? path : path.slice(lastSlash + 1);
@@ -43,6 +45,11 @@ describe('VfsDiffViewer', () => {
       if (version === 3) return 'Content v3\nLine 2\nNew line';
       return `Content v${version}`;
     });
+    mockListVersions.mockResolvedValue([
+      { version: 1, createdAt: 1700000000000 },
+      { version: 2, createdAt: 1700100000000 },
+      { version: 3, createdAt: 1700200000000 },
+    ]);
     mockUpdateFile.mockResolvedValue(undefined);
   });
 
@@ -361,6 +368,99 @@ describe('VfsDiffViewer', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Permission denied')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Revision Date Display', () => {
+    it('displays formatted date next to version number', async () => {
+      render(<VfsDiffViewer {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('v3')).toBeInTheDocument();
+        // The date for v3 (timestamp 1700200000000) should appear
+        const versionSpan = screen.getByText('v3').closest('span');
+        expect(versionSpan?.textContent).toMatch(/v3.*·.*2023/);
+      });
+    });
+  });
+
+  describe('Context-Only Toggle', () => {
+    it('renders the ±10 toggle button', async () => {
+      render(<VfsDiffViewer {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('±10')).toBeInTheDocument();
+      });
+    });
+
+    it('toggles context-only mode when clicked', async () => {
+      // Use content with many unchanged lines to make filtering visible
+      mockGetVersion.mockImplementation(async (_proj: string, _fileId: string, version: number) => {
+        if (version === 2) {
+          const lines = [];
+          for (let i = 0; i < 30; i++) lines.push(`line ${i}`);
+          return lines.join('\n');
+        }
+        if (version === 3) {
+          const lines = [];
+          for (let i = 0; i < 30; i++) {
+            lines.push(i === 15 ? 'CHANGED' : `line ${i}`);
+          }
+          return lines.join('\n');
+        }
+        return 'Content v1';
+      });
+
+      render(<VfsDiffViewer {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('±10')).toBeInTheDocument();
+        // Full diff shows line 0 (far from change at line 15)
+        expect(screen.getByText('line 0')).toBeInTheDocument();
+      });
+
+      // Click the toggle
+      fireEvent.click(screen.getByText('±10'));
+
+      await waitFor(() => {
+        // In context-only mode, line 0 should be hidden (>10 lines from change at 15)
+        expect(screen.queryByText('line 0')).not.toBeInTheDocument();
+        // But the changed line should still be visible
+        expect(screen.getByText('CHANGED')).toBeInTheDocument();
+      });
+    });
+
+    it('shows hunk separators in context-only mode', async () => {
+      // Two changes far apart
+      mockGetVersion.mockImplementation(async (_proj: string, _fileId: string, version: number) => {
+        if (version === 2) {
+          const lines = [];
+          for (let i = 0; i < 50; i++) lines.push(`line ${i}`);
+          return lines.join('\n');
+        }
+        if (version === 3) {
+          const lines = [];
+          for (let i = 0; i < 50; i++) {
+            lines.push(i === 5 || i === 45 ? `CHANGED_${i}` : `line ${i}`);
+          }
+          return lines.join('\n');
+        }
+        return 'Content v1';
+      });
+
+      render(<VfsDiffViewer {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('±10')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('±10'));
+
+      await waitFor(() => {
+        // Should have separator between hunks
+        const separators = screen.getAllByText('···');
+        expect(separators.length).toBeGreaterThanOrEqual(1);
       });
     });
   });

@@ -29,7 +29,11 @@ import type {
 } from '../../types';
 import type { ToolInfoRenderBlock, ToolResultRenderBlock } from '../../types/content';
 import { isModelReference, isModelReferenceArray } from '../../types';
-import { generateUniqueId } from '../../utils/idGenerator';
+import {
+  generateChecksummedId,
+  generateUniqueId,
+  validateIdChecksum,
+} from '../../utils/idGenerator';
 import { storage } from '../storage';
 import {
   runAgenticLoop,
@@ -40,10 +44,17 @@ import {
 import { createTokenTotals, addTokens } from '../../utils/tokenTotals';
 import { toolRegistry } from './clientSideTools';
 import { apiService } from '../api/apiService';
-import * as vfs from '../vfs/vfsService';
+import * as vfs from '../vfs';
+import { formatFileWithLineNumbers } from '../../utils/formatFileContent';
 
 // Tool names that minions cannot use
 const MINION_EXCLUDED_TOOLS = ['minion'];
+
+/** Truncate error messages to avoid wasting parent LLM context tokens */
+export function truncateError(message: string, limit = 200): string {
+  if (message.length <= limit) return message;
+  return message.slice(0, limit) + '...';
+}
 
 /** Format a ModelReference as "apiDefinitionId:modelId" for schema enum values */
 export function formatModelString(ref: ModelReference): string {
@@ -57,11 +68,21 @@ export function parseModelString(str: string): ModelReference | undefined {
   return { apiDefinitionId: str.substring(0, idx), modelId: str.substring(idx + 1) };
 }
 
-/** Stashed fullContent from a rolled-back message for re-use during retry */
+/** Strip a namespace prefix from a path for minion-facing display */
+export function stripNsPrefix(path: string, prefix?: string): string {
+  if (!prefix) return path;
+  if (path === prefix) return '/';
+  if (path.startsWith(prefix + '/')) return path.slice(prefix.length);
+  return path;
+}
+
+/** Stashed content from a rolled-back message for re-use during retry */
 interface StashedRetryContent {
   modelFamily?: string;
-  fullContent: unknown;
+  fullContent?: unknown;
   renderingContent?: RenderingBlockGroup[];
+  injectedFiles?: Array<{ path: string; content: string }>;
+  injectionMode?: string;
 }
 
 /**
@@ -105,12 +126,15 @@ function extractToolResultText(fullContent: unknown): string | undefined {
 // Maximum iterations for minion agentic loop (same as main loop)
 const MAX_ITERATIONS = 50;
 
-// Sentinel checkpoint value meaning "before any messages" (enables first-run retry)
-export const CHECKPOINT_START = '_start';
+// Maximum auto-enforce retries when minion doesn't call the return tool
+const AUTO_ENFORCE_MAX_RETRIES = 2;
+
+// Sentinel savepoint value meaning "before any messages" (enables first-run retry)
+export const SAVEPOINT_START = '_start';
 
 /** Input parameters for minion tool */
 interface MinionInput {
-  /** Action: 'message' (default) sends a new message, 'retry' rolls back to checkpoint and re-executes */
+  /** Action: 'message' (default) sends a new message, 'retry' rolls back to savepoint and re-executes */
   action?: 'message' | 'retry';
   /** Optional: existing minion chat ID to continue a conversation */
   minionChatId?: string;
@@ -126,6 +150,126 @@ interface MinionInput {
   model?: string;
   /** Display name shown in the UI for this minion call. If omitted, persona name is used. */
   displayName?: string;
+  /** VFS file paths to inject as context. Contents are prepended to the message. */
+  injectFiles?: string[];
+}
+
+/** Result of rolling back messages to a savepoint */
+interface RollbackResult {
+  stashedRetryContent: StashedRetryContent | undefined;
+  recoveredMessage: string | undefined;
+}
+
+/**
+ * Roll back a minion chat to its savepoint.
+ *
+ * Slices messages after the savepoint, stashes content from the first
+ * rolled-back message for re-use, recovers the original message text,
+ * subtracts rolled-back token metadata, and deletes the messages from storage.
+ *
+ * Returns `{ undefined, undefined }` when nothing to roll back.
+ */
+async function rollbackToSavepoint(
+  minionChat: MinionChat,
+  existingMessages: Message<unknown>[],
+  savepoint: string
+): Promise<RollbackResult> {
+  let rolledBack: Message<unknown>[];
+
+  if (savepoint === SAVEPOINT_START) {
+    rolledBack = existingMessages;
+  } else {
+    const savepointIdx = existingMessages.findIndex(m => m.id === savepoint);
+    if (savepointIdx === -1) {
+      return { stashedRetryContent: undefined, recoveredMessage: undefined };
+    }
+    rolledBack = existingMessages.slice(savepointIdx + 1);
+  }
+
+  if (rolledBack.length === 0) {
+    return { stashedRetryContent: undefined, recoveredMessage: undefined };
+  }
+
+  // Stash content from the first rolled-back message for potential re-use in Phase 3.
+  // Tool_result messages have fullContent (the API payload) — user messages have renderingContent
+  // (injected file bars, text groups). Both paths preserve rendering fidelity on retry.
+  let stashedRetryContent: StashedRetryContent | undefined;
+  const stashedFirst = rolledBack[0].content;
+  if (stashedFirst.fullContent) {
+    stashedRetryContent = {
+      modelFamily: stashedFirst.modelFamily as string | undefined,
+      fullContent: stashedFirst.fullContent,
+      renderingContent: stashedFirst.renderingContent as RenderingBlockGroup[] | undefined,
+      injectedFiles: stashedFirst.injectedFiles,
+      injectionMode: stashedFirst.injectionMode,
+    };
+  } else if (stashedFirst.renderingContent) {
+    stashedRetryContent = {
+      modelFamily: undefined,
+      fullContent: undefined,
+      renderingContent: stashedFirst.renderingContent as RenderingBlockGroup[],
+      injectedFiles: stashedFirst.injectedFiles,
+      injectionMode: stashedFirst.injectionMode,
+    };
+  }
+
+  // Recover original message text from the first rolled-back message
+  let recoveredMessage: string | undefined;
+  const firstAfter = rolledBack[0];
+  const textContent = firstAfter.content.content as string;
+  if (textContent) {
+    recoveredMessage = textContent;
+  } else {
+    recoveredMessage = extractToolResultText(firstAfter.content.fullContent) ?? undefined;
+  }
+
+  // Subtract rolled-back token metadata from chat totals
+  for (const msg of rolledBack) {
+    const meta = msg.metadata;
+    if (meta) {
+      minionChat.totalInputTokens = Math.max(
+        0,
+        (minionChat.totalInputTokens ?? 0) - (meta.inputTokens ?? 0)
+      );
+      minionChat.totalOutputTokens = Math.max(
+        0,
+        (minionChat.totalOutputTokens ?? 0) - (meta.outputTokens ?? 0)
+      );
+      minionChat.totalReasoningTokens = Math.max(
+        0,
+        (minionChat.totalReasoningTokens ?? 0) - (meta.reasoningTokens ?? 0)
+      );
+      minionChat.totalCacheCreationTokens = Math.max(
+        0,
+        (minionChat.totalCacheCreationTokens ?? 0) - (meta.cacheCreationTokens ?? 0)
+      );
+      minionChat.totalCacheReadTokens = Math.max(
+        0,
+        (minionChat.totalCacheReadTokens ?? 0) - (meta.cacheReadTokens ?? 0)
+      );
+      minionChat.totalCost = Math.max(0, (minionChat.totalCost ?? 0) - (meta.messageCost ?? 0));
+    }
+  }
+
+  // Delete rolled-back messages from storage
+  if (savepoint === SAVEPOINT_START) {
+    await storage.deleteMessageAndAfter(minionChat.id, rolledBack[0].id);
+  } else {
+    await storage.deleteMessagesAfter(minionChat.id, savepoint);
+  }
+
+  return { stashedRetryContent, recoveredMessage };
+}
+
+/**
+ * Resolve the effective return mode from tool options, with backward
+ * compat for legacy `noReturnTool` / `returnOnly` booleans.
+ */
+function resolveReturnMode(opts: ToolOptions): string {
+  if (typeof opts.returnMode === 'string') return opts.returnMode;
+  if (opts.noReturnTool === true) return 'no-return';
+  if (opts.returnOnly === true) return 'return-only';
+  return 'both';
 }
 
 /**
@@ -172,7 +316,8 @@ function buildInfoGroup(
   persona?: string,
   displayName?: string,
   apiDefinitionId?: string,
-  modelId?: string
+  modelId?: string,
+  injectedFiles?: Array<{ path: string; content: string; error?: boolean }>
 ): RenderingBlockGroup {
   const infoBlock: ToolInfoRenderBlock = {
     type: 'tool_info',
@@ -182,6 +327,7 @@ function buildInfoGroup(
     displayName,
     apiDefinitionId,
     modelId,
+    injectedFiles,
   };
   return { category: 'backstage', blocks: [infoBlock] };
 }
@@ -206,39 +352,53 @@ async function* executeMinion(
   // original fullContent directly instead of reconstructing from extracted text.
   let stashedRetryContent: StashedRetryContent | undefined;
 
-  // ── Phase 1: Validate inputs + load/create chat + checkpoint ──
+  // ── Phase 1: Validate inputs + load/create chat ──
   // Errors here indicate no state change; caller can resend to reattempt.
 
-  if (action === 'message' && !minionInput.message) {
+  const autoRollbackEnabled = toolOptions?.autoRollback === true;
+  if (action === 'message' && !minionInput.message && !autoRollbackEnabled) {
     return {
-      content:
-        'Error: "message" is required when action is "message" (or omitted). Resend to reattempt.',
+      content: truncateError(
+        'Error: "message" is required when action is "message" (or omitted). Resend to reattempt.'
+      ),
       isError: true,
     };
   }
   if (action === 'retry' && !minionInput.minionChatId) {
     return {
-      content: 'Error: "minionChatId" is required when action is "retry". Resend to reattempt.',
+      content: truncateError(
+        'Error: "minionChatId" is required when action is "retry". Resend to reattempt.'
+      ),
       isError: true,
     };
   }
 
   if (!context?.projectId) {
     return {
-      content: 'Error: projectId is required in context. Resend to reattempt.',
+      content: truncateError('Error: projectId is required in context. Resend to reattempt.'),
       isError: true,
     };
   }
 
-  // Load or create minion chat + handle retry rollback + save checkpoint
+  // Load or create minion chat + handle retry rollback
   let minionChat: MinionChat;
   let existingMessages: Message<unknown>[] = [];
 
   if (minionInput.minionChatId) {
+    if (validateIdChecksum(minionInput.minionChatId) === 'invalid') {
+      return {
+        content: truncateError(
+          'Error: Invalid minionChatId (checksum mismatch) — the ID may have been copied incorrectly. Check the minionChatId from the previous minion result and resend.'
+        ),
+        isError: true,
+      };
+    }
     const existing = await storage.getMinionChat(minionInput.minionChatId);
     if (!existing) {
       return {
-        content: `Error: Minion chat not found: ${minionInput.minionChatId}. Resend to reattempt.`,
+        content: truncateError(
+          `Error: Minion chat not found: ${minionInput.minionChatId}. Resend to reattempt.`
+        ),
         isError: true,
       };
     }
@@ -251,116 +411,69 @@ async function* executeMinion(
     if (minionInput.enabledTools !== undefined) minionChat.enabledTools = minionInput.enabledTools;
 
     if (action === 'retry') {
-      // Retry: roll back to checkpoint before proceeding
-      if (minionChat.checkpoint === undefined) {
+      // Retry: roll back to savepoint before proceeding
+      if (minionChat.savepoint === undefined) {
         return {
-          content: 'Error: Cannot retry — no checkpoint on this minion chat. Resend to reattempt.',
+          content: truncateError(
+            'Error: Cannot retry — no savepoint on this minion chat. Resend to reattempt.'
+          ),
           isError: true,
         };
       }
 
-      let rolledBack: Message<unknown>[];
+      const rollback = await rollbackToSavepoint(
+        minionChat,
+        existingMessages,
+        minionChat.savepoint
+      );
 
-      if (minionChat.checkpoint === CHECKPOINT_START) {
-        // First-run retry: roll back all messages
-        rolledBack = existingMessages;
-      } else {
-        const checkpointIdx = existingMessages.findIndex(m => m.id === minionChat.checkpoint);
-        if (checkpointIdx === -1) {
-          return {
-            content: `Error: Checkpoint message ${minionChat.checkpoint} not found in chat history. Resend to reattempt.`,
-            isError: true,
-          };
-        }
-        rolledBack = existingMessages.slice(checkpointIdx + 1);
-      }
-
-      if (rolledBack.length === 0) {
+      if (!rollback.stashedRetryContent && !rollback.recoveredMessage) {
         return {
-          content: 'Error: No messages after checkpoint to retry. Resend to reattempt.',
+          content: truncateError(
+            'Error: No messages after savepoint to retry. Resend to reattempt.'
+          ),
           isError: true,
         };
       }
 
-      // Stash fullContent from the first rolled-back message for potential re-use in Phase 3.
-      // Tool_result messages (from buildToolResultMessage) have content.content = '' and the
-      // actual payload in fullContent — stashing lets us re-use it when API types match.
-      if (rolledBack[0].content.fullContent) {
-        stashedRetryContent = {
-          modelFamily: rolledBack[0].content.modelFamily as string | undefined,
-          fullContent: rolledBack[0].content.fullContent,
-          renderingContent: rolledBack[0].content.renderingContent as
-            | RenderingBlockGroup[]
-            | undefined,
+      if (rollback.stashedRetryContent) stashedRetryContent = rollback.stashedRetryContent;
+      if (!minionInput.message && rollback.recoveredMessage) {
+        minionInput.message = rollback.recoveredMessage;
+      } else if (!minionInput.message) {
+        return {
+          content: truncateError(
+            'Error: message required — original could not be recovered. Resend to reattempt.'
+          ),
+          isError: true,
         };
       }
 
-      // Recover original message when caller didn't provide one
-      if (!minionInput.message) {
-        const firstAfter = rolledBack[0];
-        const textContent = firstAfter.content.content as string;
-        if (textContent) {
-          minionInput.message = textContent;
-        } else {
-          // Tool_result messages have empty content.content — extract from fullContent
-          minionInput.message = extractToolResultText(firstAfter.content.fullContent) ?? '';
-        }
-      }
-
-      // Subtract rolled-back token metadata from chat totals
-      for (const msg of rolledBack) {
-        const meta = msg.metadata;
-        if (meta) {
-          minionChat.totalInputTokens = Math.max(
-            0,
-            (minionChat.totalInputTokens ?? 0) - (meta.inputTokens ?? 0)
-          );
-          minionChat.totalOutputTokens = Math.max(
-            0,
-            (minionChat.totalOutputTokens ?? 0) - (meta.outputTokens ?? 0)
-          );
-          minionChat.totalReasoningTokens = Math.max(
-            0,
-            (minionChat.totalReasoningTokens ?? 0) - (meta.reasoningTokens ?? 0)
-          );
-          minionChat.totalCacheCreationTokens = Math.max(
-            0,
-            (minionChat.totalCacheCreationTokens ?? 0) - (meta.cacheCreationTokens ?? 0)
-          );
-          minionChat.totalCacheReadTokens = Math.max(
-            0,
-            (minionChat.totalCacheReadTokens ?? 0) - (meta.cacheReadTokens ?? 0)
-          );
-          minionChat.totalCost = Math.max(0, (minionChat.totalCost ?? 0) - (meta.messageCost ?? 0));
-        }
-      }
-
-      // Delete rolled-back messages
-      if (minionChat.checkpoint === CHECKPOINT_START) {
-        await storage.deleteMessageAndAfter(minionChat.id, rolledBack[0].id);
-      } else {
-        await storage.deleteMessagesAfter(minionChat.id, minionChat.checkpoint!);
-      }
       existingMessages = await storage.getMinionMessages(minionChat.id);
-
-      // Checkpoint stays unchanged — it already points to the right position
       await storage.saveMinionChat(minionChat);
     } else {
-      // Normal continuation: advance checkpoint to last message before this run
-      minionChat.checkpoint =
-        existingMessages.length > 0
-          ? existingMessages[existingMessages.length - 1].id
-          : CHECKPOINT_START;
-      await storage.saveMinionChat(minionChat);
+      // Normal continuation: handle autoRollback if enabled, otherwise just proceed
+      if (autoRollbackEnabled && minionChat.savepoint !== undefined) {
+        const rollback = await rollbackToSavepoint(
+          minionChat,
+          existingMessages,
+          minionChat.savepoint
+        );
+        if (rollback.stashedRetryContent) stashedRetryContent = rollback.stashedRetryContent;
+        if (!minionInput.message && rollback.recoveredMessage) {
+          minionInput.message = rollback.recoveredMessage;
+        }
+        existingMessages = await storage.getMinionMessages(minionChat.id);
+        await storage.saveMinionChat(minionChat);
+      }
     }
   } else {
-    // Create new minion chat with initial checkpoint
+    // Create new minion chat with initial savepoint
     const parentChatId = context.chatId ?? 'standalone';
     minionChat = {
-      id: generateUniqueId('minion'),
+      id: generateChecksummedId('minion'),
       parentChatId,
       projectId: context.projectId,
-      checkpoint: CHECKPOINT_START,
+      savepoint: SAVEPOINT_START,
       displayName: minionInput.displayName,
       persona: minionInput.persona,
       enabledTools: minionInput.enabledTools,
@@ -370,19 +483,30 @@ async function* executeMinion(
     await storage.saveMinionChat(minionChat);
   }
 
+  // After autoRollback may have recovered a message, validate it's available
+  if (!minionInput.message) {
+    return {
+      content: truncateError('Error: "message" is required. Resend to reattempt.'),
+      isError: true,
+    };
+  }
+
   // ── Phase 2: Validation + setup ──
-  // Checkpoint is saved. Errors here mean caller should resend with the message.
+  // No state change yet. Errors here mean caller should resend.
 
   const allowWebSearch = toolOptions?.allowWebSearch === true;
   if (minionInput.enableWeb && !allowWebSearch) {
     return {
-      content:
-        'Error: Web search is not allowed for minions. Enable "Allow Web Search" in minion tool options. Resend with the message to reattempt.',
+      content: truncateError(
+        'Error: Web search is not allowed for minions. Enable "Allow Web Search" in minion tool options. Resend to reattempt.'
+      ),
       isError: true,
     };
   }
 
   const minionToolOptions = toolOptions ?? {};
+  const fileInjectionMode =
+    (minionToolOptions.fileInjectionMode as 'inline' | 'separate-block' | 'as-file') ?? 'inline';
 
   // Resolve effective model: input.model (from LLM) > minionChat stored model > toolOptions.model (default)
   let effectiveModelRef: ModelReference | undefined;
@@ -392,8 +516,9 @@ async function* executeMinion(
     const modelsList = minionToolOptions.models;
     if (!isModelReferenceArray(modelsList) || modelsList.length === 0) {
       return {
-        content:
-          'Error: model parameter provided but no models list configured. Resend with the message to reattempt.',
+        content: truncateError(
+          'Error: model parameter provided but no models list configured. Resend to reattempt.'
+        ),
         isError: true,
       };
     }
@@ -401,7 +526,9 @@ async function* executeMinion(
     const parsed = parseModelString(minionInput.model);
     if (!parsed) {
       return {
-        content: `Error: Invalid model format: "${minionInput.model}". Expected "apiDefinitionId:modelId". Resend with the message to reattempt.`,
+        content: truncateError(
+          `Error: Invalid model format: "${minionInput.model}". Expected "apiDefinitionId:modelId". Resend to reattempt.`
+        ),
         isError: true,
       };
     }
@@ -412,7 +539,9 @@ async function* executeMinion(
     if (!isInList) {
       const available = modelsList.map(formatModelString).join(', ');
       return {
-        content: `Error: Model "${minionInput.model}" is not in the configured models list. Available: ${available}. Resend with the message to reattempt.`,
+        content: truncateError(
+          `Error: Model "${minionInput.model}" is not in the configured models list. Available: ${available}. Resend to reattempt.`
+        ),
         isError: true,
       };
     }
@@ -434,8 +563,9 @@ async function* executeMinion(
 
   if (!effectiveModelRef) {
     return {
-      content:
-        'Error: Minion model not configured. Please configure a model in project settings. Resend with the message to reattempt.',
+      content: truncateError(
+        'Error: Minion model not configured. Please configure a model in project settings. Resend to reattempt.'
+      ),
       isError: true,
     };
   }
@@ -443,7 +573,9 @@ async function* executeMinion(
   const project = await storage.getProject(context.projectId);
   if (!project) {
     return {
-      content: `Error: Project not found: ${context.projectId}. Resend with the message to reattempt.`,
+      content: truncateError(
+        `Error: Project not found: ${context.projectId}. Resend to reattempt.`
+      ),
       isError: true,
     };
   }
@@ -451,7 +583,9 @@ async function* executeMinion(
   const apiDef = await storage.getAPIDefinition(effectiveModelRef.apiDefinitionId);
   if (!apiDef) {
     return {
-      content: `Error: API definition not found: ${effectiveModelRef.apiDefinitionId}. Resend with the message to reattempt.`,
+      content: truncateError(
+        `Error: API definition not found: ${effectiveModelRef.apiDefinitionId}. Resend to reattempt.`
+      ),
       isError: true,
     };
   }
@@ -462,7 +596,9 @@ async function* executeMinion(
   );
   if (!model) {
     return {
-      content: `Error: Model not found: ${effectiveModelRef.modelId}. Resend with the message to reattempt.`,
+      content: truncateError(
+        `Error: Model not found: ${effectiveModelRef.modelId}. Resend to reattempt.`
+      ),
       isError: true,
     };
   }
@@ -477,13 +613,16 @@ async function* executeMinion(
     );
     if (invalidTools.length > 0) {
       return {
-        content: `Error: Tools not available in project: ${invalidTools.join(', ')}. Available tools: ${projectTools.join(', ') || '(none)'}. Resend with the message to reattempt.`,
+        content: truncateError(
+          `Error: Tools not available in project: ${invalidTools.join(', ')}. Available tools: ${projectTools.join(', ') || '(none)'}. Resend to reattempt.`
+        ),
         isError: true,
       };
     }
   }
 
-  const includeReturn = minionToolOptions.noReturnTool !== true;
+  const returnMode = resolveReturnMode(minionToolOptions);
+  const includeReturn = returnMode !== 'no-return';
   const disableReasoning = minionToolOptions.disableReasoning === true;
   const minionTools = buildMinionTools(effectiveEnabledTools, projectTools, includeReturn);
 
@@ -514,10 +653,52 @@ async function* executeMinion(
     }
   }
 
+  // Read injected files from VFS
+  const injectedFileEntries: Array<{ path: string; content: string; error?: boolean }> = [];
+  let injectedFilesPrefix = '';
+  if (minionInput.injectFiles?.length) {
+    // Compute namespace prefix so display paths can be relative to the minion's root
+    const _nsMode = minionToolOptions.namespacedMinion ?? 'off';
+    const _persona = minionInput.persona ?? minionChat.persona ?? 'default';
+    const _shouldNs = _nsMode !== 'off' && (_nsMode === 'all' || _persona !== 'default');
+    const injectNsPrefix = _shouldNs ? `/minions/${_persona}` : undefined;
+
+    const sections: string[] = [];
+    for (const filePath of minionInput.injectFiles) {
+      const displayPath = stripNsPrefix(filePath, injectNsPrefix);
+      try {
+        const fileContent = await vfs.readFile(context.projectId, filePath);
+        const formatted = project.noLineNumbers
+          ? fileContent
+          : formatFileWithLineNumbers(fileContent);
+        const label = project.noLineNumbers ? '' : ' with line numbers';
+        sections.push(
+          `=== ${displayPath} ===\nHere's the content of ${displayPath}${label}:\n${formatted}`
+        );
+        injectedFileEntries.push({ path: displayPath, content: formatted });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        injectedFileEntries.push({ path: filePath, content: errMsg, error: true });
+      }
+    }
+    // If any file failed to read, return error to the caller instead of launching minion
+    const failedFiles = injectedFileEntries.filter(f => f.error);
+    if (failedFiles.length > 0) {
+      const paths = failedFiles.map(f => `${f.path}: ${f.content}`).join('\n');
+      return {
+        content: truncateError(
+          `Error: Failed to read injected file(s):\n${paths}\nFix the paths and resend.`
+        ),
+        isError: true,
+      };
+    }
+    injectedFilesPrefix = sections.join('\n\n') + '\n\n';
+  }
+
   // Build info group for streaming display (include persona name for non-default personas)
   const personaLabel =
     minionChat.displayName ??
-    (minionToolOptions.namespacedMinion === true &&
+    (minionToolOptions.namespacedMinion !== 'off' &&
     minionChat.persona &&
     minionChat.persona !== 'default'
       ? minionChat.persona
@@ -528,7 +709,8 @@ async function* executeMinion(
     personaLabel,
     minionChat.displayName,
     effectiveModelRef.apiDefinitionId,
-    effectiveModelRef.modelId
+    effectiveModelRef.modelId,
+    injectedFileEntries.length > 0 ? injectedFileEntries : undefined
   );
 
   // Persist resolved model and tools into minionChat for future continuation
@@ -569,6 +751,7 @@ async function* executeMinion(
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: skipped.id,
+        name: skipped.name,
         content: errContent,
         is_error: true,
       });
@@ -581,6 +764,7 @@ async function* executeMinion(
     toolResultBlocks.push({
       type: 'tool_result',
       tool_use_id: pendingReturnToolUse.id,
+      name: pendingReturnToolUse.name,
       content: minionInput.message,
     });
     toolResultRenderBlocks.push(
@@ -592,7 +776,17 @@ async function* executeMinion(
       )
     );
 
-    const toolResultMessage = apiService.buildToolResultMessage(apiDef.apiType, toolResultBlocks);
+    const toolResultMessage: Message<unknown> = {
+      id: generateUniqueId('msg_user'),
+      role: 'user',
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: apiDef.apiType,
+      },
+      timestamp: new Date(),
+    };
+    toolResultMessage.content.toolResults = toolResultBlocks;
     toolResultMessage.content.renderingContent = [
       { category: 'backstage' as const, blocks: toolResultRenderBlocks },
     ];
@@ -602,15 +796,61 @@ async function* executeMinion(
     minionContext = [...existingMessages, toolResultMessage];
   } else {
     // Normal case: build user message for minion
+    // Use stashed renderingContent from retry if available and no new files were injected,
+    // preserving file bar UI instead of rendering file content as plain text.
+    let renderingGroups: RenderingBlockGroup[];
+    if (stashedRetryContent?.renderingContent && injectedFileEntries.length === 0) {
+      renderingGroups = stashedRetryContent.renderingContent;
+    } else {
+      renderingGroups = [];
+      if (injectedFileEntries.length > 0) {
+        renderingGroups.push({
+          category: 'backstage',
+          blocks: injectedFileEntries.map(f => ({
+            type: 'injected_file' as const,
+            path: f.path,
+            content: f.content,
+            error: f.error,
+          })),
+        });
+      }
+      renderingGroups.push({
+        category: 'text',
+        blocks: [{ type: 'text', text: minionInput.message }],
+      });
+    }
+
+    // Determine effective injection mode, restoring from stash on retry
+    const successFiles = injectedFileEntries.filter(f => !f.error);
+    const effectiveMode =
+      injectedFileEntries.length === 0 && stashedRetryContent?.injectedFiles
+        ? ((stashedRetryContent.injectionMode as typeof fileInjectionMode) ?? 'inline')
+        : fileInjectionMode;
+    const effectiveFiles =
+      successFiles.length > 0 ? successFiles : (stashedRetryContent?.injectedFiles ?? []);
+    const useStructuredInjection = effectiveMode !== 'inline' && effectiveFiles.length > 0;
+
+    // For inline mode: prepend file text into content string (original behavior).
+    // For separate-block / as-file: keep content clean, store files on the message
+    // so the API client can build native blocks.
+    const llmContent = useStructuredInjection
+      ? minionInput.message
+      : injectedFilesPrefix
+        ? injectedFilesPrefix + '=== end of files ===\n\n' + minionInput.message
+        : minionInput.message;
+
     const userMessage: Message<string> = {
       id: generateUniqueId('msg_user'),
       role: 'user',
       content: {
         type: 'text',
-        content: minionInput.message,
-        renderingContent: [
-          { category: 'text', blocks: [{ type: 'text', text: minionInput.message }] },
-        ],
+        content: llmContent,
+        renderingContent: renderingGroups,
+        ...(useStructuredInjection && {
+          injectedFiles: effectiveFiles.map(f => ({ path: f.path, content: f.content })),
+          injectionMode: effectiveMode,
+          modelFamily: apiDef.apiType,
+        }),
       },
       timestamp: new Date(),
     };
@@ -621,43 +861,57 @@ async function* executeMinion(
     minionContext = [...existingMessages, userMessage];
   }
 
-  // Resolve persona and namespace when namespacedMinion is enabled
-  const namespacedMinion = minionToolOptions.namespacedMinion === true;
+  // Resolve persona and namespace based on namespacedMinion mode
+  const nsMode = minionToolOptions.namespacedMinion ?? 'off';
   let minionNamespace: string | undefined;
   let minionSystemPrompt: string;
 
-  if (namespacedMinion) {
-    const persona = minionInput.persona ?? minionChat.persona ?? 'default';
-    minionNamespace = `/minions/${persona}`;
-
-    // Read global prompt shared across all personas
-    let globalPrompt = '';
-    try {
-      globalPrompt = await vfs.readFile(context.projectId, '/minions/_global.md');
-    } catch {
-      // No global prompt — that's fine
-    }
-
-    if (persona !== 'default') {
-      // Read persona prompt from /minions/<persona>.md (root VFS, no namespace)
-      try {
-        const personaPrompt = await vfs.readFile(context.projectId, `/minions/${persona}.md`);
-        minionSystemPrompt = [globalPrompt, personaPrompt].filter(Boolean).join('\n\n');
-      } catch {
-        return {
-          content: `Error: Persona file /minions/${persona}.md not found. Create the file or use a different persona. Resend with the message to reattempt.`,
-          isError: true,
-        };
-      }
-    } else {
-      // Default persona uses configured system prompt
-      const configuredPrompt =
-        typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
-      minionSystemPrompt = [globalPrompt, configuredPrompt].filter(Boolean).join('\n\n');
-    }
-  } else {
+  if (nsMode === 'off') {
+    // No namespace, no persona lookup
     minionSystemPrompt =
       typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+  } else {
+    const persona = minionInput.persona ?? minionChat.persona ?? 'default';
+
+    // 'persona' mode: only non-default personas get namespaced
+    // 'all' mode: everyone gets namespaced including default
+    const shouldNamespace = nsMode === 'all' || persona !== 'default';
+
+    if (shouldNamespace) {
+      minionNamespace = `/minions/${persona}`;
+
+      // Read global prompt shared across all personas
+      let globalPrompt = '';
+      try {
+        globalPrompt = await vfs.readFile(context.projectId, '/minions/_global.md');
+      } catch {
+        // No global prompt — that's fine
+      }
+
+      if (persona !== 'default') {
+        // Read persona prompt from /minions/<persona>.md (root VFS, no namespace)
+        try {
+          const personaPrompt = await vfs.readFile(context.projectId, `/minions/${persona}.md`);
+          minionSystemPrompt = [globalPrompt, personaPrompt].filter(Boolean).join('\n\n');
+        } catch {
+          return {
+            content: truncateError(
+              `Error: Persona file /minions/${persona}.md not found. Create the file or use a different persona. Resend to reattempt.`
+            ),
+            isError: true,
+          };
+        }
+      } else {
+        // Default persona in 'all' mode uses configured system prompt + global
+        const configuredPrompt =
+          typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+        minionSystemPrompt = [globalPrompt, configuredPrompt].filter(Boolean).join('\n\n');
+      }
+    } else {
+      // 'persona' mode with default/no persona — behave like 'off'
+      minionSystemPrompt =
+        typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+    }
   }
 
   // Build system prompts from enabled tools
@@ -682,16 +936,20 @@ async function* executeMinion(
     .filter(Boolean)
     .join('\n\n');
 
-  // Build effective tool options — inject deferReturn into return tool's options
-  // so its description function reflects the deferred mode
-  const deferReturn = minionToolOptions.deferReturn === true;
+  // Build effective tool options — inject returnMode and deferReturn into return tool's options
+  // so its description function reflects the current mode
+  const deferReturnMode =
+    typeof minionToolOptions.deferReturn === 'string'
+      ? (minionToolOptions.deferReturn as 'no' | 'auto-ack' | 'free-run')
+      : minionToolOptions.deferReturn === true
+        ? 'free-run'
+        : undefined;
   const effectiveToolOptions = { ...(project.toolOptions ?? {}) };
-  if (deferReturn) {
-    effectiveToolOptions.return = {
-      ...effectiveToolOptions.return,
-      deferReturn: true,
-    };
-  }
+  effectiveToolOptions.return = {
+    ...effectiveToolOptions.return,
+    returnMode,
+    ...(deferReturnMode && deferReturnMode !== 'no' ? { deferReturn: deferReturnMode } : {}),
+  };
 
   // Build agentic loop options for minion
   const loopOptions: AgenticLoopOptions = {
@@ -709,7 +967,29 @@ async function* executeMinion(
     disableStream: project.disableStream ?? false,
     extendedContext: project.extendedContext ?? false,
     namespace: minionNamespace,
-    deferReturn,
+    deferReturn: deferReturnMode && deferReturnMode !== 'no' ? deferReturnMode : undefined,
+    fallbackToolExtraction: true,
+    deferredSoftStopRounds:
+      typeof minionToolOptions.deferredSoftStopRounds === 'number'
+        ? minionToolOptions.deferredSoftStopRounds
+        : undefined,
+    deferredForceStopRounds:
+      typeof minionToolOptions.deferredForceStopRounds === 'number'
+        ? minionToolOptions.deferredForceStopRounds
+        : undefined,
+    returnAckMessage:
+      typeof minionToolOptions.returnAckMessage === 'string' && minionToolOptions.returnAckMessage
+        ? minionToolOptions.returnAckMessage
+        : undefined,
+    returnDuplicateMessage:
+      typeof minionToolOptions.returnDuplicateMessage === 'string' &&
+      minionToolOptions.returnDuplicateMessage
+        ? minionToolOptions.returnDuplicateMessage
+        : undefined,
+    autoAckMessage:
+      typeof minionToolOptions.autoAckMessage === 'string' && minionToolOptions.autoAckMessage
+        ? minionToolOptions.autoAckMessage
+        : undefined,
     // Reasoning settings from project
     enableReasoning: disableReasoning ? false : project.enableReasoning,
     reasoningBudgetTokens: project.reasoningBudgetTokens,
@@ -728,74 +1008,183 @@ async function* executeMinion(
   let returnValue: string | undefined;
 
   try {
-    const gen = runAgenticLoop(loopOptions, minionContext);
-
-    // Consume generator, handling events
-    let iterResult: IteratorResult<
-      AgenticLoopEvent,
+    type LoopFinalResult =
       Awaited<ReturnType<typeof runAgenticLoop>> extends AsyncGenerator<infer _E, infer R, infer _N>
         ? R
-        : never
-    >;
+        : never;
 
-    do {
-      iterResult = await gen.next();
+    let loopMessages = minionContext;
+    let autoEnforceAttempts = 0;
+    let lastFinalResult: LoopFinalResult | undefined;
 
-      if (!iterResult.done) {
-        const event = iterResult.value;
+    // Main execution loop (re-runs for auto-enforce retries)
+    while (true) {
+      const gen = runAgenticLoop(loopOptions, loopMessages);
 
-        switch (event.type) {
-          case 'streaming_chunk':
-            // Yield accumulated + current streaming groups for real-time display
-            yield {
-              type: 'groups_update',
-              groups: [infoGroup, ...accumulatedGroups, ...event.groups],
-            };
-            break;
+      // Consume generator, handling events
+      let iterResult: IteratorResult<AgenticLoopEvent, LoopFinalResult>;
 
-          case 'message_created':
-            // Save message to minion chat
-            await storage.saveMinionMessage(minionChat.id, event.message);
-            // Accumulate rendering content, mark as tool-generated
-            if (event.message.content.renderingContent) {
-              const markedGroups = event.message.content.renderingContent.map(g => ({
-                ...g,
-                isToolGenerated: true,
-              }));
-              accumulatedGroups.push(...markedGroups);
-            }
-            // Accumulate text from assistant messages
-            if (event.message.role === 'assistant' && event.message.content.content) {
-              accumulatedText.push(event.message.content.content as string);
-            }
-            // Yield updated finalized content
-            yield {
-              type: 'groups_update',
-              groups: [infoGroup, ...accumulatedGroups],
-            };
-            break;
+      do {
+        iterResult = await gen.next();
 
-          case 'tokens_consumed':
-            addTokens(totals, event.tokens);
-            break;
+        if (!iterResult.done) {
+          const event = iterResult.value;
 
-          case 'streaming_start':
-          case 'streaming_end':
-          case 'first_chunk':
-          case 'pending_tool_result':
-          case 'tool_block_update':
-          case 'checkpoint_set':
-            break;
+          switch (event.type) {
+            case 'streaming_chunk':
+              // Yield accumulated + current streaming groups for real-time display
+              yield {
+                type: 'groups_update',
+                groups: [infoGroup, ...accumulatedGroups, ...event.groups],
+              };
+              break;
+
+            case 'message_created':
+              // Save message to minion chat
+              await storage.saveMinionMessage(minionChat.id, event.message);
+              // Accumulate rendering content, mark as tool-generated
+              if (event.message.content.renderingContent) {
+                const markedGroups = event.message.content.renderingContent.map(g => ({
+                  ...g,
+                  isToolGenerated: true,
+                }));
+                accumulatedGroups.push(...markedGroups);
+              }
+              // Accumulate text from assistant messages
+              if (event.message.role === 'assistant' && event.message.content.content) {
+                accumulatedText.push(event.message.content.content as string);
+              }
+              // Yield updated finalized content
+              yield {
+                type: 'groups_update',
+                groups: [infoGroup, ...accumulatedGroups],
+              };
+              break;
+
+            case 'tokens_consumed':
+              addTokens(totals, event.tokens);
+              break;
+
+            case 'streaming_start':
+            case 'streaming_end':
+            case 'first_chunk':
+            case 'pending_tool_result':
+            case 'tool_block_update':
+            case 'checkpoint_set':
+            case 'active_hook_changed':
+            case 'chat_metadata_updated':
+            case 'dummy_hook_start':
+            case 'dummy_hook_end':
+              break;
+          }
         }
+      } while (!iterResult.done);
+
+      lastFinalResult = iterResult.value;
+
+      // Determine response based on final status
+      if (lastFinalResult.status === 'complete' && lastFinalResult.returnValue !== undefined) {
+        usedReturnTool = true;
+        returnValue = lastFinalResult.returnValue;
+      } else if (lastFinalResult.status === 'error') {
+        return {
+          content: truncateError(`Minion error: ${lastFinalResult.error.message}`),
+          isError: true,
+          renderingGroups: [infoGroup, ...accumulatedGroups],
+          tokenTotals: totals,
+        };
+      } else if (lastFinalResult.status === 'max_iterations') {
+        // If a deferred return was stored before hitting max iterations, use it
+        if (lastFinalResult.returnValue !== undefined) {
+          usedReturnTool = true;
+          returnValue = lastFinalResult.returnValue;
+        } else {
+          return {
+            content: truncateError(`Minion reached maximum iterations (${MAX_ITERATIONS})`),
+            isError: true,
+            renderingGroups: [infoGroup, ...accumulatedGroups],
+            tokenTotals: totals,
+          };
+        }
+      } else if (lastFinalResult.status === 'soft_stopped') {
+        return {
+          content: truncateError('Minion was stopped before completion'),
+          isError: true,
+          renderingGroups: [infoGroup, ...accumulatedGroups],
+          tokenTotals: totals,
+        };
       }
-    } while (!iterResult.done);
 
-    // Handle final result
-    const finalResult = iterResult.value;
+      // Auto-enforce retry: if return wasn't called and retries remain, send reminder and re-run
+      if (
+        returnMode === 'auto-enforced' &&
+        !usedReturnTool &&
+        autoEnforceAttempts < AUTO_ENFORCE_MAX_RETRIES
+      ) {
+        autoEnforceAttempts++;
+        const reminderMessage: Message<string> = {
+          id: generateUniqueId('msg_user'),
+          role: 'user',
+          content: {
+            type: 'text',
+            content:
+              (typeof minionToolOptions.returnEnforceMessage === 'string' &&
+                minionToolOptions.returnEnforceMessage) ||
+              'You have not used the return tool to respond. Please put your response in the return tool call.',
+          },
+          timestamp: new Date(),
+        };
+        await storage.saveMinionMessage(minionChat.id, reminderMessage);
+        // Add reminder to accumulated rendering groups
+        accumulatedGroups.push({
+          category: 'text',
+          blocks: [{ type: 'text', text: reminderMessage.content.content }],
+          isToolGenerated: true,
+        });
+        yield {
+          type: 'groups_update',
+          groups: [infoGroup, ...accumulatedGroups],
+        };
+        loopMessages = await storage.getMinionMessages(minionChat.id);
+        continue;
+      }
 
-    // Update minion chat with totals
+      break;
+    }
+
+    // Determine stop reason from last assistant message
+    let stopReason = 'end_turn';
+    if (lastFinalResult && lastFinalResult.messages.length > 0) {
+      const lastMsg = lastFinalResult.messages[lastFinalResult.messages.length - 1];
+      if (lastMsg.role === 'assistant') {
+        stopReason = (lastMsg.content.stopReason as string) ?? 'end_turn';
+      }
+    }
+    // Map tool_use → end_turn when return tool triggered completion
+    if (usedReturnTool && stopReason === 'tool_use') {
+      stopReason = 'end_turn';
+    }
+
+    // Abnormal stop reasons → error (skip savepoint so next call can roll back)
+    const normalStopReasons = new Set(['end_turn', 'stop_sequence']);
+    if (!normalStopReasons.has(stopReason)) {
+      return {
+        content: truncateError(`Minion ended unexpectedly (${stopReason})`),
+        isError: true,
+        renderingGroups: [infoGroup, ...accumulatedGroups],
+        tokenTotals: totals,
+      };
+    }
+
+    // Advance savepoint to the last message after successful execution
+    const allMessages = [...existingMessages, ...(lastFinalResult?.messages ?? [])];
+    const finalSavepoint =
+      allMessages.length > 0 ? allMessages[allMessages.length - 1].id : SAVEPOINT_START;
+
+    // Update minion chat with totals and new savepoint (after all retries)
     const updatedMinionChat: MinionChat = {
       ...minionChat,
+      savepoint: finalSavepoint,
       totalInputTokens: (minionChat.totalInputTokens ?? 0) + totals.inputTokens,
       totalOutputTokens: (minionChat.totalOutputTokens ?? 0) + totals.outputTokens,
       totalReasoningTokens: (minionChat.totalReasoningTokens ?? 0) + totals.reasoningTokens,
@@ -808,68 +1197,48 @@ async function* executeMinion(
     };
     await storage.saveMinionChat(updatedMinionChat);
 
-    // Determine response based on final status
-    if (finalResult.status === 'complete' && finalResult.returnValue !== undefined) {
-      usedReturnTool = true;
-      returnValue = finalResult.returnValue;
-    } else if (finalResult.status === 'error') {
-      return {
-        content: `Minion error: ${finalResult.error.message}`,
-        isError: true,
-        renderingGroups: [infoGroup, ...accumulatedGroups],
-        tokenTotals: totals,
-      };
-    } else if (finalResult.status === 'max_iterations') {
-      // If a deferred return was stored before hitting max iterations, use it
-      if (finalResult.returnValue !== undefined) {
-        usedReturnTool = true;
-        returnValue = finalResult.returnValue;
-      } else {
-        return {
-          content: `Minion reached maximum iterations (${MAX_ITERATIONS})`,
-          isError: true,
-          renderingGroups: [infoGroup, ...accumulatedGroups],
-          tokenTotals: totals,
-        };
-      }
-    }
-
-    // Determine stop reason from last assistant message
-    let stopReason = 'end_turn';
-    if (finalResult.messages.length > 0) {
-      const lastMsg = finalResult.messages[finalResult.messages.length - 1];
-      if (lastMsg.role === 'assistant') {
-        stopReason = (lastMsg.content.stopReason as string) ?? 'end_turn';
-      }
-    }
-    // Map tool_use → end_turn when return tool triggered completion
-    if (usedReturnTool && stopReason === 'tool_use') {
-      stopReason = 'end_turn';
-    }
-
-    // Build result JSON: `result` only present when return tool was used
+    // Build result content
     const joinedText = accumulatedText.join('\n\n');
-    const returnOnly = minionToolOptions.returnOnly === true;
-    const suppressText = returnOnly && usedReturnTool && returnValue !== undefined && joinedText;
+    const minionTag = `<minionChatId>${minionChat.id}</minionChatId>`;
+    const hasCoT = !!lastFinalResult?.hasCoT;
+    let resultContent: string;
 
-    const resultJson: Record<string, unknown> = {
-      text: suppressText ? '' : joinedText,
-      stopReason,
-      minionChatId: minionChat.id,
-    };
-    if (usedReturnTool && returnValue !== undefined) {
-      resultJson.result = returnValue;
+    if (returnMode === 'both') {
+      // JSON format for 'both' mode (can have text + result)
+      const resultJson: Record<string, unknown> = {
+        stopReason,
+        hasCoT,
+        minionChatId: minionChat.id,
+        text: joinedText,
+      };
+      if (usedReturnTool && returnValue !== undefined) {
+        resultJson.result = returnValue;
+      }
+      resultContent = JSON.stringify(resultJson);
+    } else {
+      // Simplified tag format for all other modes
+      let body: string;
+      if (usedReturnTool && returnValue !== undefined) {
+        body = returnValue;
+      } else if (returnMode === 'enforced' || returnMode === 'auto-enforced') {
+        body = 'Warning: Return tool was not called';
+      } else {
+        // no-return mode, or return-only fallback when return wasn't called
+        body = joinedText;
+      }
+      const hasCoTTag = hasCoT ? '<hasCoT />\n' : '';
+      resultContent = minionTag + '\n' + hasCoTTag + body;
     }
 
     return {
-      content: JSON.stringify(resultJson),
+      content: resultContent,
       renderingGroups: [infoGroup, ...accumulatedGroups],
       tokenTotals: totals,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
-      content: `Minion execution failed: ${message}`,
+      content: truncateError(`Minion execution failed: ${message}`),
       isError: true,
       renderingGroups: [infoGroup, ...accumulatedGroups],
       tokenTotals: totals,
@@ -908,12 +1277,27 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push(`Display: ${minionInput.displayName}`);
   }
 
+  if (minionInput.injectFiles?.length) {
+    lines.push(`Files: ${minionInput.injectFiles.join(', ')}`);
+  }
+
   if (minionInput.message) {
     lines.push('');
     lines.push(minionInput.message);
   }
 
   return lines.join('\n');
+}
+
+/** Extract minionChatId, hasCoT, and body from simplified tag format */
+export function parseSimplifiedOutput(
+  output: string
+): { minionChatId: string; hasCoT: boolean; body: string } | undefined {
+  const match = output.match(
+    /^<minionChatId>([^<]+)<\/minionChatId>\n?(?:<hasCoT \/>\n?)?([\s\S]*)$/
+  );
+  if (!match) return undefined;
+  return { minionChatId: match[1], hasCoT: output.includes('<hasCoT />'), body: match[2] };
 }
 
 /**
@@ -924,10 +1308,31 @@ function renderMinionOutput(output: string, isError?: boolean): string {
     return output;
   }
 
+  // Simplified tag format (non-both modes)
+  const simplified = parseSimplifiedOutput(output);
+  if (simplified) {
+    const lines: string[] = [];
+    if (simplified.hasCoT) {
+      lines.push('[CoT: yes]');
+    }
+    if (simplified.body) {
+      lines.push(simplified.body);
+    }
+    lines.push(`[minionChatId: ${simplified.minionChatId}]`);
+    return lines.join('\n\n');
+  }
+
+  // JSON format (both mode, legacy)
   try {
     const parsed = JSON.parse(output);
     const lines: string[] = [];
 
+    if (parsed.hasCoT) {
+      lines.push('[CoT: yes]');
+    }
+    if (parsed.warning) {
+      lines.push(`⚠ ${parsed.warning}`);
+    }
     if (parsed.text) {
       lines.push('Text output captured.');
     }
@@ -952,7 +1357,7 @@ async function getMinionSystemPromptInjection(
   context: SystemPromptContext,
   opts: ToolOptions
 ): Promise<string> {
-  if (opts.namespacedMinion !== true) return '';
+  if (opts.namespacedMinion === 'off' || !opts.namespacedMinion) return '';
 
   try {
     const dirExists = await vfs.isDirectory(context.projectId, '/minions');
@@ -990,15 +1395,24 @@ async function getMinionSystemPromptInjection(
   }
 }
 
-/** Build minion tool description, conditionally including web search bullet. */
+/** Build minion tool description, conditionally including web search and retry bullets. */
 function getMinionDescription(opts: ToolOptions): string {
   const lines = [
     'Delegate a task to a minion sub-agent. The minion runs independently with its own agentic loop and can use a subset of available tools. Use this to parallelize work or delegate specific tasks.',
     '',
     'The minion will execute the task and return the result. You can optionally:',
     '- Continue a previous minion conversation by providing minionChatId',
-    '- Retry the last run by setting action to "retry" with the same minionChatId. Omit message to re-send the original, or provide a new message to replace it.',
   ];
+
+  if (opts.autoRollback === true) {
+    lines.push(
+      '- If a previous run failed, the minion automatically recovers on next continuation.'
+    );
+  } else {
+    lines.push(
+      '- Retry the last run by setting action to "retry" with the same minionChatId. Omit message to re-send the original, or provide a new message to replace it.'
+    );
+  }
 
   if (opts.allowWebSearch === true) {
     lines.push('- Enable web search for the minion via enableWeb');
@@ -1006,10 +1420,11 @@ function getMinionDescription(opts: ToolOptions): string {
 
   lines.push(
     '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)',
-    '- Provide a displayName to label this minion in the UI'
+    '- Provide a displayName to label this minion in the UI',
+    '- Inject file context via injectFiles (array of VFS paths). Contents are prepended to the message.'
   );
 
-  if (opts.namespacedMinion === true) {
+  if (opts.namespacedMinion && opts.namespacedMinion !== 'off') {
     lines.push(
       '- Select a persona via the persona parameter. Each persona gets its own isolated VFS namespace and system prompt from /minions/<name>.md'
     );
@@ -1023,7 +1438,7 @@ function getMinionDescription(opts: ToolOptions): string {
     }
   }
 
-  if (opts.noReturnTool !== true) {
+  if (resolveReturnMode(opts) !== 'no-return') {
     lines.push(
       '',
       "The minion always has access to a 'return' tool to explicitly signal completion with a result."
@@ -1033,35 +1448,44 @@ function getMinionDescription(opts: ToolOptions): string {
   return lines.join('\n');
 }
 
-/** Build minion input schema, conditionally including enableWeb property. */
+/** Build minion input schema, conditionally including enableWeb and action properties. */
 function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
-  const properties: Record<string, unknown> = {
-    action: {
+  const properties: Record<string, unknown> = {};
+
+  // Omit action when autoRollback is on — caller doesn't see the retry option
+  if (opts.autoRollback !== true) {
+    properties.action = {
       type: 'string',
       enum: ['message', 'retry'],
       description:
-        'Action to perform. "message" (default) sends a new message. "retry" rolls back the minion chat to the last checkpoint and re-executes.',
-    },
-    minionChatId: {
-      type: 'string',
-      description: 'Optional: ID of an existing minion chat to continue the conversation',
-    },
-    message: {
-      type: 'string',
-      description:
-        'The task or message to send to the minion. Required for "message" action. For "retry": omit to re-send the original, or provide a new message to replace it.',
-    },
-    enabledTools: {
-      type: 'array',
-      items: { type: 'string' },
-      description:
-        "Tools to enable for the minion (must be subset of project tools, 'minion' excluded). Defaults to none — specify tools explicitly.",
-    },
-    displayName: {
-      type: 'string',
-      description:
-        'Display name shown in the UI for this minion call. If omitted, persona name is used.',
-    },
+        'Action to perform. "message" (default) sends a new message. "retry" rolls back the minion chat to the last savepoint and re-executes.',
+    };
+  }
+
+  properties.minionChatId = {
+    type: 'string',
+    description: 'Optional: ID of an existing minion chat to continue the conversation',
+  };
+  properties.message = {
+    type: 'string',
+    description:
+      'The task or message to send to the minion. Required for "message" action. For "retry": omit to re-send the original, or provide a new message to replace it.',
+  };
+  properties.enabledTools = {
+    type: 'array',
+    items: { type: 'string' },
+    description:
+      "Tools to enable for the minion (must be subset of project tools, 'minion' excluded). Defaults to none — specify tools explicitly.",
+  };
+  properties.displayName = {
+    type: 'string',
+    description:
+      'Display name shown in the UI for this minion call. If omitted, persona name is used.',
+  };
+  properties.injectFiles = {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'VFS file paths to inject as context. Contents are prepended to the message.',
   };
 
   if (opts.allowWebSearch === true) {
@@ -1071,7 +1495,7 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     };
   }
 
-  if (opts.namespacedMinion === true) {
+  if (opts.namespacedMinion && opts.namespacedMinion !== 'off') {
     properties.persona = {
       type: 'string',
       description:
@@ -1108,6 +1532,7 @@ export const minionTool: ClientSideTool = {
   displayName: 'Minion',
   displaySubtitle: 'Delegate tasks to a sub-agent',
   complex: true,
+  parallelThrottleMs: 2000,
   description: getMinionDescription,
   inputSchema: getMinionInputSchema,
   systemPrompt: getMinionSystemPromptInjection,
@@ -1138,27 +1563,6 @@ export const minionTool: ClientSideTool = {
     },
     {
       type: 'boolean',
-      id: 'allowWebSearch',
-      label: 'Allow Web Search',
-      subtitle: 'Let minions use web search when requested',
-      default: false,
-    },
-    {
-      type: 'boolean',
-      id: 'returnOnly',
-      label: 'Return Only',
-      subtitle: 'Suppress accumulated text when return tool provides a result',
-      default: false,
-    },
-    {
-      type: 'boolean',
-      id: 'noReturnTool',
-      label: 'No Return Tool',
-      subtitle: 'Remove the return tool from minion toolset',
-      default: false,
-    },
-    {
-      type: 'boolean',
       id: 'disableReasoning',
       label: 'Disable Reasoning',
       subtitle: 'Turn off reasoning/thinking for minion calls regardless of project settings',
@@ -1166,17 +1570,133 @@ export const minionTool: ClientSideTool = {
     },
     {
       type: 'boolean',
-      id: 'deferReturn',
-      label: 'Deferred Return',
-      subtitle: 'Return tool stores result without breaking the agentic loop',
+      id: 'allowWebSearch',
+      label: 'Allow Web Search',
+      subtitle: 'Let minions use web search when requested',
       default: false,
     },
     {
       type: 'boolean',
-      id: 'namespacedMinion',
-      label: 'Namespaced Minion',
-      subtitle: 'Isolate each persona into its own VFS namespace',
+      id: 'autoRollback',
+      label: 'Auto Rollback',
+      subtitle: 'Automatically roll back previously failed interactions on next continuation',
       default: false,
+    },
+    {
+      type: 'select',
+      id: 'namespacedMinion',
+      label: 'Namespace',
+      subtitle: 'Isolate minion personas into VFS namespaces',
+      default: 'off',
+      choices: [
+        { value: 'off', label: 'Off' },
+        { value: 'persona', label: 'Persona' },
+        { value: 'all', label: 'All' },
+      ],
+      migrateFrom: [{ optionId: 'namespacedMinion', whenTrue: 'all' }],
+    },
+    {
+      type: 'select',
+      id: 'returnMode',
+      label: 'Return Mode',
+      subtitle: 'How minion output is captured',
+      default: 'both',
+      choices: [
+        { value: 'no-return', label: 'No Return' },
+        { value: 'both', label: 'Both' },
+        { value: 'return-only', label: 'Return Only' },
+        { value: 'enforced', label: 'Enforced' },
+        { value: 'auto-enforced', label: 'Auto Enforced' },
+      ],
+      migrateFrom: [
+        { optionId: 'noReturnTool', whenTrue: 'no-return' },
+        { optionId: 'returnOnly', whenTrue: 'return-only' },
+      ],
+    },
+    {
+      type: 'text',
+      id: 'returnEnforceMessage',
+      label: 'Auto-Enforce Reminder',
+      subtitle: 'Message sent when auto-enforced mode retries because return was not called',
+      default: '',
+      placeholder:
+        'You have not used the return tool to respond. Please put your response in the return tool call.',
+      visibleWhen: { optionId: 'returnMode', value: 'auto-enforced' },
+    },
+    {
+      type: 'select',
+      id: 'deferReturn',
+      label: 'Deferred Return',
+      subtitle: 'How the return tool interacts with the agentic loop',
+      default: 'no',
+      choices: [
+        { value: 'no', label: 'No' },
+        { value: 'auto-ack', label: 'Auto Ack' },
+        { value: 'free-run', label: 'Free Run' },
+      ],
+      migrateFrom: [{ optionId: 'deferReturn', whenTrue: 'free-run' }],
+      visibleWhen: {
+        optionId: 'returnMode',
+        value: ['both', 'return-only', 'enforced', 'auto-enforced'],
+      },
+    },
+    {
+      type: 'number',
+      id: 'deferredSoftStopRounds',
+      label: 'Soft Stop Rounds',
+      subtitle: 'Rounds after deferred return before injecting stop messages',
+      default: 5,
+      min: 0,
+      visibleWhen: { optionId: 'deferReturn', value: 'free-run' },
+    },
+    {
+      type: 'number',
+      id: 'deferredForceStopRounds',
+      label: 'Force Stop Rounds',
+      subtitle: 'Rounds after deferred return before force-stopping the loop',
+      default: 10,
+      min: 0,
+      visibleWhen: { optionId: 'deferReturn', value: 'free-run' },
+    },
+    {
+      type: 'text',
+      id: 'returnAckMessage',
+      label: 'Return Accepted',
+      subtitle: 'Tool result message sent when return stores a result',
+      default: '',
+      placeholder: 'Recorded. Stop and user will call you back.',
+      visibleWhen: { optionId: 'deferReturn', value: ['auto-ack', 'free-run'] },
+    },
+    {
+      type: 'text',
+      id: 'autoAckMessage',
+      label: 'Acknowledge Message',
+      subtitle: 'Assistant text appended after return to create a clean conversation boundary',
+      default: '',
+      placeholder: 'Will do.',
+      visibleWhen: { optionId: 'deferReturn', value: 'auto-ack' },
+    },
+    {
+      type: 'text',
+      id: 'returnDuplicateMessage',
+      label: 'Return Already Stored',
+      subtitle: 'Error sent when return is called again after a result is stored',
+      default: '',
+      placeholder:
+        'The previous return has been recorded already. Please stop and user will call back.',
+      visibleWhen: { optionId: 'deferReturn', value: 'free-run' },
+    },
+    {
+      type: 'select',
+      id: 'fileInjectionMode',
+      label: 'File Injection Mode',
+      subtitle: 'How injected files are sent to the minion LLM',
+      default: 'inline',
+      choices: [
+        { value: 'inline', label: 'Inline' },
+        { value: 'separate-block', label: 'Separate Blocks' },
+        { value: 'as-file', label: 'Document Blocks' },
+      ],
     },
   ],
 

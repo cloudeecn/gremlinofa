@@ -1,22 +1,17 @@
 import OpenAI from 'openai';
+import { getProxyConfig } from './proxyConfig';
 import type {
   APIDefinition,
   Message,
-  MessageStopReason,
   Model,
   ReasoningEffort,
-  RenderingBlockGroup,
-  RenderingContentBlock,
-  ToolResultBlock,
   ToolUseBlock,
   ToolOptions,
 } from '../../types';
-
-import { groupAndConsolidateBlocks } from '../../types';
-import { generateUniqueId } from '../../utils/idGenerator';
 import { mapReasoningEffort } from '../../utils/reasoningEffort';
 import { toolRegistry } from '../tools/clientSideTools';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import { effectiveInjectionMode } from './fileInjectionHelper';
 import {
   convertOutputToStreamChunks,
   createMapperState,
@@ -24,7 +19,7 @@ import {
   mapResponsesEventToStreamChunks,
   parseResponsesStreamEvent,
 } from './responsesStreamMapper';
-import { applyContextTidy, type FilterBlocksFn } from './contextTidy';
+import { findCheckpointIndex, findThinkingBoundary, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from './modelMetadata';
 import { storage } from '../storage';
 import {
@@ -33,56 +28,111 @@ import {
 } from './model_metadatas/openRouterModelMapper';
 
 /**
- * Responses API block filter for context tidy.
- * Removes reasoning items always, function_call by name, function_call_output by ID.
+ * Combined message tidy: checkpoint filtering, thinking pruning, empty text removal.
+ * Single forward pass with direct access to Responses API item types.
  */
-const filterResponsesBlocks: FilterBlocksFn = (
-  fullContent,
-  removedToolNames,
-  isCheckpoint,
-  removedToolUseIds
-) => {
-  if (!Array.isArray(fullContent)) return { filtered: fullContent, newRemovedIds: [] };
+function tidyMessages(
+  messages: Message<unknown>[],
+  checkpointMessageId: string | undefined,
+  tidyToolNames: Set<string> | undefined,
+  pruneThinking: boolean,
+  pruneEmptyText: boolean
+): Message<unknown>[] {
+  const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
+  const thinkingBoundary = pruneThinking || pruneEmptyText ? findThinkingBoundary(messages) : -1;
 
-  const filtered: unknown[] = [];
-  const newRemovedIds: string[] = [];
+  if (checkpointIdx === -1 && thinkingBoundary <= 0) return messages;
 
-  for (const item of fullContent) {
-    const i = item as { type?: string; name?: string; call_id?: string };
+  const toolNames = tidyToolNames ?? new Set<string>();
+  const removedToolUseIds = new Set<string>();
+  const processUntil = Math.max(checkpointIdx, thinkingBoundary - 1);
+  const result: Message<unknown>[] = [];
 
-    // Always remove reasoning blocks
-    if (i.type === 'reasoning') continue;
+  for (let i = 0; i <= processUntil; i++) {
+    const msg = messages[i];
+    const inCheckpoint = checkpointIdx >= 0 && i <= checkpointIdx;
+    const isCheckpoint = inCheckpoint && i === checkpointIdx;
+    const inThinking = thinkingBoundary > 0 && i < thinkingBoundary;
 
-    // Checkpoint message: only reasoning removed
-    if (isCheckpoint) {
-      filtered.push(item);
+    if (msg.content.modelFamily !== 'responses_api' || msg.content.fullContent == null) {
+      if (inCheckpoint && !isCheckpoint) {
+        const { message, newRemovedIds } = tidyAgnosticMessage(
+          msg,
+          toolNames,
+          removedToolUseIds,
+          false
+        );
+        for (const id of newRemovedIds) removedToolUseIds.add(id);
+        if (message) result.push(message);
+      } else if (inThinking) {
+        const hasText = msg.content.content.trim().length > 0;
+        const hasTools =
+          (msg.content.toolCalls?.length ?? 0) + (msg.content.toolResults?.length ?? 0) > 0;
+        if (hasText || hasTools) result.push(msg);
+      } else {
+        result.push(msg);
+      }
       continue;
     }
 
-    // function_call — remove if name matches
-    if (i.type === 'function_call' && i.name && removedToolNames.has(i.name)) {
-      if (i.call_id) newRemovedIds.push(i.call_id);
-      continue;
+    let items = msg.content.fullContent as {
+      type?: string;
+      name?: string;
+      call_id?: string;
+      text?: string;
+    }[];
+
+    if (inCheckpoint) {
+      const filtered: typeof items = [];
+      for (const it of items) {
+        if (it.type === 'reasoning') continue;
+        if (isCheckpoint) {
+          filtered.push(it);
+          continue;
+        }
+        if (it.type === 'function_call' && it.name && toolNames.has(it.name)) {
+          if (it.call_id) removedToolUseIds.add(it.call_id);
+          continue;
+        }
+        if (it.type === 'function_call_output' && it.call_id && removedToolUseIds.has(it.call_id)) {
+          continue;
+        }
+        filtered.push(it);
+      }
+      items = filtered;
     }
 
-    // function_call_output — remove if matching a removed call
-    if (i.type === 'function_call_output' && i.call_id && removedToolUseIds.has(i.call_id)) {
-      continue;
+    if (inThinking && !inCheckpoint && pruneThinking) {
+      items = items.filter(it => it.type !== 'reasoning');
     }
 
-    filtered.push(item);
+    if (inThinking && pruneEmptyText) {
+      items = items.filter(it => it.type !== 'output_text' || (it.text?.trim()?.length ?? 0) > 0);
+    }
+
+    if (items.length === 0) continue;
+    if (items !== (msg.content.fullContent as typeof items)) {
+      result.push({ ...msg, content: { ...msg.content, fullContent: items } });
+    } else {
+      result.push(msg);
+    }
   }
 
-  return { filtered, newRemovedIds };
-};
+  for (let i = processUntil + 1; i < messages.length; i++) {
+    result.push(messages[i]);
+  }
+
+  return result;
+}
 
 export class ResponsesClient implements APIClient {
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
-    // Create OpenAI client with API key and custom baseUrl if provided
+    const proxy = getProxyConfig(apiDefinition);
     const client = new OpenAI({
       dangerouslyAllowBrowser: true,
       apiKey: apiDefinition.apiKey,
-      baseURL: apiDefinition.baseUrl || undefined,
+      baseURL: proxy?.baseURL ?? (apiDefinition.baseUrl || undefined),
+      ...(proxy && { defaultHeaders: proxy.headers }),
     });
 
     // Get all models from the API
@@ -174,20 +224,21 @@ export class ResponsesClient implements APIClient {
   ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.Responses.ResponseInputItem[]>, unknown> {
     let requestParams: OpenAI.Responses.ResponseCreateParams = {};
     try {
-      // Create OpenAI client with API key and custom baseUrl if provided
+      const proxy = getProxyConfig(apiDefinition);
       const client = new OpenAI({
         dangerouslyAllowBrowser: true,
         apiKey: apiDefinition.apiKey,
-        baseURL: apiDefinition.baseUrl || undefined,
+        baseURL: proxy?.baseURL ?? (apiDefinition.baseUrl || undefined),
+        ...(proxy && { defaultHeaders: proxy.headers }),
       });
 
-      // Apply context tidy before message conversion
-      const tidiedMessages = applyContextTidy(
+      // Tidy messages: checkpoint filtering, thinking pruning, empty text removal
+      const tidiedMessages = tidyMessages(
         messages,
         options.checkpointMessageId,
         options.tidyToolNames,
-        'responses_api',
-        filterResponsesBlocks
+        apiDefinition.advancedSettings?.pruneThinking ?? false,
+        apiDefinition.advancedSettings?.pruneEmptyText ?? false
       );
 
       // Build input array using ResponseInputItem format
@@ -209,32 +260,39 @@ export class ResponsesClient implements APIClient {
       // Add conversation messages
       tidiedMessages.forEach(msg => {
         if (msg.role === 'user') {
-          // Check if this is a tool result message (fullContent has function_call_output items)
+          // Legacy stored messages: fullContent has function_call_output items
           if (
             msg.content.modelFamily === 'responses_api' &&
             msg.content.fullContent &&
             Array.isArray(msg.content.fullContent)
           ) {
-            // Cast through unknown since stored data loses SDK type info
             const fullContentArr = msg.content.fullContent;
             const hasFunctionCallOutput = fullContentArr.some(
               item => item.type === 'function_call_output'
             );
             if (hasFunctionCallOutput) {
-              // Add function_call_output items directly
               for (const item of fullContentArr) {
                 if (item.type === 'function_call_output') {
                   input.push(item);
                 }
               }
-              return; // Skip normal user message processing
+              return;
             }
           }
 
-          const contentItems: (
-            | OpenAI.Responses.ResponseInputText
-            | OpenAI.Responses.ResponseInputImage
-          )[] = [];
+          // New messages and cross-model: use toolResults
+          if (msg.content.toolResults?.length) {
+            for (const tr of msg.content.toolResults) {
+              input.push({
+                type: 'function_call_output',
+                call_id: tr.tool_use_id,
+                output: tr.content,
+              } as OpenAI.Responses.ResponseInputItem);
+            }
+            return;
+          }
+
+          const contentItems: OpenAI.Responses.ResponseInputContent[] = [];
 
           // Add images first if attachments present
           if (msg.attachments && msg.attachments.length > 0) {
@@ -243,6 +301,27 @@ export class ResponsesClient implements APIClient {
                 type: 'input_image',
                 image_url: `data:${attachment.mimeType};base64,${attachment.data}`,
               } as OpenAI.Responses.ResponseInputImage);
+            }
+          }
+
+          // Add injected file blocks based on injection mode
+          if (msg.content.injectedFiles?.length && msg.content.injectionMode) {
+            const mode = effectiveInjectionMode(msg.content.injectionMode, 'responses_api');
+            if (mode === 'as-file') {
+              for (const file of msg.content.injectedFiles) {
+                contentItems.push({
+                  type: 'input_file',
+                  file_data: `data:text/plain;base64,${btoa(unescape(encodeURIComponent(file.content)))}`,
+                  filename: file.path,
+                } as OpenAI.Responses.ResponseInputContent);
+              }
+            } else if (mode === 'separate-block') {
+              for (const file of msg.content.injectedFiles) {
+                contentItems.push({
+                  type: 'input_text',
+                  text: `=== ${file.path} ===\n${file.content}`,
+                });
+              }
             }
           }
 
@@ -271,6 +350,23 @@ export class ResponsesClient implements APIClient {
                 delete item.parsed_arguments;
               }
               input.push(item);
+            }
+          } else if (msg.content.toolCalls?.length) {
+            // Cross-model reconstruction: text message + function_call items
+            if (msg.content.content.trim()) {
+              input.push({
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: msg.content.content }],
+              } as OpenAI.Responses.ResponseInputItem);
+            }
+            for (const tc of msg.content.toolCalls) {
+              input.push({
+                type: 'function_call',
+                call_id: tc.id,
+                name: tc.name,
+                arguments: JSON.stringify(tc.input),
+              } as OpenAI.Responses.ResponseInputItem);
             }
           } else {
             input.push({
@@ -320,7 +416,7 @@ export class ResponsesClient implements APIClient {
 
       // Get model metadata for reasoning configuration
       const model = await storage.getModel(apiDefinition.id, modelId);
-      this.applyReasoning(requestParams, options, model);
+      this.applyReasoning(requestParams, options, model, apiDefinition);
 
       // Add tools if present
       if (tools.length > 0) {
@@ -490,10 +586,11 @@ export class ResponsesClient implements APIClient {
     return {
       textContent,
       thinkingContent: thinkingContent || thinkingSummary || undefined,
+      hasCoT: fullContent.some(item => item.type === 'reasoning'),
       fullContent,
       stopReason: hasFunctionCall ? 'tool_use' : undefined,
       inputTokens: inputTokens - cachedTokens,
-      outputTokens,
+      outputTokens: outputTokens - reasoningTokens,
       cacheReadTokens: cachedTokens,
       reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
       webSearchCount: webSearchCount > 0 ? webSearchCount : undefined,
@@ -508,15 +605,29 @@ export class ResponsesClient implements APIClient {
       reasoningEffort?: ReasoningEffort;
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
     },
-    model?: Model
+    model?: Model,
+    apiDefinition?: APIDefinition
   ) {
     const effort = options.reasoningEffort;
     const summary = options.reasoningSummary;
+    const useDeFactoThinking =
+      model?.deFactoThinking || apiDefinition?.advancedSettings?.deFactoThinking;
 
     if (options.temperature) requestParams.temperature = options.temperature;
 
     // Skip reasoning if explicitly disabled or model doesn't support it
     if (options.enableReasoning === false || model?.reasoningMode === 'none') {
+      if (useDeFactoThinking) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (requestParams as any)['thinking'] = { type: 'disabled' };
+      }
+      return;
+    }
+
+    // De facto thinking: inject { thinking: { type: "enabled" } } and skip standard params
+    if (useDeFactoThinking) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (requestParams as any)['thinking'] = { type: 'enabled' };
       return;
     }
 
@@ -535,155 +646,6 @@ export class ResponsesClient implements APIClient {
     const mappedEffort = mapReasoningEffort(effort, supportedEfforts as ReasoningEffort[]);
     requestParams.reasoning = { effort: mappedEffort, summary };
     requestParams.include = ['reasoning.encrypted_content'];
-  }
-
-  migrateMessageRendering(
-    fullContent: unknown,
-    stopReason: string | null
-  ): {
-    renderingContent: RenderingBlockGroup[];
-    stopReason: MessageStopReason;
-  } {
-    // Responses API stores fullContent as ResponseInputItem[] (output items)
-    // Convert each item to appropriate RenderingContentBlock
-    const blocks: RenderingContentBlock[] = [];
-    let mappedStopReason = this.mapStopReason(stopReason);
-
-    if (Array.isArray(fullContent)) {
-      for (const item of fullContent as Array<Record<string, unknown>>) {
-        switch (item.type) {
-          case 'reasoning': {
-            // Extract text from summary array
-            const summary = item.summary as Array<Record<string, unknown>> | undefined;
-            if (summary && Array.isArray(summary)) {
-              let thinkingText = '';
-              for (const part of summary) {
-                if (part.type === 'summary_text' && typeof part.text === 'string') {
-                  thinkingText += part.text;
-                }
-              }
-              if (thinkingText.trim()) {
-                blocks.push({ type: 'thinking', thinking: thinkingText });
-              }
-            }
-            break;
-          }
-
-          case 'web_search_call': {
-            // Extract query from action
-            const action = item.action as Record<string, unknown> | undefined;
-            const id = (item.id as string) || '';
-            if (action) {
-              const actionType = action.type as string;
-              let query = '';
-              if (actionType === 'search') {
-                query = (action.query as string) || '';
-              } else if (actionType === 'open_page') {
-                query = `Opening: ${action.url as string}`;
-              }
-
-              // Extract sources as results
-              const sources = action.sources as Array<Record<string, unknown>> | undefined;
-              const results = (sources || []).map(source => ({
-                title: (source.title as string) || '',
-                url: (source.url as string) || '',
-              }));
-
-              if (query) {
-                blocks.push({
-                  type: 'web_search',
-                  id,
-                  query,
-                  results,
-                });
-              }
-            }
-            break;
-          }
-
-          case 'function_call': {
-            // Tool use block
-            const callId = (item.call_id as string) || (item.id as string) || '';
-            const name = (item.name as string) || '';
-            const argsStr = (item.arguments as string) || '{}';
-            let input: Record<string, unknown> = {};
-            try {
-              input = JSON.parse(argsStr) as Record<string, unknown>;
-            } catch {
-              // Keep empty input on parse failure
-            }
-
-            blocks.push({
-              type: 'tool_use',
-              id: callId,
-              name,
-              input,
-            });
-
-            // Function call means tool_use stop reason
-            mappedStopReason = 'tool_use';
-            break;
-          }
-
-          case 'message': {
-            // Extract text from message content
-            if (item.role !== 'assistant') continue;
-
-            const content = item.content;
-            if (Array.isArray(content)) {
-              let textContent = '';
-              for (const part of content as Array<Record<string, unknown>>) {
-                if (part.type === 'output_text' && typeof part.text === 'string') {
-                  textContent += part.text;
-                } else if (part.type === 'refusal' && typeof part.refusal === 'string') {
-                  textContent += part.refusal;
-                }
-              }
-              if (textContent.trim()) {
-                blocks.push({ type: 'text', text: textContent });
-              }
-            } else if (typeof content === 'string' && content.trim()) {
-              blocks.push({ type: 'text', text: content });
-            }
-            break;
-          }
-
-          default:
-            // Skip unknown item types
-            break;
-        }
-      }
-    } else if (typeof fullContent === 'string' && fullContent.trim()) {
-      // Legacy format: just text content
-      blocks.push({ type: 'text', text: fullContent });
-    }
-
-    return {
-      renderingContent: groupAndConsolidateBlocks(blocks),
-      stopReason: mappedStopReason,
-    };
-  }
-
-  /**
-   * Map OpenAI Responses API status to MessageStopReason.
-   */
-  private mapStopReason(stopReason: string | null): MessageStopReason {
-    if (!stopReason) {
-      return 'end_turn';
-    }
-    // Responses API uses: completed, incomplete, failed, in_progress, cancelled
-    switch (stopReason) {
-      case 'completed':
-        return 'end_turn';
-      case 'incomplete':
-        return 'max_tokens';
-      case 'failed':
-        return 'error';
-      case 'cancelled':
-        return 'cancelled';
-      default:
-        return stopReason;
-    }
   }
 
   /**
@@ -708,33 +670,6 @@ export class ResponsesClient implements APIClient {
       }
     }
     return toolUseBlocks;
-  }
-
-  /**
-   * Build tool result message in OpenAI Responses API expected format.
-   * Tool results are stored as FunctionCallOutput items.
-   */
-  buildToolResultMessage(
-    toolResults: ToolResultBlock[]
-  ): Message<OpenAI.Responses.ResponseInputItem[]> {
-    const functionCallOutputs: OpenAI.Responses.ResponseInputItem.FunctionCallOutput[] =
-      toolResults.map(tr => ({
-        type: 'function_call_output' as const,
-        call_id: tr.tool_use_id,
-        output: tr.content,
-      }));
-
-    return {
-      id: generateUniqueId('msg_user'),
-      role: 'user',
-      content: {
-        type: 'text',
-        content: '',
-        modelFamily: 'responses_api',
-        fullContent: functionCallOutputs,
-      },
-      timestamp: new Date(),
-    };
   }
 
   /**

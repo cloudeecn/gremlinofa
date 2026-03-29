@@ -32,6 +32,7 @@ export type RenderingContentBlock =
   | ToolUseRenderBlock
   | ToolResultRenderBlock
   | ToolInfoRenderBlock
+  | InjectedFileRenderBlock
   | ErrorRenderBlock;
 
 /** Thinking block - just the thinking text */
@@ -119,6 +120,8 @@ export interface ToolInfoRenderBlock {
   apiDefinitionId?: string;
   /** Model ID used for this minion call */
   modelId?: string;
+  /** Files injected as context via injectFiles parameter */
+  injectedFiles?: Array<{ path: string; content: string; error?: boolean }>;
 }
 
 /**
@@ -135,6 +138,14 @@ export interface TokenTotals {
   webSearchCount: number;
   cost: number;
   costUnreliable: boolean;
+}
+
+/** Injected file block — file content pre-loaded into a minion's context */
+export interface InjectedFileRenderBlock {
+  type: 'injected_file';
+  path: string;
+  content: string;
+  error?: boolean;
 }
 
 /** Error block */
@@ -156,6 +167,7 @@ export function categorizeBlock(block: RenderingContentBlock): BlockCategory {
     case 'tool_use':
     case 'tool_result':
     case 'tool_info':
+    case 'injected_file':
       return 'backstage';
     case 'text':
       return 'text';

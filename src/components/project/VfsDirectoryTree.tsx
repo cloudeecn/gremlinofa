@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import * as vfsService from '../../services/vfs/vfsService';
-import type { DirEntry } from '../../services/vfs/vfsService';
+import * as vfsService from '../../services/vfs';
+import type { DirEntry } from '../../services/vfs';
 
 // TODO: Add toggle to show deleted files/directories/orphan nodes
 
@@ -243,7 +243,7 @@ export default function VfsDirectoryTree({
   const isRootLoading = rootState?.loading ?? false;
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="ios-scroll h-full overflow-y-auto overscroll-y-contain">
       {/* Root header */}
       <div className="sticky top-0 bg-white px-3 py-2">
         <div className="text-xs font-medium tracking-wide text-gray-500 uppercase">

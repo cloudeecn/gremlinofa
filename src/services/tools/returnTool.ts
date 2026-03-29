@@ -16,10 +16,24 @@ export const returnTool: ClientSideTool = {
   displaySubtitle: 'Return a result and stop execution',
   internal: true, // Not shown in ProjectSettings UI - only available to minion agents
 
-  description: (opts: ToolOptions) =>
-    opts.deferReturn
-      ? 'Store a result to return to the caller. Execution continues after this call — you can perform cleanup or follow-up work. The stored result will be delivered when you finish.'
-      : 'Signal task completion by returning a result to the caller. This ends your current turn — no further tool calls will run. Use this when you have a final answer or deliverable ready. The caller may continue the conversation later.',
+  description: (opts: ToolOptions) => {
+    if (opts.deferReturn === 'auto-ack') {
+      return 'Return your result to the caller. The result will be stored and you will acknowledge the task. This ends your current turn.';
+    }
+    if (opts.deferReturn === 'free-run') {
+      return 'Store a result to return to the caller. Execution continues after this call — you can perform cleanup or follow-up work. The stored result will be delivered when you finish.';
+    }
+    const mode = typeof opts.returnMode === 'string' ? opts.returnMode : 'both';
+    switch (mode) {
+      case 'enforced':
+      case 'auto-enforced':
+        return 'You MUST call this tool to return your result. Responding in plain text without calling this tool is not accepted. Place your complete response in the result parameter.';
+      case 'return-only':
+        return 'Return your result by calling this tool. This is the preferred way to deliver results. Place your complete response in the result parameter. This ends your current turn.';
+      default:
+        return 'Signal task completion by returning a result to the caller. This ends your current turn — no further tool calls will run. Use this when you have a final answer or deliverable ready. The caller may continue the conversation later.';
+    }
+  },
 
   inputSchema: {
     type: 'object',

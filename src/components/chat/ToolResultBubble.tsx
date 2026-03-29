@@ -1,13 +1,16 @@
 import { useState } from 'react';
 import type { RenderingBlockGroup, ToolResultRenderBlock } from '../../types/content';
 import type { Message } from '../../types';
-import { formatTimestamp, formatTokens } from '../../utils/messageFormatters';
+import { formatTimestamp, formatTokenGroup } from '../../utils/messageFormatters';
 import { usePreferences } from '../../hooks/usePreferences';
-import ToolResultView from './ToolResultView';
+import ToolResultView, { FocusedMinionView } from './ToolResultView';
 
 export interface ToolResultBubbleProps {
   message: Message<unknown>;
   onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
+  onDeleteMessage?: (messageId: string) => void;
+  focusMode?: boolean;
+  expandMinions?: boolean;
 }
 
 /**
@@ -17,7 +20,13 @@ export interface ToolResultBubbleProps {
  * 1. Results with renderingGroups → ToolResultView (complex, expanded view)
  * 2. Simple results → collapsible purple group
  */
-export default function ToolResultBubble({ message, onAction }: ToolResultBubbleProps) {
+export default function ToolResultBubble({
+  message,
+  onAction,
+  onDeleteMessage,
+  focusMode,
+  expandMinions,
+}: ToolResultBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const { iconOnRight } = usePreferences();
 
@@ -64,8 +73,8 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
 
   return (
     <div className="flex flex-col items-start">
-      {/* Simple tool results in collapsible group */}
-      {hasSimple && (
+      {/* Simple tool results in collapsible group (hidden in focus mode) */}
+      {hasSimple && !focusMode && (
         <div className="mb-2 w-full overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50">
           <button
             onClick={() => setIsExpanded(!isExpanded)}
@@ -127,7 +136,7 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
                       </span>
                     )}
                   </button>
-                  <pre className="ml-4 overflow-x-auto rounded bg-gray-100 p-2 text-xs whitespace-pre-wrap text-gray-700">
+                  <pre className="ml-4 rounded bg-gray-100 p-2 text-xs break-all whitespace-pre-wrap text-gray-700">
                     {result.renderedContent ?? result.content}
                   </pre>
                 </div>
@@ -137,49 +146,61 @@ export default function ToolResultBubble({ message, onAction }: ToolResultBubble
         </div>
       )}
 
-      {/* Complex results (with renderingGroups) rendered via ToolResultView */}
+      {/* Complex results (with renderingGroups) */}
       {complexResults.map((result, index) => (
         <div key={`complex-${index}`} className="mb-2 w-full">
-          <ToolResultView block={result} />
+          {expandMinions ? <FocusedMinionView block={result} /> : <ToolResultView block={result} />}
         </div>
       ))}
 
-      {/* Timestamp, cost, and actions — hidden while any tool is still in progress */}
-      {toolResults.every(r => !r.status || r.status === 'complete' || r.status === 'error') && (
-        <div className="mt-1 flex items-center gap-2">
-          <span className="text-[10px] text-gray-500">{formatTimestamp(message.timestamp)}</span>
-          {(message.metadata?.messageCost ?? 0) > 0 && message.metadata && (
-            <span className="text-[10px] text-gray-500">
-              <span className="text-gray-400">|</span>{' '}
-              {formatTokens('↑', message.metadata.inputTokens)}
-              {message.metadata.inputTokens ? ' ' : ''}
-              {formatTokens('↓', message.metadata.outputTokens)}
-              {formatTokens(' R:', message.metadata.reasoningTokens)}
-              {formatTokens(' C↑', message.metadata.cacheCreationTokens)}
-              {formatTokens(' C↓', message.metadata.cacheReadTokens)} $
-              {message.metadata.messageCost!.toFixed(3)}
-            </span>
-          )}
-          {onAction && (
-            <>
+      {/* Timestamp, cost, and actions — hidden in focus mode or while any tool is still in progress */}
+      {!focusMode &&
+        toolResults.every(r => !r.status || r.status === 'complete' || r.status === 'error') && (
+          <div className="mt-1 flex items-center gap-2">
+            <span className="text-[10px] text-gray-500">{formatTimestamp(message.timestamp)}</span>
+            {(message.metadata?.messageCost ?? 0) > 0 && message.metadata && (
+              <span className="text-[10px] text-gray-500">
+                <span className="text-gray-400">|</span>{' '}
+                {formatTokenGroup('↑', message.metadata.inputTokens, [
+                  { prefix: 'C↑', value: message.metadata.cacheCreationTokens },
+                  { prefix: 'C↓', value: message.metadata.cacheReadTokens },
+                ])}
+                {message.metadata.inputTokens ? ' ' : ''}
+                {formatTokenGroup('↓', message.metadata.outputTokens, [
+                  { prefix: 'R:', value: message.metadata.reasoningTokens },
+                ])}{' '}
+                ${message.metadata.messageCost!.toFixed(3)}
+              </span>
+            )}
+            {onAction && (
+              <>
+                <button
+                  onClick={() => onAction('resend', message.id)}
+                  className="text-[10px] text-gray-400 transition-colors hover:text-blue-600"
+                  title="Resend from here"
+                >
+                  🔄
+                </button>
+                <button
+                  onClick={() => onAction('delete', message.id)}
+                  className="text-[10px] text-gray-400 transition-colors hover:text-red-600"
+                  title="Delete this message and all after"
+                >
+                  🗑️
+                </button>
+              </>
+            )}
+            {onDeleteMessage && (
               <button
-                onClick={() => onAction('resend', message.id)}
-                className="text-[10px] text-gray-400 transition-colors hover:text-blue-600"
-                title="Resend from here"
-              >
-                🔄
-              </button>
-              <button
-                onClick={() => onAction('delete', message.id)}
+                onClick={() => onDeleteMessage(message.id)}
                 className="text-[10px] text-gray-400 transition-colors hover:text-red-600"
-                title="Delete this message and all after"
+                title="Delete this message"
               >
-                🗑️
+                ❌
               </button>
-            </>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        )}
     </div>
   );
 }

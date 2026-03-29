@@ -344,7 +344,7 @@ export class ResponsesClient implements APIClient {
             // Include ALL stored items (message, function_call, reasoning, etc.)
             // Don't filter - API needs full context including encrypted reasoning
             // Cast through unknown since stored data loses SDK type info
-            const storedItems = msg.content.fullContent as OpenAI.Responses.ResponseOutputItem[];
+            const storedItems = msg.content.fullContent as OpenAI.Responses.ResponseInputItem[];
             for (const item of storedItems) {
               if ('parsed_arguments' in item) {
                 delete item.parsed_arguments;
@@ -519,10 +519,19 @@ export class ResponsesClient implements APIClient {
    */
   private processResponse(
     response: OpenAI.Responses.Response
-  ): StreamResult<OpenAI.Responses.ResponseOutputItem[]> {
+  ): StreamResult<OpenAI.Responses.ResponseInputItem[]> {
     // Extract text content from output
     let textContent = response.output_text;
-    const fullContent = response.output.filter(output => output !== undefined);
+    // SDK v6.9+: output items can have status:"failed" which input validation rejects.
+    // Validate each item — streamed chunks are already yielded so user sees the content.
+    const fullContent = response.output
+      .filter(output => output !== undefined)
+      .map((item): OpenAI.Responses.ResponseInputItem => {
+        if ('status' in item && item.status === 'failed') {
+          throw new Error(`Response item failed: ${item.type}`);
+        }
+        return item as OpenAI.Responses.ResponseInputItem;
+      });
     let thinkingContent = '';
     let thinkingSummary = '';
     let hasFunctionCall = false;

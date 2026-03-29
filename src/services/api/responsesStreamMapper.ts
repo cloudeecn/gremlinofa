@@ -469,7 +469,13 @@ export function convertOutputToStreamChunks(
       case 'mcp_list_tools':
       case 'mcp_approval_request':
       case 'custom_tool_call':
-        // Not implemented - skip these tool types
+      case 'function_call_output':
+      case 'computer_call_output':
+      case 'tool_search_call':
+      case 'tool_search_output':
+      case 'local_shell_call_output':
+      case 'mcp_approval_response':
+      case 'custom_tool_call_output':
         break;
     }
   }

@@ -220,14 +220,15 @@ describe('idGenerator', () => {
     });
 
     it('detects transposition (position-dependent)', () => {
-      const id = generateChecksummedId('minion');
+      // Use a known ID where swapping positions 12-13 changes the checksum.
+      // Random IDs have ~2% chance of a hash collision on adjacent transposition
+      // (10-bit hash), making the test flaky with generateChecksummedId().
+      const id = 'minion_qw3azafiddpmwdl4ubv2nicyowemc2mhxb';
+      expect(validateIdChecksum(id)).toBe('valid');
       const arr = [...id];
-      // Swap two adjacent chars in the random portion
       const swapIdx = 'minion_'.length + 5;
-      if (arr[swapIdx] !== arr[swapIdx + 1]) {
-        [arr[swapIdx], arr[swapIdx + 1]] = [arr[swapIdx + 1], arr[swapIdx]];
-        expect(validateIdChecksum(arr.join(''))).toBe('invalid');
-      }
+      [arr[swapIdx], arr[swapIdx + 1]] = [arr[swapIdx + 1], arr[swapIdx]];
+      expect(validateIdChecksum(arr.join(''))).toBe('invalid');
     });
 
     it('returns no_checksum for legacy 32-char IDs', () => {

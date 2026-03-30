@@ -376,6 +376,34 @@ describe('Compound operations', () => {
       const body = await res.json();
       expect(body.error).toContain('3 occurrences');
     });
+
+    it('preserves $ special patterns in replacement text literally', async () => {
+      await api('PUT', `/write?projectId=${PROJECT}&path=/dollar.txt`, {
+        rawBody: Buffer.from('prefix\nconst re = /old/;\nsuffix'),
+      });
+
+      const res = await api('POST', `/str-replace?projectId=${PROJECT}&path=/dollar.txt`, {
+        body: { oldStr: 'const re = /old/;', newStr: 'const re = new RegExp(`^${pattern}$`);' },
+      });
+      expect(res.status).toBe(200);
+
+      const readRes = await api('GET', `/read?projectId=${PROJECT}&path=/dollar.txt`);
+      expect(await readRes.text()).toBe('prefix\nconst re = new RegExp(`^${pattern}$`);\nsuffix');
+    });
+
+    it('counts non-overlapping occurrences correctly', async () => {
+      await api('PUT', `/write?projectId=${PROJECT}&path=/overlap.txt`, {
+        rawBody: Buffer.from('aaa'),
+      });
+
+      const res = await api('POST', `/str-replace?projectId=${PROJECT}&path=/overlap.txt`, {
+        body: { oldStr: 'aa', newStr: 'XX' },
+      });
+      expect(res.status).toBe(200);
+
+      const readRes = await api('GET', `/read?projectId=${PROJECT}&path=/overlap.txt`);
+      expect(await readRes.text()).toBe('XXa');
+    });
   });
 
   describe('insert', () => {

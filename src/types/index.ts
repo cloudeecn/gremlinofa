@@ -233,6 +233,10 @@ export interface Project {
   extendedContext?: boolean;
   // Strip line numbers from filesystem/memory tool output
   noLineNumbers?: boolean;
+  // Remote VFS configuration
+  remoteVfsUrl?: string; // URL of remote VFS backend
+  remoteVfsPassword?: string; // Server-wide password
+  remoteVfsEncrypt?: boolean; // E2E encrypt file content (default: false)
 }
 
 // Chat pending state types
@@ -621,12 +625,21 @@ export function initializeToolOptions(
   return result;
 }
 
+/** Factory that creates a VfsAdapter for a given namespace */
+export type VfsAdapterFactory = (
+  namespace?: string
+) => import('../services/vfs/vfsAdapter').VfsAdapter;
+
 /** Context passed to tool execute function */
 export interface ToolContext {
   projectId: string;
   chatId?: string;
   namespace?: string;
   noLineNumbers?: boolean;
+  /** Pre-bound adapter using the context's namespace */
+  vfsAdapter: import('../services/vfs/vfsAdapter').VfsAdapter;
+  /** Factory to create adapters for other namespaces */
+  createVfsAdapter: VfsAdapterFactory;
 }
 
 /** Context passed to system prompt functions for dynamic generation */
@@ -640,6 +653,8 @@ export interface SystemPromptContext {
   apiType?: APIType;
   /** VFS namespace for isolated minion personas */
   namespace?: string;
+  /** VFS adapter factory — uses correct backend (local/remote) for the project */
+  createVfsAdapter?: VfsAdapterFactory;
 }
 
 /** Input schema type for tool definitions - includes index signature for SDK compatibility */

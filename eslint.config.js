@@ -12,6 +12,7 @@ export default defineConfig([
     'chatbot/**',
     'storage-backend/**',
     'cors-proxy/**',
+    'vfs-backend/**',
     '**/__tests__/**',
     '**/*.test.ts',
     '**/*.test.tsx',

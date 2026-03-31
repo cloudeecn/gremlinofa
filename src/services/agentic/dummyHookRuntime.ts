@@ -7,7 +7,7 @@
  */
 
 import { JsVMContext } from '../tools/jsvm/JsVMContext';
-import * as vfs from '../vfs';
+import type { VfsAdapter } from '../vfs/vfsAdapter';
 import type { DummyHookResult } from './agenticLoopGenerator';
 
 /** Condensed representation of a single message for hook history */
@@ -57,20 +57,16 @@ export class DummyHookRuntime {
   /**
    * Load a hook from VFS. Returns null if the hook file doesn't exist.
    */
-  static async load(
-    projectId: string,
-    namespace: string | undefined,
-    hookName: string
-  ): Promise<DummyHookRuntime | null> {
+  static async load(adapter: VfsAdapter, hookName: string): Promise<DummyHookRuntime | null> {
     const hookPath = `/hooks/${hookName}.js`;
 
     // Check if hook file exists
     try {
-      const content = await vfs.readFile(projectId, hookPath, namespace);
+      const content = await adapter.readFile(hookPath);
       if (!content) return null;
 
       // Create VM without lib loading — hooks are self-contained
-      const vm = await JsVMContext.create(projectId, false, namespace, false);
+      const vm = await JsVMContext.create(adapter, false, false);
 
       return new DummyHookRuntime(vm, content);
     } catch {

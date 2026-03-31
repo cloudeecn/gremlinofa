@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import * as vfsService from '../../services/vfs';
-import { getBasename, type VersionInfo } from '../../services/vfs';
+import { getBasename, type VfsAdapter, type VersionInfo } from '../../services/vfs';
 import {
   computeLcsDiff,
   splitLines,
@@ -11,7 +10,7 @@ import {
 } from '../../utils/lcsDiff';
 
 export interface VfsDiffViewerProps {
-  projectId: string;
+  adapter: VfsAdapter;
   path: string;
   onRollback: () => void;
   onClose: () => void;
@@ -31,12 +30,7 @@ interface DiffState {
   currentContent: string; // Content of viewingVersion
 }
 
-export default function VfsDiffViewer({
-  projectId,
-  path,
-  onRollback,
-  onClose,
-}: VfsDiffViewerProps) {
+export default function VfsDiffViewer({ adapter, path, onRollback, onClose }: VfsDiffViewerProps) {
   const [state, setState] = useState<DiffState>({
     loading: true,
     error: null,
@@ -58,7 +52,7 @@ export default function VfsDiffViewer({
 
       try {
         // Load current version content
-        const currentContent = await vfsService.getVersion(projectId, fileId, version);
+        const currentContent = await adapter.getVersion(fileId, version);
         if (currentContent === null) {
           throw new Error('Version content not found');
         }
@@ -66,7 +60,7 @@ export default function VfsDiffViewer({
         // Load previous version content (empty string for minStoredVersion or v1)
         let prevContent = '';
         if (version > minVersion) {
-          const prev = await vfsService.getVersion(projectId, fileId, version - 1);
+          const prev = await adapter.getVersion(fileId, version - 1);
           if (prev === null) {
             throw new Error('Previous version content not found');
           }
@@ -89,7 +83,7 @@ export default function VfsDiffViewer({
         }));
       }
     },
-    [projectId]
+    [adapter]
   );
 
   // Load versions list
@@ -97,13 +91,13 @@ export default function VfsDiffViewer({
     setState(prev => ({ ...prev, loading: true, error: null }));
 
     try {
-      const fileId = await vfsService.getFileId(projectId, path);
+      const fileId = await adapter.getFileId(path);
       if (!fileId) {
         throw new Error('File not found');
       }
 
       // Get file metadata including minStoredVersion
-      const meta = await vfsService.getFileMeta(projectId, path);
+      const meta = await adapter.getFileMeta(path);
       if (!meta) {
         throw new Error('File metadata not found');
       }
@@ -114,7 +108,7 @@ export default function VfsDiffViewer({
       }
 
       // Fetch real version list with timestamps
-      const versions = await vfsService.listVersions(projectId, fileId);
+      const versions = await adapter.listVersions(fileId);
 
       setState(prev => ({
         ...prev,
@@ -134,7 +128,7 @@ export default function VfsDiffViewer({
         error: message,
       }));
     }
-  }, [projectId, path, loadVersionContent]);
+  }, [adapter, path, loadVersionContent]);
 
   // Navigation handlers
   const handlePrev = useCallback(() => {
@@ -160,14 +154,14 @@ export default function VfsDiffViewer({
     setRolling(true);
     try {
       // Rollback creates new version with viewing version's content
-      await vfsService.updateFile(projectId, path, state.currentContent);
+      await adapter.writeFile(path, state.currentContent);
       onRollback();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to rollback';
       setState(prev => ({ ...prev, error: message }));
       setRolling(false);
     }
-  }, [projectId, path, state.currentContent, onRollback]);
+  }, [adapter, path, state.currentContent, onRollback]);
 
   // Load on mount
   useEffect(() => {

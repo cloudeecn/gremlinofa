@@ -1,50 +1,80 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import VfsFileViewer from '../VfsFileViewer';
+import type { VfsAdapter } from '../../../services/vfs/vfsAdapter';
 
-// Mock vfsService
-const mockReadFileWithMeta = vi.fn();
-const mockGetFileMeta = vi.fn();
-
+// Mock only the utility function from the vfs barrel
 vi.mock('../../../services/vfs', () => ({
-  readFileWithMeta: (...args: unknown[]) => mockReadFileWithMeta(...args),
-  getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),
   getBasename: (path: string) => {
     const lastSlash = path.lastIndexOf('/');
     return lastSlash === -1 ? path : path.slice(lastSlash + 1);
   },
 }));
 
-describe('VfsFileViewer', () => {
-  const defaultProps = {
-    projectId: 'proj_test_123',
-    path: '/docs/notes.txt',
-    onEdit: vi.fn(),
-    onDiff: vi.fn(),
-    onDelete: vi.fn(),
-  };
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockReadFileWithMeta.mockResolvedValue({
+function createMockAdapter(overrides?: Partial<VfsAdapter>): VfsAdapter {
+  return {
+    readDir: vi.fn().mockResolvedValue([]),
+    readFile: vi.fn().mockResolvedValue(''),
+    readFileWithMeta: vi.fn().mockResolvedValue({
       content: 'File content here',
       isBinary: false,
       mime: 'text/plain',
-    });
-    mockGetFileMeta.mockResolvedValue({
+    }),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    createFile: vi.fn().mockResolvedValue(undefined),
+    deleteFile: vi.fn().mockResolvedValue(undefined),
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    rmdir: vi.fn().mockResolvedValue(undefined),
+    rename: vi.fn().mockResolvedValue(undefined),
+    exists: vi.fn().mockResolvedValue(false),
+    isFile: vi.fn().mockResolvedValue(false),
+    isDirectory: vi.fn().mockResolvedValue(false),
+    stat: vi.fn().mockResolvedValue({ size: 0, mtime: 0 }),
+    hasVfs: vi.fn().mockResolvedValue(true),
+    clearVfs: vi.fn().mockResolvedValue(undefined),
+    strReplace: vi.fn().mockResolvedValue({ replaced: true }),
+    insert: vi.fn().mockResolvedValue({ inserted: true }),
+    appendFile: vi.fn().mockResolvedValue({ created: false }),
+    getFileMeta: vi.fn().mockResolvedValue({
       version: 3,
       createdAt: Date.now() - 86400000,
       updatedAt: Date.now(),
       minStoredVersion: 1,
       storedVersionCount: 3,
-    });
+    }),
+    getFileId: vi.fn().mockResolvedValue('file-id'),
+    listVersions: vi.fn().mockResolvedValue([]),
+    getVersion: vi.fn().mockResolvedValue(null),
+    dropOldVersions: vi.fn().mockResolvedValue(0),
+    listOrphans: vi.fn().mockResolvedValue([]),
+    restoreOrphan: vi.fn().mockResolvedValue(undefined),
+    purgeOrphan: vi.fn().mockResolvedValue(undefined),
+    compactProject: vi.fn().mockResolvedValue({ freed: 0 }),
+    ...overrides,
+  } as VfsAdapter;
+}
+
+describe('VfsFileViewer', () => {
+  let mockAdapter: VfsAdapter;
+
+  const getDefaultProps = () => ({
+    adapter: mockAdapter,
+    path: '/docs/notes.txt',
+    onEdit: vi.fn(),
+    onDiff: vi.fn(),
+    onDelete: vi.fn(),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
   describe('Loading State', () => {
     it('shows loading spinner while fetching file', async () => {
-      mockReadFileWithMeta.mockImplementation(() => new Promise(() => {}));
+      vi.mocked(mockAdapter.readFileWithMeta).mockImplementation(() => new Promise(() => {}));
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       // Filename should be visible in header even during loading
       expect(screen.getByText('notes.txt')).toBeInTheDocument();
@@ -57,13 +87,13 @@ describe('VfsFileViewer', () => {
 
   describe('Content Display', () => {
     it('displays file content after loading', async () => {
-      mockReadFileWithMeta.mockResolvedValue({
+      vi.mocked(mockAdapter.readFileWithMeta).mockResolvedValue({
         content: 'Hello, World!',
         isBinary: false,
         mime: 'text/plain',
       });
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('Hello, World!')).toBeInTheDocument();
@@ -71,7 +101,7 @@ describe('VfsFileViewer', () => {
     });
 
     it('displays filename in header', async () => {
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('notes.txt')).toBeInTheDocument();
@@ -79,13 +109,15 @@ describe('VfsFileViewer', () => {
     });
 
     it('displays version badge', async () => {
-      mockGetFileMeta.mockResolvedValue({
+      vi.mocked(mockAdapter.getFileMeta).mockResolvedValue({
         version: 5,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
         minStoredVersion: 1,
         storedVersionCount: 5,
       });
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v5')).toBeInTheDocument();
@@ -93,9 +125,13 @@ describe('VfsFileViewer', () => {
     });
 
     it('displays "(empty file)" for empty content', async () => {
-      mockReadFileWithMeta.mockResolvedValue({ content: '', isBinary: false, mime: 'text/plain' });
+      vi.mocked(mockAdapter.readFileWithMeta).mockResolvedValue({
+        content: '',
+        isBinary: false,
+        mime: 'text/plain',
+      });
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('(empty file)')).toBeInTheDocument();
@@ -103,13 +139,13 @@ describe('VfsFileViewer', () => {
     });
 
     it('preserves whitespace in content', async () => {
-      mockReadFileWithMeta.mockResolvedValue({
+      vi.mocked(mockAdapter.readFileWithMeta).mockResolvedValue({
         content: 'Line 1\n  Indented\n\nDouble newline',
         isBinary: false,
         mime: 'text/plain',
       });
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         const pre = screen.getByText(/Line 1/);
@@ -122,7 +158,7 @@ describe('VfsFileViewer', () => {
     it('calls onEdit when Edit button clicked', async () => {
       const onEdit = vi.fn();
 
-      render(<VfsFileViewer {...defaultProps} onEdit={onEdit} />);
+      render(<VfsFileViewer {...getDefaultProps()} onEdit={onEdit} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Edit file')).not.toBeDisabled();
@@ -135,9 +171,15 @@ describe('VfsFileViewer', () => {
 
     it('calls onDiff when Diff button clicked', async () => {
       const onDiff = vi.fn();
-      mockGetFileMeta.mockResolvedValue({ version: 3 });
+      vi.mocked(mockAdapter.getFileMeta).mockResolvedValue({
+        version: 3,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        minStoredVersion: 1,
+        storedVersionCount: 3,
+      });
 
-      render(<VfsFileViewer {...defaultProps} onDiff={onDiff} />);
+      render(<VfsFileViewer {...getDefaultProps()} onDiff={onDiff} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('View diff')).not.toBeDisabled();
@@ -149,9 +191,15 @@ describe('VfsFileViewer', () => {
     });
 
     it('disables Diff button when version is 1', async () => {
-      mockGetFileMeta.mockResolvedValue({ version: 1 });
+      vi.mocked(mockAdapter.getFileMeta).mockResolvedValue({
+        version: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        minStoredVersion: 1,
+        storedVersionCount: 1,
+      });
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Edit file')).not.toBeDisabled();
@@ -163,7 +211,7 @@ describe('VfsFileViewer', () => {
     it('calls onDelete when Delete button clicked', async () => {
       const onDelete = vi.fn();
 
-      render(<VfsFileViewer {...defaultProps} onDelete={onDelete} />);
+      render(<VfsFileViewer {...getDefaultProps()} onDelete={onDelete} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Delete file')).not.toBeDisabled();
@@ -179,7 +227,7 @@ describe('VfsFileViewer', () => {
     it('renders close button when onClose provided', async () => {
       const onClose = vi.fn();
 
-      render(<VfsFileViewer {...defaultProps} onClose={onClose} />);
+      render(<VfsFileViewer {...getDefaultProps()} onClose={onClose} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Close')).toBeInTheDocument();
@@ -187,7 +235,7 @@ describe('VfsFileViewer', () => {
     });
 
     it('does not render close button when onClose not provided', async () => {
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Edit file')).not.toBeDisabled();
@@ -199,7 +247,7 @@ describe('VfsFileViewer', () => {
     it('calls onClose when Close button clicked', async () => {
       const onClose = vi.fn();
 
-      render(<VfsFileViewer {...defaultProps} onClose={onClose} />);
+      render(<VfsFileViewer {...getDefaultProps()} onClose={onClose} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Close')).toBeInTheDocument();
@@ -213,9 +261,9 @@ describe('VfsFileViewer', () => {
 
   describe('Error Handling', () => {
     it('displays error message when load fails', async () => {
-      mockReadFileWithMeta.mockRejectedValue(new Error('File not found'));
+      vi.mocked(mockAdapter.readFileWithMeta).mockRejectedValue(new Error('File not found'));
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('File not found')).toBeInTheDocument();
@@ -223,9 +271,9 @@ describe('VfsFileViewer', () => {
     });
 
     it('shows Retry button on error', async () => {
-      mockReadFileWithMeta.mockRejectedValue(new Error('Network error'));
+      vi.mocked(mockAdapter.readFileWithMeta).mockRejectedValue(new Error('Network error'));
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('Retry')).toBeInTheDocument();
@@ -233,14 +281,15 @@ describe('VfsFileViewer', () => {
     });
 
     it('retries loading when Retry button clicked', async () => {
-      mockReadFileWithMeta.mockRejectedValueOnce(new Error('Network error'));
-      mockReadFileWithMeta.mockResolvedValueOnce({
-        content: 'Recovered content',
-        isBinary: false,
-        mime: 'text/plain',
-      });
+      vi.mocked(mockAdapter.readFileWithMeta)
+        .mockRejectedValueOnce(new Error('Network error'))
+        .mockResolvedValueOnce({
+          content: 'Recovered content',
+          isBinary: false,
+          mime: 'text/plain',
+        });
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('Retry')).toBeInTheDocument();
@@ -252,13 +301,13 @@ describe('VfsFileViewer', () => {
         expect(screen.getByText('Recovered content')).toBeInTheDocument();
       });
 
-      expect(mockReadFileWithMeta).toHaveBeenCalledTimes(2);
+      expect(mockAdapter.readFileWithMeta).toHaveBeenCalledTimes(2);
     });
 
     it('disables action buttons on error', async () => {
-      mockReadFileWithMeta.mockRejectedValue(new Error('Error'));
+      vi.mocked(mockAdapter.readFileWithMeta).mockRejectedValue(new Error('Error'));
 
-      render(<VfsFileViewer {...defaultProps} />);
+      render(<VfsFileViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('Retry')).toBeInTheDocument();
@@ -271,7 +320,7 @@ describe('VfsFileViewer', () => {
 
   describe('Path Handling', () => {
     it('extracts filename from path', async () => {
-      render(<VfsFileViewer {...defaultProps} path="/deep/nested/file.md" />);
+      render(<VfsFileViewer {...getDefaultProps()} path="/deep/nested/file.md" />);
 
       await waitFor(() => {
         expect(screen.getByText('file.md')).toBeInTheDocument();
@@ -279,7 +328,7 @@ describe('VfsFileViewer', () => {
     });
 
     it('handles root-level files', async () => {
-      render(<VfsFileViewer {...defaultProps} path="/readme.txt" />);
+      render(<VfsFileViewer {...getDefaultProps()} path="/readme.txt" />);
 
       await waitFor(() => {
         expect(screen.getByText('readme.txt')).toBeInTheDocument();
@@ -289,57 +338,65 @@ describe('VfsFileViewer', () => {
 
   describe('Reactivity', () => {
     it('reloads when path changes', async () => {
-      mockReadFileWithMeta.mockResolvedValueOnce({
-        content: 'First file',
-        isBinary: false,
-        mime: 'text/plain',
-      });
-      mockReadFileWithMeta.mockResolvedValueOnce({
-        content: 'Second file',
-        isBinary: false,
-        mime: 'text/plain',
-      });
+      vi.mocked(mockAdapter.readFileWithMeta)
+        .mockResolvedValueOnce({
+          content: 'First file',
+          isBinary: false,
+          mime: 'text/plain',
+        })
+        .mockResolvedValueOnce({
+          content: 'Second file',
+          isBinary: false,
+          mime: 'text/plain',
+        });
 
-      const { rerender } = render(<VfsFileViewer {...defaultProps} path="/file1.txt" />);
+      const props = getDefaultProps();
+      const { rerender } = render(<VfsFileViewer {...props} path="/file1.txt" />);
 
       await waitFor(() => {
         expect(screen.getByText('First file')).toBeInTheDocument();
       });
 
-      rerender(<VfsFileViewer {...defaultProps} path="/file2.txt" />);
+      rerender(<VfsFileViewer {...props} path="/file2.txt" />);
 
       await waitFor(() => {
         expect(screen.getByText('Second file')).toBeInTheDocument();
       });
 
-      expect(mockReadFileWithMeta).toHaveBeenCalledTimes(2);
+      expect(mockAdapter.readFileWithMeta).toHaveBeenCalledTimes(2);
     });
 
-    it('reloads when projectId changes', async () => {
-      mockReadFileWithMeta.mockResolvedValueOnce({
-        content: 'Project A file',
-        isBinary: false,
-        mime: 'text/plain',
+    it('reloads when adapter changes', async () => {
+      const adapterA = createMockAdapter({
+        readFileWithMeta: vi.fn().mockResolvedValue({
+          content: 'Adapter A file',
+          isBinary: false,
+          mime: 'text/plain',
+        }),
       });
-      mockReadFileWithMeta.mockResolvedValueOnce({
-        content: 'Project B file',
-        isBinary: false,
-        mime: 'text/plain',
+      const adapterB = createMockAdapter({
+        readFileWithMeta: vi.fn().mockResolvedValue({
+          content: 'Adapter B file',
+          isBinary: false,
+          mime: 'text/plain',
+        }),
       });
 
-      const { rerender } = render(<VfsFileViewer {...defaultProps} projectId="proj_a" />);
+      const props = getDefaultProps();
+      const { rerender } = render(<VfsFileViewer {...props} adapter={adapterA} />);
 
       await waitFor(() => {
-        expect(screen.getByText('Project A file')).toBeInTheDocument();
+        expect(screen.getByText('Adapter A file')).toBeInTheDocument();
       });
 
-      rerender(<VfsFileViewer {...defaultProps} projectId="proj_b" />);
+      rerender(<VfsFileViewer {...props} adapter={adapterB} />);
 
       await waitFor(() => {
-        expect(screen.getByText('Project B file')).toBeInTheDocument();
+        expect(screen.getByText('Adapter B file')).toBeInTheDocument();
       });
 
-      expect(mockReadFileWithMeta).toHaveBeenCalledTimes(2);
+      expect(adapterA.readFileWithMeta).toHaveBeenCalledTimes(1);
+      expect(adapterB.readFileWithMeta).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -28,6 +28,8 @@ import type { ToolResultRenderBlock } from '../types/content';
 
 import { generateUniqueId } from '../utils/idGenerator';
 import { showAlert } from '../utils/alerts';
+import { getAdapter } from '../services/vfs';
+import { encryptionService } from '../services/encryption/encryptionService';
 
 /** Throttle interval for streaming/tool-block UI updates (ms).
  * Batches rapid state updates from parallel minions into fewer React renders. */
@@ -224,13 +226,21 @@ async function buildAgenticLoopOptions(
   const enabledTools = project.enabledTools ?? [];
   const toolOptions = project.toolOptions ?? {};
 
-  // Build system prompt context with apiType for tool prompt generation
+  // Build VFS adapter factory first — needed by system prompt generation
+  let userId = '';
+  if (project.remoteVfsUrl) {
+    userId = await encryptionService.deriveUserId();
+  }
+  const createVfsAdapter = (ns?: string) => getAdapter(project, userId, ns);
+
+  // Build system prompt context with apiType and factory for tool prompt generation
   const systemPromptContext = {
     projectId: project.id,
     chatId: chat.id,
     apiDefinitionId: apiDef.id,
     modelId,
     apiType: apiDef.apiType,
+    createVfsAdapter,
   };
 
   // Build combined system prompt: project prompt + tool prompts (async)
@@ -259,6 +269,7 @@ async function buildAgenticLoopOptions(
     disableStream: project.disableStream ?? false,
     extendedContext: project.extendedContext ?? false,
     noLineNumbers: project.noLineNumbers,
+    createVfsAdapter,
     enableReasoning: project.enableReasoning,
     reasoningBudgetTokens: project.reasoningBudgetTokens,
     thinkingKeepTurns: project.thinkingKeepTurns,

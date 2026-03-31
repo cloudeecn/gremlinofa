@@ -2,20 +2,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import VfsFileEditor from '../VfsFileEditor';
 
-// Mock vfsService
-const mockUpdateFile = vi.fn();
-
+// Mock VFS barrel for utility functions only
 vi.mock('../../../services/vfs', () => ({
-  updateFile: (...args: unknown[]) => mockUpdateFile(...args),
   getBasename: (path: string) => {
     const lastSlash = path.lastIndexOf('/');
     return lastSlash === -1 ? path : path.slice(lastSlash + 1);
   },
 }));
 
+const mockAdapter = {
+  writeFile: vi.fn().mockResolvedValue(undefined),
+};
+
 describe('VfsFileEditor', () => {
   const defaultProps = {
-    projectId: 'proj_test_123',
+    adapter: mockAdapter as any,
     path: '/docs/notes.txt',
     initialContent: 'Initial file content',
     onSave: vi.fn(),
@@ -26,7 +27,7 @@ describe('VfsFileEditor', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     localStorage.clear();
-    mockUpdateFile.mockResolvedValue(undefined);
+    mockAdapter.writeFile.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -84,7 +85,7 @@ describe('VfsFileEditor', () => {
   });
 
   describe('Save Action', () => {
-    it('calls updateFile with correct parameters on save', async () => {
+    it('calls adapter.writeFile with correct parameters on save', async () => {
       // Use real timers for async save tests
       vi.useRealTimers();
 
@@ -98,11 +99,7 @@ describe('VfsFileEditor', () => {
       fireEvent.click(screen.getByText('Save'));
 
       await waitFor(() => {
-        expect(mockUpdateFile).toHaveBeenCalledWith(
-          'proj_test_123',
-          '/docs/notes.txt',
-          'Modified content'
-        );
+        expect(mockAdapter.writeFile).toHaveBeenCalledWith('/docs/notes.txt', 'Modified content');
       });
 
       vi.useFakeTimers();
@@ -124,7 +121,7 @@ describe('VfsFileEditor', () => {
     });
 
     it('shows spinner while saving', () => {
-      mockUpdateFile.mockImplementation(() => new Promise(() => {}));
+      mockAdapter.writeFile.mockImplementation(() => new Promise(() => {}));
 
       render(<VfsFileEditor {...defaultProps} />);
 
@@ -134,7 +131,7 @@ describe('VfsFileEditor', () => {
     });
 
     it('disables buttons while saving', () => {
-      mockUpdateFile.mockImplementation(() => new Promise(() => {}));
+      mockAdapter.writeFile.mockImplementation(() => new Promise(() => {}));
 
       render(<VfsFileEditor {...defaultProps} />);
 
@@ -147,7 +144,7 @@ describe('VfsFileEditor', () => {
     });
 
     it('disables textarea while saving', () => {
-      mockUpdateFile.mockImplementation(() => new Promise(() => {}));
+      mockAdapter.writeFile.mockImplementation(() => new Promise(() => {}));
 
       render(<VfsFileEditor {...defaultProps} />);
 
@@ -161,7 +158,7 @@ describe('VfsFileEditor', () => {
     it('displays error message when save fails', async () => {
       vi.useRealTimers();
 
-      mockUpdateFile.mockRejectedValue(new Error('Permission denied'));
+      mockAdapter.writeFile.mockRejectedValue(new Error('Permission denied'));
 
       render(<VfsFileEditor {...defaultProps} />);
 
@@ -177,7 +174,7 @@ describe('VfsFileEditor', () => {
     it('re-enables buttons after save error', async () => {
       vi.useRealTimers();
 
-      mockUpdateFile.mockRejectedValue(new Error('Error'));
+      mockAdapter.writeFile.mockRejectedValue(new Error('Error'));
 
       render(<VfsFileEditor {...defaultProps} />);
 
@@ -194,8 +191,8 @@ describe('VfsFileEditor', () => {
     it('clears error when save succeeds after previous error', async () => {
       vi.useRealTimers();
 
-      mockUpdateFile.mockRejectedValueOnce(new Error('First error'));
-      mockUpdateFile.mockResolvedValueOnce(undefined);
+      mockAdapter.writeFile.mockRejectedValueOnce(new Error('First error'));
+      mockAdapter.writeFile.mockResolvedValueOnce(undefined);
 
       render(<VfsFileEditor {...defaultProps} />);
 
@@ -227,7 +224,7 @@ describe('VfsFileEditor', () => {
       expect(onCancel).toHaveBeenCalled();
     });
 
-    it('does not call updateFile when cancelled', () => {
+    it('does not call adapter.writeFile when cancelled', () => {
       render(<VfsFileEditor {...defaultProps} />);
 
       // Modify content
@@ -237,7 +234,7 @@ describe('VfsFileEditor', () => {
       // Cancel
       fireEvent.click(screen.getByText('Cancel'));
 
-      expect(mockUpdateFile).not.toHaveBeenCalled();
+      expect(mockAdapter.writeFile).not.toHaveBeenCalled();
     });
   });
 
@@ -253,14 +250,14 @@ describe('VfsFileEditor', () => {
         vi.advanceTimersByTime(600);
       });
 
-      const draftKey = `draft_vfs-editor_proj_test_123_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
       const stored = localStorage.getItem(draftKey);
       expect(stored).not.toBeNull();
       expect(JSON.parse(stored!).content).toBe('Draft content');
     });
 
     it('restores draft on mount', () => {
-      const draftKey = `draft_vfs-editor_proj_test_123_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Restored draft', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -270,7 +267,7 @@ describe('VfsFileEditor', () => {
     });
 
     it('shows draft warning when restored draft differs from initial', () => {
-      const draftKey = `draft_vfs-editor_proj_test_123_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Different draft', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -281,7 +278,7 @@ describe('VfsFileEditor', () => {
     });
 
     it('does not show draft warning when draft matches initial', () => {
-      const draftKey = `draft_vfs-editor_proj_test_123_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Same content', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -294,7 +291,7 @@ describe('VfsFileEditor', () => {
       vi.useRealTimers();
 
       // Pre-populate a draft
-      const draftKey = `draft_vfs-editor_proj_test_123_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Draft to clear on save', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -311,7 +308,7 @@ describe('VfsFileEditor', () => {
     });
 
     it('clears draft on cancel', () => {
-      const draftKey = `draft_vfs-editor_proj_test_123_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Draft to clear', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -333,7 +330,7 @@ describe('VfsFileEditor', () => {
       });
 
       // Path should be URL-encoded in the key
-      const expectedKey = `draft_vfs-editor_proj_test_123_${encodeURIComponent('/deep/nested/path.txt')}`;
+      const expectedKey = `draft_vfs-editor_vfs_${encodeURIComponent('/deep/nested/path.txt')}`;
       expect(localStorage.getItem(expectedKey)).not.toBeNull();
     });
   });

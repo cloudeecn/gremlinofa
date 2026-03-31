@@ -1,63 +1,80 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import VfsDiffViewer from '../VfsDiffViewer';
+import type { VfsAdapter } from '../../../services/vfs';
 
-// Mock vfsService
-const mockGetFileId = vi.fn();
-const mockGetFileMeta = vi.fn();
-const mockGetVersion = vi.fn();
-const mockUpdateFile = vi.fn();
-const mockListVersions = vi.fn();
-
-vi.mock('../../../services/vfs', () => ({
-  getFileId: (...args: unknown[]) => mockGetFileId(...args),
-  getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),
-  getVersion: (...args: unknown[]) => mockGetVersion(...args),
-  updateFile: (...args: unknown[]) => mockUpdateFile(...args),
-  listVersions: (...args: unknown[]) => mockListVersions(...args),
-  getBasename: (path: string) => {
-    const lastSlash = path.lastIndexOf('/');
-    return lastSlash === -1 ? path : path.slice(lastSlash + 1);
-  },
-}));
-
-describe('VfsDiffViewer', () => {
-  const defaultProps = {
-    projectId: 'proj_test_123',
-    path: '/docs/notes.txt',
-    onRollback: vi.fn(),
-    onClose: vi.fn(),
+vi.mock('../../../services/vfs', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../../services/vfs')>();
+  return {
+    ...actual,
+    getBasename: (path: string) => {
+      const lastSlash = path.lastIndexOf('/');
+      return lastSlash === -1 ? path : path.slice(lastSlash + 1);
+    },
   };
+});
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetFileId.mockResolvedValue('file_abc123');
-    mockGetFileMeta.mockResolvedValue({
+function createMockAdapter(overrides: Partial<VfsAdapter> = {}): VfsAdapter {
+  return {
+    getFileId: vi.fn().mockResolvedValue('file_abc123'),
+    getFileMeta: vi.fn().mockResolvedValue({
       version: 3,
       createdAt: Date.now() - 86400000,
       updatedAt: Date.now(),
       minStoredVersion: 1,
       storedVersionCount: 3,
-    });
-    mockGetVersion.mockImplementation(async (_proj, _fileId, version) => {
+    }),
+    getVersion: vi.fn().mockImplementation(async (_fileId: string, version: number) => {
       if (version === 1) return 'Content v1';
       if (version === 2) return 'Content v2\nLine 2';
       if (version === 3) return 'Content v3\nLine 2\nNew line';
       return `Content v${version}`;
-    });
-    mockListVersions.mockResolvedValue([
+    }),
+    listVersions: vi.fn().mockResolvedValue([
       { version: 1, createdAt: 1700000000000 },
       { version: 2, createdAt: 1700100000000 },
       { version: 3, createdAt: 1700200000000 },
-    ]);
-    mockUpdateFile.mockResolvedValue(undefined);
+    ]),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    readDir: vi.fn(),
+    readFile: vi.fn(),
+    readFileWithMeta: vi.fn(),
+    createFile: vi.fn(),
+    deleteFile: vi.fn(),
+    mkdir: vi.fn(),
+    rmdir: vi.fn(),
+    rename: vi.fn(),
+    exists: vi.fn(),
+    isFile: vi.fn(),
+    isDirectory: vi.fn(),
+    stat: vi.fn(),
+    hasVfs: vi.fn(),
+    ...overrides,
+  } as VfsAdapter;
+}
+
+describe('VfsDiffViewer', () => {
+  let mockAdapter: VfsAdapter;
+
+  const getDefaultProps = () => ({
+    adapter: mockAdapter,
+    path: '/docs/notes.txt',
+    onRollback: vi.fn(),
+    onClose: vi.fn(),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
   describe('Loading State', () => {
     it('shows loading spinner while fetching versions', async () => {
-      mockGetFileId.mockImplementation(() => new Promise(() => {}));
+      mockAdapter = createMockAdapter({
+        getFileId: vi.fn().mockImplementation(() => new Promise(() => {})),
+      });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       expect(screen.getByText('notes.txt')).toBeInTheDocument();
       expect(screen.getByText('(version history)')).toBeInTheDocument();
@@ -66,9 +83,11 @@ describe('VfsDiffViewer', () => {
 
   describe('Error Handling', () => {
     it('displays error when file not found', async () => {
-      mockGetFileId.mockResolvedValue(null);
+      mockAdapter = createMockAdapter({
+        getFileId: vi.fn().mockResolvedValue(null),
+      });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('File not found')).toBeInTheDocument();
@@ -76,13 +95,15 @@ describe('VfsDiffViewer', () => {
     });
 
     it('displays error when no version history', async () => {
-      mockGetFileMeta.mockResolvedValue({
-        version: 1,
-        minStoredVersion: 1,
-        storedVersionCount: 1,
+      mockAdapter = createMockAdapter({
+        getFileMeta: vi.fn().mockResolvedValue({
+          version: 1,
+          minStoredVersion: 1,
+          storedVersionCount: 1,
+        }),
       });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('No version history available')).toBeInTheDocument();
@@ -90,9 +111,11 @@ describe('VfsDiffViewer', () => {
     });
 
     it('shows Retry button on error', async () => {
-      mockGetFileId.mockRejectedValue(new Error('Network error'));
+      mockAdapter = createMockAdapter({
+        getFileId: vi.fn().mockRejectedValue(new Error('Network error')),
+      });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('Retry')).toBeInTheDocument();
@@ -100,10 +123,13 @@ describe('VfsDiffViewer', () => {
     });
 
     it('retries loading when Retry clicked', async () => {
-      mockGetFileId.mockRejectedValueOnce(new Error('Network error'));
-      mockGetFileId.mockResolvedValueOnce('file_abc123');
+      const mockGetFileId = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('Network error'))
+        .mockResolvedValueOnce('file_abc123');
+      mockAdapter = createMockAdapter({ getFileId: mockGetFileId });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('Retry')).toBeInTheDocument();
@@ -119,7 +145,7 @@ describe('VfsDiffViewer', () => {
 
   describe('Version Display', () => {
     it('displays filename in header', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('notes.txt')).toBeInTheDocument();
@@ -127,7 +153,7 @@ describe('VfsDiffViewer', () => {
     });
 
     it('displays current version at start', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         // Should show v3 (current version) with "current" badge
@@ -137,7 +163,7 @@ describe('VfsDiffViewer', () => {
     });
 
     it('shows "Changes in:" label for non-first versions', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('Changes in:')).toBeInTheDocument();
@@ -145,7 +171,7 @@ describe('VfsDiffViewer', () => {
     });
 
     it('shows diff statistics', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText(/\+\d+/)).toBeInTheDocument(); // +N additions
@@ -157,7 +183,7 @@ describe('VfsDiffViewer', () => {
 
   describe('Diff Display', () => {
     it('displays diff lines with correct styling', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         // At v3, should show v2→v3 diff
@@ -166,9 +192,11 @@ describe('VfsDiffViewer', () => {
     });
 
     it('shows "No differences" for identical content', async () => {
-      mockGetVersion.mockResolvedValue('Same content');
+      mockAdapter = createMockAdapter({
+        getVersion: vi.fn().mockResolvedValue('Same content'),
+      });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('No differences')).toBeInTheDocument();
@@ -178,7 +206,7 @@ describe('VfsDiffViewer', () => {
 
   describe('Version Navigation', () => {
     it('renders single set of navigation buttons', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         // Single version navigation (not two selectors)
@@ -190,7 +218,7 @@ describe('VfsDiffViewer', () => {
     });
 
     it('loads previous version content when navigating back', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -202,13 +230,13 @@ describe('VfsDiffViewer', () => {
       await waitFor(() => {
         expect(screen.getByText('v2')).toBeInTheDocument();
         // Should have loaded v1 and v2 content
-        expect(mockGetVersion).toHaveBeenCalledWith('proj_test_123', 'file_abc123', 2);
-        expect(mockGetVersion).toHaveBeenCalledWith('proj_test_123', 'file_abc123', 1);
+        expect(mockAdapter.getVersion).toHaveBeenCalledWith('file_abc123', 2);
+        expect(mockAdapter.getVersion).toHaveBeenCalledWith('file_abc123', 1);
       });
     });
 
     it('disables next button at current version', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -219,7 +247,7 @@ describe('VfsDiffViewer', () => {
     });
 
     it('disables prev button at v1', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -237,7 +265,7 @@ describe('VfsDiffViewer', () => {
     });
 
     it('shows "Created:" label at v1', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -254,7 +282,7 @@ describe('VfsDiffViewer', () => {
     });
 
     it('can navigate forward from older versions', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -272,7 +300,7 @@ describe('VfsDiffViewer', () => {
 
   describe('Rollback Action', () => {
     it('disables rollback at current version', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -283,7 +311,7 @@ describe('VfsDiffViewer', () => {
     });
 
     it('enables rollback at older versions', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -297,9 +325,9 @@ describe('VfsDiffViewer', () => {
       });
     });
 
-    it('calls updateFile with viewing version content on rollback', async () => {
+    it('calls writeFile with viewing version content on rollback', async () => {
       const onRollback = vi.fn();
-      render(<VfsDiffViewer {...defaultProps} onRollback={onRollback} />);
+      render(<VfsDiffViewer {...getDefaultProps()} onRollback={onRollback} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -316,19 +344,17 @@ describe('VfsDiffViewer', () => {
 
       await waitFor(() => {
         // Should update file with v2 content (the viewing version)
-        expect(mockUpdateFile).toHaveBeenCalledWith(
-          'proj_test_123',
-          '/docs/notes.txt',
-          'Content v2\nLine 2'
-        );
+        expect(mockAdapter.writeFile).toHaveBeenCalledWith('/docs/notes.txt', 'Content v2\nLine 2');
         expect(onRollback).toHaveBeenCalled();
       });
     });
 
     it('shows "Rolling back..." while in progress', async () => {
-      mockUpdateFile.mockImplementation(() => new Promise(() => {}));
+      mockAdapter = createMockAdapter({
+        writeFile: vi.fn().mockImplementation(() => new Promise(() => {})),
+      });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -349,9 +375,11 @@ describe('VfsDiffViewer', () => {
     });
 
     it('displays error when rollback fails', async () => {
-      mockUpdateFile.mockRejectedValue(new Error('Permission denied'));
+      mockAdapter = createMockAdapter({
+        writeFile: vi.fn().mockRejectedValue(new Error('Permission denied')),
+      });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -374,7 +402,7 @@ describe('VfsDiffViewer', () => {
 
   describe('Revision Date Display', () => {
     it('displays formatted date next to version number', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('v3')).toBeInTheDocument();
@@ -387,7 +415,7 @@ describe('VfsDiffViewer', () => {
 
   describe('Context-Only Toggle', () => {
     it('renders the ±10 toggle button', async () => {
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('±10')).toBeInTheDocument();
@@ -396,23 +424,25 @@ describe('VfsDiffViewer', () => {
 
     it('toggles context-only mode when clicked', async () => {
       // Use content with many unchanged lines to make filtering visible
-      mockGetVersion.mockImplementation(async (_proj: string, _fileId: string, version: number) => {
-        if (version === 2) {
-          const lines = [];
-          for (let i = 0; i < 30; i++) lines.push(`line ${i}`);
-          return lines.join('\n');
-        }
-        if (version === 3) {
-          const lines = [];
-          for (let i = 0; i < 30; i++) {
-            lines.push(i === 15 ? 'CHANGED' : `line ${i}`);
+      mockAdapter = createMockAdapter({
+        getVersion: vi.fn().mockImplementation(async (_fileId: string, version: number) => {
+          if (version === 2) {
+            const lines = [];
+            for (let i = 0; i < 30; i++) lines.push(`line ${i}`);
+            return lines.join('\n');
           }
-          return lines.join('\n');
-        }
-        return 'Content v1';
+          if (version === 3) {
+            const lines = [];
+            for (let i = 0; i < 30; i++) {
+              lines.push(i === 15 ? 'CHANGED' : `line ${i}`);
+            }
+            return lines.join('\n');
+          }
+          return 'Content v1';
+        }),
       });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('±10')).toBeInTheDocument();
@@ -433,23 +463,25 @@ describe('VfsDiffViewer', () => {
 
     it('shows hunk separators in context-only mode', async () => {
       // Two changes far apart
-      mockGetVersion.mockImplementation(async (_proj: string, _fileId: string, version: number) => {
-        if (version === 2) {
-          const lines = [];
-          for (let i = 0; i < 50; i++) lines.push(`line ${i}`);
-          return lines.join('\n');
-        }
-        if (version === 3) {
-          const lines = [];
-          for (let i = 0; i < 50; i++) {
-            lines.push(i === 5 || i === 45 ? `CHANGED_${i}` : `line ${i}`);
+      mockAdapter = createMockAdapter({
+        getVersion: vi.fn().mockImplementation(async (_fileId: string, version: number) => {
+          if (version === 2) {
+            const lines = [];
+            for (let i = 0; i < 50; i++) lines.push(`line ${i}`);
+            return lines.join('\n');
           }
-          return lines.join('\n');
-        }
-        return 'Content v1';
+          if (version === 3) {
+            const lines = [];
+            for (let i = 0; i < 50; i++) {
+              lines.push(i === 5 || i === 45 ? `CHANGED_${i}` : `line ${i}`);
+            }
+            return lines.join('\n');
+          }
+          return 'Content v1';
+        }),
       });
 
-      render(<VfsDiffViewer {...defaultProps} />);
+      render(<VfsDiffViewer {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('±10')).toBeInTheDocument();
@@ -468,7 +500,7 @@ describe('VfsDiffViewer', () => {
   describe('Close Action', () => {
     it('calls onClose when Close button clicked', async () => {
       const onClose = vi.fn();
-      render(<VfsDiffViewer {...defaultProps} onClose={onClose} />);
+      render(<VfsDiffViewer {...getDefaultProps()} onClose={onClose} />);
 
       await waitFor(() => {
         expect(screen.getByText('Close')).toBeInTheDocument();
@@ -481,7 +513,7 @@ describe('VfsDiffViewer', () => {
 
     it('calls onClose when header close button clicked', async () => {
       const onClose = vi.fn();
-      render(<VfsDiffViewer {...defaultProps} onClose={onClose} />);
+      render(<VfsDiffViewer {...getDefaultProps()} onClose={onClose} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Close')).toBeInTheDocument();
@@ -495,7 +527,7 @@ describe('VfsDiffViewer', () => {
 
   describe('Path Handling', () => {
     it('extracts filename from nested path', async () => {
-      render(<VfsDiffViewer {...defaultProps} path="/deep/nested/file.md" />);
+      render(<VfsDiffViewer {...getDefaultProps()} path="/deep/nested/file.md" />);
 
       await waitFor(() => {
         expect(screen.getByText('file.md')).toBeInTheDocument();

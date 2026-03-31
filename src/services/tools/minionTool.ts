@@ -44,7 +44,6 @@ import {
 import { createTokenTotals, addTokens } from '../../utils/tokenTotals';
 import { toolRegistry } from './clientSideTools';
 import { apiService } from '../api/apiService';
-import * as vfs from '../vfs';
 import { formatFileWithLineNumbers } from '../../utils/formatFileContent';
 
 // Tool names that minions cannot use
@@ -663,11 +662,12 @@ async function* executeMinion(
     const _shouldNs = _nsMode !== 'off' && (_nsMode === 'all' || _persona !== 'default');
     const injectNsPrefix = _shouldNs ? `/minions/${_persona}` : undefined;
 
+    const rootAdapter = context.createVfsAdapter();
     const sections: string[] = [];
     for (const filePath of minionInput.injectFiles) {
       const displayPath = stripNsPrefix(filePath, injectNsPrefix);
       try {
-        const fileContent = await vfs.readFile(context.projectId, filePath);
+        const fileContent = await rootAdapter.readFile(filePath);
         const formatted = project.noLineNumbers
           ? fileContent
           : formatFileWithLineNumbers(fileContent);
@@ -880,10 +880,11 @@ async function* executeMinion(
     if (shouldNamespace) {
       minionNamespace = `/minions/${persona}`;
 
-      // Read global prompt shared across all personas
+      // Read persona files from root VFS (no namespace)
+      const personaAdapter = context.createVfsAdapter();
       let globalPrompt = '';
       try {
-        globalPrompt = await vfs.readFile(context.projectId, '/minions/_global.md');
+        globalPrompt = await personaAdapter.readFile('/minions/_global.md');
       } catch {
         // No global prompt — that's fine
       }
@@ -891,7 +892,7 @@ async function* executeMinion(
       if (persona !== 'default') {
         // Read persona prompt from /minions/<persona>.md (root VFS, no namespace)
         try {
-          const personaPrompt = await vfs.readFile(context.projectId, `/minions/${persona}.md`);
+          const personaPrompt = await personaAdapter.readFile(`/minions/${persona}.md`);
           minionSystemPrompt = [globalPrompt, personaPrompt].filter(Boolean).join('\n\n');
         } catch {
           return {
@@ -922,6 +923,7 @@ async function* executeMinion(
     modelId: model.id,
     apiType: apiDef.apiType,
     namespace: minionNamespace,
+    createVfsAdapter: context.createVfsAdapter,
   };
 
   const toolSystemPrompts = await toolRegistry.getSystemPrompts(
@@ -967,6 +969,7 @@ async function* executeMinion(
     disableStream: project.disableStream ?? false,
     extendedContext: project.extendedContext ?? false,
     namespace: minionNamespace,
+    createVfsAdapter: context.createVfsAdapter,
     deferReturn: deferReturnMode && deferReturnMode !== 'no' ? deferReturnMode : undefined,
     fallbackToolExtraction: true,
     deferredSoftStopRounds:
@@ -1359,11 +1362,15 @@ async function getMinionSystemPromptInjection(
 ): Promise<string> {
   if (opts.namespacedMinion === 'off' || !opts.namespacedMinion) return '';
 
+  const adapter = context.createVfsAdapter
+    ? context.createVfsAdapter()
+    : new (await import('../vfs/localVfsAdapter')).LocalVfsAdapter(context.projectId);
+
   try {
-    const dirExists = await vfs.isDirectory(context.projectId, '/minions');
+    const dirExists = await adapter.isDirectory('/minions');
     if (!dirExists) return '';
 
-    const entries = await vfs.readDir(context.projectId, '/minions');
+    const entries = await adapter.readDir('/minions');
     const personaFiles = entries
       .filter(e => e.type === 'file' && e.name.endsWith('.md'))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -1374,7 +1381,7 @@ async function getMinionSystemPromptInjection(
     for (const file of personaFiles) {
       const name = file.name.replace(/\.md$/, '');
       try {
-        const content = await vfs.readFile(context.projectId, `/minions/${file.name}`);
+        const content = await adapter.readFile(`/minions/${file.name}`);
         const firstLine = content
           .split('\n')[0]
           .replace(/^#+\s*/, '')

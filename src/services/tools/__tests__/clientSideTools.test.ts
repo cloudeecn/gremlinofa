@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { toolRegistry, executeToolSimple } from '../clientSideTools';
 import { type ClientSideTool, type ToolResult, type SystemPromptContext } from '../../../types';
+import { LocalVfsAdapter } from '../../vfs/localVfsAdapter';
+
+const mockAdapter = new LocalVfsAdapter('test-project');
+const mockAdapterFactory = (ns?: string) => new LocalVfsAdapter('test-project', ns);
 
 describe('clientSideTools', () => {
   afterEach(() => {
@@ -34,7 +38,11 @@ describe('clientSideTools', () => {
   });
 
   describe('executeToolSimple', () => {
-    const context = { projectId: 'test-project' };
+    const context = {
+      projectId: 'test-project',
+      vfsAdapter: mockAdapter,
+      createVfsAdapter: mockAdapterFactory,
+    };
 
     it('should return error for unknown tool', async () => {
       const result = await executeToolSimple('nonexistent_tool', {}, [], {}, context);
@@ -94,11 +102,21 @@ describe('clientSideTools', () => {
         { data: 'test' },
         ['echo_tool'],
         { echo_tool: { optA: true } },
-        { projectId: 'proj-123', chatId: 'chat-456' }
+        {
+          projectId: 'proj-123',
+          chatId: 'chat-456',
+          vfsAdapter: mockAdapter,
+          createVfsAdapter: mockAdapterFactory,
+        }
       );
 
       expect(receivedOpts).toEqual({ optA: true });
-      expect(receivedCtx).toEqual({ projectId: 'proj-123', chatId: 'chat-456' });
+      expect(receivedCtx).toEqual({
+        projectId: 'proj-123',
+        chatId: 'chat-456',
+        vfsAdapter: mockAdapter,
+        createVfsAdapter: mockAdapterFactory,
+      });
     });
   });
 

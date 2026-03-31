@@ -16,6 +16,10 @@ import {
   stripNsPrefix,
 } from '../minionTool';
 import type { ToolResult, ToolExecuteReturn, ModelReference } from '../../../types';
+import { LocalVfsAdapter } from '../../vfs/localVfsAdapter';
+
+const mockAdapter = new LocalVfsAdapter('proj_123');
+const mockAdapterFactory = (ns?: string) => new LocalVfsAdapter('proj_123', ns);
 
 // Minimal storage mock for execute tests that now reach storage (Phase 2 errors)
 vi.mock('../../storage', () => ({
@@ -683,7 +687,11 @@ describe('minionTool', () => {
 
     it('returns Phase 1 error when message action has no message', async () => {
       const result = await collectToolResult(
-        minionTool.execute({}, undefined, { projectId: 'proj_123' })
+        minionTool.execute({}, undefined, {
+          projectId: 'proj_123',
+          vfsAdapter: mockAdapter,
+          createVfsAdapter: mockAdapterFactory,
+        })
       );
       expect(result.isError).toBe(true);
       expect(result.content).toContain('"message" is required');
@@ -692,7 +700,11 @@ describe('minionTool', () => {
 
     it('returns Phase 1 error when retry action has no minionChatId', async () => {
       const result = await collectToolResult(
-        minionTool.execute({ action: 'retry' }, undefined, { projectId: 'proj_123' })
+        minionTool.execute({ action: 'retry' }, undefined, {
+          projectId: 'proj_123',
+          vfsAdapter: mockAdapter,
+          createVfsAdapter: mockAdapterFactory,
+        })
       );
       expect(result.isError).toBe(true);
       expect(result.content).toContain('"minionChatId" is required');
@@ -714,6 +726,8 @@ describe('minionTool', () => {
       const result = await collectToolResult(
         minionTool.execute({ message: 'test', minionChatId: garbledId }, undefined, {
           projectId: 'proj_123',
+          vfsAdapter: mockAdapter,
+          createVfsAdapter: mockAdapterFactory,
         })
       );
       expect(result.isError).toBe(true);
@@ -725,7 +739,7 @@ describe('minionTool', () => {
         minionTool.execute(
           { message: 'test' },
           {}, // No model configured
-          { projectId: 'proj_123' }
+          { projectId: 'proj_123', vfsAdapter: mockAdapter, createVfsAdapter: mockAdapterFactory }
         )
       );
       expect(result.isError).toBe(true);
@@ -738,7 +752,7 @@ describe('minionTool', () => {
         minionTool.execute(
           { message: 'test', model: 'api_1:claude-3' },
           { model: { apiDefinitionId: 'api_1', modelId: 'claude-3' } },
-          { projectId: 'proj_123' }
+          { projectId: 'proj_123', vfsAdapter: mockAdapter, createVfsAdapter: mockAdapterFactory }
         )
       );
       expect(result.isError).toBe(true);
@@ -751,7 +765,7 @@ describe('minionTool', () => {
         minionTool.execute(
           { message: 'test', model: 'api_2:gpt-4' },
           { model: { apiDefinitionId: 'api_1', modelId: 'claude-3' }, models },
-          { projectId: 'proj_123' }
+          { projectId: 'proj_123', vfsAdapter: mockAdapter, createVfsAdapter: mockAdapterFactory }
         )
       );
       expect(result.isError).toBe(true);
@@ -765,7 +779,7 @@ describe('minionTool', () => {
         minionTool.execute(
           { message: 'test', model: 'nocolon' },
           { model: { apiDefinitionId: 'api_1', modelId: 'claude-3' }, models },
-          { projectId: 'proj_123' }
+          { projectId: 'proj_123', vfsAdapter: mockAdapter, createVfsAdapter: mockAdapterFactory }
         )
       );
       expect(result.isError).toBe(true);

@@ -2,13 +2,14 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useAlert } from '../../hooks/useAlert';
+import { useVfsAdapter } from '../../hooks/useVfsAdapter';
 import VfsDirectoryTree from './VfsDirectoryTree';
 import VfsFileViewer from './VfsFileViewer';
 import VfsFileEditor from './VfsFileEditor';
 import VfsDiffViewer from './VfsDiffViewer';
 import VfsFileModal from './VfsFileModal';
-import * as vfsService from '../../services/vfs';
-import { zip } from 'fflate';
+import { getBasename } from '../../services/vfs';
+import { zip, unzip } from 'fflate';
 
 export interface VfsManagerViewProps {
   projectId: string;
@@ -21,6 +22,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { showDestructiveConfirm } = useAlert();
+  const adapter = useVfsAdapter(projectId);
 
   // Selection state
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -39,19 +41,20 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
   // Content refresh key for desktop
   const [contentKey, setContentKey] = useState(0);
 
-  // File upload input ref
+  // File upload input refs
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
 
   // Loading state for operations
   const [isOperating, setIsOperating] = useState(false);
 
   // Handle initial path from URL deep link
   useEffect(() => {
-    if (!initialPath) return;
+    if (!initialPath || !adapter) return;
 
     const checkAndSelectPath = async () => {
       try {
-        const isFileResult = await vfsService.isFile(projectId, initialPath);
+        const isFileResult = await adapter.isFile(initialPath);
         if (isFileResult) {
           setSelectedPath(initialPath);
           setSelectedType('file');
@@ -61,19 +64,18 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
           return;
         }
 
-        const isDirResult = await vfsService.isDirectory(projectId, initialPath);
+        const isDirResult = await adapter.isDirectory(initialPath);
         if (isDirResult) {
           setSelectedPath(initialPath);
           setSelectedType('dir');
         }
-        // If neither exists, just ignore (user may want to see empty tree)
       } catch (error) {
         console.debug('[VfsManagerView] Initial path check failed:', error);
       }
     };
 
     checkAndSelectPath();
-  }, [initialPath, projectId, isMobile]);
+  }, [initialPath, adapter, isMobile]);
 
   const handleSelectFile = useCallback(
     (path: string) => {
@@ -101,16 +103,16 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
 
   // Desktop: Edit
   const handleDesktopEdit = useCallback(async () => {
-    if (!selectedPath) return;
+    if (!selectedPath || !adapter) return;
 
     try {
-      const content = await vfsService.readFile(projectId, selectedPath);
+      const content = await adapter.readFile(selectedPath);
       setEditInitialContent(content);
       setDesktopMode('edit');
     } catch (error) {
       console.debug('[VfsManagerView] Failed to load content for edit:', error);
     }
-  }, [projectId, selectedPath]);
+  }, [adapter, selectedPath]);
 
   // Desktop: Diff
   const handleDesktopDiff = useCallback(() => {
@@ -119,9 +121,9 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
 
   // Desktop: Delete file
   const handleDesktopDeleteFile = useCallback(async () => {
-    if (!selectedPath) return;
+    if (!selectedPath || !adapter) return;
 
-    const filename = vfsService.getBasename(selectedPath);
+    const filename = getBasename(selectedPath);
     const confirmed = await showDestructiveConfirm(
       'Delete File',
       `Are you sure you want to delete "${filename}"? This file will be marked as deleted.`,
@@ -130,7 +132,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
 
     if (confirmed) {
       try {
-        await vfsService.deleteFile(projectId, selectedPath);
+        await adapter.deleteFile(selectedPath);
         setSelectedPath(null);
         setSelectedType(null);
         setTreeKey(k => k + 1);
@@ -138,13 +140,13 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
         console.debug('[VfsManagerView] Failed to delete file:', error);
       }
     }
-  }, [projectId, selectedPath, showDestructiveConfirm]);
+  }, [adapter, selectedPath, showDestructiveConfirm]);
 
-  // Desktop: Delete directory
+  // Desktop: Delete directory (root cannot be deleted)
   const handleDeleteDirectory = useCallback(async () => {
-    if (!selectedPath || selectedType !== 'dir') return;
+    if (!selectedPath || !adapter || selectedType !== 'dir' || selectedPath === '/') return;
 
-    const dirname = vfsService.getBasename(selectedPath);
+    const dirname = getBasename(selectedPath);
     const confirmed = await showDestructiveConfirm(
       'Delete Directory',
       `Are you sure you want to delete "${dirname}" and all its contents? This directory will be marked as deleted.`,
@@ -153,7 +155,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
 
     if (confirmed) {
       try {
-        await vfsService.rmdir(projectId, selectedPath, true);
+        await adapter.rmdir(selectedPath, true);
         setSelectedPath(null);
         setSelectedType(null);
         setTreeKey(k => k + 1);
@@ -161,7 +163,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
         console.debug('[VfsManagerView] Failed to delete directory:', error);
       }
     }
-  }, [projectId, selectedPath, selectedType, showDestructiveConfirm]);
+  }, [adapter, selectedPath, selectedType, showDestructiveConfirm]);
 
   // Desktop: Save from editor
   const handleDesktopSave = useCallback(() => {
@@ -203,6 +205,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
 
   // Create new file
   const handleCreateFile = useCallback(async () => {
+    if (!adapter) return;
     const dirPath = selectedPath && selectedType === 'dir' ? selectedPath : '/';
     const filename = prompt('Enter file name:');
     if (!filename || !filename.trim()) return;
@@ -210,7 +213,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
     const filePath = dirPath === '/' ? `/${filename.trim()}` : `${dirPath}/${filename.trim()}`;
 
     try {
-      await vfsService.createFile(projectId, filePath, '');
+      await adapter.createFile(filePath, '');
       setTreeKey(k => k + 1);
       setSelectedPath(filePath);
       setSelectedType('file');
@@ -219,10 +222,11 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
       const msg = error instanceof Error ? error.message : 'Failed to create file';
       alert(msg);
     }
-  }, [projectId, selectedPath, selectedType]);
+  }, [adapter, selectedPath, selectedType]);
 
   // Create new directory
   const handleCreateDirectory = useCallback(async () => {
+    if (!adapter) return;
     const dirPath = selectedPath && selectedType === 'dir' ? selectedPath : '/';
     const dirname = prompt('Enter directory name:');
     if (!dirname || !dirname.trim()) return;
@@ -230,7 +234,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
     const newDirPath = dirPath === '/' ? `/${dirname.trim()}` : `${dirPath}/${dirname.trim()}`;
 
     try {
-      await vfsService.mkdir(projectId, newDirPath);
+      await adapter.mkdir(newDirPath);
       setTreeKey(k => k + 1);
       setSelectedPath(newDirPath);
       setSelectedType('dir');
@@ -238,13 +242,13 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
       const msg = error instanceof Error ? error.message : 'Failed to create directory';
       alert(msg);
     }
-  }, [projectId, selectedPath, selectedType]);
+  }, [adapter, selectedPath, selectedType]);
 
   // Upload file - detect UTF-8 or binary
   const handleFileUpload = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
-      if (!file) return;
+      if (!file || !adapter) return;
 
       // Reset input so same file can be re-selected
       event.target.value = '';
@@ -270,9 +274,9 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
         }
 
         if (isText) {
-          await vfsService.writeFile(projectId, filePath, textContent);
+          await adapter.writeFile(filePath, textContent);
         } else {
-          await vfsService.writeFile(projectId, filePath, buffer);
+          await adapter.writeFile(filePath, buffer);
         }
 
         setTreeKey(k => k + 1);
@@ -286,12 +290,12 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
         setIsOperating(false);
       }
     },
-    [projectId, selectedPath, selectedType]
+    [adapter, selectedPath, selectedType]
   );
 
   // Download directory as ZIP
   const handleDownloadZip = useCallback(async () => {
-    if (!selectedPath || selectedType !== 'dir') return;
+    if (!selectedPath || !adapter || selectedType !== 'dir') return;
 
     setIsOperating(true);
     try {
@@ -299,13 +303,13 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
       const files: Record<string, Uint8Array> = {};
 
       const collectFiles = async (dirPath: string, prefix: string) => {
-        const entries = await vfsService.readDir(projectId, dirPath);
+        const entries = await adapter.readDir(dirPath);
         for (const entry of entries) {
           const entryPath = dirPath === '/' ? `/${entry.name}` : `${dirPath}/${entry.name}`;
           const zipPath = prefix ? `${prefix}/${entry.name}` : entry.name;
 
           if (entry.type === 'file') {
-            const result = await vfsService.readFileWithMeta(projectId, entryPath);
+            const result = await adapter.readFileWithMeta(entryPath);
             if (result.isBinary) {
               // Binary: content is base64
               const binary = atob(result.content);
@@ -325,7 +329,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
         }
       };
 
-      const dirName = vfsService.getBasename(selectedPath) || 'root';
+      const dirName = selectedPath === '/' ? 'vfs-root' : getBasename(selectedPath) || 'root';
       await collectFiles(selectedPath, '');
 
       if (Object.keys(files).length === 0) {
@@ -361,7 +365,145 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
       const msg = error instanceof Error ? error.message : 'Failed to download directory';
       alert(msg);
     }
-  }, [projectId, selectedPath, selectedType]);
+  }, [adapter, selectedPath, selectedType]);
+
+  // Upload ZIP - extract contents into selected directory
+  const handleUploadZip = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file || !adapter) return;
+
+      event.target.value = '';
+
+      const dirPath = selectedPath && selectedType === 'dir' ? selectedPath : '/';
+
+      setIsOperating(true);
+      try {
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+
+        // Extract ZIP
+        const extracted = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
+          unzip(bytes, (err, data) => {
+            if (err) reject(err);
+            else resolve(data);
+          });
+        });
+
+        const entries = Object.entries(extracted);
+        if (entries.length === 0) {
+          alert('ZIP file is empty');
+          setIsOperating(false);
+          return;
+        }
+
+        // Detect common root prefix (e.g. all files under "mydir/")
+        const filePaths = entries.map(([p]) => p).filter(p => !p.endsWith('/'));
+        let stripPrefix = '';
+        if (filePaths.length > 0) {
+          const firstSegments = filePaths.map(p => p.split('/')[0]);
+          const candidate = firstSegments[0];
+          if (firstSegments.every(s => s === candidate)) {
+            // Check that this candidate is actually a directory prefix (has slash after it)
+            if (filePaths.every(p => p.includes('/'))) {
+              stripPrefix = candidate + '/';
+            }
+          }
+        }
+
+        // Sort: directories first, then files (shortest paths first)
+        const dirEntries = entries
+          .filter(([p]) => p.endsWith('/'))
+          .sort((a, b) => a[0].length - b[0].length);
+        const fileEntries = entries.filter(([p]) => !p.endsWith('/'));
+
+        let failed = 0;
+
+        // Create directories
+        for (const [rawPath] of dirEntries) {
+          let relPath =
+            stripPrefix && rawPath.startsWith(stripPrefix)
+              ? rawPath.slice(stripPrefix.length)
+              : rawPath;
+          relPath = relPath.replace(/\/+$/, ''); // remove trailing slash
+          if (!relPath) continue;
+
+          const fullPath = dirPath === '/' ? `/${relPath}` : `${dirPath}/${relPath}`;
+          try {
+            await adapter.mkdir(fullPath);
+          } catch {
+            // Directory may already exist
+          }
+        }
+
+        // Write files
+        for (const [rawPath, content] of fileEntries) {
+          const relPath =
+            stripPrefix && rawPath.startsWith(stripPrefix)
+              ? rawPath.slice(stripPrefix.length)
+              : rawPath;
+          if (!relPath) continue;
+
+          const fullPath = dirPath === '/' ? `/${relPath}` : `${dirPath}/${relPath}`;
+
+          // Ensure parent directories exist
+          const parentSegments = relPath.split('/').slice(0, -1);
+          let parentPath = dirPath;
+          for (const seg of parentSegments) {
+            parentPath = parentPath === '/' ? `/${seg}` : `${parentPath}/${seg}`;
+            try {
+              await adapter.mkdir(parentPath);
+            } catch {
+              // Already exists
+            }
+          }
+
+          try {
+            // Detect text vs binary
+            let isText = false;
+            let textContent = '';
+            try {
+              const decoder = new TextDecoder('utf-8', { fatal: true });
+              textContent = decoder.decode(content);
+              isText = true;
+            } catch {
+              isText = false;
+            }
+
+            if (isText) {
+              await adapter.writeFile(fullPath, textContent);
+            } else {
+              await adapter.writeFile(fullPath, content.buffer as ArrayBuffer);
+            }
+          } catch {
+            failed++;
+          }
+        }
+
+        setTreeKey(k => k + 1);
+
+        if (failed > 0) {
+          alert(
+            `Extracted ${fileEntries.length - failed}/${fileEntries.length} files. ${failed} failed.`
+          );
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Failed to extract ZIP';
+        alert(msg);
+      } finally {
+        setIsOperating(false);
+      }
+    },
+    [adapter, selectedPath, selectedType]
+  );
+
+  if (!adapter) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-gray-50">
+        <span className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-gray-50">
@@ -388,7 +530,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
         // Mobile: Full-width tree, modal for file
         <div className="flex flex-1 flex-col overflow-hidden">
           <VfsDirectoryTree
-            projectId={projectId}
+            adapter={adapter}
             selectedPath={selectedPath}
             initialPath={initialPath}
             refreshToken={treeKey}
@@ -401,8 +543,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
             <div className="border-t border-gray-200 bg-white p-4">
               <div className="flex flex-col gap-3">
                 <div className="text-sm text-gray-600">
-                  Selected:{' '}
-                  <span className="font-medium">{vfsService.getBasename(selectedPath) || '/'}</span>
+                  Selected: <span className="font-medium">{getBasename(selectedPath) || '/'}</span>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -439,24 +580,31 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
                   </button>
                   <button
                     type="button"
-                    className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
-                    onClick={handleDeleteDirectory}
+                    className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+                    onClick={() => zipInputRef.current?.click()}
                     disabled={isOperating}
                   >
-                    🗑️ Delete
+                    📦 Upload ZIP
                   </button>
+                  {selectedPath !== '/' && (
+                    <button
+                      type="button"
+                      className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                      onClick={handleDeleteDirectory}
+                      disabled={isOperating}
+                    >
+                      🗑️ Delete
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
           )}
 
-          {/* Hidden file input for upload */}
-          <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
-
           {/* Mobile modal */}
           {selectedPath && selectedType === 'file' && (
             <VfsFileModal
-              projectId={projectId}
+              adapter={adapter}
               path={selectedPath}
               isOpen={mobileModalOpen}
               onClose={handleMobileModalClose}
@@ -470,7 +618,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
           {/* Left panel: Directory tree */}
           <div className="flex w-2/5 max-w-[400px] min-w-[200px] flex-col border-r border-gray-200 bg-white">
             <VfsDirectoryTree
-              projectId={projectId}
+              adapter={adapter}
               selectedPath={selectedPath}
               initialPath={initialPath}
               refreshToken={treeKey}
@@ -491,7 +639,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
                 <div className="flex items-center gap-3 border-b border-gray-200 px-4 py-3">
                   <span className="text-xl">📁</span>
                   <span className="font-medium text-gray-900">
-                    {vfsService.getBasename(selectedPath) || '/'}
+                    {getBasename(selectedPath) || '/'}
                   </span>
                 </div>
                 {/* Directory actions */}
@@ -533,12 +681,22 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
                     </button>
                     <button
                       type="button"
-                      className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
-                      onClick={handleDeleteDirectory}
+                      className="rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+                      onClick={() => zipInputRef.current?.click()}
                       disabled={isOperating}
                     >
-                      🗑️ Delete Directory
+                      📦 Upload ZIP
                     </button>
+                    {selectedPath !== '/' && (
+                      <button
+                        type="button"
+                        className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                        onClick={handleDeleteDirectory}
+                        disabled={isOperating}
+                      >
+                        🗑️ Delete Directory
+                      </button>
+                    )}
                   </div>
                   {isOperating && (
                     <div className="flex items-center gap-2 text-gray-500">
@@ -547,18 +705,11 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
                     </div>
                   )}
                 </div>
-                {/* Hidden file input for upload (desktop) */}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  className="hidden"
-                  onChange={handleFileUpload}
-                />
               </div>
             ) : desktopMode === 'view' ? (
               <VfsFileViewer
                 key={`view-${contentKey}`}
-                projectId={projectId}
+                adapter={adapter}
                 path={selectedPath}
                 onEdit={handleDesktopEdit}
                 onDiff={handleDesktopDiff}
@@ -566,7 +717,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
               />
             ) : desktopMode === 'edit' ? (
               <VfsFileEditor
-                projectId={projectId}
+                adapter={adapter}
                 path={selectedPath}
                 initialContent={editInitialContent}
                 onSave={handleDesktopSave}
@@ -574,7 +725,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
               />
             ) : (
               <VfsDiffViewer
-                projectId={projectId}
+                adapter={adapter}
                 path={selectedPath}
                 onRollback={handleDesktopRollback}
                 onClose={handleDesktopDiffClose}
@@ -583,6 +734,16 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
           </div>
         </div>
       )}
+
+      {/* Hidden file inputs for upload (shared between mobile and desktop) */}
+      <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
+      <input
+        ref={zipInputRef}
+        type="file"
+        accept=".zip"
+        className="hidden"
+        onChange={handleUploadZip}
+      />
     </div>
   );
 }

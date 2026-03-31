@@ -29,6 +29,7 @@ There are some standalone packages in this project's root.
 
 - storage-backend
 - cors-proxy
+- vfs-backend
 
 In order to test compile and unit test these packages, you need to `cd <standalone-package-path>`, than run `npm run verify` and `npm run test:silent` accordingly.
 
@@ -39,6 +40,13 @@ They have their own package.json and config files.
 - It's API definition is in `storage-backend/storage-api.yaml`. Use it as source of truth.
   - Any update to the API must start with updating this file.
   - The reverse proxy may prepend a baseUrl, for example, when the main app access `{baseUrl}/api/{api}`, it is actually accessing `/api/{api}` in the storage backend.
+
+### vfs-backend
+
+- API definition is in `vfs-backend/vfs-api.yaml`. Use it as source of truth.
+- Filesystem-based VFS: files live on a real server directory, browsable and editable outside the app.
+- Per-file write locking (not per-project tree lock like the frontend).
+- Server-side versioning via hidden `.{filename}.ver/` directories.
 
 # Anti slop
 

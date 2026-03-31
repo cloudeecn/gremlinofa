@@ -130,6 +130,10 @@ vi.mock('../../../utils/idGenerator', () => ({
 
 import { apiService } from '../../api/apiService';
 import { executeClientSideTool } from '../clientSideTools';
+import { LocalVfsAdapter } from '../../vfs/localVfsAdapter';
+
+const minionAdapter = new LocalVfsAdapter('proj_test');
+const minionAdapterFactory = (ns?: string) => new LocalVfsAdapter('proj_test', ns);
 
 /** Consume an async generator to get the final ToolResult, collecting yielded events */
 async function collectToolResult(
@@ -249,6 +253,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -323,6 +329,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -370,6 +378,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       // Collect yielded events from the generator
@@ -444,6 +454,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -540,7 +552,12 @@ describe('Minion Integration', () => {
       const toolOptions: ToolOptions = {
         model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
       };
-      const context: ToolContext = { projectId: 'proj_test', chatId: 'chat_test' };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
+      };
 
       const result = await collectToolResult(
         minionTool.execute(
@@ -604,7 +621,12 @@ describe('Minion Integration', () => {
       const toolOptions: ToolOptions = {
         model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
       };
-      const context: ToolContext = { projectId: 'proj_test', chatId: 'chat_test' };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
+      };
 
       // Continue WITHOUT specifying enabledTools — should use stored ones
       const result = await collectToolResult(
@@ -651,6 +673,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       // Request minion with specific project tools
@@ -686,6 +710,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_nonexistent',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -707,6 +733,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -728,6 +756,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -747,6 +777,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -774,6 +806,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -829,6 +863,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -863,6 +899,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -893,6 +931,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -923,6 +963,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -953,6 +995,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -1048,6 +1092,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       // Resume the minion chat with a message (which becomes the return tool result)
@@ -1130,6 +1176,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       await collectToolResult(
@@ -1168,6 +1216,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       await collectToolResult(minionTool.execute({ message: 'New task' }, toolOptions, context));
@@ -1193,6 +1243,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -1228,6 +1280,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       // Check the initial saveMinionChat call has SAVEPOINT_START
@@ -1263,6 +1317,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       await collectToolResult(minionTool.execute({ message: 'Test' }, toolOptions, context));
@@ -1283,6 +1339,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -1316,6 +1374,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       await collectToolResult(
@@ -1334,7 +1394,12 @@ describe('Minion Integration', () => {
     const toolOptions: ToolOptions = {
       model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
     };
-    const context: ToolContext = { projectId: 'proj_test', chatId: 'chat_test' };
+    const context: ToolContext = {
+      projectId: 'proj_test',
+      chatId: 'chat_test',
+      vfsAdapter: minionAdapter,
+      createVfsAdapter: minionAdapterFactory,
+    };
 
     function setupChatWithSavepoint() {
       const chat: MinionChat = {
@@ -1910,6 +1975,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       // No enabledTools specified
@@ -1930,6 +1997,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -1965,6 +2034,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       // 'return' is always available, shouldn't trigger validation
@@ -1998,6 +2069,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -2029,6 +2102,8 @@ describe('Minion Integration', () => {
       const context: ToolContext = {
         projectId: 'proj_test',
         chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
       };
 
       const result = await collectToolResult(
@@ -2053,7 +2128,12 @@ describe('Minion Integration', () => {
       model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
       autoRollback: true,
     };
-    const context: ToolContext = { projectId: 'proj_test', chatId: 'chat_test' };
+    const context: ToolContext = {
+      projectId: 'proj_test',
+      chatId: 'chat_test',
+      vfsAdapter: minionAdapter,
+      createVfsAdapter: minionAdapterFactory,
+    };
 
     function setupMockStream() {
       const mockResult = {

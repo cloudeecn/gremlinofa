@@ -5,8 +5,8 @@
 
 import { useRef, useState } from 'react';
 import Modal from '../ui/Modal';
-import { compactProject } from '../../services/vfs';
 import type { CompactResult } from '../../services/vfs';
+import { useVfsAdapter } from '../../hooks/useVfsAdapter';
 import { showDestructiveConfirm } from '../../utils/alerts';
 
 interface CompactModalProps {
@@ -24,8 +24,11 @@ function CompactModalContent({ onClose, projectId }: { onClose: () => void; proj
   const [error, setError] = useState<string | null>(null);
   const [purgeAllDeleted, setPurgeAllDeleted] = useState(false);
   const abortedRef = useRef(false);
+  const adapter = useVfsAdapter(projectId);
 
   const handleCompact = async () => {
+    if (!adapter) return;
+
     if (purgeAllDeleted) {
       const confirmed = await showDestructiveConfirm(
         'Purge All Deleted Files',
@@ -40,8 +43,7 @@ function CompactModalContent({ onClose, projectId }: { onClose: () => void; proj
     abortedRef.current = false;
 
     try {
-      const compactResult = await compactProject(
-        projectId,
+      const compactResult = await adapter.compactProject(
         progress => {
           if (abortedRef.current) return;
           setItemsProcessed(progress.current);

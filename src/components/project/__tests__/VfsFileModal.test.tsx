@@ -1,31 +1,58 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import VfsFileModal from '../VfsFileModal';
+import type { VfsAdapter } from '../../../services/vfs';
 
-// Mock vfsService
-const mockReadFile = vi.fn();
-const mockReadFileWithMeta = vi.fn();
-const mockGetFileMeta = vi.fn();
-const mockDeleteFile = vi.fn();
-const mockGetFileId = vi.fn();
-const mockListVersions = vi.fn();
-const mockGetVersion = vi.fn();
-const mockUpdateFile = vi.fn();
-
+// Mock the vfs barrel — only getBasename is used at runtime by VfsFileModal
 vi.mock('../../../services/vfs', () => ({
-  readFile: (...args: unknown[]) => mockReadFile(...args),
-  readFileWithMeta: (...args: unknown[]) => mockReadFileWithMeta(...args),
-  getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),
-  deleteFile: (...args: unknown[]) => mockDeleteFile(...args),
-  getFileId: (...args: unknown[]) => mockGetFileId(...args),
-  listVersions: (...args: unknown[]) => mockListVersions(...args),
-  getVersion: (...args: unknown[]) => mockGetVersion(...args),
-  updateFile: (...args: unknown[]) => mockUpdateFile(...args),
   getBasename: (path: string) => {
     const lastSlash = path.lastIndexOf('/');
     return lastSlash === -1 ? path : path.slice(lastSlash + 1);
   },
 }));
+
+function createMockAdapter(): VfsAdapter {
+  return {
+    readFile: vi.fn().mockResolvedValue('File content here'),
+    readFileWithMeta: vi.fn().mockResolvedValue({
+      content: 'File content here',
+      isBinary: false,
+      mime: 'text/plain',
+    }),
+    getFileMeta: vi.fn().mockResolvedValue({
+      version: 3,
+      createdAt: Date.now() - 86400000,
+      updatedAt: Date.now(),
+      minStoredVersion: 1,
+      storedVersionCount: 3,
+    }),
+    deleteFile: vi.fn().mockResolvedValue(undefined),
+    getFileId: vi.fn().mockResolvedValue(null),
+    listVersions: vi.fn().mockResolvedValue([]),
+    getVersion: vi.fn().mockResolvedValue(null),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    dropOldVersions: vi.fn().mockResolvedValue(0),
+    // Stubs for remaining VfsAdapter methods (not used by the modal)
+    readDir: vi.fn().mockResolvedValue([]),
+    createFile: vi.fn().mockResolvedValue(undefined),
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    rmdir: vi.fn().mockResolvedValue(undefined),
+    rename: vi.fn().mockResolvedValue(undefined),
+    exists: vi.fn().mockResolvedValue(false),
+    isFile: vi.fn().mockResolvedValue(false),
+    isDirectory: vi.fn().mockResolvedValue(false),
+    stat: vi.fn().mockResolvedValue({ isFile: false, isDirectory: false }),
+    hasVfs: vi.fn().mockResolvedValue(true),
+    clearVfs: vi.fn().mockResolvedValue(undefined),
+    strReplace: vi.fn().mockResolvedValue({ editLine: 1, snippet: '' }),
+    insert: vi.fn().mockResolvedValue({ insertedAt: 1 }),
+    appendFile: vi.fn().mockResolvedValue({ created: false }),
+    listOrphans: vi.fn().mockResolvedValue([]),
+    restoreOrphan: vi.fn().mockResolvedValue(undefined),
+    purgeOrphan: vi.fn().mockResolvedValue(undefined),
+    compactProject: vi.fn().mockResolvedValue({ freed: 0, remaining: 0 }),
+  } as unknown as VfsAdapter;
+}
 
 // Mock useAlert
 const mockShowDestructiveConfirm = vi.fn();
@@ -36,38 +63,30 @@ vi.mock('../../../hooks/useAlert', () => ({
 }));
 
 describe('VfsFileModal', () => {
-  const defaultProps = {
-    projectId: 'proj_test_123',
+  let mockAdapter: VfsAdapter;
+
+  const getDefaultProps = () => ({
+    adapter: mockAdapter,
     path: '/docs/notes.txt',
     isOpen: true,
     onClose: vi.fn(),
     onFileDeleted: vi.fn(),
-  };
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockReadFile.mockResolvedValue('File content here');
-    mockReadFileWithMeta.mockResolvedValue({
-      content: 'File content here',
-      isBinary: false,
-      mime: 'text/plain',
-    });
-    mockGetFileMeta.mockResolvedValue({
-      version: 3,
-      createdAt: Date.now() - 86400000,
-      updatedAt: Date.now(),
-    });
+    mockAdapter = createMockAdapter();
     mockShowDestructiveConfirm.mockResolvedValue(false);
   });
 
   describe('Rendering', () => {
     it('renders nothing when isOpen is false', () => {
-      const { container } = render(<VfsFileModal {...defaultProps} isOpen={false} />);
+      const { container } = render(<VfsFileModal {...getDefaultProps()} isOpen={false} />);
       expect(container).toBeEmptyDOMElement();
     });
 
     it('renders VfsFileViewer in view mode by default', async () => {
-      render(<VfsFileModal {...defaultProps} />);
+      render(<VfsFileModal {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('File content here')).toBeInTheDocument();
@@ -81,7 +100,7 @@ describe('VfsFileModal', () => {
 
   describe('Mode Transitions', () => {
     it('transitions to edit mode when Edit clicked', async () => {
-      render(<VfsFileModal {...defaultProps} />);
+      render(<VfsFileModal {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Edit file')).not.toBeDisabled();
@@ -100,15 +119,15 @@ describe('VfsFileModal', () => {
     });
 
     it('transitions to diff mode when Diff clicked', async () => {
-      mockGetFileId.mockResolvedValue('file_123');
-      mockListVersions.mockResolvedValue([
+      vi.mocked(mockAdapter.getFileId).mockResolvedValue('file_123');
+      vi.mocked(mockAdapter.listVersions).mockResolvedValue([
         { version: 1, createdAt: Date.now() - 86400000 },
         { version: 2, createdAt: Date.now() - 43200000 },
         { version: 3, createdAt: Date.now() },
       ]);
-      mockGetVersion.mockResolvedValue('Old content');
+      vi.mocked(mockAdapter.getVersion).mockResolvedValue('Old content');
 
-      render(<VfsFileModal {...defaultProps} />);
+      render(<VfsFileModal {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('View diff')).not.toBeDisabled();
@@ -123,7 +142,7 @@ describe('VfsFileModal', () => {
     });
 
     it('returns to view mode when Cancel clicked in edit mode', async () => {
-      render(<VfsFileModal {...defaultProps} />);
+      render(<VfsFileModal {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Edit file')).not.toBeDisabled();
@@ -146,9 +165,7 @@ describe('VfsFileModal', () => {
     });
 
     it('returns to view mode after save', async () => {
-      mockUpdateFile.mockResolvedValue(undefined);
-
-      render(<VfsFileModal {...defaultProps} />);
+      render(<VfsFileModal {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Edit file')).not.toBeDisabled();
@@ -171,14 +188,14 @@ describe('VfsFileModal', () => {
     });
 
     it('returns to view mode when diff Close clicked', async () => {
-      mockGetFileId.mockResolvedValue('file_123');
-      mockListVersions.mockResolvedValue([
+      vi.mocked(mockAdapter.getFileId).mockResolvedValue('file_123');
+      vi.mocked(mockAdapter.listVersions).mockResolvedValue([
         { version: 1, createdAt: Date.now() - 86400000 },
         { version: 2, createdAt: Date.now() },
       ]);
-      mockGetVersion.mockResolvedValue('Content');
+      vi.mocked(mockAdapter.getVersion).mockResolvedValue('Content');
 
-      render(<VfsFileModal {...defaultProps} />);
+      render(<VfsFileModal {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('View diff')).not.toBeDisabled();
@@ -208,7 +225,7 @@ describe('VfsFileModal', () => {
 
   describe('Delete Functionality', () => {
     it('shows confirmation dialog when Delete clicked', async () => {
-      render(<VfsFileModal {...defaultProps} />);
+      render(<VfsFileModal {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Delete file')).not.toBeDisabled();
@@ -225,11 +242,12 @@ describe('VfsFileModal', () => {
 
     it('deletes file and calls callbacks when confirmed', async () => {
       mockShowDestructiveConfirm.mockResolvedValue(true);
-      mockDeleteFile.mockResolvedValue(undefined);
       const onFileDeleted = vi.fn();
       const onClose = vi.fn();
 
-      render(<VfsFileModal {...defaultProps} onFileDeleted={onFileDeleted} onClose={onClose} />);
+      render(
+        <VfsFileModal {...getDefaultProps()} onFileDeleted={onFileDeleted} onClose={onClose} />
+      );
 
       await waitFor(() => {
         expect(screen.getByTitle('Delete file')).not.toBeDisabled();
@@ -238,7 +256,7 @@ describe('VfsFileModal', () => {
       fireEvent.click(screen.getByTitle('Delete file'));
 
       await waitFor(() => {
-        expect(mockDeleteFile).toHaveBeenCalledWith('proj_test_123', '/docs/notes.txt');
+        expect(mockAdapter.deleteFile).toHaveBeenCalledWith('/docs/notes.txt');
       });
 
       expect(onFileDeleted).toHaveBeenCalled();
@@ -249,7 +267,7 @@ describe('VfsFileModal', () => {
       mockShowDestructiveConfirm.mockResolvedValue(false);
       const onFileDeleted = vi.fn();
 
-      render(<VfsFileModal {...defaultProps} onFileDeleted={onFileDeleted} />);
+      render(<VfsFileModal {...getDefaultProps()} onFileDeleted={onFileDeleted} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Delete file')).not.toBeDisabled();
@@ -261,7 +279,7 @@ describe('VfsFileModal', () => {
         expect(mockShowDestructiveConfirm).toHaveBeenCalled();
       });
 
-      expect(mockDeleteFile).not.toHaveBeenCalled();
+      expect(mockAdapter.deleteFile).not.toHaveBeenCalled();
       expect(onFileDeleted).not.toHaveBeenCalled();
     });
   });
@@ -270,7 +288,7 @@ describe('VfsFileModal', () => {
     it('calls onClose when close button clicked in view mode', async () => {
       const onClose = vi.fn();
 
-      render(<VfsFileModal {...defaultProps} onClose={onClose} />);
+      render(<VfsFileModal {...getDefaultProps()} onClose={onClose} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('Close')).toBeInTheDocument();
@@ -285,20 +303,19 @@ describe('VfsFileModal', () => {
   describe('Content Refresh', () => {
     it('refreshes content after save', async () => {
       // VfsFileViewer uses readFileWithMeta, VfsFileEditor uses readFile
-      mockReadFileWithMeta.mockResolvedValueOnce({
+      vi.mocked(mockAdapter.readFileWithMeta).mockResolvedValueOnce({
         content: 'Original content',
         isBinary: false,
         mime: 'text/plain',
       });
-      mockReadFile.mockResolvedValueOnce('Original content'); // For editor
-      mockUpdateFile.mockResolvedValue(undefined);
-      mockReadFileWithMeta.mockResolvedValueOnce({
+      vi.mocked(mockAdapter.readFile).mockResolvedValueOnce('Original content'); // For editor
+      vi.mocked(mockAdapter.readFileWithMeta).mockResolvedValueOnce({
         content: 'Updated content',
         isBinary: false,
         mime: 'text/plain',
       });
 
-      render(<VfsFileModal {...defaultProps} />);
+      render(<VfsFileModal {...getDefaultProps()} />);
 
       await waitFor(() => {
         expect(screen.getByText('Original content')).toBeInTheDocument();
@@ -316,21 +333,22 @@ describe('VfsFileModal', () => {
 
       await waitFor(() => {
         // View mode should reload content
-        expect(mockReadFileWithMeta).toHaveBeenCalledTimes(2); // Initial + refresh
+        expect(mockAdapter.readFileWithMeta).toHaveBeenCalledTimes(2); // Initial + refresh
       });
     });
   });
 
   describe('Path Changes', () => {
     it('resets to view mode when path changes', async () => {
-      mockGetFileId.mockResolvedValue('file_123');
-      mockListVersions.mockResolvedValue([
+      vi.mocked(mockAdapter.getFileId).mockResolvedValue('file_123');
+      vi.mocked(mockAdapter.listVersions).mockResolvedValue([
         { version: 1, createdAt: Date.now() - 86400000 },
         { version: 2, createdAt: Date.now() },
       ]);
-      mockGetVersion.mockResolvedValue('Content');
+      vi.mocked(mockAdapter.getVersion).mockResolvedValue('Content');
 
-      const { rerender } = render(<VfsFileModal {...defaultProps} />);
+      const props = getDefaultProps();
+      const { rerender } = render(<VfsFileModal {...props} />);
 
       await waitFor(() => {
         expect(screen.getByTitle('View diff')).not.toBeDisabled();
@@ -344,7 +362,7 @@ describe('VfsFileModal', () => {
       });
 
       // Change path
-      rerender(<VfsFileModal {...defaultProps} path="/other/file.txt" />);
+      rerender(<VfsFileModal {...props} path="/other/file.txt" />);
 
       await waitFor(() => {
         // Should be back in view mode

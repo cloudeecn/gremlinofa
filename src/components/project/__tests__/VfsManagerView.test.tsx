@@ -13,22 +13,42 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-// Mock vfsService
-const mockReadDir = vi.fn();
-const mockReadFileWithMeta = vi.fn();
-const mockGetFileMeta = vi.fn();
-const mockDeleteFile = vi.fn();
-const mockRmdir = vi.fn();
+// Mock adapter for VFS operations (hoisted so vi.mock can reference it)
+const mockAdapter = vi.hoisted(() => ({
+  readDir: vi.fn().mockResolvedValue([]),
+  readFile: vi.fn().mockResolvedValue(''),
+  readFileWithMeta: vi.fn().mockResolvedValue({ content: '', isBinary: false, mime: 'text/plain' }),
+  writeFile: vi.fn().mockResolvedValue(undefined),
+  createFile: vi.fn().mockResolvedValue(undefined),
+  deleteFile: vi.fn().mockResolvedValue(undefined),
+  mkdir: vi.fn().mockResolvedValue(undefined),
+  rmdir: vi.fn().mockResolvedValue(undefined),
+  isFile: vi.fn().mockResolvedValue(false),
+  isDirectory: vi.fn().mockResolvedValue(false),
+  exists: vi.fn().mockResolvedValue(false),
+  getFileMeta: vi.fn().mockResolvedValue({
+    version: 1,
+    createdAt: 0,
+    updatedAt: 0,
+    minStoredVersion: 1,
+    storedVersionCount: 1,
+  }),
+}));
 
+vi.mock('../../../hooks/useVfsAdapter', () => ({
+  useVfsAdapter: vi.fn(() => mockAdapter),
+}));
+
+// Mock vfs barrel — only utility functions
 vi.mock('../../../services/vfs', () => ({
-  readDir: (...args: unknown[]) => mockReadDir(...args),
-  readFileWithMeta: (...args: unknown[]) => mockReadFileWithMeta(...args),
-  getFileMeta: (...args: unknown[]) => mockGetFileMeta(...args),
-  deleteFile: (...args: unknown[]) => mockDeleteFile(...args),
-  rmdir: (...args: unknown[]) => mockRmdir(...args),
   getBasename: (path: string) => {
     const lastSlash = path.lastIndexOf('/');
     return lastSlash === -1 ? path : path.slice(lastSlash + 1);
+  },
+  getPathSegments: (path: string) => {
+    const normalized = path === '/' ? '/' : path.replace(/\/+$/, '') || '/';
+    if (normalized === '/') return [];
+    return normalized.slice(1).split('/');
   },
 }));
 
@@ -58,17 +78,18 @@ describe('VfsManagerView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIsMobile = false;
-    mockReadDir.mockResolvedValue([
+    mockAdapter.readDir.mockResolvedValue([
       { name: 'notes.txt', type: 'file', size: 100 },
       { name: 'docs', type: 'dir' },
     ]);
-    mockReadFileWithMeta.mockResolvedValue({
+    mockAdapter.readFileWithMeta.mockResolvedValue({
       content: 'File content',
       isBinary: false,
       mime: 'text/plain',
     });
-    mockGetFileMeta.mockResolvedValue({ version: 1 });
     mockShowDestructiveConfirm.mockResolvedValue(false);
+    mockAdapter.isFile.mockResolvedValue(false);
+    mockAdapter.isDirectory.mockResolvedValue(false);
   });
 
   describe('Header', () => {
@@ -197,7 +218,7 @@ describe('VfsManagerView', () => {
     it('deletes directory when confirmed', async () => {
       mockIsMobile = false;
       mockShowDestructiveConfirm.mockResolvedValue(true);
-      mockRmdir.mockResolvedValue(undefined);
+      mockAdapter.rmdir.mockResolvedValue(undefined);
 
       renderWithRouter(<VfsManagerView {...defaultProps} />);
 
@@ -214,14 +235,74 @@ describe('VfsManagerView', () => {
       fireEvent.click(screen.getByText('🗑️ Delete Directory'));
 
       await waitFor(() => {
-        expect(mockRmdir).toHaveBeenCalledWith('proj_test_123', '/docs', true);
+        expect(mockAdapter.rmdir).toHaveBeenCalledWith('/docs', true);
       });
+    });
+  });
+
+  describe('Root Selection', () => {
+    it('shows directory actions when root is selected', async () => {
+      mockIsMobile = false;
+
+      renderWithRouter(<VfsManagerView {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('/')).toBeInTheDocument();
+      });
+
+      // Click the root node
+      fireEvent.click(screen.getByText('/'));
+
+      await waitFor(() => {
+        // Directory actions should be visible
+        expect(screen.getByText('📄 New File')).toBeInTheDocument();
+        expect(screen.getByText('📁 New Folder')).toBeInTheDocument();
+        expect(screen.getByText('📦 Download ZIP')).toBeInTheDocument();
+      });
+    });
+
+    it('hides delete button when root is selected (desktop)', async () => {
+      mockIsMobile = false;
+
+      renderWithRouter(<VfsManagerView {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('/')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('/'));
+
+      await waitFor(() => {
+        expect(screen.getByText('📄 New File')).toBeInTheDocument();
+      });
+
+      // Delete button should NOT be present for root
+      expect(screen.queryByText('🗑️ Delete Directory')).not.toBeInTheDocument();
+    });
+
+    it('hides delete button when root is selected (mobile)', async () => {
+      mockIsMobile = true;
+
+      renderWithRouter(<VfsManagerView {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('/')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('/'));
+
+      await waitFor(() => {
+        expect(screen.getByText('📄 New File')).toBeInTheDocument();
+      });
+
+      // Delete button should NOT be present for root
+      expect(screen.queryByText('🗑️ Delete')).not.toBeInTheDocument();
     });
   });
 
   describe('Empty State', () => {
     it('shows empty message when no files', async () => {
-      mockReadDir.mockResolvedValue([]);
+      mockAdapter.readDir.mockResolvedValue([]);
 
       renderWithRouter(<VfsManagerView {...defaultProps} />);
 
@@ -235,7 +316,7 @@ describe('VfsManagerView', () => {
     it('refreshes tree after file delete on mobile', async () => {
       mockIsMobile = true;
       mockShowDestructiveConfirm.mockResolvedValue(true);
-      mockRmdir.mockResolvedValue(undefined);
+      mockAdapter.rmdir.mockResolvedValue(undefined);
 
       renderWithRouter(<VfsManagerView {...defaultProps} />);
 
@@ -253,7 +334,7 @@ describe('VfsManagerView', () => {
 
       await waitFor(() => {
         // Tree should be refreshed (readDir called again)
-        expect(mockReadDir).toHaveBeenCalledTimes(2);
+        expect(mockAdapter.readDir).toHaveBeenCalledTimes(2);
       });
     });
   });

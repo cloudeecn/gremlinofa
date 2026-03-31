@@ -61,6 +61,14 @@ export {
   selectVersionsToKeep,
 } from './vfsService';
 
+// Adapters
+export { RemoteVfsAdapter } from './remoteVfsAdapter';
+export { LocalVfsAdapter } from './localVfsAdapter';
+export type { VfsAdapter } from './vfsAdapter';
+
+// Adapter factory
+export { getAdapter } from './vfsFacade';
+
 // Types and classes
 export { VfsError } from './vfsService';
 export type {

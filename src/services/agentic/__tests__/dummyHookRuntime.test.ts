@@ -1,37 +1,64 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DummyHookRuntime } from '../dummyHookRuntime';
+import type { VfsAdapter } from '../../vfs/vfsAdapter';
 
-vi.mock('../../vfs', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../vfs')>();
+function createMockAdapter(): VfsAdapter {
   return {
-    ...actual,
-    readFile: vi.fn(),
-    isDirectory: vi.fn(),
     readDir: vi.fn(),
-  };
-});
+    readFile: vi.fn(),
+    readFileWithMeta: vi.fn(),
+    writeFile: vi.fn(),
+    createFile: vi.fn(),
+    deleteFile: vi.fn(),
+    mkdir: vi.fn(),
+    rmdir: vi.fn(),
+    rename: vi.fn(),
+    exists: vi.fn(),
+    isFile: vi.fn(),
+    isDirectory: vi.fn(),
+    stat: vi.fn(),
+    hasVfs: vi.fn(),
+    clearVfs: vi.fn(),
+    strReplace: vi.fn(),
+    insert: vi.fn(),
+    appendFile: vi.fn(),
+    getFileMeta: vi.fn(),
+    getFileId: vi.fn(),
+    listVersions: vi.fn(),
+    getVersion: vi.fn(),
+    dropOldVersions: vi.fn(),
+    listOrphans: vi.fn(),
+    restoreOrphan: vi.fn(),
+    purgeOrphan: vi.fn(),
+    copyFile: vi.fn(),
+    deletePath: vi.fn(),
+    createFileGuarded: vi.fn(),
+    ensureDirAndWrite: vi.fn(),
+    compactProject: vi.fn(),
+  } as VfsAdapter;
+}
 
-const vfs = await import('../../vfs');
+let adapter: VfsAdapter;
 
 describe('DummyHookRuntime', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    adapter = createMockAdapter();
   });
 
   describe('load', () => {
     it('returns null when hook file does not exist', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('not found'));
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('not found'));
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'missing-hook');
+      const runtime = await DummyHookRuntime.load(adapter, 'missing-hook');
       expect(runtime).toBeNull();
     });
 
     it('loads a hook file from VFS', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         'return function(msg, iter) { return undefined; };'
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'test-hook');
+      const runtime = await DummyHookRuntime.load(adapter, 'test-hook');
       expect(runtime).not.toBeNull();
       runtime?.dispose();
     });
@@ -39,11 +66,11 @@ describe('DummyHookRuntime', () => {
 
   describe('run', () => {
     it('returns undefined value for passthrough hooks', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         'return function(msg, iter) { return undefined; };'
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'pass');
+      const runtime = await DummyHookRuntime.load(adapter, 'pass');
       expect(runtime).not.toBeNull();
 
       const result = await runtime!.run({}, 1);
@@ -53,11 +80,11 @@ describe('DummyHookRuntime', () => {
     });
 
     it('returns "user" when hook returns "user"', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         'return function(msg, iter) { return "user"; };'
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'stop');
+      const runtime = await DummyHookRuntime.load(adapter, 'stop');
       const result = await runtime!.run({}, 1);
       expect(result.value).toBe('user');
       expect(result.error).toBeUndefined();
@@ -65,11 +92,11 @@ describe('DummyHookRuntime', () => {
     });
 
     it('returns structured response with text', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         'return function(msg, iter) { return { text: "Hello", brief: "auto" }; };'
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'respond');
+      const runtime = await DummyHookRuntime.load(adapter, 'respond');
       const result = await runtime!.run({}, 1);
       expect(result.value).toEqual({ text: 'Hello', brief: 'auto' });
       expect(result.error).toBeUndefined();
@@ -77,7 +104,7 @@ describe('DummyHookRuntime', () => {
     });
 
     it('returns structured response with toolCalls', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         `return function(msg, iter) {
           return {
             text: "Running search",
@@ -87,7 +114,7 @@ describe('DummyHookRuntime', () => {
         };`
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'tools');
+      const runtime = await DummyHookRuntime.load(adapter, 'tools');
       const { value } = await runtime!.run({}, 1);
 
       expect(value).toBeDefined();
@@ -101,11 +128,11 @@ describe('DummyHookRuntime', () => {
     });
 
     it('returns undefined value with error message on hook error', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         'return function(msg, iter) { throw new Error("boom"); };'
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'broken');
+      const runtime = await DummyHookRuntime.load(adapter, 'broken');
       const result = await runtime!.run({}, 1);
       expect(result.value).toBeUndefined();
       expect(result.error).toContain('boom');
@@ -113,7 +140,7 @@ describe('DummyHookRuntime', () => {
     });
 
     it('passes lastMessage data to hook', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         `return function(msg, iter) {
           if (msg.toolResults && msg.toolResults.length > 0 && msg.toolResults[0].name === "memory") {
             return { text: "Got memory result", brief: "test" };
@@ -122,7 +149,7 @@ describe('DummyHookRuntime', () => {
         };`
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'check');
+      const runtime = await DummyHookRuntime.load(adapter, 'check');
 
       const passResult = await runtime!.run({ text: 'hello' }, 1);
       expect(passResult.value).toBeUndefined();
@@ -138,14 +165,14 @@ describe('DummyHookRuntime', () => {
     });
 
     it('passes iteration count to hook', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         `return function(msg, iter) {
           if (iter > 3) return "user";
           return undefined;
         };`
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'iter');
+      const runtime = await DummyHookRuntime.load(adapter, 'iter');
 
       expect((await runtime!.run({}, 1)).value).toBeUndefined();
       expect((await runtime!.run({}, 3)).value).toBeUndefined();
@@ -154,7 +181,7 @@ describe('DummyHookRuntime', () => {
     });
 
     it('passes chatId and messageId to hook', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         `return function(msg, iter) {
           if (msg.chatId && msg.messageId) {
             return { text: msg.chatId + ":" + msg.messageId, brief: "ids" };
@@ -163,18 +190,18 @@ describe('DummyHookRuntime', () => {
         };`
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'ids');
+      const runtime = await DummyHookRuntime.load(adapter, 'ids');
       const result = await runtime!.run({ chatId: 'chat-42', messageId: 'msg-7' }, 1);
       expect(result.value).toEqual({ text: 'chat-42:msg-7', brief: 'ids' });
       runtime!.dispose();
     });
 
     it('supports async hook function returning synthetic response', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         'return async function(msg, iter) { return { text: "async hello", brief: "async" }; };'
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'async-respond');
+      const runtime = await DummyHookRuntime.load(adapter, 'async-respond');
       const result = await runtime!.run({}, 1);
       expect(result.value).toEqual({ text: 'async hello', brief: 'async' });
       expect(result.error).toBeUndefined();
@@ -182,11 +209,11 @@ describe('DummyHookRuntime', () => {
     });
 
     it('supports async hook function returning "user"', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         'return async function(msg, iter) { return "user"; };'
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'async-stop');
+      const runtime = await DummyHookRuntime.load(adapter, 'async-stop');
       const result = await runtime!.run({}, 1);
       expect(result.value).toBe('user');
       expect(result.error).toBeUndefined();
@@ -194,7 +221,7 @@ describe('DummyHookRuntime', () => {
     });
 
     it('supports top-level await in hook file body', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         `var config = await Promise.resolve({ limit: 5 });
         return function(msg, iter) {
           if (iter > config.limit) return "user";
@@ -202,14 +229,14 @@ describe('DummyHookRuntime', () => {
         };`
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'top-await');
+      const runtime = await DummyHookRuntime.load(adapter, 'top-await');
       expect((await runtime!.run({}, 3)).value).toBeUndefined();
       expect((await runtime!.run({}, 6)).value).toBe('user');
       runtime!.dispose();
     });
 
     it('passes history array to hook', async () => {
-      (vfs.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
         `return function(msg, iter) {
           if (msg.history && msg.history.length === 2) {
             return { text: msg.history[0].id + "," + msg.history[1].role, brief: "hist" };
@@ -218,7 +245,7 @@ describe('DummyHookRuntime', () => {
         };`
       );
 
-      const runtime = await DummyHookRuntime.load('proj-1', undefined, 'hist');
+      const runtime = await DummyHookRuntime.load(adapter, 'hist');
       const result = await runtime!.run(
         {
           chatId: 'chat-1',

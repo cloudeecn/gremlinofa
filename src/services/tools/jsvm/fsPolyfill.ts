@@ -11,7 +11,7 @@
  */
 
 import type { QuickJSContext, QuickJSHandle } from 'quickjs-emscripten-core';
-import * as vfs from '../../vfs';
+import type { VfsAdapter } from '../../vfs/vfsAdapter';
 import { VfsError, normalizePath, isNamespacedReadonly } from '../../vfs';
 
 /** Readonly paths - any write/delete to these paths throws EROFS */
@@ -74,13 +74,13 @@ function vfsErrorToErrno(error: VfsError, path: string): string {
  * Manages pending async operations and provides fs methods to the context.
  */
 export class FsBridge {
-  private projectId: string;
+  private adapter: VfsAdapter;
   private context: QuickJSContext;
   private namespace?: string;
   private pendingOps: PendingFsOp[] = [];
 
-  constructor(projectId: string, context: QuickJSContext, namespace?: string) {
-    this.projectId = projectId;
+  constructor(adapter: VfsAdapter, context: QuickJSContext, namespace?: string) {
+    this.adapter = adapter;
     this.context = context;
     this.namespace = namespace;
   }
@@ -161,7 +161,7 @@ export class FsBridge {
         const encoding = encodingHandle ? this.context.getString(encodingHandle) : undefined;
         return this.queueOp(async () => {
           try {
-            const result = await vfs.readFileWithMeta(this.projectId, path, this.namespace);
+            const result = await this.adapter.readFileWithMeta(path);
 
             if (result.isBinary) {
               // Binary file
@@ -263,7 +263,7 @@ export class FsBridge {
           }
           try {
             // Use vfs.writeFile which handles both string and ArrayBuffer
-            await vfs.writeFile(this.projectId, path, data, this.namespace);
+            await this.adapter.writeFile(path, data);
             return { ok: true, value: undefined };
           } catch (error) {
             if (error instanceof VfsError) {
@@ -282,7 +282,7 @@ export class FsBridge {
       if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'exists');
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
-        const exists = await vfs.exists(this.projectId, path, this.namespace);
+        const exists = await this.adapter.exists(path);
         return { ok: true, value: exists };
       });
     });
@@ -299,7 +299,7 @@ export class FsBridge {
           return { ok: false, error: `EROFS: read-only file system, mkdir '${path}'` };
         }
         try {
-          await vfs.mkdir(this.projectId, path, this.namespace);
+          await this.adapter.mkdir(path);
           return { ok: true, value: undefined };
         } catch (error) {
           if (error instanceof VfsError) {
@@ -318,7 +318,7 @@ export class FsBridge {
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         try {
-          const entries = await vfs.readDir(this.projectId, path, false, this.namespace);
+          const entries = await this.adapter.readDir(path);
           const names = entries.map(e => e.name);
           return { ok: true, value: names };
         } catch (error) {
@@ -342,7 +342,7 @@ export class FsBridge {
           return { ok: false, error: `EROFS: read-only file system, unlink '${path}'` };
         }
         try {
-          await vfs.deleteFile(this.projectId, path, this.namespace);
+          await this.adapter.deleteFile(path);
           return { ok: true, value: undefined };
         } catch (error) {
           if (error instanceof VfsError) {
@@ -365,7 +365,7 @@ export class FsBridge {
           return { ok: false, error: `EROFS: read-only file system, rmdir '${path}'` };
         }
         try {
-          await vfs.rmdir(this.projectId, path, true, this.namespace);
+          await this.adapter.rmdir(path, true);
           return { ok: true, value: undefined };
         } catch (error) {
           if (error instanceof VfsError) {
@@ -395,7 +395,7 @@ export class FsBridge {
             return { ok: false, error: `EROFS: read-only file system, rename '${newPath}'` };
           }
           try {
-            await vfs.rename(this.projectId, oldPath, newPath, this.namespace);
+            await this.adapter.rename(oldPath, newPath);
             return { ok: true, value: undefined };
           } catch (error) {
             if (error instanceof VfsError) {
@@ -415,7 +415,7 @@ export class FsBridge {
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         try {
-          const st = await vfs.stat(this.projectId, path, this.namespace);
+          const st = await this.adapter.stat(path);
           return {
             ok: true,
             value: {

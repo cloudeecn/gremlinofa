@@ -3,11 +3,11 @@ import Modal from '../ui/Modal';
 import VfsFileViewer from './VfsFileViewer';
 import VfsFileEditor from './VfsFileEditor';
 import VfsDiffViewer from './VfsDiffViewer';
-import * as vfsService from '../../services/vfs';
+import { getBasename, type VfsAdapter } from '../../services/vfs';
 import { useAlert } from '../../hooks/useAlert';
 
 export interface VfsFileModalProps {
-  projectId: string;
+  adapter: VfsAdapter;
   path: string;
   isOpen: boolean;
   onClose: () => void;
@@ -17,7 +17,7 @@ export interface VfsFileModalProps {
 type Mode = 'view' | 'edit' | 'diff';
 
 export default function VfsFileModal({
-  projectId,
+  adapter,
   path,
   isOpen,
   onClose,
@@ -40,20 +40,20 @@ export default function VfsFileModal({
   // Load initial content for editor
   const handleEdit = useCallback(async () => {
     try {
-      const content = await vfsService.readFile(projectId, path);
+      const content = await adapter.readFile(path);
       setInitialContent(content);
       setMode('edit');
     } catch (error) {
       console.debug('[VfsFileModal] Failed to load content for edit:', error);
     }
-  }, [projectId, path]);
+  }, [adapter, path]);
 
   const handleDiff = useCallback(() => {
     setMode('diff');
   }, []);
 
   const handleDelete = useCallback(async () => {
-    const filename = vfsService.getBasename(path);
+    const filename = getBasename(path);
     const confirmed = await showDestructiveConfirm(
       'Delete File',
       `Are you sure you want to delete "${filename}"? This file will be marked as deleted.`,
@@ -62,14 +62,14 @@ export default function VfsFileModal({
 
     if (confirmed) {
       try {
-        await vfsService.deleteFile(projectId, path);
+        await adapter.deleteFile(path);
         onFileDeleted();
         onClose();
       } catch (error) {
         console.debug('[VfsFileModal] Failed to delete file:', error);
       }
     }
-  }, [projectId, path, onFileDeleted, onClose, showDestructiveConfirm]);
+  }, [adapter, path, onFileDeleted, onClose, showDestructiveConfirm]);
 
   const handleSave = useCallback(() => {
     setMode('view');
@@ -97,7 +97,7 @@ export default function VfsFileModal({
         {mode === 'view' && (
           <VfsFileViewer
             key={`view-${contentVersion}`}
-            projectId={projectId}
+            adapter={adapter}
             path={path}
             onEdit={handleEdit}
             onDiff={handleDiff}
@@ -107,7 +107,7 @@ export default function VfsFileModal({
         )}
         {mode === 'edit' && (
           <VfsFileEditor
-            projectId={projectId}
+            adapter={adapter}
             path={path}
             initialContent={initialContent}
             onSave={handleSave}
@@ -116,7 +116,7 @@ export default function VfsFileModal({
         )}
         {mode === 'diff' && (
           <VfsDiffViewer
-            projectId={projectId}
+            adapter={adapter}
             path={path}
             onRollback={handleRollback}
             onClose={handleDiffClose}

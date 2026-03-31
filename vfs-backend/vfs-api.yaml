@@ -1,0 +1,443 @@
+openapi: 3.0.3
+info:
+  title: GremlinOFA VFS Backend
+  version: 1.0.0
+  description: |
+    Filesystem-based VFS backend. Files live on a real server directory, browsable
+    and editable outside the app. Per-file locking, server-side versioning, and
+    compound text operations included.
+
+servers:
+  - url: /api
+    description: API routes (behind auth)
+
+security:
+  - basicAuth: []
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: Username = userId, password = AUTH_PASSWORD
+
+  parameters:
+    projectId:
+      name: projectId
+      in: query
+      required: true
+      schema:
+        type: string
+    path:
+      name: path
+      in: query
+      required: true
+      schema:
+        type: string
+        example: /docs/readme.md
+
+  schemas:
+    DirEntry:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [file, dir]
+        size:
+          type: number
+        mtime:
+          type: number
+    StrReplaceResult:
+      type: object
+      properties:
+        editLine:
+          type: integer
+        snippet:
+          type: string
+    InsertResult:
+      type: object
+      properties:
+        insertedAt:
+          type: integer
+    VersionInfo:
+      type: object
+      properties:
+        version:
+          type: integer
+        createdAt:
+          type: number
+        size:
+          type: number
+    FileMeta:
+      type: object
+      properties:
+        version:
+          type: integer
+        createdAt:
+          type: number
+        size:
+          type: number
+        mime:
+          type: string
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/ls:
+    get:
+      summary: List directory entries
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - name: path
+          in: query
+          schema:
+            type: string
+            default: /
+      responses:
+        '200':
+          description: Directory listing (excludes hidden dirs)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DirEntry'
+
+  /api/stat:
+    get:
+      summary: File or directory stat
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      responses:
+        '200':
+          description: Stat info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  size:
+                    type: number
+                  mtime:
+                    type: number
+                  type:
+                    type: string
+                    enum: [file, dir]
+        '404':
+          description: Not found
+
+  /api/exists:
+    get:
+      summary: Check if path exists
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      responses:
+        '200':
+          description: Always 200
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exists:
+                    type: boolean
+
+  /api/read:
+    get:
+      summary: Read file content
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      responses:
+        '200':
+          description: Raw file content
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Not found
+
+  /api/write:
+    put:
+      summary: Write file content
+      description: Auto-creates parent directories. Saves version before overwrite.
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+        - name: createOnly
+          in: query
+          schema:
+            type: boolean
+            default: false
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '204':
+          description: Written
+        '409':
+          description: File exists (createOnly=true)
+
+  /api/rm:
+    delete:
+      summary: Delete file
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      responses:
+        '204':
+          description: Deleted
+
+  /api/mkdir:
+    post:
+      summary: Create directory (recursive)
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      responses:
+        '204':
+          description: Created
+
+  /api/rmdir:
+    delete:
+      summary: Delete directory recursively
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      responses:
+        '204':
+          description: Deleted
+
+  /api/rename:
+    post:
+      summary: Rename/move file or directory
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from:
+                  type: string
+                to:
+                  type: string
+      responses:
+        '204':
+          description: Renamed
+
+  /api/str-replace:
+    post:
+      summary: Atomic string replacement (must be unique)
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [oldStr, newStr]
+              properties:
+                oldStr:
+                  type: string
+                newStr:
+                  type: string
+      responses:
+        '200':
+          description: Replacement result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StrReplaceResult'
+        '400':
+          description: String not found or not unique
+
+  /api/insert:
+    post:
+      summary: Insert text at line number
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [line, text]
+              properties:
+                line:
+                  type: integer
+                text:
+                  type: string
+      responses:
+        '200':
+          description: Insert result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsertResult'
+        '400':
+          description: Invalid line number
+
+  /api/append:
+    post:
+      summary: Append text to file (creates if missing)
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+      responses:
+        '200':
+          description: Append result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created:
+                    type: boolean
+
+  /api/versions:
+    get:
+      summary: List stored versions
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      responses:
+        '200':
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VersionInfo'
+    delete:
+      summary: Prune old versions
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+        - name: keep
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Prune result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: integer
+
+  /api/version:
+    get:
+      summary: Read specific version content
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+        - name: v
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Version content
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Version not found
+
+  /api/file-meta:
+    get:
+      summary: File metadata with version info
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+        - $ref: '#/components/parameters/path'
+      responses:
+        '200':
+          description: File metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileMeta'
+        '404':
+          description: Not found
+
+  /api/compact:
+    post:
+      summary: Prune old versions across all files
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keepCount:
+                  type: integer
+                  default: 10
+      responses:
+        '200':
+          description: Compact result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  filesProcessed:
+                    type: integer
+                  versionsDropped:
+                    type: integer

@@ -1,0 +1,28 @@
+[Unit]
+Description=GremlinOFA VFS Backend - Filesystem-based virtual file storage
+Documentation=https://github.com/nicobailey/gremlinofa
+After=network.target
+
+[Service]
+Type=simple
+User=gremlinofa
+Group=gremlinofa
+WorkingDirectory=/opt/gremlinofa-vfs
+ExecStart=/usr/bin/node /opt/gremlinofa-vfs/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/gremlinofa-vfs
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gremlinofa-vfs
+
+[Install]
+WantedBy=multi-user.target

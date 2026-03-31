@@ -1,35 +1,47 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { fsTool } from '../fsTool';
-import * as vfs from '../../vfs';
 import { VfsError } from '../../vfs';
 import type { ToolContext, ToolOptions, ToolResult } from '../../../types';
+import type { VfsAdapter } from '../../vfs/vfsAdapter';
 
-// Mock the vfs barrel
-vi.mock('../../vfs', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../vfs')>();
+// Mock VfsAdapter with vi.fn() stubs for each method used in fsTool
+function createMockAdapter(): VfsAdapter {
   return {
-    ...actual,
-    exists: vi.fn(),
     readDir: vi.fn(),
     readFile: vi.fn(),
     readFileWithMeta: vi.fn(),
-    isDirectory: vi.fn(),
-    stat: vi.fn(),
     writeFile: vi.fn(),
     createFile: vi.fn(),
-    createFileGuarded: vi.fn(),
-    updateFile: vi.fn(),
     deleteFile: vi.fn(),
-    deletePath: vi.fn(),
-    rmdir: vi.fn(),
     mkdir: vi.fn(),
+    rmdir: vi.fn(),
     rename: vi.fn(),
+    exists: vi.fn(),
+    isFile: vi.fn(),
+    isDirectory: vi.fn(),
+    stat: vi.fn(),
+    hasVfs: vi.fn(),
+    clearVfs: vi.fn(),
     strReplace: vi.fn(),
     insert: vi.fn(),
     appendFile: vi.fn(),
+    getFileMeta: vi.fn(),
+    getFileId: vi.fn(),
+    listVersions: vi.fn(),
+    getVersion: vi.fn(),
+    dropOldVersions: vi.fn(),
+    listOrphans: vi.fn(),
+    restoreOrphan: vi.fn(),
+    purgeOrphan: vi.fn(),
     copyFile: vi.fn(),
-  };
-});
+    deletePath: vi.fn(),
+    createFileGuarded: vi.fn(),
+    ensureDirAndWrite: vi.fn(),
+    compactProject: vi.fn(),
+  } as VfsAdapter;
+}
+
+let mockAdapter: VfsAdapter;
 
 /** Consume an async generator to get the final ToolResult */
 async function collectToolResult(gen: ReturnType<typeof fsTool.execute>): Promise<ToolResult> {
@@ -45,18 +57,22 @@ async function executeFs(
   projectId = 'test-project',
   toolOptions: ToolOptions = {}
 ) {
-  const context: ToolContext = { projectId };
+  const context: ToolContext = {
+    projectId,
+    vfsAdapter: mockAdapter,
+    createVfsAdapter: () => createMockAdapter(),
+  };
   return collectToolResult(fsTool.execute(input, toolOptions, context));
 }
 
 describe('fsTool view-all command', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
   it('returns concatenated content for multiple valid files', async () => {
-    (vfs.isDirectory as Mock).mockResolvedValue(false);
-    (vfs.readFileWithMeta as Mock)
+    (mockAdapter.isDirectory as Mock).mockResolvedValue(false);
+    (mockAdapter.readFileWithMeta as Mock)
       .mockResolvedValueOnce({ content: 'File one content', isBinary: false })
       .mockResolvedValueOnce({ content: 'File two content', isBinary: false });
 
@@ -73,10 +89,10 @@ describe('fsTool view-all command', () => {
   });
 
   it('returns partial success when some paths fail', async () => {
-    (vfs.isDirectory as Mock)
+    (mockAdapter.isDirectory as Mock)
       .mockResolvedValueOnce(false)
       .mockRejectedValueOnce(new VfsError('Path not found', 'PATH_NOT_FOUND'));
-    (vfs.readFileWithMeta as Mock).mockResolvedValueOnce({
+    (mockAdapter.readFileWithMeta as Mock).mockResolvedValueOnce({
       content: 'Good content',
       isBinary: false,
     });
@@ -92,7 +108,7 @@ describe('fsTool view-all command', () => {
   });
 
   it('returns isError true when all paths fail', async () => {
-    (vfs.isDirectory as Mock)
+    (mockAdapter.isDirectory as Mock)
       .mockRejectedValueOnce(new VfsError('Path not found', 'PATH_NOT_FOUND'))
       .mockRejectedValueOnce(new VfsError('Path not found', 'PATH_NOT_FOUND'));
 
@@ -118,11 +134,11 @@ describe('fsTool view-all command', () => {
 
 describe('fsTool copy command', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
-  it('copies a file via vfs.copyFile', async () => {
-    (vfs.copyFile as Mock).mockResolvedValue(undefined);
+  it('copies a file via adapter.copyFile', async () => {
+    (mockAdapter.copyFile as Mock).mockResolvedValue(undefined);
 
     const result = await executeFs({
       command: 'copy',
@@ -132,17 +148,11 @@ describe('fsTool copy command', () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content).toContain('Successfully copied /data/src.txt to /data/dst.txt');
-    expect(vfs.copyFile).toHaveBeenCalledWith(
-      'test-project',
-      '/data/src.txt',
-      '/data/dst.txt',
-      undefined,
-      undefined
-    );
+    expect(mockAdapter.copyFile).toHaveBeenCalledWith('/data/src.txt', '/data/dst.txt', undefined);
   });
 
   it('returns error when destination is a directory', async () => {
-    (vfs.copyFile as Mock).mockRejectedValue(
+    (mockAdapter.copyFile as Mock).mockRejectedValue(
       new VfsError('Destination is a directory: /data/somedir', 'NOT_A_FILE')
     );
 
@@ -157,7 +167,9 @@ describe('fsTool copy command', () => {
   });
 
   it('returns error when source does not exist', async () => {
-    (vfs.copyFile as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
+    (mockAdapter.copyFile as Mock).mockRejectedValue(
+      new VfsError('Path not found', 'PATH_NOT_FOUND')
+    );
 
     const result = await executeFs({
       command: 'copy',
@@ -183,11 +195,11 @@ describe('fsTool copy command', () => {
 
 describe('fsTool create command', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
   it('creates a text file using createFileGuarded', async () => {
-    (vfs.createFileGuarded as Mock).mockResolvedValue(undefined);
+    (mockAdapter.createFileGuarded as Mock).mockResolvedValue(undefined);
 
     const result = await executeFs({
       command: 'create',
@@ -197,17 +209,13 @@ describe('fsTool create command', () => {
 
     expect(result.content).toBe('File created successfully at: /data/new.txt');
     expect(result.isError).toBeFalsy();
-    expect(vfs.createFileGuarded).toHaveBeenCalledWith(
-      'test-project',
-      '/data/new.txt',
-      'hello',
-      undefined,
-      undefined
-    );
+    expect(mockAdapter.createFileGuarded).toHaveBeenCalledWith('/data/new.txt', 'hello', undefined);
   });
 
   it('returns error when file already exists without overwrite', async () => {
-    (vfs.createFileGuarded as Mock).mockRejectedValue(new VfsError('File exists', 'FILE_EXISTS'));
+    (mockAdapter.createFileGuarded as Mock).mockRejectedValue(
+      new VfsError('File exists', 'FILE_EXISTS')
+    );
 
     const result = await executeFs({
       command: 'create',
@@ -220,7 +228,7 @@ describe('fsTool create command', () => {
   });
 
   it('overwrites existing text file when overwrite is true', async () => {
-    (vfs.createFileGuarded as Mock).mockResolvedValue(undefined);
+    (mockAdapter.createFileGuarded as Mock).mockResolvedValue(undefined);
 
     const result = await executeFs({
       command: 'create',
@@ -231,17 +239,15 @@ describe('fsTool create command', () => {
 
     expect(result.content).toBe('File created successfully at: /data/existing.txt');
     expect(result.isError).toBeFalsy();
-    expect(vfs.createFileGuarded).toHaveBeenCalledWith(
-      'test-project',
+    expect(mockAdapter.createFileGuarded).toHaveBeenCalledWith(
       '/data/existing.txt',
       'new content',
-      true,
-      undefined
+      true
     );
   });
 
   it('returns error for binary file when it exists without overwrite', async () => {
-    (vfs.createFileGuarded as Mock).mockRejectedValue(
+    (mockAdapter.createFileGuarded as Mock).mockRejectedValue(
       new VfsError('File already exists: /data/img.png', 'FILE_EXISTS')
     );
 
@@ -256,7 +262,7 @@ describe('fsTool create command', () => {
   });
 
   it('creates binary file when it does not exist', async () => {
-    (vfs.createFileGuarded as Mock).mockResolvedValue(undefined);
+    (mockAdapter.createFileGuarded as Mock).mockResolvedValue(undefined);
 
     const result = await executeFs({
       command: 'create',
@@ -266,11 +272,11 @@ describe('fsTool create command', () => {
 
     expect(result.content).toBe('Binary file created successfully at: /data/img.png');
     expect(result.isError).toBeFalsy();
-    expect(vfs.createFileGuarded).toHaveBeenCalled();
+    expect(mockAdapter.createFileGuarded).toHaveBeenCalled();
   });
 
   it('overwrites existing binary file when overwrite is true', async () => {
-    (vfs.createFileGuarded as Mock).mockResolvedValue(undefined);
+    (mockAdapter.createFileGuarded as Mock).mockResolvedValue(undefined);
 
     const result = await executeFs({
       command: 'create',
@@ -281,23 +287,21 @@ describe('fsTool create command', () => {
 
     expect(result.content).toBe('Binary file created successfully at: /data/img.png');
     expect(result.isError).toBeFalsy();
-    expect(vfs.createFileGuarded).toHaveBeenCalledWith(
-      'test-project',
+    expect(mockAdapter.createFileGuarded).toHaveBeenCalledWith(
       '/data/img.png',
       expect.any(ArrayBuffer),
-      true,
-      undefined
+      true
     );
   });
 });
 
 describe('fsTool str_replace command', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
   it('omitting new_str deletes matched text instead of inserting "undefined"', async () => {
-    (vfs.strReplace as Mock).mockResolvedValue({
+    (mockAdapter.strReplace as Mock).mockResolvedValue({
       editLine: 1,
       snippet: '     1\tHello',
     });
@@ -310,17 +314,11 @@ describe('fsTool str_replace command', () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(vfs.strReplace).toHaveBeenCalledWith(
-      'test-project',
-      '/data/test.txt',
-      ' world',
-      '',
-      undefined
-    );
+    expect(mockAdapter.strReplace).toHaveBeenCalledWith('/data/test.txt', ' world', '');
   });
 
   it('returns snippet on successful replacement', async () => {
-    (vfs.strReplace as Mock).mockResolvedValue({
+    (mockAdapter.strReplace as Mock).mockResolvedValue({
       editLine: 2,
       snippet: '     1\tline one\n     2\tnew text\n     3\tline three',
     });
@@ -338,7 +336,7 @@ describe('fsTool str_replace command', () => {
   });
 
   it('returns error when string not found', async () => {
-    (vfs.strReplace as Mock).mockRejectedValue(
+    (mockAdapter.strReplace as Mock).mockRejectedValue(
       new VfsError('String not found', 'STRING_NOT_FOUND')
     );
 
@@ -354,7 +352,7 @@ describe('fsTool str_replace command', () => {
   });
 
   it('returns error when string is not unique', async () => {
-    (vfs.strReplace as Mock).mockRejectedValue(
+    (mockAdapter.strReplace as Mock).mockRejectedValue(
       new VfsError('Multiple occurrences (2) found in lines: 3, 7', 'STRING_NOT_UNIQUE')
     );
 
@@ -371,7 +369,7 @@ describe('fsTool str_replace command', () => {
   });
 
   it('returns error for binary files', async () => {
-    (vfs.strReplace as Mock).mockRejectedValue(new VfsError('Binary file', 'BINARY_FILE'));
+    (mockAdapter.strReplace as Mock).mockRejectedValue(new VfsError('Binary file', 'BINARY_FILE'));
 
     const result = await executeFs({
       command: 'str_replace',
@@ -387,11 +385,11 @@ describe('fsTool str_replace command', () => {
 
 describe('fsTool insert command', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
-  it('inserts text at a line via vfs.insert', async () => {
-    (vfs.insert as Mock).mockResolvedValue({ insertedAt: 2 });
+  it('inserts text at a line via adapter.insert', async () => {
+    (mockAdapter.insert as Mock).mockResolvedValue({ insertedAt: 2 });
 
     const result = await executeFs({
       command: 'insert',
@@ -402,17 +400,11 @@ describe('fsTool insert command', () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content).toContain('has been edited');
-    expect(vfs.insert).toHaveBeenCalledWith(
-      'test-project',
-      '/data/test.txt',
-      2,
-      'new line',
-      undefined
-    );
+    expect(mockAdapter.insert).toHaveBeenCalledWith('/data/test.txt', 2, 'new line');
   });
 
   it('returns error for invalid line number', async () => {
-    (vfs.insert as Mock).mockRejectedValue(
+    (mockAdapter.insert as Mock).mockRejectedValue(
       new VfsError('Invalid line 99 in /data/test.txt. Valid range: [0, 5]', 'INVALID_LINE')
     );
 
@@ -429,7 +421,7 @@ describe('fsTool insert command', () => {
   });
 
   it('returns error for binary files', async () => {
-    (vfs.insert as Mock).mockRejectedValue(new VfsError('Binary file', 'BINARY_FILE'));
+    (mockAdapter.insert as Mock).mockRejectedValue(new VfsError('Binary file', 'BINARY_FILE'));
 
     const result = await executeFs({
       command: 'insert',
@@ -445,11 +437,11 @@ describe('fsTool insert command', () => {
 
 describe('fsTool append command', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
   it('appends to existing file', async () => {
-    (vfs.appendFile as Mock).mockResolvedValue({ created: false });
+    (mockAdapter.appendFile as Mock).mockResolvedValue({ created: false });
 
     const result = await executeFs({
       command: 'append',
@@ -459,16 +451,11 @@ describe('fsTool append command', () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content).toContain('Content appended to');
-    expect(vfs.appendFile).toHaveBeenCalledWith(
-      'test-project',
-      '/data/test.txt',
-      'appended text',
-      undefined
-    );
+    expect(mockAdapter.appendFile).toHaveBeenCalledWith('/data/test.txt', 'appended text');
   });
 
   it('creates file when it does not exist', async () => {
-    (vfs.appendFile as Mock).mockResolvedValue({ created: true });
+    (mockAdapter.appendFile as Mock).mockResolvedValue({ created: true });
 
     const result = await executeFs({
       command: 'append',
@@ -481,7 +468,7 @@ describe('fsTool append command', () => {
   });
 
   it('omitting file_text appends nothing instead of "undefined"', async () => {
-    (vfs.appendFile as Mock).mockResolvedValue({ created: false });
+    (mockAdapter.appendFile as Mock).mockResolvedValue({ created: false });
 
     const result = await executeFs({
       command: 'append',
@@ -490,11 +477,11 @@ describe('fsTool append command', () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(vfs.appendFile).toHaveBeenCalledWith('test-project', '/data/test.txt', '', undefined);
+    expect(mockAdapter.appendFile).toHaveBeenCalledWith('/data/test.txt', '');
   });
 
   it('returns error for binary files', async () => {
-    (vfs.appendFile as Mock).mockRejectedValue(
+    (mockAdapter.appendFile as Mock).mockRejectedValue(
       new VfsError('Cannot append to binary file', 'BINARY_FILE')
     );
 
@@ -511,11 +498,11 @@ describe('fsTool append command', () => {
 
 describe('fsTool delete command', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
-  it('deletes via vfs.deletePath', async () => {
-    (vfs.deletePath as Mock).mockResolvedValue(undefined);
+  it('deletes via adapter.deletePath', async () => {
+    (mockAdapter.deletePath as Mock).mockResolvedValue(undefined);
 
     const result = await executeFs({
       command: 'delete',
@@ -524,11 +511,13 @@ describe('fsTool delete command', () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content).toContain('Successfully deleted');
-    expect(vfs.deletePath).toHaveBeenCalledWith('test-project', '/data/file.txt', undefined);
+    expect(mockAdapter.deletePath).toHaveBeenCalledWith('/data/file.txt');
   });
 
   it('returns error when path does not exist', async () => {
-    (vfs.deletePath as Mock).mockRejectedValue(new VfsError('Path not found', 'PATH_NOT_FOUND'));
+    (mockAdapter.deletePath as Mock).mockRejectedValue(
+      new VfsError('Path not found', 'PATH_NOT_FOUND')
+    );
 
     const result = await executeFs({
       command: 'delete',
@@ -540,7 +529,7 @@ describe('fsTool delete command', () => {
   });
 
   it('returns generic error for unexpected failures', async () => {
-    (vfs.deletePath as Mock).mockRejectedValue(new Error('unexpected'));
+    (mockAdapter.deletePath as Mock).mockRejectedValue(new Error('unexpected'));
 
     const result = await executeFs({
       command: 'delete',
@@ -554,11 +543,11 @@ describe('fsTool delete command', () => {
 
 describe('fsTool copy overwrite behavior', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
   it('errors when destination exists without overwrite', async () => {
-    (vfs.copyFile as Mock).mockRejectedValue(
+    (mockAdapter.copyFile as Mock).mockRejectedValue(
       new VfsError('Destination already exists', 'DESTINATION_EXISTS')
     );
 
@@ -573,7 +562,7 @@ describe('fsTool copy overwrite behavior', () => {
   });
 
   it('overwrites when destination exists with overwrite: true', async () => {
-    (vfs.copyFile as Mock).mockResolvedValue(undefined);
+    (mockAdapter.copyFile as Mock).mockResolvedValue(undefined);
 
     const result = await executeFs({
       command: 'copy',
@@ -584,23 +573,17 @@ describe('fsTool copy overwrite behavior', () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content).toContain('Successfully copied');
-    expect(vfs.copyFile).toHaveBeenCalledWith(
-      'test-project',
-      '/data/src.txt',
-      '/data/dst.txt',
-      true,
-      undefined
-    );
+    expect(mockAdapter.copyFile).toHaveBeenCalledWith('/data/src.txt', '/data/dst.txt', true);
   });
 });
 
 describe('fsTool rename overwrite behavior', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockAdapter = createMockAdapter();
   });
 
-  it('passes overwrite to vfs.rename', async () => {
-    (vfs.rename as Mock).mockResolvedValue(undefined);
+  it('passes overwrite to adapter.rename', async () => {
+    (mockAdapter.rename as Mock).mockResolvedValue(undefined);
 
     const result = await executeFs({
       command: 'rename',
@@ -610,17 +593,11 @@ describe('fsTool rename overwrite behavior', () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(vfs.rename).toHaveBeenCalledWith(
-      'test-project',
-      '/data/old.txt',
-      '/data/new.txt',
-      undefined,
-      true
-    );
+    expect(mockAdapter.rename).toHaveBeenCalledWith('/data/old.txt', '/data/new.txt', true);
   });
 
   it('errors when destination exists without overwrite', async () => {
-    (vfs.rename as Mock).mockRejectedValue(
+    (mockAdapter.rename as Mock).mockRejectedValue(
       new VfsError('Destination exists', 'DESTINATION_EXISTS')
     );
 
@@ -636,6 +613,10 @@ describe('fsTool rename overwrite behavior', () => {
 });
 
 describe('fsTool input validation', () => {
+  beforeEach(() => {
+    mockAdapter = createMockAdapter();
+  });
+
   it('returns error when command is missing', async () => {
     const result = await executeFs({});
     expect(result.content).toBe('Error: command is required');

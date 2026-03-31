@@ -178,6 +178,31 @@ describe('VFS Text Editing', () => {
         code: 'PATH_NOT_FOUND',
       });
     });
+
+    it('preserves $ special patterns in replacement text literally', async () => {
+      await createFile(projectId, '/test.txt', 'prefix\nconst re = /old/;\nsuffix');
+
+      // newStr contains $` which String.replace() would interpret as "text before match"
+      await strReplace(
+        projectId,
+        '/test.txt',
+        'const re = /old/;',
+        'const re = new RegExp(`^${pattern}$`);'
+      );
+
+      const content = await readFile(projectId, '/test.txt');
+      expect(content).toBe('prefix\nconst re = new RegExp(`^${pattern}$`);\nsuffix');
+    });
+
+    it('counts non-overlapping occurrences correctly', async () => {
+      // "aa" appears once (non-overlapping) in "aaa", not twice
+      await createFile(projectId, '/test.txt', 'aaa');
+
+      const result = await strReplace(projectId, '/test.txt', 'aa', 'XX');
+      const content = await readFile(projectId, '/test.txt');
+      expect(content).toBe('XXa');
+      expect(result.editLine).toBe(1);
+    });
   });
 
   describe('insert', () => {

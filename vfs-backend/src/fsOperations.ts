@@ -259,7 +259,7 @@ export async function strReplace(
     let pos = 0;
     while ((pos = content.indexOf(oldStr, pos)) !== -1) {
       count++;
-      pos += 1;
+      pos += oldStr.length;
     }
 
     if (count === 0) {
@@ -274,7 +274,8 @@ export async function strReplace(
 
     const replacePos = content.indexOf(oldStr);
     const editLine = content.substring(0, replacePos).split('\n').length;
-    const newContent = content.replace(oldStr, newStr);
+    const newContent =
+      content.substring(0, replacePos) + newStr + content.substring(replacePos + oldStr.length);
 
     await fs.writeFile(resolved, newContent, 'utf-8');
 

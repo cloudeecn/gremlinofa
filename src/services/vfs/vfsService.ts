@@ -1697,7 +1697,7 @@ function countOccurrences(content: string, searchStr: string): number {
   let pos = 0;
   while ((pos = content.indexOf(searchStr, pos)) !== -1) {
     count++;
-    pos += 1;
+    pos += searchStr.length;
   }
   return count;
 }
@@ -1711,7 +1711,7 @@ function findOccurrenceLines(content: string, searchStr: string): number[] {
   while ((pos = content.indexOf(searchStr, pos)) !== -1) {
     const lineNum = content.substring(0, pos).split('\n').length;
     lines.push(lineNum);
-    pos += 1;
+    pos += searchStr.length;
   }
   return lines;
 }
@@ -1797,7 +1797,8 @@ export async function strReplace(
   const editLine = content.substring(0, replacePos).split('\n').length;
 
   // Perform replacement
-  const newContent = content.replace(oldStr, newStr);
+  const newContent =
+    content.substring(0, replacePos) + newStr + content.substring(replacePos + oldStr.length);
 
   // Save current version to history, then update file
   await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);

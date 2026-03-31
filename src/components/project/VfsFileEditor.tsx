@@ -1,11 +1,10 @@
 import { useState, useCallback } from 'react';
 import Spinner from '../ui/Spinner';
 import { useDraftPersistence, clearDraft } from '../../hooks/useDraftPersistence';
-import * as vfsService from '../../services/vfs';
-import { getBasename } from '../../services/vfs';
+import { getBasename, type VfsAdapter } from '../../services/vfs';
 
 export interface VfsFileEditorProps {
-  projectId: string;
+  adapter: VfsAdapter;
   path: string;
   initialContent: string;
   onSave: () => void;
@@ -13,7 +12,7 @@ export interface VfsFileEditorProps {
 }
 
 export default function VfsFileEditor({
-  projectId,
+  adapter,
   path,
   initialContent,
   onSave,
@@ -23,8 +22,8 @@ export default function VfsFileEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Draft context ID: projectId_encodedPath to handle "/" in paths
-  const draftContextId = `${projectId}_${encodeURIComponent(path)}`;
+  // Draft context ID: encodedPath to handle "/" in paths
+  const draftContextId = `vfs_${encodeURIComponent(path)}`;
 
   const isDirty = content !== initialContent;
 
@@ -40,7 +39,7 @@ export default function VfsFileEditor({
     setError(null);
 
     try {
-      await vfsService.updateFile(projectId, path, content);
+      await adapter.writeFile(path, content);
       clearDraft('vfs-editor', draftContextId);
       onSave();
     } catch (err) {
@@ -48,7 +47,7 @@ export default function VfsFileEditor({
       setError(message);
       setSaving(false);
     }
-  }, [projectId, path, content, draftContextId, onSave]);
+  }, [adapter, path, content, draftContextId, onSave]);
 
   const handleCancel = useCallback(() => {
     clearDraft('vfs-editor', draftContextId);

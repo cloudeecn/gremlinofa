@@ -12,6 +12,10 @@
 import { withTreeLock } from './treeLock';
 import * as svc from './vfsService';
 import type { FileContent } from './vfsService';
+import type { VfsAdapter } from './vfsAdapter';
+import type { Project } from '../../types';
+import { RemoteVfsAdapter } from './remoteVfsAdapter';
+import { LocalVfsAdapter } from './localVfsAdapter';
 
 // ============================================================================
 // Lock Wrapper Utility
@@ -199,4 +203,27 @@ export async function ensureDirAndWrite(
       await svc.writeFile(projectId, filePath, file.content, namespace);
     }
   });
+}
+
+// ============================================================================
+// Adapter Factory
+// ============================================================================
+
+/**
+ * Get a VfsAdapter for a project. If the project has remoteVfsUrl configured,
+ * returns a RemoteVfsAdapter (no client-side tree lock — server handles it).
+ * Otherwise returns a LocalVfsAdapter wrapping the existing vfsService with tree lock.
+ */
+export function getAdapter(project: Project, userId: string, namespace?: string): VfsAdapter {
+  if (project.remoteVfsUrl) {
+    return new RemoteVfsAdapter(
+      project.remoteVfsUrl,
+      userId,
+      project.remoteVfsPassword ?? '',
+      project.id,
+      project.remoteVfsEncrypt ?? false,
+      namespace
+    );
+  }
+  return new LocalVfsAdapter(project.id, namespace);
 }

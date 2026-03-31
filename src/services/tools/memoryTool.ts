@@ -9,7 +9,7 @@
  * - System prompt mode: Injects memory listing and README.md into system prompt
  *
  * This is a stateless tool - all state is passed via toolOptions and context.
- * Internally uses VfsService for tree-structured storage with versioning.
+ * Internally uses VfsAdapter for tree-structured storage with versioning.
  */
 
 import type {
@@ -21,8 +21,9 @@ import type {
   ToolResult,
   ToolStreamEvent,
 } from '../../types';
-import * as vfs from '../vfs';
+import type { VfsAdapter } from '../vfs/vfsAdapter';
 import { VfsError } from '../vfs';
+import { LocalVfsAdapter } from '../vfs/localVfsAdapter';
 import { formatFileWithLineNumbers } from '../../utils/formatFileContent';
 
 const MEMORIES_ROOT = '/memories';
@@ -146,15 +147,11 @@ interface ListingEntry {
 /**
  * List directory contents up to 2 levels deep
  */
-async function listTwoLevels(
-  projectId: string,
-  basePath: string,
-  namespace?: string
-): Promise<ListingEntry[]> {
+async function listTwoLevels(adapter: VfsAdapter, basePath: string): Promise<ListingEntry[]> {
   const entries: ListingEntry[] = [];
 
   // Level 1: direct children
-  const level1 = await vfs.readDir(projectId, basePath, false, namespace);
+  const level1 = await adapter.readDir(basePath);
 
   for (const entry of level1) {
     const entryPath = `${basePath}/${entry.name}`;
@@ -163,7 +160,7 @@ async function listTwoLevels(
     // Level 2: children of directories
     if (entry.type === 'dir') {
       try {
-        const level2 = await vfs.readDir(projectId, entryPath, false, namespace);
+        const level2 = await adapter.readDir(entryPath);
         for (const child of level2) {
           entries.push({
             path: `${entryPath}/${child.name}`,
@@ -180,15 +177,14 @@ async function listTwoLevels(
 }
 
 // ============================================================================
-// Command Handlers (stateless - receive projectId explicitly)
+// Command Handlers (stateless - receive adapter explicitly)
 // ============================================================================
 
 /** Handle view command */
 async function handleView(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
   viewRange?: [number, number],
-  namespace?: string,
   noLineNumbers?: boolean
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
@@ -197,14 +193,14 @@ async function handleView(
   if (vfsPath === MEMORIES_ROOT) {
     try {
       // Ensure the /memories directory exists
-      const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
+      const memoriesExists = await adapter.exists(MEMORIES_ROOT);
       if (!memoriesExists) {
         return {
           content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
         };
       }
 
-      const entries = await listTwoLevels(projectId, MEMORIES_ROOT, namespace);
+      const entries = await listTwoLevels(adapter, MEMORIES_ROOT);
 
       if (entries.length === 0) {
         return {
@@ -234,7 +230,7 @@ async function handleView(
 
   // File content
   try {
-    const content = await vfs.readFile(projectId, vfsPath, namespace);
+    const content = await adapter.readFile(vfsPath);
     const lines = content.split('\n');
 
     if (lines.length > MAX_LINE_COUNT) {
@@ -279,7 +275,7 @@ async function handleView(
       }
       if (error.code === 'NOT_A_FILE') {
         // It's a directory, list its contents (2 levels deep)
-        const entries = await listTwoLevels(projectId, vfsPath, namespace);
+        const entries = await listTwoLevels(adapter, vfsPath);
         const listing = entries
           .map(entry => {
             const size = entry.size !== undefined ? formatSize(entry.size) : '0';
@@ -298,11 +294,10 @@ async function handleView(
 
 /** Handle create command */
 async function handleCreate(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
   fileText: string,
-  overwrite?: boolean,
-  namespace?: string
+  overwrite?: boolean
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
@@ -315,9 +310,9 @@ async function handleCreate(
 
   try {
     if (overwrite) {
-      await vfs.writeFile(projectId, vfsPath, fileText, namespace);
+      await adapter.writeFile(vfsPath, fileText);
     } else {
-      await vfs.createFile(projectId, vfsPath, fileText, namespace);
+      await adapter.createFile(vfsPath, fileText);
     }
 
     return {
@@ -336,11 +331,10 @@ async function handleCreate(
 
 /** Handle str_replace command */
 async function handleStrReplace(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
   oldStr: string,
-  newStr: string,
-  namespace?: string
+  newStr: string
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
@@ -352,7 +346,7 @@ async function handleStrReplace(
   }
 
   try {
-    const { snippet } = await vfs.strReplace(projectId, vfsPath, oldStr, newStr, namespace);
+    const { snippet } = await adapter.strReplace(vfsPath, oldStr, newStr);
 
     return {
       content: `The memory file has been edited.\n${snippet}`,
@@ -388,11 +382,10 @@ async function handleStrReplace(
 
 /** Handle insert command */
 async function handleInsert(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
   insertLine: number,
-  insertText: string,
-  namespace?: string
+  insertText: string
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
@@ -404,7 +397,7 @@ async function handleInsert(
   }
 
   try {
-    await vfs.insert(projectId, vfsPath, insertLine, insertText, namespace);
+    await adapter.insert(vfsPath, insertLine, insertText);
 
     return {
       content: `The file ${vfsPath} has been edited.`,
@@ -433,11 +426,7 @@ async function handleInsert(
 }
 
 /** Handle delete command */
-async function handleDelete(
-  projectId: string,
-  path: string,
-  namespace?: string
-): Promise<ToolResult> {
+async function handleDelete(adapter: VfsAdapter, path: string): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
   if (vfsPath === MEMORIES_ROOT) {
@@ -448,7 +437,7 @@ async function handleDelete(
   }
 
   try {
-    await vfs.deletePath(projectId, vfsPath, namespace);
+    await adapter.deletePath(vfsPath);
 
     return {
       content: `Successfully deleted ${vfsPath}`,
@@ -468,11 +457,10 @@ async function handleDelete(
 
 /** Handle rename command */
 async function handleRename(
-  projectId: string,
+  adapter: VfsAdapter,
   oldPath: string,
   newPath: string,
-  overwrite?: boolean,
-  namespace?: string
+  overwrite?: boolean
 ): Promise<ToolResult> {
   const oldVfsPath = normalizeToVfsPath(oldPath);
   const newVfsPath = normalizeToVfsPath(newPath);
@@ -492,7 +480,7 @@ async function handleRename(
   }
 
   try {
-    await vfs.rename(projectId, oldVfsPath, newVfsPath, namespace, overwrite);
+    await adapter.rename(oldVfsPath, newVfsPath, overwrite);
 
     return {
       content: `Successfully renamed ${oldVfsPath} to ${newVfsPath}`,
@@ -524,11 +512,10 @@ async function handleRename(
 
 /** Handle copy command */
 async function handleCopy(
-  projectId: string,
+  adapter: VfsAdapter,
   sourcePath: string,
   destPath: string,
-  overwrite?: boolean,
-  namespace?: string
+  overwrite?: boolean
 ): Promise<ToolResult> {
   const srcVfsPath = normalizeToVfsPath(sourcePath);
   const dstVfsPath = normalizeToVfsPath(destPath);
@@ -548,7 +535,7 @@ async function handleCopy(
   }
 
   try {
-    await vfs.copyFile(projectId, srcVfsPath, dstVfsPath, overwrite, namespace);
+    await adapter.copyFile(srcVfsPath, dstVfsPath, overwrite);
 
     return {
       content: `Successfully copied ${srcVfsPath} to ${dstVfsPath}`,
@@ -579,11 +566,7 @@ async function handleCopy(
 }
 
 /** Handle mkdir command */
-async function handleMkdir(
-  projectId: string,
-  path: string,
-  namespace?: string
-): Promise<ToolResult> {
+async function handleMkdir(adapter: VfsAdapter, path: string): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
   if (vfsPath === MEMORIES_ROOT) {
@@ -594,7 +577,7 @@ async function handleMkdir(
   }
 
   try {
-    await vfs.mkdir(projectId, vfsPath, namespace);
+    await adapter.mkdir(vfsPath);
 
     return {
       content: `Directory created successfully at: ${vfsPath}`,
@@ -620,10 +603,9 @@ async function handleMkdir(
 
 /** Handle append command */
 async function handleAppend(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
-  fileText: string,
-  namespace?: string
+  fileText: string
 ): Promise<ToolResult> {
   const vfsPath = normalizeToVfsPath(path);
 
@@ -635,7 +617,7 @@ async function handleAppend(
   }
 
   try {
-    const { created } = await vfs.appendFile(projectId, vfsPath, fileText, namespace);
+    const { created } = await adapter.appendFile(vfsPath, fileText);
 
     if (created) {
       return {
@@ -660,9 +642,8 @@ async function handleAppend(
 
 /** Handle view-all command — batch multiple file reads into one result */
 async function handleMultiView(
-  projectId: string,
+  adapter: VfsAdapter,
   paths: string[],
-  namespace?: string,
   noLineNumbers?: boolean
 ): Promise<ToolResult> {
   if (!paths || paths.length === 0) {
@@ -676,7 +657,7 @@ async function handleMultiView(
   let errorCount = 0;
 
   for (const path of paths) {
-    const result = await handleView(projectId, path, undefined, namespace, noLineNumbers);
+    const result = await handleView(adapter, path, undefined, noLineNumbers);
     if (result.isError) {
       errorCount++;
       const vfsPath = normalizeToVfsPath(path);
@@ -700,15 +681,14 @@ async function* executeMemoryCommand(
   _toolOptions?: ToolOptions,
   context?: ToolContext
 ): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
-  if (!context?.projectId) {
+  if (!context?.vfsAdapter) {
     return {
-      content: 'Error: projectId is required in context',
+      content: 'Error: vfsAdapter is required in context',
       isError: true,
     };
   }
 
-  const projectId = context.projectId;
-  const namespace = context.namespace;
+  const adapter = context.vfsAdapter;
   const memoryInput = input as unknown as MemoryInput;
 
   // Validate required fields before dispatch — LLMs sometimes omit them
@@ -753,61 +733,45 @@ async function* executeMemoryCommand(
 
   switch (memoryInput.command) {
     case 'view':
-      return handleView(
-        projectId,
-        memoryInput.path,
-        memoryInput.view_range,
-        namespace,
-        context.noLineNumbers
-      );
+      return handleView(adapter, memoryInput.path, memoryInput.view_range, context.noLineNumbers);
     case 'create':
       return handleCreate(
-        projectId,
+        adapter,
         memoryInput.path,
         memoryInput.file_text ?? '',
-        memoryInput.overwrite,
-        namespace
+        memoryInput.overwrite
       );
     case 'str_replace':
       return handleStrReplace(
-        projectId,
+        adapter,
         memoryInput.path,
         memoryInput.old_str,
-        memoryInput.new_str ?? '',
-        namespace
+        memoryInput.new_str ?? ''
       );
     case 'insert':
       return handleInsert(
-        projectId,
+        adapter,
         memoryInput.path,
         memoryInput.insert_line,
-        memoryInput.insert_text ?? '',
-        namespace
+        memoryInput.insert_text ?? ''
       );
     case 'delete':
-      return handleDelete(projectId, memoryInput.path, namespace);
+      return handleDelete(adapter, memoryInput.path);
     case 'rename':
       return handleRename(
-        projectId,
+        adapter,
         memoryInput.old_path,
         memoryInput.new_path,
-        memoryInput.overwrite,
-        namespace
+        memoryInput.overwrite
       );
     case 'copy':
-      return handleCopy(
-        projectId,
-        memoryInput.old_path,
-        memoryInput.new_path,
-        memoryInput.overwrite,
-        namespace
-      );
+      return handleCopy(adapter, memoryInput.old_path, memoryInput.new_path, memoryInput.overwrite);
     case 'mkdir':
-      return handleMkdir(projectId, memoryInput.path, namespace);
+      return handleMkdir(adapter, memoryInput.path);
     case 'append':
-      return handleAppend(projectId, memoryInput.path, memoryInput.file_text ?? '', namespace);
+      return handleAppend(adapter, memoryInput.path, memoryInput.file_text ?? '');
     case 'view-all':
-      return handleMultiView(projectId, memoryInput.paths, namespace, context.noLineNumbers);
+      return handleMultiView(adapter, memoryInput.paths, context.noLineNumbers);
     default:
       return {
         content: `Unknown memory command: ${(memoryInput as { command: string }).command}`,
@@ -838,6 +802,9 @@ function renderMemoryInput(input: Record<string, unknown>): string {
 /**
  * Generate the memory system prompt for a project.
  * Returns listing of /memories and content of /memories/README.md (if exists).
+ *
+ * Uses context.createVfsAdapter when available (routes to correct backend for remote VFS),
+ * falls back to LocalVfsAdapter for standalone/test scenarios.
  */
 async function getMemorySystemPrompt(
   context: SystemPromptContext,
@@ -853,6 +820,10 @@ async function getMemorySystemPrompt(
     return '';
   }
 
+  const adapter: VfsAdapter = context.createVfsAdapter
+    ? context.createVfsAdapter(namespace)
+    : new LocalVfsAdapter(projectId, namespace);
+
   const parts: string[] = [];
 
   // Part 1: Description and file listing
@@ -864,9 +835,9 @@ Unless asked otherwise, as you make progress, record status / progress / thought
 
   let fileListing: string;
   try {
-    const memoriesExists = await vfs.exists(projectId, MEMORIES_ROOT, namespace);
+    const memoriesExists = await adapter.exists(MEMORIES_ROOT);
     if (memoriesExists) {
-      const entries = await listTwoLevels(projectId, MEMORIES_ROOT, namespace);
+      const entries = await listTwoLevels(adapter, MEMORIES_ROOT);
 
       if (entries.length > 0) {
         const listing = entries.map(entry => `\t${entry.path}`).join('\n');
@@ -891,9 +862,9 @@ ${listing}
   // Part 2: Read /memories/README.md if it exists
   const readmePath = `${MEMORIES_ROOT}/README.md`;
   try {
-    const readmeExists = await vfs.exists(projectId, readmePath, namespace);
+    const readmeExists = await adapter.exists(readmePath);
     if (readmeExists) {
-      const content = await vfs.readFile(projectId, readmePath, namespace);
+      const content = await adapter.readFile(readmePath);
       const lines = content.split('\n');
       const totalLines = lines.length;
 

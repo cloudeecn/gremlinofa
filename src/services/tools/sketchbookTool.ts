@@ -14,7 +14,7 @@ import type {
   ToolResult,
   ToolStreamEvent,
 } from '../../types';
-import * as vfs from '../vfs';
+import type { VfsAdapter } from '../vfs/vfsAdapter';
 
 const optionDefinitions: ToolOptionDefinition[] = [
   {
@@ -27,19 +27,18 @@ const optionDefinitions: ToolOptionDefinition[] = [
 ];
 
 async function appendToSketchbook(
-  projectId: string,
+  adapter: VfsAdapter,
   vfsPath: string,
-  content: string,
-  namespace?: string
+  content: string
 ): Promise<void> {
-  const fileExists = await vfs.exists(projectId, vfsPath, namespace);
+  const fileExists = await adapter.exists(vfsPath);
 
   if (fileExists) {
-    const existing = await vfs.readFile(projectId, vfsPath, namespace);
-    await vfs.updateFile(projectId, vfsPath, existing + '\n---\n' + content, namespace);
+    const existing = await adapter.readFile(vfsPath);
+    await adapter.writeFile(vfsPath, existing + '\n---\n' + content);
   } else {
     // createFile auto-creates parent directories via ensureParentExists
-    await vfs.createFile(projectId, vfsPath, content, namespace);
+    await adapter.createFile(vfsPath, content);
   }
 }
 
@@ -53,8 +52,8 @@ async function* executeSketchbook(
     return { content: 'noted.' };
   }
 
-  if (!context?.projectId) {
-    throw new Error('projectId is required');
+  if (!context?.vfsAdapter) {
+    throw new Error('vfsAdapter is required');
   }
 
   const content = (input.content as string) ?? '';
@@ -63,7 +62,7 @@ async function* executeSketchbook(
   const vfsPath = name ? `/sketchbook/${fileSlug}-${name}.md` : `/sketchbook/${fileSlug}.md`;
 
   try {
-    await appendToSketchbook(context.projectId, vfsPath, content, context.namespace);
+    await appendToSketchbook(context.vfsAdapter, vfsPath, content);
   } catch (error) {
     console.debug('[sketchbookTool] VFS write failed', error);
     return { content: 'Error, please retry.', isError: true };

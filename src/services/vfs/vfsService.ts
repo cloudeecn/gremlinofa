@@ -126,7 +126,7 @@ const MOUNT_ROOTS = ['/share'];
  * Throw if trying to write to a namespace-readonly path.
  * /share is read-only for namespaced callers; /sharerw is not.
  */
-function assertWritable(path: string, namespace?: string): void {
+export function assertWritable(path: string, namespace?: string): void {
   if (!namespace) return;
   const normalized = normalizePath(path);
   if (normalized === '/share' || normalized.startsWith('/share/')) {

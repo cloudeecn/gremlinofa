@@ -1,14 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import VfsDirectoryTree from '../VfsDirectoryTree';
-import type { DirEntry } from '../../../services/vfs';
+import type { DirEntry, VfsAdapter } from '../../../services/vfs';
 
-// Mock vfsService
-const mockReadDir = vi.fn();
-
-vi.mock('../../../services/vfs', () => ({
-  readDir: (...args: unknown[]) => mockReadDir(...args),
-}));
+// Mock adapter passed as prop — only readDir and isDirectory are used by the component
+const mockAdapter = {
+  readDir: vi.fn<VfsAdapter['readDir']>().mockResolvedValue([]),
+  isDirectory: vi.fn<VfsAdapter['isDirectory']>().mockResolvedValue(false),
+};
 
 // Helper to create DirEntry
 function createDirEntry(overrides: Partial<DirEntry> = {}): DirEntry {
@@ -24,7 +23,7 @@ function createDirEntry(overrides: Partial<DirEntry> = {}): DirEntry {
 
 describe('VfsDirectoryTree', () => {
   const defaultProps = {
-    projectId: 'proj_test_123',
+    adapter: mockAdapter as unknown as VfsAdapter,
     selectedPath: null,
     onSelectFile: vi.fn(),
     onSelectDir: vi.fn(),
@@ -32,13 +31,14 @@ describe('VfsDirectoryTree', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockReadDir.mockResolvedValue([]);
+    mockAdapter.readDir.mockResolvedValue([]);
+    mockAdapter.isDirectory.mockResolvedValue(false);
   });
 
   describe('Initial Rendering', () => {
     it('shows loading spinner while loading root', async () => {
       // Don't resolve immediately to see loading state
-      mockReadDir.mockImplementation(() => new Promise(() => {}));
+      mockAdapter.readDir.mockImplementation(() => new Promise(() => {}));
 
       render(<VfsDirectoryTree {...defaultProps} />);
 
@@ -47,7 +47,7 @@ describe('VfsDirectoryTree', () => {
     });
 
     it('shows "No files yet" when root is empty', async () => {
-      mockReadDir.mockResolvedValue([]);
+      mockAdapter.readDir.mockResolvedValue([]);
 
       render(<VfsDirectoryTree {...defaultProps} />);
 
@@ -57,7 +57,7 @@ describe('VfsDirectoryTree', () => {
     });
 
     it('renders files and directories from root', async () => {
-      mockReadDir.mockResolvedValue([
+      mockAdapter.readDir.mockResolvedValue([
         createDirEntry({ name: 'docs', type: 'dir' }),
         createDirEntry({ name: 'notes.txt', type: 'file', size: 1024 }),
       ]);
@@ -71,7 +71,7 @@ describe('VfsDirectoryTree', () => {
     });
 
     it('displays file size for files', async () => {
-      mockReadDir.mockResolvedValue([
+      mockAdapter.readDir.mockResolvedValue([
         createDirEntry({ name: 'small.txt', type: 'file', size: 512 }),
         createDirEntry({ name: 'medium.txt', type: 'file', size: 2048 }),
       ]);
@@ -85,7 +85,7 @@ describe('VfsDirectoryTree', () => {
     });
 
     it('shows correct icons for files and directories', async () => {
-      mockReadDir.mockResolvedValue([
+      mockAdapter.readDir.mockResolvedValue([
         createDirEntry({ name: 'folder', type: 'dir' }),
         createDirEntry({ name: 'file.txt', type: 'file' }),
       ]);
@@ -102,7 +102,7 @@ describe('VfsDirectoryTree', () => {
   describe('Selection', () => {
     it('calls onSelectFile when clicking a file', async () => {
       const onSelectFile = vi.fn();
-      mockReadDir.mockResolvedValue([createDirEntry({ name: 'notes.txt', type: 'file' })]);
+      mockAdapter.readDir.mockResolvedValue([createDirEntry({ name: 'notes.txt', type: 'file' })]);
 
       render(<VfsDirectoryTree {...defaultProps} onSelectFile={onSelectFile} />);
 
@@ -117,7 +117,7 @@ describe('VfsDirectoryTree', () => {
 
     it('calls onSelectDir when clicking a directory', async () => {
       const onSelectDir = vi.fn();
-      mockReadDir.mockResolvedValue([createDirEntry({ name: 'docs', type: 'dir' })]);
+      mockAdapter.readDir.mockResolvedValue([createDirEntry({ name: 'docs', type: 'dir' })]);
 
       render(<VfsDirectoryTree {...defaultProps} onSelectDir={onSelectDir} />);
 
@@ -131,7 +131,7 @@ describe('VfsDirectoryTree', () => {
     });
 
     it('highlights selected path', async () => {
-      mockReadDir.mockResolvedValue([
+      mockAdapter.readDir.mockResolvedValue([
         createDirEntry({ name: 'selected.txt', type: 'file' }),
         createDirEntry({ name: 'other.txt', type: 'file' }),
       ]);
@@ -150,9 +150,11 @@ describe('VfsDirectoryTree', () => {
   describe('Expand/Collapse', () => {
     it('expands directory on click and loads children', async () => {
       // First call returns root with a directory
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'docs', type: 'dir' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([createDirEntry({ name: 'docs', type: 'dir' })]);
       // Second call returns children of /docs
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'readme.md', type: 'file' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([
+        createDirEntry({ name: 'readme.md', type: 'file' }),
+      ]);
 
       render(<VfsDirectoryTree {...defaultProps} />);
 
@@ -167,12 +169,14 @@ describe('VfsDirectoryTree', () => {
         expect(screen.getByText('readme.md')).toBeInTheDocument();
       });
 
-      expect(mockReadDir).toHaveBeenCalledWith('proj_test_123', '/docs');
+      expect(mockAdapter.readDir).toHaveBeenCalledWith('/docs');
     });
 
     it('shows "(empty)" for empty directories', async () => {
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'empty-folder', type: 'dir' })]);
-      mockReadDir.mockResolvedValueOnce([]);
+      mockAdapter.readDir.mockResolvedValueOnce([
+        createDirEntry({ name: 'empty-folder', type: 'dir' }),
+      ]);
+      mockAdapter.readDir.mockResolvedValueOnce([]);
 
       render(<VfsDirectoryTree {...defaultProps} />);
 
@@ -188,8 +192,10 @@ describe('VfsDirectoryTree', () => {
     });
 
     it('collapses expanded directory on second click', async () => {
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'docs', type: 'dir' })]);
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'readme.md', type: 'file' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([createDirEntry({ name: 'docs', type: 'dir' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([
+        createDirEntry({ name: 'readme.md', type: 'file' }),
+      ]);
 
       render(<VfsDirectoryTree {...defaultProps} />);
 
@@ -213,9 +219,11 @@ describe('VfsDirectoryTree', () => {
     });
 
     it('handles nested directory expansion', async () => {
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'level1', type: 'dir' })]);
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'level2', type: 'dir' })]);
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'deep-file.txt', type: 'file' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([createDirEntry({ name: 'level1', type: 'dir' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([createDirEntry({ name: 'level2', type: 'dir' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([
+        createDirEntry({ name: 'deep-file.txt', type: 'file' }),
+      ]);
 
       render(<VfsDirectoryTree {...defaultProps} />);
 
@@ -240,7 +248,7 @@ describe('VfsDirectoryTree', () => {
 
   describe('Error Handling', () => {
     it('shows empty state when directory load fails', async () => {
-      mockReadDir.mockRejectedValue(new Error('Network error'));
+      mockAdapter.readDir.mockRejectedValue(new Error('Network error'));
 
       render(<VfsDirectoryTree {...defaultProps} />);
 
@@ -250,12 +258,57 @@ describe('VfsDirectoryTree', () => {
     });
   });
 
+  describe('Root Node', () => {
+    it('renders a clickable root "/" node', async () => {
+      mockAdapter.readDir.mockResolvedValue([]);
+
+      render(<VfsDirectoryTree {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('/')).toBeInTheDocument();
+      });
+
+      // Root should show the folder icon
+      expect(screen.getByText('📂')).toBeInTheDocument();
+    });
+
+    it('calls onSelectDir with "/" when clicking root node', async () => {
+      const onSelectDir = vi.fn();
+      mockAdapter.readDir.mockResolvedValue([]);
+
+      render(<VfsDirectoryTree {...defaultProps} onSelectDir={onSelectDir} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('/')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('/'));
+
+      expect(onSelectDir).toHaveBeenCalledWith('/');
+    });
+
+    it('highlights root when selectedPath is "/"', async () => {
+      mockAdapter.readDir.mockResolvedValue([]);
+
+      render(<VfsDirectoryTree {...defaultProps} selectedPath="/" />);
+
+      await waitFor(() => {
+        expect(screen.getByText('/')).toBeInTheDocument();
+      });
+
+      const rootButton = screen.getByText('/').closest('button');
+      expect(rootButton).toHaveClass('bg-blue-100');
+    });
+  });
+
   describe('Path Construction', () => {
     it('constructs correct paths for nested files', async () => {
       const onSelectFile = vi.fn();
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'docs', type: 'dir' })]);
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'notes', type: 'dir' })]);
-      mockReadDir.mockResolvedValueOnce([createDirEntry({ name: 'file.txt', type: 'file' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([createDirEntry({ name: 'docs', type: 'dir' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([createDirEntry({ name: 'notes', type: 'dir' })]);
+      mockAdapter.readDir.mockResolvedValueOnce([
+        createDirEntry({ name: 'file.txt', type: 'file' }),
+      ]);
 
       render(<VfsDirectoryTree {...defaultProps} onSelectFile={onSelectFile} />);
 

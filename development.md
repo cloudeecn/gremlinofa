@@ -57,6 +57,10 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 **Storage & Data**
 
 - [x] Lightweight deployable remote storage (`storage-backend/` - SQLite + Express)
+- [x] Remote VFS backend (`vfs-backend/` - Express, real filesystem, per-file locking, server-side versioning)
+- [x] Remote VFS adapter (frontend `RemoteVfsAdapter` talks to vfs-backend, optional E2E encryption)
+- [x] VFS adapter routing — all callers (UI via `useVfsAdapter` hook, tools/JSVM/hooks via `ToolContext.vfsAdapter`, `createVfsAdapter` factory for cross-namespace access, system prompt generation via `SystemPromptContext.createVfsAdapter`)
+- [x] VFS Manager clickable root node (create files/dirs at `/`, download entire VFS as ZIP, upload ZIP)
 - [x] OOBE wizard (start fresh / import backup / use existing remote data)
 - [x] Attachment manager (view, select, delete, delete older than X days, missing attachment handling)
 - [x] Storage quota display (local IndexedDB only, shows usage/quota with warning at >100MB or >50%)
@@ -755,13 +759,14 @@ Component structure:
 
 ```
 VfsManagerView (page at /project/:projectId/vfs)
+├── useVfsAdapter(projectId) → adapter (RemoteVfsAdapter or LocalVfsAdapter)
 ├── Header (back to project settings, title)
 ├── Desktop Layout (side-by-side via flex)
-│   ├── VfsDirectoryTree (left panel ~40%)
-│   └── Content panel (right ~60%): VfsFileViewer / VfsFileEditor / VfsDiffViewer
+│   ├── VfsDirectoryTree (left panel ~40%, receives adapter)
+│   └── Content panel (right ~60%): VfsFileViewer / VfsFileEditor / VfsDiffViewer (receive adapter)
 └── Mobile Layout
-    ├── VfsDirectoryTree (full width)
-    └── VfsFileModal (when file selected)
+    ├── VfsDirectoryTree (full width, receives adapter)
+    └── VfsFileModal → VfsFileViewer / VfsFileEditor / VfsDiffViewer (receive adapter)
 ```
 
 Features:
@@ -775,6 +780,7 @@ Features:
 - **Create**: Create empty text files and directories from directory panel
 - **Upload**: Upload files with auto-detection (valid UTF-8 → text, otherwise → binary via magic bytes)
 - **Download ZIP**: Download entire directory as ZIP archive (uses `fflate` library)
+- **Upload ZIP**: Extract a ZIP archive into the selected directory (auto-strips common root prefix, handles text/binary detection per file)
 - **Drop old versions**: For files with >10 versions, drop historical versions keeping last 10. After dropping, badge shows "v15 (10 stored)" to indicate actual stored version count differs from version number. Diff viewer respects minStoredVersion and shows "Oldest stored:" label when viewing the earliest available version.
 
 **Unified Reasoning Section:**
@@ -840,7 +846,7 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 - Per-file versioning in `vfs_versions` table (auto-versioned on every update)
 - Soft-delete with orphan tracking for displaced files during renames
 - 999,999 line limit per file (returns error if exceeded)
-- **Namespace isolation**: All public VFS functions accept an optional `namespace` parameter. When set, paths are resolved through the namespace (e.g., `/minions/coder` + `/memories/note.md` → `/minions/coder/memories/note.md`). `resolveNamespacedPath()` handles resolution with path traversal mitigation.
+- **Namespace isolation**: `VfsAdapter` instances are bound to a namespace at creation time. `LocalVfsAdapter(projectId, namespace)` resolves paths through the namespace (e.g., `/minions/coder` + `/memories/note.md` → `/minions/coder/memories/note.md`). `resolveNamespacedPath()` handles resolution with path traversal mitigation. Tool handlers receive a pre-bound adapter via `ToolContext.vfsAdapter`.
 - **Cross-namespace mounts**: Two shared paths bypass namespace prefixing:
   - `/share` — read-only for namespaced callers (main agent has write access). Enforced via `assertWritable()` in VFS core, throws `VfsError('READONLY')`.
   - `/sharerw` — read-write for all, including namespaced callers. Enables minion-to-minion collaboration.
@@ -1157,7 +1163,7 @@ When `namespacedMinion` is not `off`, `persona` input parameter and system promp
 - `/minions/_global.md` (optional) — content prepended to the system prompt for namespaced personas. Read from root VFS before persona-specific prompt.
 - `persona` input parameter selects a persona (omit for `default`). Namespaced personas map to namespace `/minions/<persona>`.
 - In `persona` mode, default/no-persona minions stay in root VFS with no namespace and no `_global.md`.
-- Namespace flows through the agentic loop: `AgenticLoopOptions.namespace` → `ToolContext.namespace` → all VFS calls in memory, filesystem, and JavaScript tools.
+- Namespace flows through the agentic loop: `AgenticLoopOptions.namespace` → `ToolContext.vfsAdapter` (pre-bound adapter) → all VFS calls in memory, filesystem, JavaScript, sketchbook, and DUMMY tools. `ToolContext.createVfsAdapter` factory lets minion tool create adapters for other namespaces.
 - A persona's `/memories/README.md` resolves to `/minions/<persona>/memories/README.md` in VFS storage.
 - `/share` paths bypass namespace prefixing — read-only for namespaced minions (main agent writes, minions read).
 - `/sharerw` paths bypass namespace prefixing — read-write for all, enables minion-to-minion collaboration.

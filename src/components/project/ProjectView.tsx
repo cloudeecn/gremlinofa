@@ -9,8 +9,8 @@ import { useAlert } from '../../hooks/useAlert';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 import { processImages } from '../../utils/imageProcessor';
-import { createFile } from '../../services/vfs';
 import { generateUniqueId } from '../../utils/idGenerator';
+import { useVfsAdapter } from '../../hooks/useVfsAdapter';
 import ModelSelector from './ModelSelector';
 import ProjectNameIconModal from './ProjectNameIconModal';
 import SystemPromptModal from './SystemPromptModal';
@@ -89,6 +89,8 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
     projectId,
     apiDefinitions,
   });
+
+  const vfsAdapter = useVfsAdapter(projectId);
 
   // UI state
   const [newChatMessage, setNewChatMessage] = useState('');
@@ -282,12 +284,12 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
   };
 
   const handleSendAsFile = async () => {
-    if (!newChatMessage.trim() || isCreatingChat || isProcessingAttachments) return;
+    if (!newChatMessage.trim() || isCreatingChat || isProcessingAttachments || !vfsAdapter) return;
 
     const fileId = generateUniqueId('tmp');
     const filePath = `/tmp/${fileId}.txt`;
 
-    await createFile(projectId, filePath, newChatMessage);
+    await vfsAdapter.createFile(filePath, newChatMessage);
 
     const newChat = await createNewChat(filePath, newChatApiDefId, newChatModelId, undefined);
 

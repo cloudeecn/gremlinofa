@@ -1,25 +1,42 @@
 import { describe, it, expect, afterEach, vi, type Mock, beforeEach } from 'vitest';
 import { JsVMContext } from '../JsVMContext';
-import * as vfs from '../../../vfs';
+import type { VfsAdapter } from '../../../vfs/vfsAdapter';
 
-// Mock vfsService for fs tests
-vi.mock('../../../vfs', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../../vfs')>();
+function createMockAdapter(): VfsAdapter {
   return {
-    ...actual,
-    isDirectory: vi.fn(),
     readDir: vi.fn(),
-    exists: vi.fn(),
-    stat: vi.fn(),
     readFile: vi.fn(),
     readFileWithMeta: vi.fn(),
     writeFile: vi.fn(),
-    mkdir: vi.fn(),
+    createFile: vi.fn(),
     deleteFile: vi.fn(),
+    mkdir: vi.fn(),
     rmdir: vi.fn(),
     rename: vi.fn(),
-  };
-});
+    exists: vi.fn(),
+    isFile: vi.fn(),
+    isDirectory: vi.fn(),
+    stat: vi.fn(),
+    hasVfs: vi.fn(),
+    clearVfs: vi.fn(),
+    strReplace: vi.fn(),
+    insert: vi.fn(),
+    appendFile: vi.fn(),
+    getFileMeta: vi.fn(),
+    getFileId: vi.fn(),
+    listVersions: vi.fn(),
+    getVersion: vi.fn(),
+    dropOldVersions: vi.fn(),
+    listOrphans: vi.fn(),
+    restoreOrphan: vi.fn(),
+    purgeOrphan: vi.fn(),
+    copyFile: vi.fn(),
+    deletePath: vi.fn(),
+    createFileGuarded: vi.fn(),
+    ensureDirAndWrite: vi.fn(),
+    compactProject: vi.fn(),
+  } as VfsAdapter;
+}
 
 describe('JsVMContext', () => {
   let vm: JsVMContext | null = null;
@@ -562,45 +579,45 @@ describe('JsVMContext', () => {
   });
 
   describe('lib script loading', () => {
-    const projectId = 'test-project';
+    let adapter: VfsAdapter;
 
     beforeEach(() => {
-      vi.clearAllMocks();
+      adapter = createMockAdapter();
     });
 
-    /** Configure VFS mocks so specific lib directories exist with given scripts */
+    /** Configure adapter mocks so specific lib directories exist with given scripts */
     function mockLibDir(libPath: string, scripts: { name: string; content: string }[]) {
-      (vfs.isDirectory as Mock).mockImplementation((_pid: string, path: string) =>
+      (adapter.isDirectory as Mock).mockImplementation((path: string) =>
         Promise.resolve(path === libPath)
       );
-      (vfs.readDir as Mock).mockImplementation((_pid: string, path: string) => {
+      (adapter.readDir as Mock).mockImplementation((path: string) => {
         if (path === libPath) {
           return Promise.resolve(scripts.map(s => ({ name: s.name, type: 'file' })));
         }
         return Promise.resolve([]);
       });
-      (vfs.readFile as Mock).mockImplementation((_pid: string, path: string) => {
+      (adapter.readFile as Mock).mockImplementation((path: string) => {
         const script = scripts.find(s => `${libPath}/${s.name}` === path);
         return Promise.resolve(script?.content ?? '');
       });
     }
 
-    /** Configure VFS mocks for both /share/lib and /lib directories */
+    /** Configure adapter mocks for both /share/lib and /lib directories */
     function mockBothLibDirs(
       shareScripts: { name: string; content: string }[],
       libScripts: { name: string; content: string }[]
     ) {
-      (vfs.isDirectory as Mock).mockImplementation((_pid: string, path: string) =>
+      (adapter.isDirectory as Mock).mockImplementation((path: string) =>
         Promise.resolve(path === '/share/lib' || path === '/lib')
       );
-      (vfs.readDir as Mock).mockImplementation((_pid: string, path: string) => {
+      (adapter.readDir as Mock).mockImplementation((path: string) => {
         if (path === '/share/lib')
           return Promise.resolve(shareScripts.map(s => ({ name: s.name, type: 'file' })));
         if (path === '/lib')
           return Promise.resolve(libScripts.map(s => ({ name: s.name, type: 'file' })));
         return Promise.resolve([]);
       });
-      (vfs.readFile as Mock).mockImplementation((_pid: string, path: string) => {
+      (adapter.readFile as Mock).mockImplementation((path: string) => {
         const shareScript = shareScripts.find(s => `/share/lib/${s.name}` === path);
         if (shareScript) return Promise.resolve(shareScript.content);
         const libScript = libScripts.find(s => `/lib/${s.name}` === path);
@@ -612,7 +629,7 @@ describe('JsVMContext', () => {
     it('loads /share/lib scripts when enabled', async () => {
       mockLibDir('/share/lib', [{ name: 'utils.js', content: 'globalThis.shared = 42;' }]);
 
-      vm = await JsVMContext.create(projectId, false, undefined, true);
+      vm = await JsVMContext.create(adapter, false, true);
       const result = await vm.evaluate('shared');
 
       expect(result.isError).toBe(false);
@@ -625,7 +642,7 @@ describe('JsVMContext', () => {
         [{ name: 'a.js', content: 'globalThis.order.push("lib");' }]
       );
 
-      vm = await JsVMContext.create(projectId, true, undefined, true);
+      vm = await JsVMContext.create(adapter, true, true);
       const result = await vm.evaluate('order');
 
       expect(result.isError).toBe(false);
@@ -638,7 +655,7 @@ describe('JsVMContext', () => {
         [{ name: 'a.js', content: 'globalThis.local = true;' }]
       );
 
-      vm = await JsVMContext.create(projectId, true, undefined, false);
+      vm = await JsVMContext.create(adapter, true, false);
 
       const sharedResult = await vm.evaluate('typeof shared');
       expect(sharedResult.value).toBe('undefined');
@@ -653,7 +670,7 @@ describe('JsVMContext', () => {
         [{ name: 'a.js', content: 'globalThis.local = true;' }]
       );
 
-      vm = await JsVMContext.create(projectId, false, undefined, false);
+      vm = await JsVMContext.create(adapter, false, false);
 
       const sharedResult = await vm.evaluate('typeof shared');
       expect(sharedResult.value).toBe('undefined');
@@ -665,7 +682,7 @@ describe('JsVMContext', () => {
     it('captures /share/lib console output in library logs', async () => {
       mockLibDir('/share/lib', [{ name: 'log.js', content: 'console.log("hello from share");' }]);
 
-      vm = await JsVMContext.create(projectId, false, undefined, true);
+      vm = await JsVMContext.create(adapter, false, true);
       const logs = vm.getLibraryLogs();
 
       expect(logs).toHaveLength(2);
@@ -675,16 +692,16 @@ describe('JsVMContext', () => {
   });
 
   describe('fs.writeFile', () => {
-    const projectId = 'test-project';
+    let adapter: VfsAdapter;
 
     beforeEach(() => {
-      vi.clearAllMocks();
-      (vfs.isDirectory as Mock).mockResolvedValue(false); // No /lib directory
-      (vfs.writeFile as Mock).mockResolvedValue(undefined);
+      adapter = createMockAdapter();
+      (adapter.isDirectory as Mock).mockResolvedValue(false); // No /lib directory
+      (adapter.writeFile as Mock).mockResolvedValue(undefined);
     });
 
     it('writes Uint8Array as raw bytes', async () => {
-      vm = await JsVMContext.create(projectId, false);
+      vm = await JsVMContext.create(adapter, false);
 
       const result = await vm.evaluate(`
         (async () => {
@@ -696,17 +713,17 @@ describe('JsVMContext', () => {
 
       expect(result.isError).toBe(false);
       expect(result.value).toBe('done');
-      expect(vfs.writeFile).toHaveBeenCalledTimes(1);
+      expect(adapter.writeFile).toHaveBeenCalledTimes(1);
 
       // Verify the data is an ArrayBuffer with correct bytes
-      const [, , data] = (vfs.writeFile as Mock).mock.calls[0];
+      const [, data] = (adapter.writeFile as Mock).mock.calls[0];
       expect(data).toBeInstanceOf(ArrayBuffer);
       const written = new Uint8Array(data);
       expect(Array.from(written)).toEqual([0x7f, 0x45, 0x4c, 0x46]);
     });
 
     it('writes ArrayBuffer as raw bytes', async () => {
-      vm = await JsVMContext.create(projectId, false);
+      vm = await JsVMContext.create(adapter, false);
 
       const result = await vm.evaluate(`
         (async () => {
@@ -719,14 +736,14 @@ describe('JsVMContext', () => {
       expect(result.isError).toBe(false);
       expect(result.value).toBe('done');
 
-      const [, , data] = (vfs.writeFile as Mock).mock.calls[0];
+      const [, data] = (adapter.writeFile as Mock).mock.calls[0];
       expect(data).toBeInstanceOf(ArrayBuffer);
       const written = new Uint8Array(data);
       expect(Array.from(written)).toEqual([0x7f, 0x45, 0x4c, 0x46]);
     });
 
     it('writes string as text', async () => {
-      vm = await JsVMContext.create(projectId, false);
+      vm = await JsVMContext.create(adapter, false);
 
       const result = await vm.evaluate(`
         (async () => {
@@ -738,12 +755,12 @@ describe('JsVMContext', () => {
       expect(result.isError).toBe(false);
       expect(result.value).toBe('done');
 
-      const [, , data] = (vfs.writeFile as Mock).mock.calls[0];
+      const [, data] = (adapter.writeFile as Mock).mock.calls[0];
       expect(data).toBe('hello world');
     });
 
     it('rejects non-string non-buffer data', async () => {
-      vm = await JsVMContext.create(projectId, false);
+      vm = await JsVMContext.create(adapter, false);
 
       const result = await vm.evaluate(`
         (async () => {
@@ -759,11 +776,11 @@ describe('JsVMContext', () => {
       expect(result.isError).toBe(false);
       expect(result.value).toContain('EINVAL');
       expect(result.value).toContain('data must be string or buffer');
-      expect(vfs.writeFile).not.toHaveBeenCalled();
+      expect(adapter.writeFile).not.toHaveBeenCalled();
     });
 
     it('rejects number data', async () => {
-      vm = await JsVMContext.create(projectId, false);
+      vm = await JsVMContext.create(adapter, false);
 
       const result = await vm.evaluate(`
         (async () => {
@@ -778,7 +795,7 @@ describe('JsVMContext', () => {
 
       expect(result.isError).toBe(false);
       expect(result.value).toContain('EINVAL');
-      expect(vfs.writeFile).not.toHaveBeenCalled();
+      expect(adapter.writeFile).not.toHaveBeenCalled();
     });
   });
 });

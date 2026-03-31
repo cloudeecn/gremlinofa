@@ -18,7 +18,7 @@ import {
 import variant from '@jitl/quickjs-ng-wasmfile-release-sync';
 import { injectPolyfills } from './polyfills';
 import { FsBridge } from './fsPolyfill';
-import * as vfs from '../../vfs';
+import type { VfsAdapter } from '../../vfs/vfsAdapter';
 
 export type ConsoleLevel = 'LOG' | 'WARN' | 'ERROR' | 'INFO' | 'DEBUG';
 
@@ -72,15 +72,13 @@ export class JsVMContext {
 
   /**
    * Create a new JsVMContext with polyfills injected.
-   * @param projectId - Optional project ID to enable fs operations
+   * @param adapter - Optional VfsAdapter to enable fs operations
    * @param loadLib - Whether to load /lib scripts on session start (default: true)
-   * @param namespace - Optional VFS namespace for isolated minion personas
    * @param loadShareLib - Whether to load /share/lib scripts (default: true)
    */
   static async create(
-    projectId?: string,
+    adapter?: VfsAdapter,
     loadLib = true,
-    namespace?: string,
     loadShareLib = true
   ): Promise<JsVMContext> {
     const module = await getModule();
@@ -91,17 +89,17 @@ export class JsVMContext {
     vm.setupHalt();
     injectPolyfills(context);
 
-    // Set up fs bridge if projectId provided
-    if (projectId) {
-      vm.fsBridge = new FsBridge(projectId, context, namespace);
+    // Set up fs bridge if adapter provided
+    if (adapter) {
+      vm.fsBridge = new FsBridge(adapter, context);
       vm.fsBridge.injectFs();
 
       // Load /share/lib first (shared across namespaces), then /lib (per-project)
       if (loadShareLib) {
-        await vm.loadLibScripts(projectId, '/share/lib', namespace);
+        await vm.loadLibScripts(adapter, '/share/lib');
       }
       if (loadLib) {
-        await vm.loadLibScripts(projectId, '/lib', namespace);
+        await vm.loadLibScripts(adapter, '/lib');
       }
     }
 
@@ -113,20 +111,16 @@ export class JsVMContext {
    * Scripts are executed with their filename for better stack traces.
    * Console output during library loading is captured in libraryConsoleOutput.
    */
-  private async loadLibScripts(
-    projectId: string,
-    libPath: string,
-    namespace?: string
-  ): Promise<void> {
+  private async loadLibScripts(adapter: VfsAdapter, libPath: string): Promise<void> {
     try {
       // Check if directory exists
-      const libExists = await vfs.isDirectory(projectId, libPath, namespace);
+      const libExists = await adapter.isDirectory(libPath);
       if (!libExists) {
         return;
       }
 
       // List files (non-recursive)
-      const entries = await vfs.readDir(projectId, libPath, false, namespace);
+      const entries = await adapter.readDir(libPath);
 
       // Filter for .js files and sort alphabetically for deterministic order
       const jsFiles = entries
@@ -155,7 +149,7 @@ export class JsVMContext {
           this.consoleOutput = libraryOutput;
 
           try {
-            const content = await vfs.readFile(projectId, filePath, namespace);
+            const content = await adapter.readFile(filePath);
 
             // Use evalCode directly (not evaluate) to avoid resetting consoleOutput
             // and to have simpler error handling during init

@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { returnTool } from '../returnTool';
 import { toolRegistry } from '../clientSideTools';
 import type { ToolResult, ToolExecuteReturn } from '../../../types';
+import { LocalVfsAdapter } from '../../vfs/localVfsAdapter';
+
+const mockAdapter = new LocalVfsAdapter('test-project');
+const mockAdapterFactory = (ns?: string) => new LocalVfsAdapter('test-project', ns);
 
 /** Consume an async generator to get the final ToolResult */
 async function collectToolResult(gen: ToolExecuteReturn): Promise<ToolResult> {
@@ -193,7 +197,7 @@ describe('toolRegistry internal tool filtering', () => {
       { result: 'test' },
       ['return'],
       {},
-      { projectId: 'test-project' }
+      { projectId: 'test-project', vfsAdapter: mockAdapter, createVfsAdapter: mockAdapterFactory }
     );
 
     expect(result.content).toBe('test');

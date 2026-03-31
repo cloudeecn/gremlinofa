@@ -94,9 +94,9 @@ async function* executeJavaScript(
     };
   }
 
-  if (!context?.projectId) {
+  if (!context?.vfsAdapter) {
     return {
-      content: 'Error: projectId is required in context',
+      content: 'Error: vfsAdapter is required in context',
       isError: true,
     };
   }
@@ -107,7 +107,7 @@ async function* executeJavaScript(
   const loadShareLib = toolOptions?.loadShareLib === true;
 
   // Create fresh context for this execution
-  const vm = await JsVMContext.create(context.projectId, loadLib, context.namespace, loadShareLib);
+  const vm = await JsVMContext.create(context.vfsAdapter, loadLib, loadShareLib);
 
   try {
     // Wrap code in async IIFE so await works at top level and return value is captured

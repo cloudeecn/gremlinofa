@@ -24,6 +24,7 @@ import type {
   MessageAttachment,
   Model,
   RenderingBlockGroup,
+  ToolContext,
   ToolOptions,
   ToolResult,
   ToolResultBlock,
@@ -36,6 +37,8 @@ import type {
 import { type ToolResultRenderBlock, type ToolUseRenderBlock } from '../../types/content';
 import { generateUniqueId } from '../../utils/idGenerator';
 import { createTokenTotals, addTokens, hasTokenUsage } from '../../utils/tokenTotals';
+import { LocalVfsAdapter } from '../vfs/localVfsAdapter';
+import type { VfsAdapter } from '../vfs/vfsAdapter';
 import { DummyHookRuntime, type HookInput, type HookInputMessage } from './dummyHookRuntime';
 
 // ============================================================================
@@ -100,6 +103,10 @@ export interface AgenticLoopOptions {
 
   // VFS namespace for isolated minion personas
   namespace?: string;
+
+  // VFS adapter factory — creates adapters bound to project+userId for any namespace.
+  // Falls back to LocalVfsAdapter(projectId, ns) if not provided.
+  createVfsAdapter?: import('../../types').VfsAdapterFactory;
 
   // Anthropic reasoning
   enableReasoning: boolean;
@@ -687,12 +694,6 @@ function buildToolResultMessage(
 // ============================================================================
 // Tool Execution Helper
 // ============================================================================
-
-interface ToolContext {
-  projectId: string;
-  chatId?: string;
-  namespace?: string;
-}
 
 interface ActiveToolGen {
   toolUse: ToolUseBlock;
@@ -1304,12 +1305,17 @@ export async function* runAgenticLoop(
   // inference profiles whose IDs (e.g. us.anthropic.claude-...) don't match fuzz patterns.
   const effectiveExtendedContext = options.extendedContext && !!model.supportsExtendedContext;
 
-  // Build tool execution context
+  // Build VFS adapter factory and tool execution context
+  const adapterFactory =
+    options.createVfsAdapter ?? ((ns?: string) => new LocalVfsAdapter(projectId, ns));
+  const vfsAdapter: VfsAdapter = adapterFactory(options.namespace);
   const toolContext = {
     projectId,
     chatId,
     namespace: options.namespace,
     noLineNumbers: options.noLineNumbers,
+    vfsAdapter,
+    createVfsAdapter: adapterFactory,
   };
 
   // Copy to avoid mutating caller's array (React state safety)
@@ -1328,9 +1334,7 @@ export async function* runAgenticLoop(
 
   // DUMMY System: load hook runtime if active (mutable — register/unregister can swap at runtime)
   let activeHookName: string | null = options.activeHook ?? null;
-  let hookRuntime = activeHookName
-    ? await DummyHookRuntime.load(projectId, options.namespace, activeHookName)
-    : null;
+  let hookRuntime = activeHookName ? await DummyHookRuntime.load(vfsAdapter, activeHookName) : null;
   const hookContextDepth = (toolOptions.dummy?.hookContextDepth as number) ?? 0;
 
   try {
@@ -1366,7 +1370,7 @@ export async function* runAgenticLoop(
         hookRuntime?.dispose();
         activeHookName = breakResult.activeHook;
         hookRuntime = activeHookName
-          ? await DummyHookRuntime.load(projectId, options.namespace, activeHookName)
+          ? await DummyHookRuntime.load(vfsAdapter, activeHookName)
           : null;
         yield { type: 'active_hook_changed', hookName: activeHookName };
       } else if (breakResult?.breakLoop) {
@@ -1749,7 +1753,7 @@ export async function* runAgenticLoop(
         hookRuntime?.dispose();
         activeHookName = breakResult.activeHook;
         hookRuntime = activeHookName
-          ? await DummyHookRuntime.load(projectId, options.namespace, activeHookName)
+          ? await DummyHookRuntime.load(vfsAdapter, activeHookName)
           : null;
         yield { type: 'active_hook_changed', hookName: activeHookName };
       } else if (breakResult?.breakLoop) {

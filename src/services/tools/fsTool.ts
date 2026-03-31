@@ -15,7 +15,7 @@ import type {
   ToolResult,
   ToolStreamEvent,
 } from '../../types';
-import * as vfs from '../vfs';
+import type { VfsAdapter } from '../vfs/vfsAdapter';
 import { VfsError, normalizePath, base64ToBuffer } from '../vfs';
 import { formatFileWithLineNumbers } from '../../utils/formatFileContent';
 
@@ -125,15 +125,11 @@ interface ListingEntry {
 /**
  * List directory contents up to 2 levels deep
  */
-async function listTwoLevels(
-  projectId: string,
-  basePath: string,
-  namespace?: string
-): Promise<ListingEntry[]> {
+async function listTwoLevels(adapter: VfsAdapter, basePath: string): Promise<ListingEntry[]> {
   const entries: ListingEntry[] = [];
 
   // Level 1: direct children
-  const level1 = await vfs.readDir(projectId, basePath, false, namespace);
+  const level1 = await adapter.readDir(basePath);
 
   for (const entry of level1) {
     const entryPath = basePath === '/' ? `/${entry.name}` : `${basePath}/${entry.name}`;
@@ -142,7 +138,7 @@ async function listTwoLevels(
     // Level 2: children of directories
     if (entry.type === 'dir') {
       try {
-        const level2 = await vfs.readDir(projectId, entryPath, false, namespace);
+        const level2 = await adapter.readDir(entryPath);
         for (const child of level2) {
           entries.push({
             path: `${entryPath}/${child.name}`,
@@ -159,15 +155,14 @@ async function listTwoLevels(
 }
 
 // ============================================================================
-// Command Handlers (stateless - receive projectId explicitly)
+// Command Handlers (stateless - receive adapter explicitly)
 // ============================================================================
 
 /** Handle view command */
 async function handleView(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
   viewRange?: [number, number],
-  namespace?: string,
   noLineNumbers?: boolean
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
@@ -175,10 +170,10 @@ async function handleView(
   // Directory listing (root or any directory)
   try {
     // Check if it's a directory first
-    const isDir = await vfs.isDirectory(projectId, vfsPath, namespace);
+    const isDir = await adapter.isDirectory(vfsPath);
 
     if (isDir) {
-      const entries = await listTwoLevels(projectId, vfsPath, namespace);
+      const entries = await listTwoLevels(adapter, vfsPath);
 
       if (entries.length === 0) {
         return {
@@ -199,7 +194,7 @@ async function handleView(
     }
 
     // File content - use readFileWithMeta to handle binary files
-    const result = await vfs.readFileWithMeta(projectId, vfsPath, namespace);
+    const result = await adapter.readFileWithMeta(vfsPath);
 
     // Binary files return as dataUrl
     if (result.isBinary) {
@@ -253,11 +248,10 @@ async function handleView(
 
 /** Handle create command */
 async function handleCreate(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
   fileText: string,
-  overwrite?: boolean,
-  namespace?: string
+  overwrite?: boolean
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
@@ -282,14 +276,14 @@ async function handleCreate(
     if (dataUrlMatch) {
       const base64Data = dataUrlMatch[2];
       const buffer = base64ToBuffer(base64Data);
-      await vfs.createFileGuarded(projectId, vfsPath, buffer, overwrite, namespace);
+      await adapter.createFileGuarded(vfsPath, buffer, overwrite);
       return {
         content: `Binary file created successfully at: ${vfsPath}`,
       };
     }
 
     // Text file
-    await vfs.createFileGuarded(projectId, vfsPath, fileText, overwrite, namespace);
+    await adapter.createFileGuarded(vfsPath, fileText, overwrite);
 
     return {
       content: `File created successfully at: ${vfsPath}`,
@@ -309,11 +303,10 @@ async function handleCreate(
 
 /** Handle str_replace command */
 async function handleStrReplace(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
   oldStr: string,
-  newStr: string,
-  namespace?: string
+  newStr: string
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
@@ -333,7 +326,7 @@ async function handleStrReplace(
   }
 
   try {
-    const { snippet } = await vfs.strReplace(projectId, vfsPath, oldStr, newStr, namespace);
+    const { snippet } = await adapter.strReplace(vfsPath, oldStr, newStr);
 
     return {
       content: `The file has been edited.\n${snippet}`,
@@ -381,11 +374,10 @@ async function handleStrReplace(
 
 /** Handle insert command */
 async function handleInsert(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
   insertLine: number,
-  insertText: string,
-  namespace?: string
+  insertText: string
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
@@ -405,7 +397,7 @@ async function handleInsert(
   }
 
   try {
-    await vfs.insert(projectId, vfsPath, insertLine, insertText, namespace);
+    await adapter.insert(vfsPath, insertLine, insertText);
 
     return {
       content: `The file ${vfsPath} has been edited.`,
@@ -443,11 +435,7 @@ async function handleInsert(
 }
 
 /** Handle delete command */
-async function handleDelete(
-  projectId: string,
-  path: string,
-  namespace?: string
-): Promise<ToolResult> {
+async function handleDelete(adapter: VfsAdapter, path: string): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
   if (vfsPath === '/') {
@@ -466,7 +454,7 @@ async function handleDelete(
   }
 
   try {
-    await vfs.deletePath(projectId, vfsPath, namespace);
+    await adapter.deletePath(vfsPath);
     return {
       content: `Successfully deleted ${vfsPath}`,
     };
@@ -491,11 +479,10 @@ async function handleDelete(
 
 /** Handle rename command */
 async function handleRename(
-  projectId: string,
+  adapter: VfsAdapter,
   oldPath: string,
   newPath: string,
-  overwrite?: boolean,
-  namespace?: string
+  overwrite?: boolean
 ): Promise<ToolResult> {
   const oldVfsPath = normalizePath(oldPath);
   const newVfsPath = normalizePath(newPath);
@@ -522,7 +509,7 @@ async function handleRename(
   }
 
   try {
-    await vfs.rename(projectId, oldVfsPath, newVfsPath, namespace, overwrite);
+    await adapter.rename(oldVfsPath, newVfsPath, overwrite);
 
     return {
       content: `Successfully renamed ${oldVfsPath} to ${newVfsPath}`,
@@ -551,11 +538,10 @@ async function handleRename(
 
 /** Handle copy command */
 async function handleCopy(
-  projectId: string,
+  adapter: VfsAdapter,
   sourcePath: string,
   destPath: string,
-  overwrite?: boolean,
-  namespace?: string
+  overwrite?: boolean
 ): Promise<ToolResult> {
   const srcVfsPath = normalizePath(sourcePath);
   const dstVfsPath = normalizePath(destPath);
@@ -583,7 +569,7 @@ async function handleCopy(
   }
 
   try {
-    await vfs.copyFile(projectId, srcVfsPath, dstVfsPath, overwrite, namespace);
+    await adapter.copyFile(srcVfsPath, dstVfsPath, overwrite);
 
     return {
       content: `Successfully copied ${srcVfsPath} to ${dstVfsPath}`,
@@ -623,11 +609,7 @@ async function handleCopy(
 }
 
 /** Handle mkdir command */
-async function handleMkdir(
-  projectId: string,
-  path: string,
-  namespace?: string
-): Promise<ToolResult> {
+async function handleMkdir(adapter: VfsAdapter, path: string): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
   if (vfsPath === '/') {
@@ -646,7 +628,7 @@ async function handleMkdir(
   }
 
   try {
-    await vfs.mkdir(projectId, vfsPath, namespace);
+    await adapter.mkdir(vfsPath);
 
     return {
       content: `Directory created successfully at: ${vfsPath}`,
@@ -675,10 +657,9 @@ async function handleMkdir(
 
 /** Handle append command */
 async function handleAppend(
-  projectId: string,
+  adapter: VfsAdapter,
   path: string,
-  fileText: string,
-  namespace?: string
+  fileText: string
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
@@ -698,7 +679,7 @@ async function handleAppend(
   }
 
   try {
-    const { created } = await vfs.appendFile(projectId, vfsPath, fileText, namespace);
+    const { created } = await adapter.appendFile(vfsPath, fileText);
 
     if (created) {
       return {
@@ -732,9 +713,8 @@ async function handleAppend(
 
 /** Handle view-all command — batch multiple file reads into one result */
 async function handleMultiView(
-  projectId: string,
+  adapter: VfsAdapter,
   paths: string[],
-  namespace?: string,
   noLineNumbers?: boolean
 ): Promise<ToolResult> {
   if (!paths || paths.length === 0) {
@@ -748,7 +728,7 @@ async function handleMultiView(
   let errorCount = 0;
 
   for (const path of paths) {
-    const result = await handleView(projectId, path, undefined, namespace, noLineNumbers);
+    const result = await handleView(adapter, path, undefined, noLineNumbers);
     if (result.isError) {
       errorCount++;
       const vfsPath = normalizePath(path);
@@ -772,15 +752,14 @@ async function* executeFsCommand(
   _toolOptions?: ToolOptions,
   context?: ToolContext
 ): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
-  if (!context?.projectId) {
+  if (!context?.vfsAdapter) {
     return {
-      content: 'Error: projectId is required in context',
+      content: 'Error: vfsAdapter is required in context',
       isError: true,
     };
   }
 
-  const projectId = context.projectId;
-  const namespace = context.namespace;
+  const adapter = context.vfsAdapter;
   const noLineNumbers = context.noLineNumbers;
   const fsInput = input as unknown as FsInput;
 
@@ -826,55 +805,25 @@ async function* executeFsCommand(
 
   switch (fsInput.command) {
     case 'view':
-      return handleView(projectId, fsInput.path, fsInput.view_range, namespace, noLineNumbers);
+      return handleView(adapter, fsInput.path, fsInput.view_range, noLineNumbers);
     case 'create':
-      return handleCreate(
-        projectId,
-        fsInput.path,
-        fsInput.file_text ?? '',
-        fsInput.overwrite,
-        namespace
-      );
+      return handleCreate(adapter, fsInput.path, fsInput.file_text ?? '', fsInput.overwrite);
     case 'str_replace':
-      return handleStrReplace(
-        projectId,
-        fsInput.path,
-        fsInput.old_str,
-        fsInput.new_str ?? '',
-        namespace
-      );
+      return handleStrReplace(adapter, fsInput.path, fsInput.old_str, fsInput.new_str ?? '');
     case 'insert':
-      return handleInsert(
-        projectId,
-        fsInput.path,
-        fsInput.insert_line,
-        fsInput.insert_text ?? '',
-        namespace
-      );
+      return handleInsert(adapter, fsInput.path, fsInput.insert_line, fsInput.insert_text ?? '');
     case 'delete':
-      return handleDelete(projectId, fsInput.path, namespace);
+      return handleDelete(adapter, fsInput.path);
     case 'rename':
-      return handleRename(
-        projectId,
-        fsInput.old_path,
-        fsInput.new_path,
-        fsInput.overwrite,
-        namespace
-      );
+      return handleRename(adapter, fsInput.old_path, fsInput.new_path, fsInput.overwrite);
     case 'copy':
-      return handleCopy(
-        projectId,
-        fsInput.old_path,
-        fsInput.new_path,
-        fsInput.overwrite,
-        namespace
-      );
+      return handleCopy(adapter, fsInput.old_path, fsInput.new_path, fsInput.overwrite);
     case 'mkdir':
-      return handleMkdir(projectId, fsInput.path, namespace);
+      return handleMkdir(adapter, fsInput.path);
     case 'append':
-      return handleAppend(projectId, fsInput.path, fsInput.file_text ?? '', namespace);
+      return handleAppend(adapter, fsInput.path, fsInput.file_text ?? '');
     case 'view-all':
-      return handleMultiView(projectId, fsInput.paths, namespace, noLineNumbers);
+      return handleMultiView(adapter, fsInput.paths, noLineNumbers);
     default:
       return {
         content: `Unknown filesystem command: ${(fsInput as { command: string }).command}`,

@@ -1,11 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import * as vfsService from '../../services/vfs';
-import type { DirEntry } from '../../services/vfs';
+import { getPathSegments, type VfsAdapter, type DirEntry } from '../../services/vfs';
 
 // TODO: Add toggle to show deleted files/directories/orphan nodes
 
 export interface VfsDirectoryTreeProps {
-  projectId: string;
+  adapter: VfsAdapter;
   selectedPath: string | null;
   initialPath?: string; // Auto-expand directories to reveal this path
   refreshToken?: number; // Change to reload expanded directories without remounting
@@ -20,7 +19,7 @@ interface TreeNodeState {
 }
 
 export default function VfsDirectoryTree({
-  projectId,
+  adapter,
   selectedPath,
   initialPath,
   refreshToken,
@@ -43,7 +42,7 @@ export default function VfsDirectoryTree({
       }));
 
       try {
-        const entries = await vfsService.readDir(projectId, path);
+        const entries = await adapter.readDir(path);
         setNodeStates(prev => ({
           ...prev,
           [path]: { expanded: true, children: entries, loading: false },
@@ -56,7 +55,7 @@ export default function VfsDirectoryTree({
         }));
       }
     },
-    [projectId]
+    [adapter]
   );
 
   const toggleExpand = useCallback(
@@ -94,7 +93,7 @@ export default function VfsDirectoryTree({
     if (!rootState?.children) return;
 
     // Get all parent directory paths that need to be expanded
-    const segments = vfsService.getPathSegments(initialPath);
+    const segments = getPathSegments(initialPath);
     if (segments.length === 0) {
       initialPathProcessedRef.current = true;
       return;
@@ -112,7 +111,7 @@ export default function VfsDirectoryTree({
         currentPath = currentPath + '/' + segments[i];
 
         // Check if this is a directory
-        const isDir = await vfsService.isDirectory(projectId, currentPath);
+        const isDir = await adapter.isDirectory(currentPath);
         if (isDir) {
           pathsToExpand.push(currentPath);
         }
@@ -125,7 +124,7 @@ export default function VfsDirectoryTree({
     };
 
     expandParents();
-  }, [initialPath, nodeStates, projectId, loadDirectory]);
+  }, [initialPath, nodeStates, adapter, loadDirectory]);
 
   // Reload all expanded directories when refreshToken changes (preserves expanded state)
   const refreshTokenRef = useRef(refreshToken);
@@ -241,6 +240,27 @@ export default function VfsDirectoryTree({
   const rootState = nodeStates['/'];
   const rootChildren = rootState?.children;
   const isRootLoading = rootState?.loading ?? false;
+  const isRootSelected = selectedPath === '/';
+  const isRootExpanded = rootState?.expanded ?? true;
+
+  const handleRootClick = useCallback(() => {
+    onSelectDir('/');
+  }, [onSelectDir]);
+
+  const handleRootToggle = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (rootChildren === null) {
+        loadDirectory('/');
+      } else {
+        setNodeStates(prev => ({
+          ...prev,
+          '/': { ...prev['/'], expanded: !prev['/'].expanded },
+        }));
+      }
+    },
+    [rootChildren, loadDirectory]
+  );
 
   return (
     <div className="ios-scroll h-full overflow-y-auto overscroll-y-contain">
@@ -253,14 +273,51 @@ export default function VfsDirectoryTree({
 
       {/* Tree content */}
       <div className="px-1 pb-4">
-        {isRootLoading ? (
-          <div className="flex items-center justify-center py-8">
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
-          </div>
-        ) : rootChildren === null || rootChildren.length === 0 ? (
-          <div className="py-8 text-center text-sm text-gray-400">No files yet</div>
-        ) : (
-          rootChildren.map(entry => renderEntry(entry, '/', 0))
+        {/* Clickable root node */}
+        <button
+          type="button"
+          className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors ${
+            isRootSelected ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-100'
+          }`}
+          onClick={handleRootClick}
+        >
+          <span
+            className="flex h-4 w-4 items-center justify-center text-gray-400"
+            onClick={handleRootToggle}
+          >
+            {isRootLoading ? (
+              <span className="h-3 w-3 animate-spin rounded-full border border-gray-400 border-t-transparent" />
+            ) : (
+              <svg
+                className={`h-3 w-3 transition-transform ${isRootExpanded ? 'rotate-90' : ''}`}
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            )}
+          </span>
+          <span>📂</span>
+          <span className="flex-1 truncate font-medium">/</span>
+        </button>
+
+        {/* Children (shown when root is expanded) */}
+        {isRootExpanded && (
+          <>
+            {isRootLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
+              </div>
+            ) : rootChildren === null || rootChildren.length === 0 ? (
+              <div className="py-8 text-center text-sm text-gray-400">No files yet</div>
+            ) : (
+              rootChildren.map(entry => renderEntry(entry, '/', 1))
+            )}
+          </>
         )}
       </div>
     </div>

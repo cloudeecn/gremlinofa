@@ -343,6 +343,18 @@ On first launch, the OOBE wizard lets you choose between local (IndexedDB) or re
 
 See [`storage-backend/README.md`](storage-backend/README.md) for deployment instructions, API docs, and reverse proxy configurations.
 
+### Remote VFS Backend 📂
+
+Want your AI's memory files on a real filesystem instead of encrypted blobs? The VFS backend stores files on disk — browsable, editable, `grep`-able, all the things encrypted blobs can't do.
+
+- **Real files** — Your AI's files are actual files on a server. `ls` them. `cat` them. Edit them in vim. We won't judge.
+- **Per-file locking** — Two writes to different files run in parallel. Server-side, so the frontend doesn't need to think about it.
+- **Server-side versioning** — Hidden `.ver/` directories track revision history. Rollback when your AI rewrites that config file for the fifth time.
+- **Compound operations** — `str-replace`, `insert`, `append` are atomic server-side. No TOCTOU races.
+- **Optional E2E encryption** — Content-only encryption if you still want privacy. Paths stay plaintext so the server can route.
+
+Configure per-project in Project Settings > Remote VFS. The backend runs standalone — same deployment story as the storage backend.
+
 ### Message Metadata 📊
 
 Want to make your favorite model feel guilty about how much it's costing you? Or maybe just give it a sense of time and space? Message metadata lets the AI know what's happening on your end.

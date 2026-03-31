@@ -7,7 +7,6 @@
  */
 
 import type { ClientSideTool, ToolResult, ToolStreamEvent } from '../../types';
-import * as vfs from '../vfs';
 
 const HOOKS_DIR = '/hooks';
 
@@ -150,13 +149,12 @@ export const dummyTool: ClientSideTool = {
     context
   ): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
     const action = input.action as string;
-    const projectId = context?.projectId;
 
-    if (!projectId) {
-      return { content: 'No project context available.', isError: true };
+    if (!context?.vfsAdapter) {
+      return { content: 'No VFS adapter available.', isError: true };
     }
 
-    const namespace = context?.namespace;
+    const adapter = context.vfsAdapter;
 
     switch (action) {
       case 'register': {
@@ -172,7 +170,7 @@ export const dummyTool: ClientSideTool = {
         // Verify hook file exists (written by LLM via filesystem tool)
         const hookPath = `${HOOKS_DIR}/${name}.js`;
         try {
-          const content = await vfs.readFile(projectId, hookPath, namespace);
+          const content = await adapter.readFile(hookPath);
           if (!content) {
             return {
               content: `Hook file not found: ${hookPath}\nWrite the hook file using the filesystem tool first, then register it.`,
@@ -200,15 +198,10 @@ export const dummyTool: ClientSideTool = {
       }
 
       case 'template': {
-        await vfs.ensureDirAndWrite(
-          projectId,
-          HOOKS_DIR,
-          [
-            { name: 'example.js', content: EXAMPLE_HOOK },
-            { name: 'hook-chain.example.js', content: HOOK_CHAIN_EXAMPLE },
-          ],
-          namespace
-        );
+        await adapter.ensureDirAndWrite(HOOKS_DIR, [
+          { name: 'example.js', content: EXAMPLE_HOOK },
+          { name: 'hook-chain.example.js', content: HOOK_CHAIN_EXAMPLE },
+        ]);
 
         return {
           content:

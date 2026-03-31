@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { metadataTool } from '../metadataTool';
 import type { Chat, ToolContext, ToolResult } from '../../../types';
+import { LocalVfsAdapter } from '../../vfs/localVfsAdapter';
+
+const mockAdapter = new LocalVfsAdapter('proj-1');
+const mockAdapterFactory = (ns?: string) => new LocalVfsAdapter('proj-1', ns);
 
 vi.mock('../../storage', () => ({
   storage: {
@@ -23,7 +27,16 @@ async function executeMetadata(
   context?: ToolContext
 ): Promise<ToolResult> {
   return collectToolResult(
-    metadataTool.execute(input, {}, context ?? { projectId: 'proj-1', chatId: 'chat-1' })
+    metadataTool.execute(
+      input,
+      {},
+      context ?? {
+        projectId: 'proj-1',
+        chatId: 'chat-1',
+        vfsAdapter: mockAdapter,
+        createVfsAdapter: mockAdapterFactory,
+      }
+    )
   );
 }
 
@@ -270,7 +283,10 @@ describe('metadataTool', () => {
     });
 
     it('returns error without projectId', async () => {
-      const result = await executeMetadata({ command: 'list_recent_chats' }, { projectId: '' });
+      const result = await executeMetadata(
+        { command: 'list_recent_chats' },
+        { projectId: '', vfsAdapter: mockAdapter, createVfsAdapter: mockAdapterFactory }
+      );
       expect(result.isError).toBe(true);
     });
   });

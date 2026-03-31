@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import * as vfsService from '../../services/vfs';
-import { getBasename } from '../../services/vfs';
+import { getBasename, type VfsAdapter } from '../../services/vfs';
 
 export interface VfsFileViewerProps {
-  projectId: string;
+  adapter: VfsAdapter;
   path: string;
   onEdit: () => void;
   onDiff: () => void;
@@ -25,7 +24,7 @@ interface FileState {
 const KEEP_VERSIONS = 10;
 
 export default function VfsFileViewer({
-  projectId,
+  adapter,
   path,
   onEdit,
   onDiff,
@@ -48,8 +47,8 @@ export default function VfsFileViewer({
 
     try {
       const [result, meta] = await Promise.all([
-        vfsService.readFileWithMeta(projectId, path),
-        vfsService.getFileMeta(projectId, path),
+        adapter.readFileWithMeta(path),
+        adapter.getFileMeta(path),
       ]);
 
       setState({
@@ -69,7 +68,7 @@ export default function VfsFileViewer({
         error: message,
       }));
     }
-  }, [projectId, path]);
+  }, [adapter, path]);
 
   // Load file on mount/path change (deferred to avoid synchronous setState in effect)
   useEffect(() => {
@@ -108,10 +107,10 @@ export default function VfsFileViewer({
 
   const handleDropVersions = useCallback(async () => {
     try {
-      const fileId = await vfsService.getFileId(projectId, path);
+      const fileId = await adapter.getFileId(path);
       if (!fileId) return;
 
-      const deleted = await vfsService.dropOldVersions(projectId, fileId, KEEP_VERSIONS);
+      const deleted = await adapter.dropOldVersions(fileId, KEEP_VERSIONS);
       if (deleted > 0) {
         // Reload to update version display
         loadFile();
@@ -120,7 +119,7 @@ export default function VfsFileViewer({
     } catch (error) {
       console.debug('[VfsFileViewer] Failed to drop versions:', error);
     }
-  }, [projectId, path, loadFile, onDropVersions]);
+  }, [adapter, path, loadFile, onDropVersions]);
 
   if (state.loading) {
     return (

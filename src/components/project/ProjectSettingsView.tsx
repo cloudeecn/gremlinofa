@@ -91,6 +91,13 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [extendedContext, setExtendedContext] = useState(project?.extendedContext || false);
   const [noLineNumbers, setNoLineNumbers] = useState(project?.noLineNumbers || false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showRemoteVfs, setShowRemoteVfs] = useState(false);
+  const [remoteVfsUrl, setRemoteVfsUrl] = useState(project?.remoteVfsUrl || '');
+  const [remoteVfsPassword, setRemoteVfsPassword] = useState(project?.remoteVfsPassword || '');
+  const [remoteVfsEncrypt, setRemoteVfsEncrypt] = useState(project?.remoteVfsEncrypt || false);
+  const [remoteVfsTestStatus, setRemoteVfsTestStatus] = useState<
+    'idle' | 'testing' | 'ok' | 'error'
+  >('idle');
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [temperature, setTemperature] = useState(project?.temperature?.toString() || '');
   const [maxOutputTokens, setMaxOutputTokens] = useState(
@@ -149,6 +156,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setDisableStream(project.disableStream || false);
       setExtendedContext(project.extendedContext || false);
       setNoLineNumbers(project.noLineNumbers || false);
+      setRemoteVfsUrl(project.remoteVfsUrl || '');
+      setRemoteVfsPassword(project.remoteVfsPassword || '');
+      setRemoteVfsEncrypt(project.remoteVfsEncrypt || false);
     }
   }, [project]);
 
@@ -269,6 +279,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         disableStream: disableStream || undefined,
         extendedContext: extendedContext || undefined,
         noLineNumbers: noLineNumbers || undefined,
+        remoteVfsUrl: remoteVfsUrl.trim() || undefined,
+        remoteVfsPassword: remoteVfsPassword || undefined,
+        remoteVfsEncrypt: remoteVfsEncrypt || undefined,
         lastUsedAt: new Date(),
       };
 
@@ -304,6 +317,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     disableStream,
     extendedContext,
     noLineNumbers,
+    remoteVfsUrl,
+    remoteVfsPassword,
+    remoteVfsEncrypt,
     updateProject,
     projectId,
     navigate,
@@ -1451,6 +1467,93 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
             </div>
           </>
         )}
+
+        {/* Remote VFS Section */}
+        <div className="mt-6 overflow-hidden rounded-lg border border-gray-200">
+          <div
+            onClick={() => setShowRemoteVfs(!showRemoteVfs)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setShowRemoteVfs(!showRemoteVfs);
+              }
+            }}
+            role="button"
+            tabIndex={0}
+            className="flex cursor-pointer items-center justify-between bg-gray-50 px-4 py-3 transition-colors hover:bg-gray-100"
+          >
+            <span className="text-sm font-semibold text-gray-900">Remote VFS</span>
+            <span className="text-gray-600">{showRemoteVfs ? '▼' : '▶'}</span>
+          </div>
+          {showRemoteVfs && (
+            <div className="space-y-4 bg-white p-4">
+              <p className="text-xs text-gray-500">
+                Store files on a remote VFS backend instead of encrypted local storage.
+              </p>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Server URL</label>
+                <input
+                  type="url"
+                  value={remoteVfsUrl}
+                  onChange={e => setRemoteVfsUrl(e.target.value)}
+                  placeholder="https://vfs.example.com"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Password</label>
+                <input
+                  type="password"
+                  value={remoteVfsPassword}
+                  onChange={e => setRemoteVfsPassword(e.target.value)}
+                  placeholder="Server password (empty = dev mode)"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="remoteVfsEncrypt"
+                  checked={remoteVfsEncrypt}
+                  onChange={e => setRemoteVfsEncrypt(e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300"
+                />
+                <label htmlFor="remoteVfsEncrypt" className="text-sm text-gray-700">
+                  E2E encrypt file content
+                </label>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!remoteVfsUrl.trim()) return;
+                  setRemoteVfsTestStatus('testing');
+                  try {
+                    const url = remoteVfsUrl.replace(/\/+$/, '') + '/health';
+                    const res = await fetch(url);
+                    if (res.ok) {
+                      const body = await res.json();
+                      setRemoteVfsTestStatus(body.status === 'ok' ? 'ok' : 'error');
+                    } else {
+                      setRemoteVfsTestStatus('error');
+                    }
+                  } catch {
+                    setRemoteVfsTestStatus('error');
+                  }
+                }}
+                disabled={!remoteVfsUrl.trim() || remoteVfsTestStatus === 'testing'}
+                className="rounded-md bg-gray-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-gray-700 disabled:opacity-50"
+              >
+                {remoteVfsTestStatus === 'testing'
+                  ? 'Testing...'
+                  : remoteVfsTestStatus === 'ok'
+                    ? 'Connected'
+                    : remoteVfsTestStatus === 'error'
+                      ? 'Failed — Retry'
+                      : 'Test Connection'}
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Danger Zone Section */}
         <div className="mt-6 overflow-hidden rounded-lg border border-red-200">

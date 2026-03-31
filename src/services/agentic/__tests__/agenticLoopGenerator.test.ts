@@ -373,7 +373,7 @@ describe('agenticLoopGenerator', () => {
         { command: 'view', path: '/' },
         ['memory'],
         {},
-        { projectId: 'proj_test', chatId: 'chat_test' }
+        expect.objectContaining({ projectId: 'proj_test', chatId: 'chat_test' })
       );
       if (result.status === 'complete') {
         expect(result.returnValue).toBe('tool executed');
@@ -595,7 +595,7 @@ describe('agenticLoopGenerator', () => {
         { command: 'view', path: '/' },
         ['memory'],
         {},
-        { projectId: 'proj_test', chatId: 'chat_test' }
+        expect.objectContaining({ projectId: 'proj_test', chatId: 'chat_test' })
       );
       // user + assistant (tool_use) + tool_result + assistant (final) = 4 messages
       expect(result.messages).toHaveLength(4);
@@ -709,7 +709,7 @@ describe('agenticLoopGenerator', () => {
         { path: '/a' },
         ['read', 'write'],
         {},
-        { projectId: 'proj_test', chatId: 'chat_test' }
+        expect.objectContaining({ projectId: 'proj_test', chatId: 'chat_test' })
       );
       expect(executeClientSideTool).toHaveBeenNthCalledWith(
         2,
@@ -717,7 +717,7 @@ describe('agenticLoopGenerator', () => {
         { path: '/b' },
         ['read', 'write'],
         {},
-        { projectId: 'proj_test', chatId: 'chat_test' }
+        expect.objectContaining({ projectId: 'proj_test', chatId: 'chat_test' })
       );
       // 100 + 120 + 140 = 360 input tokens
       expect(result.tokens.inputTokens).toBe(360);
@@ -860,7 +860,7 @@ describe('agenticLoopGenerator', () => {
         { command: 'view', path: '/' },
         ['return', 'memory'],
         {},
-        { projectId: 'proj_test', chatId: 'chat_test' }
+        expect.objectContaining({ projectId: 'proj_test', chatId: 'chat_test' })
       );
 
       // Loop continues (no breakLoop) — LLM gets error for return and can retry
@@ -945,14 +945,14 @@ describe('agenticLoopGenerator', () => {
         { result: 'done' },
         ['return', 'memory'],
         {},
-        { projectId: 'proj_test', chatId: 'chat_test' }
+        expect.objectContaining({ projectId: 'proj_test', chatId: 'chat_test' })
       );
       expect(executeClientSideTool).toHaveBeenCalledWith(
         'memory',
         { command: 'view', path: '/' },
         ['return', 'memory'],
         {},
-        { projectId: 'proj_test', chatId: 'chat_test' }
+        expect.objectContaining({ projectId: 'proj_test', chatId: 'chat_test' })
       );
 
       // Loop continues (deferred, no breakLoop) — LLM sees "Recorded" for return + memory result
@@ -1729,14 +1729,14 @@ describe('agenticLoopGenerator', () => {
         { result: 'first' },
         ['return', 'memory'],
         {},
-        { projectId: 'proj_test', chatId: 'chat_test' }
+        expect.objectContaining({ projectId: 'proj_test', chatId: 'chat_test' })
       );
       expect(executeClientSideTool).toHaveBeenCalledWith(
         'memory',
         { command: 'view', path: '/' },
         ['return', 'memory'],
         {},
-        { projectId: 'proj_test', chatId: 'chat_test' }
+        expect.objectContaining({ projectId: 'proj_test', chatId: 'chat_test' })
       );
 
       // 3 API calls

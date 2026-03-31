@@ -6,7 +6,7 @@ import { useProject } from '../../hooks/useProject';
 import { getApiDefinitionIcon } from '../../utils/apiTypeUtils';
 import type { Chat, MessageAttachment, Project } from '../../types';
 import { useAlert } from '../../hooks/useAlert';
-import { useIsMobile } from '../../hooks/useIsMobile';
+import { useIsTouchDevice } from '../../hooks/useIsTouchDevice';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 import { processImages } from '../../utils/imageProcessor';
 import { generateUniqueId } from '../../utils/idGenerator';
@@ -75,7 +75,9 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
   const navigate = useNavigate();
   const { apiDefinitions } = useApp();
   const { showDestructiveConfirm } = useAlert();
-  const isMobile = useIsMobile();
+  const isTouchDevice = useIsTouchDevice();
+  const newChatTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const compositionJustEndedRef = useRef(false);
 
   // Use the project hook
   const {
@@ -101,6 +103,21 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
   const [validationError, setValidationError] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const maxAttachments = 10;
+
+  // Chrome fires keydown with isComposing:false AFTER compositionend,
+  // so the isComposing check alone misses the Enter that confirmed the IME candidate.
+  useEffect(() => {
+    const textarea = newChatTextareaRef.current;
+    if (!textarea) return;
+    const onCompositionEnd = () => {
+      compositionJustEndedRef.current = true;
+      requestAnimationFrame(() => {
+        compositionJustEndedRef.current = false;
+      });
+    };
+    textarea.addEventListener('compositionend', onCompositionEnd);
+    return () => textarea.removeEventListener('compositionend', onCompositionEnd);
+  }, []);
 
   // Draft persistence for new chat message
   useDraftPersistence({
@@ -552,13 +569,15 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
             )}
 
             <textarea
+              ref={newChatTextareaRef}
               value={newChatMessage}
               onChange={e => setNewChatMessage(e.target.value)}
               placeholder="Type your message here..."
               rows={3}
               className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
               onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
+                if (e.nativeEvent.isComposing || compositionJustEndedRef.current) return;
+                if (e.key === 'Enter' && !e.shiftKey && !isTouchDevice) {
                   e.preventDefault();
                   handleStartNewChat();
                 }

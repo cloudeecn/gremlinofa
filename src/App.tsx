@@ -35,6 +35,7 @@ type OOBEState = 'checking' | 'needs-oobe' | 'complete' | 'launched';
 
 function AppContent() {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   const { isInitializing } = useApp();
 
@@ -56,8 +57,24 @@ function AppContent() {
   return (
     <div className="safe-area-inset-x flex h-dvh overflow-hidden">
       {/* Desktop Sidebar */}
-      <div className="hidden md:flex md:w-80 md:flex-shrink-0">
-        <Sidebar />
+      <div
+        className={`hidden overflow-hidden transition-[width] duration-300 ease-in-out md:flex md:flex-shrink-0 ${
+          isSidebarCollapsed ? 'md:w-12' : 'md:w-80'
+        }`}
+      >
+        {isSidebarCollapsed ? (
+          <div className="flex h-full w-12 flex-col items-center bg-gray-900 pt-3">
+            <button
+              onClick={() => setIsSidebarCollapsed(false)}
+              className="flex h-8 w-8 items-center justify-center rounded text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
+              title="Expand sidebar"
+            >
+              <span className="text-xs font-bold">&gt;|</span>
+            </button>
+          </div>
+        ) : (
+          <Sidebar onCollapse={() => setIsSidebarCollapsed(true)} />
+        )}
       </div>
 
       {/* Mobile Sidebar Overlay */}

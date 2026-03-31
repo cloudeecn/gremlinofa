@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useLocation, Link } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import Spinner from './ui/Spinner';
 import { useApp } from '../hooks/useApp';
 import { useAlert } from '../hooks/useAlert';
@@ -8,9 +8,10 @@ import { generateUniqueId } from '../utils/idGenerator';
 
 interface SidebarProps {
   onClose?: () => void;
+  onCollapse?: () => void;
 }
 
-export default function Sidebar({ onClose }: SidebarProps) {
+export default function Sidebar({ onClose, onCollapse }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const { projects, saveProject } = useApp();
@@ -85,14 +86,21 @@ export default function Sidebar({ onClose }: SidebarProps) {
   return (
     <div className="flex h-full w-full flex-col bg-gray-900 text-white">
       {/* Header */}
-      <div className="border-b border-gray-700 p-4">
-        <Link to="/" className="block hover:opacity-80" onClick={onClose}>
-          <h1 className="text-sm leading-tight font-semibold">
-            Gremlin Of The
-            <br />
-            Friday Afternoon
-          </h1>
-        </Link>
+      <div className="flex items-start justify-between border-b border-gray-700 p-4">
+        <h1 className="text-sm leading-tight font-semibold">
+          Gremlin Of The
+          <br />
+          Friday Afternoon
+        </h1>
+        {onCollapse && (
+          <button
+            onClick={onCollapse}
+            className="-mt-1 -mr-1 flex h-7 w-7 items-center justify-center rounded text-gray-400 transition-colors hover:bg-gray-700 hover:text-white"
+            title="Collapse sidebar"
+          >
+            <span className="text-xs font-bold">|&lt;</span>
+          </button>
+        )}
       </div>
 
       {/* Projects List */}

@@ -1,6 +1,6 @@
 [Unit]
 Description=GremlinOFA CORS Proxy - API proxy for browser CORS bypass
-Documentation=https://github.com/your-repo/gremlinofa
+Documentation=https://github.com/cloudeecn/gremlinofa
 After=network.target
 
 [Service]

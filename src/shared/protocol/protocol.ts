@@ -71,6 +71,7 @@ export type {
   VfsCompactEvent,
 } from './events';
 
+export { INIT_EXEMPT_METHODS } from './methods';
 export type {
   GremlinMethods,
   ImportDataParams,

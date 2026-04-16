@@ -44,6 +44,24 @@ import type {
 import type { LoopId, SubscriberId } from './wire';
 
 // ============================================================================
+// Dispatch gating
+// ============================================================================
+
+/**
+ * RPC methods that may run while the backend is still dormant. OOBE and
+ * bootstrap call these before `init` to mint / normalize a CEK. Both the
+ * `GremlinServer` dispatcher and the `WorkerTransport` request gate must
+ * agree on this set — otherwise the transport hangs the call on
+ * `initPromise` even though the server would happily answer it.
+ */
+export const INIT_EXEMPT_METHODS = new Set<string>([
+  'init',
+  'generateNewCEK',
+  'normalizeCEK',
+  'deriveUserIdFromCEK',
+]);
+
+// ============================================================================
 // Wire-safe data shapes used in method results
 // ============================================================================
 

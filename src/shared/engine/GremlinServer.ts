@@ -41,23 +41,24 @@ import { runExport } from './exportRunner';
 import { runImport } from './importRunner';
 import { prepareMessageForWire } from './messageWire';
 import { runProjectExport, runProjectImport } from './projectBundle';
-import type {
-  ActiveLoopsChange,
-  ExportEvent,
-  GremlinMethods,
-  ImportDataParams,
-  ImportProgress,
-  InitParams,
-  InitResult,
-  LoopEvent,
-  LoopId,
-  MethodParams,
-  MethodResult,
-  ProjectExportEvent,
-  RunLoopParams,
-  SubscriberId,
-  ToolInventoryEntry,
-  VfsCompactEvent,
+import {
+  INIT_EXEMPT_METHODS,
+  type ActiveLoopsChange,
+  type ExportEvent,
+  type GremlinMethods,
+  type ImportDataParams,
+  type ImportProgress,
+  type InitParams,
+  type InitResult,
+  type LoopEvent,
+  type LoopId,
+  type MethodParams,
+  type MethodResult,
+  type ProjectExportEvent,
+  type RunLoopParams,
+  type SubscriberId,
+  type ToolInventoryEntry,
+  type VfsCompactEvent,
 } from '../protocol/protocol';
 
 /**
@@ -68,21 +69,6 @@ import type {
  * the dispatcher.
  */
 export { ProtocolError };
-
-/**
- * Methods that bypass `ensureInitialized()` so they can run while the
- * backend is still dormant. `init` is the canonical bootstrap; the three
- * CEK helpers are pure crypto utilities used by OOBE / bootstrap *before*
- * encryption state exists. Keeping them dormant-callable means the
- * frontend never imports CEK format helpers — it just hops to the
- * backend whenever it needs bytes ↔ string conversion or fresh entropy.
- */
-const INIT_EXEMPT_METHODS = new Set<string>([
-  'init',
-  'generateNewCEK',
-  'normalizeCEK',
-  'deriveUserIdFromCEK',
-]);
 
 export class GremlinServer {
   /**

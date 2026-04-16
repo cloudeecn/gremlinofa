@@ -5,25 +5,29 @@
  * signal, and then communicates with the worker via the standard protocol
  * envelopes (`request`, `response`, `stream_event`, `stream_end`, `error`).
  *
- * The transport queues every RPC except `init` until `init` has succeeded
- * — the worker rejects everything else with `code: 'NOT_INITIALIZED'`
- * before that point. The bootstrap is purely the protocol's `init`
- * method; no localStorage snapshot is posted across the boundary.
+ * The transport queues every RPC outside `INIT_EXEMPT_METHODS` until
+ * `init` has succeeded — the worker rejects everything else with
+ * `code: 'NOT_INITIALIZED'` before that point. The exempt set (defined in
+ * `shared/protocol/methods`) covers `init` itself plus the dormant-callable
+ * CEK helpers that OOBE invokes before the worker has been initialized.
+ * The bootstrap is purely the protocol's `init` method; no localStorage
+ * snapshot is posted across the boundary.
  *
  * Phase 2 will swap this for `WebSocketTransport`. The wire format and the
  * `Transport` interface are the same — only the framing changes.
  */
 
-import type {
-  ErrorEnvelope,
-  GremlinMethods,
-  MethodParams,
-  MethodResult,
-  RequestEnvelope,
-  ResponseEnvelope,
-  StreamEndEnvelope,
-  StreamEventEnvelope,
-  Transport,
+import {
+  INIT_EXEMPT_METHODS,
+  type ErrorEnvelope,
+  type GremlinMethods,
+  type MethodParams,
+  type MethodResult,
+  type RequestEnvelope,
+  type ResponseEnvelope,
+  type StreamEndEnvelope,
+  type StreamEventEnvelope,
+  type Transport,
 } from '../../../shared/protocol/protocol';
 import { ProtocolError } from '../../../shared/protocol/protocolError';
 import type { StorageConfig } from '../../lib/localStorageBoot';
@@ -104,8 +108,10 @@ export class WorkerTransport implements Transport {
     params: MethodParams<M>
   ): Promise<MethodResult<M>> {
     await this.readyPromise;
-    if (method !== 'init') {
-      // Block every other RPC until `init` returns successfully.
+    if (!INIT_EXEMPT_METHODS.has(method as string)) {
+      // Block every other RPC until `init` returns successfully. The
+      // exempt set covers `init` itself plus the dormant-callable CEK
+      // helpers that OOBE invokes before the worker has been initialized.
       await this.initPromise;
     }
     const requestId = `req_${++this.requestCounter}`;

@@ -15,6 +15,13 @@
     "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["src/shared/*"],
+      "@frontend/*": ["src/frontend/*"],
+      "@worker/*": ["src/worker/*"],
+      "@server/*": ["src/server/*"]
+    },
 
     /* Linting */
     "strict": true,

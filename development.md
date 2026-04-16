@@ -137,14 +137,12 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 - [x] Core services tested (encryption, compression, storage, CSV helper, data export/import, markdownRenderer)
 - [x] Hooks tested (useChat, useProject, useApp, useIsMobile, useIsKeyboardVisible, useAlert, useError, useVirtualScroll, useStreamingAssembler, useAttachmentManager, usePreferences, useMinionChat)
-- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, ToolResultBubble, StopReasonBadge, StreamingMessage, CacheWarning, WebLLMLoadingView, MinionChatView)
+- [x] Chat components tested (MessageBubble, UserMessageBubble, AssistantMessageBubble, MessageList, BackstageView, ErrorBlockView, TextGroupView, ToolResultView, ToolResultBubble, StopReasonBadge, StreamingMessage, CacheWarning, MinionChatView)
 - [x] Error components tested (ErrorView, ErrorFloatingButton)
 - [x] OOBE components tested (OOBEScreen, OOBEComplete)
 - [x] Integration tests (import/export roundtrip with 210+ records, duplicate handling, CSV special characters)
 - [x] Cross-adapter export/import tests (IndexedDB ↔ Remote, bidirectional sync, pagination, re-encryption)
 - [x] Cross-adapter E2E roundtrip tests (fake-indexeddb + live storage-backend, real encryption)
-- [x] WebLLM client unit tests (webllmClient, webllmModelInfo, apiService.webllm)
-- [x] WebGPU capability detection tests
 - [x] DUMMY System tests (dummyHookRuntime, dummyTool)
 - [x] Remote storage E2E tests (RemoteStorageAdapter against real storage-backend)
 - [ ] E2E tests (full app)
@@ -153,9 +151,9 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 ### API Definitions
 
-- Multiple API definitions per provider type (APIType: `responses_api`, `chatgpt`, `anthropic`, `webllm`, `ds01-dummy-system`)
-- Each definition: name, icon (optional emoji), baseUrl (optional), apiKey (not required for WEBLLM or when `isLocal` is true)
-- `isLocal` flag marks non-WebLLM providers that don't need API keys (e.g., local LLM servers)
+- Multiple API definitions per provider type (APIType: `responses_api`, `chatgpt`, `anthropic`, `bedrock`, `google`, `ds01-dummy-system`)
+- Each definition: name, icon (optional emoji), baseUrl (optional), apiKey (not required when `isLocal` is true)
+- `isLocal` flag marks providers that don't need API keys (e.g., local LLM servers like Ollama, LM Studio)
 - `modelsEndpoint` (optional) - Custom URL for fetching models list without authentication
   - When set, uses plain `fetch()` instead of SDK's model listing API
   - Auto-detects response format: OpenAI-compatible `{ data: [...] }`, plain array `[{...}]`, or string array `["model-1", ...]`
@@ -209,21 +207,90 @@ Tests are co-located with source files in `__tests__/` subdirectories following 
 
 ```
 src/
-├── components/     # UI: Sidebar, Modals, project/, chat/, ui/
-├── contexts/       # React Context providers (App, Alert, Error)
-├── hooks/          # Custom hooks (useChat, useProject, useVirtualScroll, etc.)
-├── services/       # Business logic subdirectories:
-│   ├── api/        # API clients, pricing modules, stream mappers
-│   ├── compression/# Gzip compression using Compression Streams API
-│   ├── encryption/ # AES-256-GCM encryption service
-│   ├── storage/    # Storage adapters (IndexDB and RemoteStorage), unified storage API
-│   └── streaming/  # StreamingContentAssembler for real-time rendering
-├── types/          # TypeScript definitions (entities, content blocks)
-├── utils/          # Utilities (CSV, image processing, markdown, formatters)
-├── constants/      # Static data (emoji list)
-└── test/           # Test configuration (Vitest setup)
+├── shared/         # Pure layer — runs in worker, jsdom, and the future Node server
+│   ├── protocol/   # Phase 1.7 split into focused files:
+│   │   ├── wire.ts        # Envelopes, identifiers, helper types
+│   │   ├── errors.ts      # ProtocolErrorCode union
+│   │   ├── events.ts      # LoopEvent / ActiveLoopsChange / Export / Import / VFS compact
+│   │   ├── methods.ts     # GremlinMethods registry + per-method param/result
+│   │   ├── protocol.ts    # Barrel re-exporting from the four files above
+│   │   ├── protocolError.ts  # ProtocolError carrier exception
+│   │   └── types/         # Application data models (Chat, Project, Message,
+│   │                      # content blocks, ToolContext, VfsAdapter, …)
+│   ├── engine/     # GremlinServer, ChatRunner, LoopRegistry, backendDeps,
+│   │               # buildLoopOptions, dataExport/Import, exportRunner/importRunner,
+│   │               # messageMetadata, messageWire, projectBundle, transports/inProcess.ts
+│   │   └── lib/    # Backend-only pure helpers (Phase 1.8 relocated from src/lib/ + src/utils/):
+│   │               # apiHelpers, assertNoLoopsRunning, incompleteTail, vfsPaths,
+│   │               # cekFormat, csvHelper, formatFileContent, reasoningEffort, tokenTotals,
+│   │               # api/{mergeExtraModels, modelMetadata, model_metadatas/*}
+│   └── services/   # Business logic subdirectories:
+│       ├── agentic/    # Agentic loop generator + dummy hook runtime
+│       ├── api/        # API clients, pricing modules, stream mappers
+│       ├── compression/# Gzip compression using Compression Streams API
+│       ├── encryption/ # EncryptionCore — pure crypto primitives
+│       ├── storage/    # UnifiedStorage + StorageAdapter + CachedStorageAdapter (1.65 hoisted IndexedDB / Remote inner adapters to worker/adapters/)
+│       ├── streaming/  # StreamingContentAssembler for real-time rendering
+│       ├── tools/      # Tool implementations (fs, memory, sketchbook, minion, etc.)
+│       └── vfs/        # VfsService + LocalVfsAdapter (1.65 hoisted RemoteVfsAdapter + adapter dispatch to worker/adapters/)
+├── frontend/       # Browser main-thread UI layer
+│   ├── App.tsx, main.tsx
+│   ├── client/     # GremlinClient + transports (worker only)
+│   ├── components/ # Sidebar, Modals, project/, chat/, ui/, activeLoops/
+│   ├── contexts/   # React Context providers (App, Alert, Error)
+│   ├── hooks/      # Custom hooks (useChat, useProject, useVirtualScroll, etc.)
+│   └── lib/        # Frontend-only helpers (Phase 1.8 relocated from src/utils/ + src/constants/):
+│                   # alerts, apiTypeUtils, emojis, formatBytes, imageProcessor,
+│                   # lcsDiff, localStorageBoot, markdownRenderer, mathRenderer,
+│                   # messageFormatters, projectExport, stackTraceMapper
+├── worker/         # Web Worker entry point + browser-only adapters
+│   ├── gremlinWorker.ts
+│   └── adapters/   # IndexedDBAdapter, RemoteStorageAdapter, RemoteVfsAdapter,
+│                   # createStorageAdapter, createVfsAdapter (factories injected
+│                   # into BackendDeps via setBootstrapAdapterFactories)
+├── server/         # Phase 2 Node WebSocket backend (placeholder)
+├── test/           # Test configuration (Vitest setup)
+├── index.css
+└── vite-env.d.ts
 public/             # Static assets and PWA icons
 ```
+
+Path aliases (`vite.config.ts` + `tsconfig.app.json`): `@shared/*`,
+`@frontend/*`, `@worker/*`, `@server/*`. Existing relative imports were
+left untouched in the Phase 1.6 reshuffle (and the Phase 1.7 types move
+preserved relative paths via a one-shot Node script rather than switching
+to the alias).
+
+#### Frontend / Backend Split (Phase 1 complete; Phases 1.5–1.8 cleanup landed)
+
+The codebase is split into four runtime layers — `shared/` (pure), `frontend/` (browser main thread), `worker/` (Web Worker entry), and `server/` (Phase 2 Node placeholder). The RPC contract lives in `src/shared/protocol/` (TypeScript types only, split into focused files) and is shared by both sides. The agentic loop, storage, encryption, API clients, and tools run inside a Web Worker today and will hop into a Node WebSocket process in Phase 2 — both deployments share the same `src/shared/engine/GremlinServer` dispatcher.
+
+- **`src/shared/protocol/`** — Phase 1.7 split the original 967-line `protocol.ts` into focused files: `wire.ts` (envelopes, identifiers, helper types), `errors.ts` (`ProtocolErrorCode` union), `events.ts` (LoopEvent, ActiveLoopsChange, Export/Import progress, project bundle, VFS compact stream payloads), `methods.ts` (the `GremlinMethods` registry plus per-method param/result types), and `protocol.ts` (now a barrel re-exporting from the four files for backward-compatible imports). `protocolError.ts` carries the `ProtocolError` exception class so destructive-op guards can construct it without a circular import on the dispatcher. `types/` holds the application data models (Chat, Project, Message, content blocks, ToolContext, VfsAdapter, etc.) that Phase 1.7 hoisted out of the top-level `src/types/` — every layer now imports them from `@shared/protocol/types` (or relative equivalents).
+- **`src/shared/engine/`** — `GremlinServer` (method dispatcher; supports deferred mode where `_deps` is `null` until `init({cek})` arrives), `ChatRunner` (per-loop wrapper around `runAgenticLoop`, fires `message_created` for synthesized user messages, enforces incomplete-tail lock + soft-stop via `LoopRegistry.isSoftStopRequested`), `LoopRegistry` (also caches in-flight `pending_tool_result` + merged `tool_block_update` state per chat so `attachChat` can replay the in-progress tool UI when a consumer reattaches mid-stream — entries cleared on the matching `message_created` and as a safety net on `loop_ended`), `buildLoopOptions.ts` + `messageMetadata.ts`, `exportRunner.ts` + `importRunner.ts`, `dataExport.ts` + `dataImport.ts` + `projectBundle.ts`, `transports/inProcess.ts` (the in-process `Transport` interface + `InProcessTransport` implementation). Streaming methods wired: `runLoop`, `subscribeActiveLoops`, `attachChat`, `exportData`, `importData`, `vfsCompactProject`.
+- **`src/shared/services/`** — agentic loop, API clients + stream mappers, compression, encryption (`EncryptionCore`, the only encryption flavor that exists), storage (`UnifiedStorage` + `CachedStorageAdapter` decorator + the `StorageAdapter` interface — the browser-only inner adapters now live under `src/worker/adapters/`), streaming assembler, tools, VFS (`LocalVfsAdapter` + `treeLock` + `vfsService` — `RemoteVfsAdapter` and the per-project dispatch live under `src/worker/adapters/`).
+- **`src/frontend/`** — `App.tsx`, `main.tsx`, `components/`, `hooks/`, `contexts/`, `client/` (GremlinClient + GremlinSession + ActiveLoopsStore + bootstrapClient + worker transport), `lib/` (frontend-only helpers). The main thread no longer constructs an encryption instance — OOBE / Data Manager use `src/frontend/lib/localStorageBoot.ts` to read/write the CEK string and the dormant-callable RPCs (`generateNewCEK`, `normalizeCEK`, `deriveUserIdFromCEK`) on `gremlinClient` for format conversions, then post the string through `gremlinClient.init({cek})`.
+- **`src/worker/gremlinWorker.ts`** — Web Worker entry: boots dormant, calls `setBootstrapAdapterFactories` at module load (registers `createStorageAdapter` and `createVfsAdapter` from `src/worker/adapters/`), then accepts a non-protocol `worker_config` envelope for the storage config and handles a typed `init({cek})` to bring up encryption + storage + the rest of the engine.
+- **`src/worker/adapters/`** — browser-only adapter implementations + worker-side factories. Files: `IndexedDBAdapter.ts`, `RemoteStorageAdapter.ts`, `RemoteVfsAdapter.ts`, `createStorageAdapter.ts` (config → `CachedStorageAdapter`-wrapped inner adapter), `createVfsAdapter.ts` (project → `LocalVfsAdapter` or `RemoteVfsAdapter`). Phase 1.65 hoisted these out of `src/shared/` so the shared layer's lint rules can ban `indexedDB` / `navigator`.
+- **`src/frontend/client/`** — `GremlinClient` (typed RPC facade exposing every protocol method, plus `exportToBlob` / `importFromBytes` / `vfsCompactProject` / `configureWorker` helpers), `GremlinSession` (per-chat session adapter), `ActiveLoopsStore`, `bootstrapClient.ts` (reads CEK + storage config from localStorage, decodes the CEK, derives userId for remote configs, calls `gremlinClient.configureWorker(storageConfig)` then `gremlinClient.init({cek})` before React mounts), `transports/worker.ts` (`WorkerTransport` — waits for `worker_ready`, posts `worker_config` ahead of `init`, queues every non-`init` request until `init` succeeds, sends `stream_cancel` on consumer-side `break`). Singleton wired unconditionally to `WorkerTransport`; constructed lazily via a `Proxy` so jsdom-only component tests don't trigger worker spawn unless they actually call a method.
+- **`src/frontend/components/activeLoops/`** — `RunningLoopsSection.tsx` + `ActiveLoopRow.tsx`. Mounted in `Sidebar.tsx`, project-agnostic. The chat view's soft-stop stays; hard abort lives only in the sidebar. Minion sub-loops register themselves on the per-server `LoopRegistry` from inside `executeMinion` (parent chat id, parent loopId, persona/displayName label) so they appear as indented child rows under the parent and the STOP button can hard-abort one without touching its siblings. Each child has its own `AbortController`; aborting the parent cascades to every child via a one-shot `addEventListener('abort', ...)` listener wired in the minion tool, but child → parent abort is intentionally unidirectional. `BackendDeps.loopRegistry` is the same instance held by `GremlinServer.registry` — threaded through `ToolContext.loopRegistry` so tools never reach for the server directly.
+- **`useChat`** is a thin React adapter (~660 lines) that subscribes to a `GremlinSession` and translates `LoopEvent`s into React state with the same 200ms throttle. Tool-use block detection reads the backend-pre-extracted `message.content.toolUseBlocks` field (Phase 1.8 leak fix) — the frontend never imports the provider-specific parser. `isLockedByIncompleteTail` is now pushed by the backend via the `lock_state_changed` LoopEvent (Phase 1.7) — `useChat` stores the latest value and surfaces it as the `Delete Message` / `Roll Back to Checkpoint` banner predicate. The frontend no longer imports `isChatLockedByIncompleteTail` from `src/lib/`; the backend computes it in `GremlinServer.broadcastChatLockState` (called from `deleteMessageAndAfter` / `saveMessage` / `attachChat` snapshot) and from `ChatRunner.run`'s teardown so the abort path's incomplete tail flips the lock as soon as the loop unwinds.
+- **VFS facade** — Phase 1.7 deleted `useVfsAdapter`. Components that want a project-bound `VfsAdapter` call `gremlinClient.getVfsAdapter(projectId)` (typically wrapped in `useMemo`). The method returns a plain object whose every operation delegates back into the per-call `vfs*` RPCs on `GremlinClient`. The actual local/remote adapter is constructed and cached server-side in `GremlinServer.getProjectVfsAdapter`.
+- **Four-layer boundary lint rules (Phase 1.6)** (`eslint.config.js`):
+  1. `src/shared/**` cannot import from `src/{frontend,worker,server}/**`
+  2. `src/frontend/**` cannot import from `src/{worker,server}/**`
+  3. `src/worker/**` cannot import from `src/{frontend,server}/**`
+  4. `src/server/**` cannot import from `src/{frontend,worker}/**`
+  - `no-restricted-globals` on `src/shared/**`: bans `localStorage`, `sessionStorage`, `document`, `window`, plus `indexedDB` and `navigator` (added in 1.65, after the adapter move). `crypto` and `fetch` stay allowed because they exist in workers and modern Node.
+  - **Frontend service boundary (Phase 1.8 tightened)**: all `src/frontend/**` code may only import from `src/shared/protocol/**` or `src/frontend/**`. `src/shared/{engine,services}/**` are off-limits — route through `gremlinClient` RPCs or consume `LoopEvent`s. The top-level `src/lib/`, `src/utils/`, `src/constants/` directories are gone — Phase 1.8 relocated every file into `shared/engine/lib/` (backend-only helpers) or `frontend/lib/` (frontend-only helpers).
+  - Tests under `**/__tests__/**` are excluded from all rules so test stubs that touch internal types stay simple.
+- **Pragmatic deviations from the plan** — all resolved: (a) Browser storage adapters → `src/worker/adapters/` (Phase 1.65). (b) `src/types/` → `src/shared/protocol/types/` (Phase 1.7). (c) `src/lib/`, `src/utils/`, `src/constants/` → two-bucket split into `shared/engine/lib/` (backend-only) and `frontend/lib/` (frontend-only) with type splits into `shared/protocol/types/` (Phase 1.8). Only `src/test/`, `src/index.css`, `src/vite-env.d.ts` remain at the top level.
+- **Encryption split (Phase 1.5 + 1.65 + 1.8)**: `EncryptionCore` (`src/shared/services/encryption/encryptionCore.ts`) holds the runtime-agnostic crypto primitives — `derivedKey`, `initializeWithCEK`, `forget`, `encrypt`/`decrypt`, `encryptWithCompression`/`decryptWithDecompression`, `deriveUserId`, `hasSameKeyAs`. Zero `localStorage` coupling. The only path now is the worker constructing an `EncryptionCore` directly inside `GremlinServer.init` from the CEK string posted via `gremlinClient.init({cek})` — Phase 1.8 changed the wire format from `Uint8Array` to `string` so the frontend posts the localStorage CEK directly without decoding. CEK format helpers (`cekFormat.ts`) live under `shared/engine/lib/` — the frontend never imports them. Main-thread CEK lifecycle (read / write / clear) lives in `src/frontend/lib/localStorageBoot.ts`.
+- **CEK init-over-RPC**: the worker boots dormant. `src/frontend/main.tsx` awaits `bootstrap()` (in `src/frontend/client/bootstrapClient.ts`) which reads the CEK string + storage config from localStorage, derives userId for remote configs via the dormant-callable `gremlinClient.deriveUserIdFromCEK(cekString)` RPC, then calls `gremlinClient.configureWorker(storageConfig)` followed by `gremlinClient.init({cek: cekString})`. The worker stashes the storage config via `setBootstrapStorageConfig` (driven by the non-protocol `worker_config` envelope) and constructs `EncryptionCore` + `UnifiedStorage` from `params.cek` and the stashed config. OOBE writes localStorage on its own and calls `configureWorker` + `init` directly. Data Manager uses `gremlinClient.clearCek()` + `clearCachedCEK()` for detach. CEK rotation uses `gremlinClient.rotateCek({newCek})` which spins up a temp `EncryptionCore` for the new key, walks every table via `exportPaginated`, decrypts with the active core + re-encrypts under the temp core + `batchSave`s the rotated rows, then transitions the server to dormant (forgets the active core, drops the deps bundle) so the frontend reconnects with a fresh `init` carrying the new CEK.
+- **Init contract (locked Phase 1.5)**: `init` accepts only `{cek, subscriberId?}`. Posting any other field (notably the legacy `storageConfig`) is rejected with `INVALID_PARAMS`. Re-init with the same CEK is idempotent; re-init with a different CEK is rejected with `CEK_MISMATCH` — to change identity the caller must `purgeAllData` (or `clearCek`) first.
+- **Destructive-op guards (Phase 1.5)**: `rotateCek`, `purgeAllData`, `importData`, and `clearCek` all run `assertNoLoopsRunning` (`src/lib/assertNoLoopsRunning.ts`) before touching storage. Refusal returns the new `LOOPS_RUNNING` protocol error code. The Data Manager UI subscribes to `activeLoopsStore` and disables the destructive buttons (Import Data, Detach Remote Storage, Delete All Data) when the snapshot count is non-zero, with an inline "stop all running loops first" hint.
+- **Worker localStorage shim deleted**: `src/backend/worker/workerLocalStorageShim.ts` is gone. After the encryption split + storage config out-of-band channel, no backend code touches `globalThis.localStorage` at module load time. `grep localStorage` in `src/shared/**` and `src/worker/**` returns zero hits outside comments.
+- **`messageCount` backfill** runs server-side in `GremlinServer.listChatsWithMessageCounts`. The frontend's `useProject` is a pure read-then-display effect — it never writes back.
+- **Migration status (Phase 1.8)**: complete. Phase 1.8 delivered: (1) CEK wire format changed from `Uint8Array` to `string` — three dormant-callable RPCs (`generateNewCEK`, `normalizeCEK`, `deriveUserIdFromCEK`) let the frontend operate on CEK strings without importing any format helpers; (2) `extractToolUseBlocks` pre-extracted backend-side via `prepareMessageForWire` at every message-yield boundary — the frontend reads the field instead of re-running the provider-specific parser; (3) `mergeExtraModels` absorbed into the backend's `discoverModels` dispatch arm (no-key fallback + error fallback + cache write); (4) `vfsPaths` inlined on the frontend (5 sites `getBasename`, 1 site `getPathSegments`); (5) every file under `src/lib/`, `src/utils/`, `src/constants/` relocated into `shared/engine/lib/` (backend-only) or `frontend/lib/` (frontend-only), with `StorageConfig` and `BundleFileEntry`/`ProjectBundle` types hoisted to `shared/protocol/types/`, `idGenerator` moved to `shared/protocol/`; (6) `attachLoop` method + dispatch stub deleted, `subscriber_joined`/`subscriber_left` event types deleted; (7) frontend lint rule tightened to "may only import from `shared/protocol/**` or `frontend/**`". Phase 2 (Node WebSocket server) is the next chunk — purely additive on top of the clean Phase 1.8 codebase.
 
 ### Storage & Encryption
 
@@ -231,10 +298,9 @@ public/             # Static assets and PWA icons
 
 - `StorageAdapter.ts` interface defines adapter contract
 - Adapters: `IndexedDBAdapter.ts` (local), `RemoteStorageAdapter.ts` (remote API)
-- `unifiedStorage.ts` high-level API wraps adapter operations
-- `storageConfig.ts` stores user's storage mode preference (localStorage key: `gremlinofa_storage_config`)
-- **Auto-routing**: `index.ts` reads config at startup and creates the appropriate adapter automatically
-- Factory functions: `createStorage()` and `createStorageAdapter()` for creating instances (useful for migration/sync)
+- `unifiedStorage.ts` high-level API wraps adapter operations. `initialize()` requires the encryption core to already hold a CEK (it asserts via `isInitialized()` and throws otherwise — no implicit localStorage fallback).
+- `StorageConfig` type lives in `src/shared/protocol/types/storageConfig.ts` (Phase 1.8 split from the runtime helpers). Runtime helpers (read/write/clear/hash) live in `src/frontend/lib/localStorageBoot.ts`.
+- Factory functions: `createStorage(config, encryption)` and `createStorageAdapter(config)` always require an explicit config — no localStorage fallback.
 - Tables: `api_definitions`, `models_cache`, `projects`, `chats`, `messages`, `attachments`, `memories`, `memory_journals`, `app_metadata`, `vfs_meta`, `vfs_files`, `vfs_versions`
 - All tables have the same columns
 
@@ -242,21 +308,23 @@ public/             # Static assets and PWA icons
 
 - `RemoteStorageAdapter` connects to `storage-backend/` via REST API
 - Auth: Basic authentication with userId + optional password
-- userId derived from CEK via `encryptionService.deriveUserId()` (PBKDF2-SHA256, 600k iterations, 64-char hex)
+- userId derived from CEK via `EncryptionCore.deriveUserId()` (PBKDF2-SHA256, 600k iterations, 64-char hex)
 - userId is computed once during OOBE and stored in `StorageConfig` (avoids async derivation at runtime)
 - Password hashing: User-entered password is hashed via `hashPassword()` (SHA-512 with `|gremlinofa` salt) before storage/transmission, preventing plaintext password leakage if users reuse common passwords
 - Config type: `StorageConfig = { type: 'local' } | { type: 'remote'; baseUrl; password; userId }`
 
 **Storage Entry Point (`index.ts`):**
 
-- `createStorageAdapter(config?)` factory creates appropriate adapter based on provided config (or reads from localStorage if not provided)
-- `createStorage(config?)` factory creates new `UnifiedStorage` instance with explicit config (useful for OOBE, migration/sync scenarios)
-- Default `storage` export is a singleton created at module load time (reads config from localStorage)
+- `createStorageAdapter(config)` factory creates the appropriate adapter from an explicit config — no longer reads localStorage on its own.
+- `createStorage(config, encryption)` factory creates a new `UnifiedStorage` instance with explicit config + a pre-keyed `EncryptionCore`.
+- No module-level singleton: every consumer (worker `init`, `createGremlinServer`, OOBE) builds its own instance with the right encryption + config pair.
 
 **Encryption:**
 
+- `EncryptionCore` (`src/services/encryption/encryptionCore.ts`): pure crypto primitives, zero `localStorage` coupling. Constructed directly by the worker / future Node server / unit tests.
+- `BrowserEncryptionService` (`src/services/encryption/encryptionService.ts`, exported under the legacy `EncryptionService` alias): extends `EncryptionCore` with the `localStorage` cache lifecycle (`initialize`, `getCEK`, `clearCEK`, `importCEK`, `convertCEKToBase32`, `isCEKBase32`). Used by the in-process / jsdom factory through the `bootstrapEncryption` hook on `BackendDeps`.
 - CEK (Content Encryption Key): 32-byte random key, auto-generated on first run
-- CEK storage: localStorage (`chatbot_cek`) in base32 format (52 characters)
+- CEK storage: localStorage (`chatbot_cek`) in base32 format (52 characters) — only the main thread (via `BrowserEncryptionService` or `localStorageBoot`) ever touches it.
 - Data encryption: AES-256-GCM with random IV per operation
 - Backward compatibility: base64-encoded CEKs supported for import
 - Format conversion: Data Manager offers one-click base64→base32 conversion for legacy CEKs
@@ -308,7 +376,7 @@ public/             # Static assets and PWA icons
 
 **API Types:**
 
-- `APIType` = protocol/client template (ChatGPT, Anthropic, WebLLM)
+- `APIType` = protocol/client template (ChatGPT, Anthropic, Google, Bedrock, etc.)
 - `APIDefinition` = configured instance (e.g., "xAI", "OpenRouter")
 
 **StreamOptions** (in `baseClient.ts`):
@@ -335,18 +403,6 @@ public/             # Static assets and PWA icons
 - `OpenAIClient` (Chat Completions with o-series/GPT-5 support)
 - `AnthropicClient` (thinking blocks, prompt caching, web search/fetch, citations, Bedrock via `@anthropic-ai/bedrock-sdk` - see below)
 - `BedrockClient` (AWS Bedrock Converse API for non-Claude models - see Bedrock Client section below)
-- `WebLLMClient` (local inference via WebGPU, no API key required)
-  - Runs models entirely in browser using WebGPU
-  - Default API definition created on first run
-  - Models cached in browser storage
-  - Zero cost (all calculations return $0)
-  - Requires WebGPU-compatible browser (Chrome 113+, Edge 113+, Safari 18+)
-  - VRAM compatibility checking via `webgpuCapabilities.ts` (estimates from `maxBufferSize * 2`)
-  - Model selector shows VRAM warnings, disables incompatible models
-  - Enhanced error messages for common issues (OOM, WebGPU init, network, storage)
-  - Model metadata (VRAM, download size, context window) from WebLLM's `prebuiltAppConfig`
-  - Loading state observable via `subscribeToLoadingState()` for UI progress display
-  - Engine lifecycle: singleton per session; when switching models, unloads current before loading new; `disposeEngine()` available to release GPU memory
 
 **AnthropicClient Bedrock Support:**
 
@@ -429,11 +485,11 @@ Messages store content in multiple fields, each serving a distinct purpose:
 
 Only these components are aware of provider SDK types. All other code uses unified types.
 
-| Component                | Per-API?    | Purpose                                                                              |
-| ------------------------ | ----------- | ------------------------------------------------------------------------------------ |
-| `APIClient`              | Yes         | `anthropicClient`, `openaiClient`, `responsesClient`, `googleClient`, `webllmClient` |
-| `StreamMapper`           | Yes         | Converts SDK stream events to unified `StreamChunk` types                            |
-| `FullContentAccumulator` | When needed | Builds `fullContent` from streaming chunks when SDK doesn't provide `finalMessage()` |
+| Component                | Per-API?    | Purpose                                                                               |
+| ------------------------ | ----------- | ------------------------------------------------------------------------------------- |
+| `APIClient`              | Yes         | `anthropicClient`, `openaiClient`, `responsesClient`, `googleClient`, `bedrockClient` |
+| `StreamMapper`           | Yes         | Converts SDK stream events to unified `StreamChunk` types                             |
+| `FullContentAccumulator` | When needed | Builds `fullContent` from streaming chunks when SDK doesn't provide `finalMessage()`  |
 
 **Streaming Data Flow:**
 
@@ -472,7 +528,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
 **Client-Side Tools:**
 
 - `src/services/tools/clientSideTools.ts` - Tool registry and execution
-- Static registration at startup: `registerAllTools()` called in `main.tsx` before React renders
+- Static registration at startup: `registerAllTools()` called in `main.tsx` (main thread) and `src/backend/worker/gremlinWorker.ts` (worker thread). Both contexts have their own `toolRegistry` singleton, so both must register or the agentic loop sends an empty tools list to the model.
 - Available tools: `memory`, `javascript`, `filesystem`, `sketchbook`, `checkpoint`
 - Tool definitions sent to API via `getToolDefinitionsForAPI(apiType, enabledToolNames, toolOptions)`
 - Execution via `executeClientSideTool(toolName, input, enabledToolNames, toolOptions, context)`
@@ -867,7 +923,7 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 **Instance Management:**
 
 - `memoryTool` - Static tool definition exported from `memoryTool.ts`
-- Tools registered via `registerAllTools()` at app startup (in `main.tsx`)
+- Tools registered via `registerAllTools()` at app startup — once in `main.tsx` (main thread) and once in `src/backend/worker/gremlinWorker.ts` (worker thread)
 - `initMemoryTool(projectId)` - **Deprecated** stub (kept for backward compatibility)
 - `disposeMemoryTool(projectId)` - **Deprecated** no-op
 
@@ -1153,7 +1209,7 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 - `returnAckMessage` (text, visibleWhen deferReturn) - Message sent when deferred return stores a result
 - `returnDuplicateMessage` (text, visibleWhen deferReturn) - Error sent when return is called again after a result is stored
 - `returnEnforceMessage` (text, visibleWhen returnMode=auto-enforced) - Message sent when auto-enforced mode retries because return was not called
-- `fileInjectionMode` (select: `inline`/`separate-block`/`as-file`, default: `inline`) - How injected files are sent to the minion LLM. `inline` prepends file text into the message string. `separate-block` sends each file as a separate text content block. `as-file` uses native document/file blocks (Anthropic `BetaRequestDocumentBlock`, OpenAI `file` part, Bedrock `DocumentBlock`). Google falls back to `separate-block`; WebLLM falls back to `inline`.
+- `fileInjectionMode` (select: `inline`/`separate-block`/`as-file`, default: `inline`) - How injected files are sent to the minion LLM. `inline` prepends file text into the message string. `separate-block` sends each file as a separate text content block. `as-file` uses native document/file blocks (Anthropic `BetaRequestDocumentBlock`, OpenAI `file` part, Bedrock `DocumentBlock`). Google falls back to `separate-block`.
 - `namespacedMinion` (select: `off`/`persona`/`all`, default: `off`) - Controls persona and VFS namespace behavior. Migrates from legacy boolean (`true` → `all`).
   - `off` — No persona parameter, no namespace. Minions use configured system prompt.
   - `persona` — Persona parameter available. Only minions called with an explicit non-default persona get VFS namespace (`/minions/<persona>/`) and persona prompts. Default/no-persona minions behave like `off` (root VFS, configured system prompt, no `_global.md`).
@@ -1320,6 +1376,8 @@ Each API client owns a `tidyMessages()` function that combines three concerns in
 4. **Genuine Anthropic enforcement** (per-definition `advancedSettings.enforceGenuineAnthropic`): post-response validation in `anthropicClient.ts` via `validateAnthropicResponse()`. Checks: (a) if input_tokens > 4096 and both cache_creation/read are zero → not genuine Anthropic; (b) if thinking blocks exist but lack cryptographic `signature` field → not genuine Anthropic. Both checks throw, caught by existing error handler.
 5. **Nudge thinking** (per-definition `advancedSettings.nudgeThinking`): applied in `apiService.sendMessageStream()` before client dispatch via `applyNudgeThinking()`. Shallow-clones the last user message and appends `\n\n<<WITH THINKING STEPS>>` to its text content. Send-time only — stored messages are untouched.
 6. **Mandate CoT** (per-definition `advancedSettings.mandateCoT`): per-run check in `agenticLoopGenerator.ts`. Tracks `loopHasCoT` across all iterations (unified: `hasCoT` or `reasoningTokens > 0`). At run completion, rejects if no iteration produced chain-of-thought. Allows runs where CoT appears in one response but not others. Returns an error status that triggers minion savepoint rollback on retry.
+7. **Treat empty output as error** (per-definition `advancedSettings.treatEmptyOutputAsError`): rejects turns producing whitespace-only text and no tool calls — catches degenerate responses from unreliable providers.
+8. **Stream accumulator** (per-definition `advancedSettings.useStreamAccumulator`, Responses API only): in `responsesClient.ts` streaming path, builds the `StreamResult` from `ResponsesStreamAccumulator` (`responsesStreamAccumulator.ts`) instead of `stream.finalResponse()`. Some third-party Responses API providers stream events but return an empty `Response.output` from the SDK's final response — text and tool blocks render to the user but `result.textContent` and `result.fullContent` are empty, breaking minion text capture and tool extraction. The accumulator consumes the same events the mapper does, keying items by `output_index` and replacing with the complete item on `response.output_item.done`. Tolerant to out-of-order events: deltas referencing unknown indices are silently dropped. Default off — enable per-provider in Settings → Advanced.
 
 Messages with mismatched `modelFamily` or missing `fullContent` are handled via shared helpers in `contextTidy.ts` (`findCheckpointIndex`, `findThinkingBoundary`, `tidyAgnosticMessage`).
 
@@ -1646,6 +1704,20 @@ When `iconOnRight` is `true`:
 
 ## Known Issues 🐛
 
+### Backend singleton encapsulation refactor (Phase 4 partially done)
+
+Worker-side code held module-level singletons (`storage`, `encryptionService`, `apiService`, `toolRegistry`) that depended on someone calling an init function at the right module-load moment. The first to bite was `toolRegistry` (commit `ba57e42`). The next was `storage` — at worker module load the in-memory `localStorage` shim is empty, so the singleton wrapped a never-initialized `IndexedDBAdapter`. The minion tool threw `Tool execution failed: IndexedDB not initialized` whenever the user was on remote storage, because it imported `{ storage }` directly and hit the broken instance instead of the one `GremlinServer.init()` built from the storage config it received.
+
+**Fix shipped** (plan: `/workspaces/.claude/plans/starry-dancing-gadget.md`): build storage / encryption / api service / tool registry as instance fields on `GremlinServer` from `init()` params; thread them through `ChatRunner` → `AgenticLoopOptions` → `ToolContext` so tools call `ctx.storage` instead of importing a singleton.
+
+- [x] Phase 0 — Bug B fix (synthetic `loop_started` in `attachChat` so re-entering a chat with a running loop shows the running indicator immediately, instead of waiting for the next streaming event)
+- [x] Phase 1 — Wire `BackendDeps` scaffold through `GremlinServer` → `ChatRunner` → `AgenticLoopOptions` → `ToolContext`. New `src/backend/backendDeps.ts` defines the bundle. `GremlinServer.init()` deferred branch builds a fresh `EncryptionService`/`UnifiedStorage`/`APIService`/`ClientSideToolRegistry` from `InitParams`. `ChatRunner` constructor takes the bundle. `buildAgenticLoopOptionsForContext` reads `deps.encryption.deriveUserId()` + `deps.toolRegistry.getSystemPrompts()` instead of singletons. `agenticLoopGenerator` reads attachments via `options.deps.storage.getAttachments` (kills the latent worker-mode bug for the attachment path) and copies the bundle into `ToolContext`. `minionTool`'s child loop forwards `deps` from its parent's `ToolContext`. `ToolContext.{storage,encryption,apiService,toolRegistry}` are typed optional in Phase 1 only — Phase 2 promotes them to required when consumers migrate. `registerAllTools(target?)` accepts a registry parameter. `APIService` constructor accepts a (currently-unused) deps bundle. `UnifiedStorage` constructor accepts an `_encryption` param (Phase 3 stores it and migrates the singleton calls). `createGremlinServer` builds the default bundle from the still-alive module-level singletons. **Worker mode still has Bug A latent** — Phase 2 fixes it by migrating `minionTool` / `metadataTool` to read from `ctx.storage`.
+- [x] Phase 2 — Migrate `minionTool` + `metadataTool` off the singletons. `ToolContext.{storage,encryption,apiService,toolRegistry}` are now required (no `?`); the agentic loop's `ToolContext` construction site is the single source of truth. `minionTool` deletes its `import { storage }`/`{ toolRegistry }`/`{ apiService }`, binds them locally from `context` at the top of `executeMinion`, and forwards them through the existing helper functions (`rollbackToSavepoint` and `executeRemoteMinion` gain a `storage` parameter). `metadataTool` reads `context.storage` directly. Tests construct stub backend deps via a small shared `testStubs.ts` helper and thread them through `ToolContext` literals (no more `vi.mock('../../storage')` patterns for `metadataTool` / `minionTool`). After Phase 2, **worker mode no longer has Bug A** for tools — when remote storage is in use, the minion tool runs against the same `UnifiedStorage` instance `GremlinServer.init()` built from `InitParams`. Phase 3 next migrates the API clients + `vfsService` + `unifiedStorage` itself off the remaining singleton hold-outs.
+- [x] Phase 3 — Migrate API clients (`openaiClient`, `responsesClient`, `anthropicClient`, `googleClient`, `bedrockClient`) + `vfsService` + `unifiedStorage` off the singletons. `APIService` constructor takes a required `APIServiceDeps` (`storage` / `toolRegistry` / `encryption`) and threads it into each client constructor; clients drop their `import { storage }` / `import { toolRegistry }` and read from `this.deps.storage.getModel(...)` / `this.deps.toolRegistry.getToolDefinitions(...)`. `UnifiedStorage` constructor stores the `EncryptionService` parameter and replaces every `encryptionService.X` with `this.encryption.X` (11 sites); `initialize()` keeps initializing the per-instance encryption. `vfsService` wraps its impure functions in an `export function createVfsService(storage, encryption)` factory whose closure captures the injected pair — the function bodies don't change, only the wrapping. Pure helpers (path utilities, type declarations, `VfsError`, binary helpers) stay at module level above the factory. A `defaultVfsService` built from the still-alive module-level singletons is exported for the fallback paths in `memoryTool.getMemorySystemPrompt` / `agenticLoopGenerator` (used by tests + standalone callers without a `createVfsAdapter` factory) and for the module-level wrappers re-exported as `createFile`, `readFile`, etc. (a follow-up deletes both). `RemoteVfsAdapter` constructor now takes an `EncryptionService` instance instead of importing the singleton. `LocalVfsAdapter` constructor takes a `VfsService` instance and delegates via `this.svc.X(...)`. `vfsFacade.getAdapter` takes a `BackendDeps` first parameter, builds a fresh `VfsService` per call, and constructs the right adapter. `GremlinServer.getProjectVfsAdapter` and `buildAgenticLoopOptionsForContext` pass `this.deps` / `deps` through. After Phase 3, **the worker bug A is functionally fixed end-to-end** — tools, agentic loop, API clients, VFS, and storage all receive deps via injection from `GremlinServer.init()`'s per-server bundle. The module-level singletons still exist but nothing inside the worker reaches for them.
+- [x] Phase 4 — **Worker side is fully off the singletons.** New pure-function module `src/services/api/apiHelpers.ts` (`extractToolUseBlocks` / `mapStopReason` / `shouldPrependPrefill`) replaces the static-shaped `apiService.X(...)` calls; the frontend `src/utils/toolUseExtractor.ts` re-export switches to it (no more singleton instance reach in the render path). `agenticLoopGenerator` drops its `import { apiService, toolRegistry }` lines, reads `extractToolUseBlocks` / `mapStopReason` / `shouldPrependPrefill` from `apiHelpers`, and reads `apiService.sendMessageStream` / the tool registry off `options.deps.{apiService,toolRegistry}` and `toolContext.toolRegistry`. The render helpers (`createToolResultRenderBlock`, `populateToolRenderFields`, `buildDummyAssistantMessage`) accept an optional `ClientSideToolRegistry` parameter so the frontend's `useChat` cancel path keeps working without one. `GremlinServer.{getCekState,deriveUserId,rotateCek,rotateTable,clearCek}` route through `this.deps.encryption` instead of the module-level singleton; `tryDecryptSample` uses a disposable `new EncryptionService()` probe so the active per-server encryption is never disturbed. `runImport` / `runExport` accept the `EncryptionService` as a parameter from `GremlinServer.{importData,exportData}`. `App.tsx` no longer imports `encryptionService`; the OOBE/launched decision reads `getCachedCEKString()` from `localStorageBoot.ts` directly in the `useState` initializer, and the loading screen disappears. `main.tsx` and `gremlinWorker.ts` drop the module-load `registerAllTools()` calls — registration happens lazily inside `GremlinServer.init()` against the per-server registry. Two new RPCs (`exportProject` streaming, `importProject` one-shot) replace the singleton-using `utils/projectImport.ts` / `utils/projectExport.ts` runtime; `src/backend/projectBundle.ts` holds the new impure runtime, and the utils files are now pure helpers + the main-thread `triggerProjectDownload`. Dead `ChatSnapshot` / `LoopSnapshot` interfaces deleted from `protocol.ts`; the streaming `attachChat` / `attachLoop` results are now `{ ok: true }`. **Bug A and Bug B are fixed end-to-end in the worker.**
+- [x] Phase 4 follow-up — Hoist pure helpers + tighten utils lint scope. New `src/lib/` directory holds the boundary-clean shared helpers: `incompleteTail.ts`, `vfsPaths.ts`, `apiHelpers.ts`, `api/modelMetadata.ts` + `api/model_metadatas/*` + `api/mergeExtraModels.ts`. `vfsService` re-exports the path helpers from `lib/vfsPaths.ts` so internal callers and the vfs barrel keep working. `dataExport.ts` / `dataImport.ts` runtime moved to `src/backend/`; the type-only progress callbacks live in `src/types/data.ts` and frontend imports re-point. The old `src/utils/{incompleteTail,vfsPaths,mergeExtraModels,toolUseExtractor}.ts` re-export shims are deleted; consumers (hooks, components, contexts) import from `src/lib/` directly. The boundary lint rule in `eslint.config.js` now covers `src/utils/**`, `src/App.tsx`, and `src/main.tsx` in addition to the previous `components/**`/`hooks/**`/`contexts/**` scope.
+- [x] Phase 4 follow-up — Delete the four module-level singleton exports (`storage`, `encryptionService`, `apiService`, `toolRegistry`), the `defaultVfsService`, and the module-level wrappers in `vfsService` (`createFile`, `readFile`, etc.). The vfsFacade's locked passthrough/compound wrappers (which were dead code in production — only LocalVfsAdapter / RemoteVfsAdapter consume them via their own per-instance lock paths) are gone too; only `getAdapter` is still exported. `createGremlinServer` now mints its own fresh `EncryptionService` / `UnifiedStorage` / `APIService` / `ClientSideToolRegistry` per call instead of bundling singletons. `registerAllTools` lost its default-singleton param and now requires a target registry. `SystemPromptContext.createVfsAdapter` and `AgenticLoopOptions.createVfsAdapter` are now required (not optional); the agentic loop's fallback construction of a `VfsService` is gone, and `getMemorySystemPrompt` / `getMinionSystemPromptInjection` throw a clear error if the factory is missing. `createStorage(config, encryption)` now requires the encryption parameter (the singleton default is gone). Hook tests (`useChat`, `useProject`, `useAttachmentManager`, `useMinionChat`) mock `../client` (gremlinClient + GremlinSession) at the boundary instead of mocking `services/storage` and relying on the in-process backend to dispatch through the singleton. Tool tests (`checkpointTool`, `returnTool`, `metadataTool`, `minionTool`, `clientSideTools`, `minionIntegration`) construct local `ClientSideToolRegistry` instances or use `vi.hoisted` mock holders. VFS tests share an in-memory storage + encryption stub via `_vfsTestHelpers.ts` and construct `createVfsService(stubStorage, stubEncryption)` directly. `executeClientSideTool` reads from `context.toolRegistry.get(toolName)` instead of the (deleted) module-level singleton. **VFS access lives only in the worker** — `buildLoopOptions` is the single production constructor of `SystemPromptContext` and `AgenticLoopOptions`, and it always supplies `createVfsAdapter` from `BackendDeps`. Direct service-layer calls from outside the worker will throw a clear "VFS access is only available inside the worker" error rather than silently constructing a fallback adapter.
+
 ### Anthropic Citation Document Index
 
 When using web search + memory tool together, citations in assistant messages may contain `document_index` references that become invalid after client-side tool execution breaks the turn. Workaround: citations are stripped from text blocks when the previous message contains a `tool_result` (in `anthropicClient.ts`). This may cause some citation data loss in multi-tool-use conversations, but prevents API 400 errors.
@@ -1672,3 +1744,4 @@ When using web search + memory tool together, citations in assistant messages ma
 3. [x] **Custom Tools** - Extend block types beyond web search/fetch
 4. **Citation Tooltips** - Hover tooltips for `data-cited` content
 5. **Streaming Abort** - Handle abort signal mid-stream
+6. **Move ID generation backend-side** — `idGenerator.ts` is currently called from ~5 frontend files (project/chat/error/UI key creation) so it has to live in `shared/`. After Phase 1.8's leak audit, every other "shared helper" turned out to be reducible to single-side ownership. ID generation could likely follow the same pattern: have `gremlinClient.createProject(name)` etc. return the saved entity with a server-assigned ID, so the FE never mints IDs locally. Error IDs and React render keys would stay frontend-local with a tiny inline helper. Worth investigating — if it works, `shared/protocol/helpers/` becomes empty and the directory disappears entirely. If the FE-locally-mints-then-saves pattern turns out to be load-bearing somewhere, leave it as is.

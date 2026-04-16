@@ -14,8 +14,6 @@ Head to https://cloudeecn.github.io/gremlinofa/ (optionally save to home screen 
 3. Open the project, tap 🔧, pick a model
 4. Start chatting
 
-WebLLM users can skip step 1 — local models run free with no API key.
-
 ## Overview
 
 GremlinOFA is a browser-based chat client for multiple AI providers. You bring your own API keys, your data stays on your device (encrypted, no less), and there's no backend server collecting your conversations. It's 95% vibe coded, and just works.
@@ -29,7 +27,6 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 - Google Gemini (native thinking, Google Search grounding, function calling)
 - AWS Bedrock (Converse API plus Claude via Anthropic SDK)
 - Any ChatGPT-compatible API (xAI, OpenRouter, local models, whatever)
-- WebLLM (run models locally via WebGPU - free, private, no API key needed)
 
 > **Limitation:** I should be direct: Anthropic is on the first-class seat here — it's what the developer uses daily and I wrote all of them, so it gets the most love. Other providers work fine, but if something's janky, that's probably why. PRs to level the playing field are very welcome. -- Claude Opus 4.5
 
@@ -221,15 +218,15 @@ gremlin.example.com {
 
 ## Tech Stack
 
-| Layer     | Tech                                                                        |
-| --------- | --------------------------------------------------------------------------- |
-| Framework | React 19 + Vite                                                             |
-| Styling   | Tailwind CSS                                                                |
-| Routing   | React Router v7                                                             |
-| Storage   | IndexedDB + AES-256-GCM                                                     |
-| AI SDKs   | @anthropic-ai/sdk, openai, @aws-sdk/client-bedrock-runtime, @mlc-ai/web-llm |
-| Rendering | marked, highlight.js, KaTeX, DOMPurify                                      |
-| Testing   | Vitest + Testing Library                                                    |
+| Layer     | Tech                                                       |
+| --------- | ---------------------------------------------------------- |
+| Framework | React 19 + Vite                                            |
+| Styling   | Tailwind CSS                                               |
+| Routing   | React Router v7                                            |
+| Storage   | IndexedDB + AES-256-GCM                                    |
+| AI SDKs   | @anthropic-ai/sdk, openai, @aws-sdk/client-bedrock-runtime |
+| Rendering | marked, highlight.js, KaTeX, DOMPurify                     |
+| Testing   | Vitest + Testing Library                                   |
 
 ## Security
 
@@ -259,22 +256,9 @@ npm run test:silent
 
 ## Bragging zone / Optional features
 
-### Run LLMs in Your Browser 🏠
-
-Your GPU, your models, your $0 API bill. WebLLM brings local inference to the browser via WebGPU — we just made sure it doesn't crash when you try to run an 8B model on integrated graphics.
-
-- **Zero cost forever** — No API keys, no rate limits, no "please upgrade your plan"
-- **Actually private** — Models run on your GPU, not "private mode" where they still phone home
-- **VRAM-aware** — The model selector warns you before you OOM your browser
-- **One-time download** — Models cached locally, instant on next visit
-
-Phi-3.5, Llama 3.1, Qwen, SmolLM, Gemma, and more. Start small (SmolLM 360M) or go big (Llama 8B) — we'll tell you if your GPU can't handle it.
-
-**Requirements:** WebGPU-compatible browser (Chrome 113+, Edge 113+, Safari 18+). GPU needs vary by model — SmolLM runs on your iPhone, 8B models want a real graphics card.
-
 ### Agentic Tools 🔧
 
-Turn your AI into a semi-autonomous agent with client-side tool execution. No server required — everything runs in your browser. Works with all providers except WebLLM (requires model tool support).
+Turn your AI into a semi-autonomous agent with client-side tool execution. No server required — everything runs in your browser.
 
 **Memory Tool** — Persistent per-project storage that survives page reloads:
 

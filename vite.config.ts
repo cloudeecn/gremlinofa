@@ -1,7 +1,11 @@
 import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import tailwindcss from '@tailwindcss/vite';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => {
@@ -17,10 +21,21 @@ export default defineConfig(({ command }) => {
       alias: {
         // Redirect Node.js smithy package to browser version for @anthropic-ai/bedrock-sdk
         '@smithy/eventstream-serde-node': '@smithy/eventstream-serde-browser',
+        '@shared': path.resolve(__dirname, 'src/shared'),
+        '@frontend': path.resolve(__dirname, 'src/frontend'),
+        '@worker': path.resolve(__dirname, 'src/worker'),
+        '@server': path.resolve(__dirname, 'src/server'),
       },
     },
     build: {
       sourcemap: true,
+    },
+    worker: {
+      // The GremlinOFA backend worker code-splits the storage / API client
+      // / agentic loop modules. Vite's default `iife` format doesn't support
+      // code-splitting; `es` does and is supported by every browser the app
+      // already targets.
+      format: 'es',
     },
     server: {
       host: '127.0.0.1',

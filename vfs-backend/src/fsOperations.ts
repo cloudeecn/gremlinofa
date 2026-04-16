@@ -172,15 +172,8 @@ export async function write(
     // Auto-create parent directories
     await fs.mkdir(path.dirname(resolved), { recursive: true });
 
-    // Save version before overwrite (if file exists)
-    try {
-      await fs.access(resolved);
-      await versioning.saveVersion(resolved);
-    } catch {
-      // New file — no version to save
-    }
-
     await fs.writeFile(resolved, content);
+    await versioning.saveVersion(resolved);
   });
 }
 
@@ -269,15 +262,13 @@ export async function strReplace(
       throw new FsError(`String not unique: ${count} occurrences found`, 400);
     }
 
-    // Save version
-    await versioning.saveVersion(resolved);
-
     const replacePos = content.indexOf(oldStr);
     const editLine = content.substring(0, replacePos).split('\n').length;
     const newContent =
       content.substring(0, replacePos) + newStr + content.substring(replacePos + oldStr.length);
 
     await fs.writeFile(resolved, newContent, 'utf-8');
+    await versioning.saveVersion(resolved);
 
     // Build snippet around edit line
     const lines = newContent.split('\n');
@@ -311,11 +302,10 @@ export async function insert(
       throw new FsError(`Invalid line ${line}. Valid range: [0, ${lines.length}]`, 400);
     }
 
-    await versioning.saveVersion(resolved);
-
     const textLines = text.split('\n');
     lines.splice(line, 0, ...textLines);
     await fs.writeFile(resolved, lines.join('\n'), 'utf-8');
+    await versioning.saveVersion(resolved);
 
     return { insertedAt: line };
   });
@@ -331,15 +321,13 @@ export async function append(
     let created = false;
     try {
       await fs.access(resolved);
-      // File exists — save version then append
-      await versioning.saveVersion(resolved);
       await fs.appendFile(resolved, text, 'utf-8');
     } catch {
-      // File doesn't exist — create with content
       await fs.mkdir(path.dirname(resolved), { recursive: true });
       await fs.writeFile(resolved, text, 'utf-8');
       created = true;
     }
+    await versioning.saveVersion(resolved);
     return { created };
   });
 }

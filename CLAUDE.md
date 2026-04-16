@@ -26,6 +26,7 @@ There are some standalone packages in this project's root.
 - storage-backend
 - cors-proxy
 - vfs-backend
+- touch-grass-backend
 
 In order to test compile and unit test these packages, you need to `cd <standalone-package-path>`, than run `npm run verify` and `npm run test:silent` accordingly.
 
@@ -43,6 +44,13 @@ They have their own package.json and config files.
 - Filesystem-based VFS: files live on a real server directory, browsable and editable outside the app.
 - Per-file write locking (not per-project tree lock like the frontend).
 - Server-side versioning via hidden `.{filename}.ver/` directories.
+
+### touch-grass-backend
+
+- Remote human minion backend. Bridges the minion tool to a human operator via a web UI.
+- API definition is in `touch-grass-backend/touch-grass-api.yaml`. Use it as source of truth.
+- SQLite-based session/message storage. In-memory long-poll resolver for low-latency response delivery.
+- Web UI: server-rendered HTML + vanilla JS, cookie-based auth.
 
 # Anti slop
 

@@ -3,7 +3,11 @@
  */
 
 import { Router } from 'express';
+import express from 'express';
 import * as fsOps from './fsOperations.js';
+
+const jsonBody = express.json();
+const rawBody = express.raw({ type: () => true, limit: '50mb' });
 
 export const router = Router();
 
@@ -101,7 +105,7 @@ router.get('/read', async (req, res) => {
   }
 });
 
-router.put('/write', async (req, res) => {
+router.put('/write', rawBody, async (req, res) => {
   const root = getProjectRoot(req, res);
   if (!root) return;
   const filePath = getPath(req, res);
@@ -109,12 +113,7 @@ router.put('/write', async (req, res) => {
   const createOnly = req.query.createOnly === 'true';
 
   try {
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const body = Buffer.concat(chunks);
-
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? '');
     await fsOps.write(root, filePath, body, createOnly);
     res.status(204).end();
   } catch (e) {
@@ -164,7 +163,7 @@ router.delete('/rmdir', async (req, res) => {
   }
 });
 
-router.post('/rename', async (req, res) => {
+router.post('/rename', jsonBody, async (req, res) => {
   const root = getProjectRoot(req, res);
   if (!root) return;
 
@@ -187,7 +186,7 @@ router.post('/rename', async (req, res) => {
 // Compound operations
 // ============================================================================
 
-router.post('/str-replace', async (req, res) => {
+router.post('/str-replace', jsonBody, async (req, res) => {
   const root = getProjectRoot(req, res);
   if (!root) return;
   const filePath = getPath(req, res);
@@ -207,7 +206,7 @@ router.post('/str-replace', async (req, res) => {
   }
 });
 
-router.post('/insert', async (req, res) => {
+router.post('/insert', jsonBody, async (req, res) => {
   const root = getProjectRoot(req, res);
   if (!root) return;
   const filePath = getPath(req, res);
@@ -227,7 +226,7 @@ router.post('/insert', async (req, res) => {
   }
 });
 
-router.post('/append', async (req, res) => {
+router.post('/append', jsonBody, async (req, res) => {
   const root = getProjectRoot(req, res);
   if (!root) return;
   const filePath = getPath(req, res);
@@ -328,7 +327,7 @@ router.get('/file-meta', async (req, res) => {
   }
 });
 
-router.post('/compact', async (req, res) => {
+router.post('/compact', jsonBody, async (req, res) => {
   const root = getProjectRoot(req, res);
   if (!root) return;
 

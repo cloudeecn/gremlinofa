@@ -14,8 +14,6 @@ Head to https://cloudeecn.github.io/gremlinofa/ (optionally save to home screen 
 3. Open the project, tap 🔧, pick a model
 4. Start chatting
 
-WebLLM users can skip step 1 — local models run free with no API key.
-
 ## Overview
 
 GremlinOFA is a browser-based chat client for multiple AI providers. You bring your own API keys, your data stays on your device (encrypted, no less), and there's no backend server collecting your conversations. It's 95% vibe coded, and just works.
@@ -29,7 +27,6 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 - Google Gemini (native thinking, Google Search grounding, function calling)
 - AWS Bedrock (Converse API plus Claude via Anthropic SDK)
 - Any ChatGPT-compatible API (xAI, OpenRouter, local models, whatever)
-- WebLLM (run models locally via WebGPU - free, private, no API key needed)
 
 > **Limitation:** I should be direct: Anthropic is on the first-class seat here — it's what the developer uses daily and I wrote all of them, so it gets the most love. Other providers work fine, but if something's janky, that's probably why. PRs to level the playing field are very welcome. -- Claude Opus 4.5
 
@@ -221,15 +218,15 @@ gremlin.example.com {
 
 ## Tech Stack
 
-| Layer     | Tech                                                                        |
-| --------- | --------------------------------------------------------------------------- |
-| Framework | React 19 + Vite                                                             |
-| Styling   | Tailwind CSS                                                                |
-| Routing   | React Router v7                                                             |
-| Storage   | IndexedDB + AES-256-GCM                                                     |
-| AI SDKs   | @anthropic-ai/sdk, openai, @aws-sdk/client-bedrock-runtime, @mlc-ai/web-llm |
-| Rendering | marked, highlight.js, KaTeX, DOMPurify                                      |
-| Testing   | Vitest + Testing Library                                                    |
+| Layer     | Tech                                                       |
+| --------- | ---------------------------------------------------------- |
+| Framework | React 19 + Vite                                            |
+| Styling   | Tailwind CSS                                               |
+| Routing   | React Router v7                                            |
+| Storage   | IndexedDB + AES-256-GCM                                    |
+| AI SDKs   | @anthropic-ai/sdk, openai, @aws-sdk/client-bedrock-runtime |
+| Rendering | marked, highlight.js, KaTeX, DOMPurify                     |
+| Testing   | Vitest + Testing Library                                   |
 
 ## Security
 
@@ -259,22 +256,9 @@ npm run test:silent
 
 ## Bragging zone / Optional features
 
-### Run LLMs in Your Browser 🏠
-
-Your GPU, your models, your $0 API bill. WebLLM brings local inference to the browser via WebGPU — we just made sure it doesn't crash when you try to run an 8B model on integrated graphics.
-
-- **Zero cost forever** — No API keys, no rate limits, no "please upgrade your plan"
-- **Actually private** — Models run on your GPU, not "private mode" where they still phone home
-- **VRAM-aware** — The model selector warns you before you OOM your browser
-- **One-time download** — Models cached locally, instant on next visit
-
-Phi-3.5, Llama 3.1, Qwen, SmolLM, Gemma, and more. Start small (SmolLM 360M) or go big (Llama 8B) — we'll tell you if your GPU can't handle it.
-
-**Requirements:** WebGPU-compatible browser (Chrome 113+, Edge 113+, Safari 18+). GPU needs vary by model — SmolLM runs on your iPhone, 8B models want a real graphics card.
-
 ### Agentic Tools 🔧
 
-Turn your AI into a semi-autonomous agent with client-side tool execution. No server required — everything runs in your browser. Works with all providers except WebLLM (requires model tool support).
+Turn your AI into a semi-autonomous agent with client-side tool execution. No server required — everything runs in your browser.
 
 **Memory Tool** — Persistent per-project storage that survives page reloads:
 
@@ -313,6 +297,20 @@ Your AI can spawn other AIs. The minion system lets your primary model delegate 
 - **Optional web search** — Gate web access per-project. When enabled, the primary model can grant minions web search on a per-task basis.
 
 **Use cases:** Have Opus dispatch a swarm of Haiku minions to research different angles simultaneously. Set up named personas — a "researcher" for web lookups, an "analyst" for data crunching — each with tailored instructions and their own workspace. Or just enjoy watching LLMs talk to each other — we don't judge.
+
+### Touch Grass (Remote Human Minion) 🌿
+
+Sometimes the best model for the job runs on coffee, not electricity. Touch Grass flips the minion system inside out — instead of delegating to another LLM, your AI delegates to _you_ (or any human with a browser and a password).
+
+- **Same interface, different species** — The LLM calls the minion tool with `remote: true` and the message lands in a web UI. It doesn't know (or care) that the "sub-agent" is a person.
+- **Long-poll, not long wait** — The backend holds the connection for 30 seconds at a time, retrying up to 10 minutes total. Plenty of time to read, think, and type like a civilized person.
+- **Session continuity** — Each remote minion gets a persistent session. The AI can send follow-ups to the same human conversation, just like continuing a regular minion chat.
+- **File context** — Injected files from the VFS are sent along with the message and displayed as collapsible code blocks. The human sees what the AI sees.
+- **Self-hosted** — Same deployment story as the other backends: SQLite, Express, systemd service file, done. No cloud dependency, no third-party accounts.
+
+**Setup:** Deploy `touch-grass-backend/`, set `API_PASSWORD` and `WEB_PASSWORD` in `.env`, then configure the minion tool's "Remote Minion Endpoint" in your project settings. The human opens `http://your-server:3004/web/`, logs in, and waits for the AI to need help.
+
+**Use cases:** Human-in-the-loop approval for risky actions. Expert consultation mid-task ("hey, should I normalize this column?"). Or just a very elaborate way to text yourself from your AI.
 
 ### DUMMY System ✨
 

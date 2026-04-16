@@ -271,17 +271,17 @@ describe('exists endpoint', () => {
 
 describe('Versioning', () => {
   it('creates versions on write and lists them', async () => {
-    // First write — no previous version to save
+    // First write — saves "v1" as version 1
     await api('PUT', `/write?projectId=${PROJECT}&path=/versioned.txt`, {
       rawBody: Buffer.from('v1'),
     });
 
-    // Second write — saves v1 as version 1
+    // Second write — saves "v2" as version 2
     await api('PUT', `/write?projectId=${PROJECT}&path=/versioned.txt`, {
       rawBody: Buffer.from('v2'),
     });
 
-    // Third write — saves v2 as version 2
+    // Third write — saves "v3" as version 3
     await api('PUT', `/write?projectId=${PROJECT}&path=/versioned.txt`, {
       rawBody: Buffer.from('v3'),
     });
@@ -290,19 +290,22 @@ describe('Versioning', () => {
     const res = await api('GET', `/versions?projectId=${PROJECT}&path=/versioned.txt`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.versions.length).toBe(2); // versions 1 and 2
+    expect(body.versions.length).toBe(3); // versions 1, 2, and 3
 
-    // Read specific version (version 1 = original "v1")
+    // Each version matches what was written
     const v1Res = await api('GET', `/version?projectId=${PROJECT}&path=/versioned.txt&v=1`);
     expect(v1Res.status).toBe(200);
     expect(await v1Res.text()).toBe('v1');
 
-    // Read version 2 = "v2"
     const v2Res = await api('GET', `/version?projectId=${PROJECT}&path=/versioned.txt&v=2`);
     expect(v2Res.status).toBe(200);
     expect(await v2Res.text()).toBe('v2');
 
-    // Current content should be "v3"
+    // Latest version = live file
+    const v3Res = await api('GET', `/version?projectId=${PROJECT}&path=/versioned.txt&v=3`);
+    expect(v3Res.status).toBe(200);
+    expect(await v3Res.text()).toBe('v3');
+
     const currentRes = await api('GET', `/read?projectId=${PROJECT}&path=/versioned.txt`);
     expect(await currentRes.text()).toBe('v3');
   });
@@ -314,14 +317,14 @@ describe('Versioning', () => {
       });
     }
 
-    // Should have 4 versions (v1-v4; v5 is current)
+    // Should have 5 versions (v1-v5, latest matches live)
     let versionsRes = await api('GET', `/versions?projectId=${PROJECT}&path=/prune.txt`);
-    expect((await versionsRes.json()).versions.length).toBe(4);
+    expect((await versionsRes.json()).versions.length).toBe(5);
 
     // Keep only 2
     const dropRes = await api('DELETE', `/versions?projectId=${PROJECT}&path=/prune.txt&keep=2`);
     expect(dropRes.status).toBe(200);
-    expect((await dropRes.json()).deleted).toBe(2);
+    expect((await dropRes.json()).deleted).toBe(3);
 
     // Verify only 2 versions remain
     versionsRes = await api('GET', `/versions?projectId=${PROJECT}&path=/prune.txt`);

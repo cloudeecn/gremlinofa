@@ -314,6 +314,20 @@ Your AI can spawn other AIs. The minion system lets your primary model delegate 
 
 **Use cases:** Have Opus dispatch a swarm of Haiku minions to research different angles simultaneously. Set up named personas — a "researcher" for web lookups, an "analyst" for data crunching — each with tailored instructions and their own workspace. Or just enjoy watching LLMs talk to each other — we don't judge.
 
+### Touch Grass (Remote Human Minion) 🌿
+
+Sometimes the best model for the job runs on coffee, not electricity. Touch Grass flips the minion system inside out — instead of delegating to another LLM, your AI delegates to _you_ (or any human with a browser and a password).
+
+- **Same interface, different species** — The LLM calls the minion tool with `remote: true` and the message lands in a web UI. It doesn't know (or care) that the "sub-agent" is a person.
+- **Long-poll, not long wait** — The backend holds the connection for 30 seconds at a time, retrying up to 10 minutes total. Plenty of time to read, think, and type like a civilized person.
+- **Session continuity** — Each remote minion gets a persistent session. The AI can send follow-ups to the same human conversation, just like continuing a regular minion chat.
+- **File context** — Injected files from the VFS are sent along with the message and displayed as collapsible code blocks. The human sees what the AI sees.
+- **Self-hosted** — Same deployment story as the other backends: SQLite, Express, systemd service file, done. No cloud dependency, no third-party accounts.
+
+**Setup:** Deploy `touch-grass-backend/`, set `API_PASSWORD` and `WEB_PASSWORD` in `.env`, then configure the minion tool's "Remote Minion Endpoint" in your project settings. The human opens `http://your-server:3004/web/`, logs in, and waits for the AI to need help.
+
+**Use cases:** Human-in-the-loop approval for risky actions. Expert consultation mid-task ("hey, should I normalize this column?"). Or just a very elaborate way to text yourself from your AI.
+
 ### DUMMY System ✨
 
 Named after a [certain plug system](https://evangelion.fandom.com/wiki/Dummy_System) that bypasses the pilot when they won't cooperate — except here, the AI _volunteers_ to be overridden.

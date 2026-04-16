@@ -22,9 +22,6 @@ export function createApp() {
     res.json({ status: 'ok' });
   });
 
-  // JSON body parser for routes that need it
-  app.use('/api', express.json());
-
   // Auth for all API routes
   app.use('/api', basicAuth);
 

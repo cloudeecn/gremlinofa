@@ -62,6 +62,23 @@ describe('minionTool', () => {
       expect(schema.properties).toHaveProperty('enabledTools');
       expect(schema.properties).toHaveProperty('displayName');
       expect(schema.properties).toHaveProperty('injectFiles');
+      expect(schema.properties).toHaveProperty('verifyHook');
+    });
+
+    it('schema verifyHook property is a string', () => {
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({})
+          : minionTool.inputSchema;
+      const prop = schema.properties!.verifyHook as { type: string };
+      expect(prop.type).toBe('string');
+    });
+
+    it('description mentions verifyHook', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') throw new Error('Expected description to be a function');
+      const desc = descFn({});
+      expect(desc).toContain('verifyHook');
     });
 
     it('schema injectFiles property is an array of strings', () => {
@@ -244,7 +261,7 @@ describe('minionTool', () => {
 
     it('has option definitions for model, models, system prompt, allowWebSearch, autoRollback, returnMode, disableReasoning, deferReturn, deferred/return messages, autoAckMessage, namespacedMinion, and fileInjectionMode', () => {
       expect(minionTool.optionDefinitions).toBeDefined();
-      expect(minionTool.optionDefinitions).toHaveLength(16);
+      expect(minionTool.optionDefinitions).toHaveLength(19);
 
       const systemPromptOpt = minionTool.optionDefinitions?.find(o => o.id === 'systemPrompt');
       expect(systemPromptOpt).toBeDefined();
@@ -544,6 +561,18 @@ describe('minionTool', () => {
       const input = { message: 'Task' };
       const result = minionTool.renderInput!(input);
       expect(result).not.toContain('Files:');
+    });
+
+    it('renders verifyHook name when specified', () => {
+      const input = { message: 'Task', verifyHook: 'check-output' };
+      const result = minionTool.renderInput!(input);
+      expect(result).toContain('VerifyHook: check-output');
+    });
+
+    it('omits VerifyHook line when verifyHook is absent', () => {
+      const input = { message: 'Task' };
+      const result = minionTool.renderInput!(input);
+      expect(result).not.toContain('VerifyHook');
     });
   });
 

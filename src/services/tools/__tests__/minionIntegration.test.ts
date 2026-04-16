@@ -975,6 +975,38 @@ describe('Minion Integration', () => {
       expect(result.content).toContain('some_weird_provider_thing');
     });
 
+    it('returns error when API returns result.error (empty choices)', async () => {
+      const mockResult = {
+        textContent: '',
+        fullContent: { role: 'assistant', content: null, refusal: null },
+        error: { message: 'API returned no message (empty choices)' },
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+
+      const mockStream = createMockStream([], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute({ message: 'Test empty response' }, toolOptions, context)
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('empty choices');
+    });
+
     it('does not advance savepoint on abnormal stop reason', async () => {
       const mockResult = {
         textContent: 'Truncated',

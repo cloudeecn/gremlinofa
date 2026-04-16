@@ -1,0 +1,240 @@
+openapi: 3.1.0
+info:
+  title: Touch Grass Backend
+  description: Remote human minion backend for GremlinOFA
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:3004
+    description: Local development
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: No authentication required
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    const: ok
+
+  /api/sessions:
+    post:
+      summary: Create a new session
+      security:
+        - basicAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName:
+                  type: string
+                  description: Optional display name for the session
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId]
+                properties:
+                  sessionId:
+                    type: string
+
+  /api/sessions/{sessionId}:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Get session with message history
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Session details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: '#/components/schemas/Session'
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+                  hasPendingRequest:
+                    type: boolean
+        '404':
+          description: Session not found
+    delete:
+      summary: Delete session and all its data
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Session deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+        '404':
+          description: Session not found
+
+  /api/sessions/{sessionId}/message:
+    parameters:
+      - name: sessionId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Send AI message and create pending request
+      description: |
+        Sends a message from the AI side and creates a pending request
+        awaiting a human response. Any existing pending request for the
+        session is auto-expired.
+      security:
+        - basicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                  description: Message content
+                files:
+                  type: array
+                  description: Injected file context
+                  items:
+                    type: object
+                    required: [path, content]
+                    properties:
+                      path:
+                        type: string
+                      content:
+                        type: string
+      responses:
+        '201':
+          description: Message sent, request created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requestId, messageId]
+                properties:
+                  requestId:
+                    type: string
+                  messageId:
+                    type: string
+        '404':
+          description: Session not found
+
+  /api/requests/{requestId}/poll:
+    parameters:
+      - name: requestId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Long-poll for human response
+      description: |
+        Holds the connection open for up to POLL_TIMEOUT_MS (default 30s).
+        Returns immediately if the request is already answered or expired.
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Poll result
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    properties:
+                      status:
+                        type: string
+                        const: pending
+                  - type: object
+                    properties:
+                      status:
+                        type: string
+                        const: answered
+                      response:
+                        type: object
+                        properties:
+                          content:
+                            type: string
+                  - type: object
+                    properties:
+                      status:
+                        type: string
+                        const: expired
+        '404':
+          description: Request not found
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: Username is callerId, password is API_PASSWORD
+
+  schemas:
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        callerId:
+          type: string
+        displayName:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        lastActivityAt:
+          type: string
+          format: date-time
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        role:
+          type: string
+          enum: [ai, human]
+        content:
+          type: string
+        files:
+          type: string
+          nullable: true
+          description: JSON-encoded array of {path, content} objects
+        createdAt:
+          type: string
+          format: date-time

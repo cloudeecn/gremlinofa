@@ -43,6 +43,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formIsSubscription, setFormIsSubscription] = useState(false);
   const [formEnforceGenuineAnthropic, setFormEnforceGenuineAnthropic] = useState(false);
   const [formDeFactoThinking, setFormDeFactoThinking] = useState(false);
+  const [formNudgeThinking, setFormNudgeThinking] = useState(false);
+  const [formMandateCoT, setFormMandateCoT] = useState(false);
+  const [formTreatEmptyOutputAsError, setFormTreatEmptyOutputAsError] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -73,6 +76,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormPruneThinking(false);
     setFormPruneEmptyText(false);
     setFormDeFactoThinking(false);
+    setFormNudgeThinking(false);
+    setFormMandateCoT(false);
     setShowAdvanced(false);
   };
 
@@ -108,6 +113,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormIsSubscription(def.advancedSettings?.isSubscription || false);
     setFormEnforceGenuineAnthropic(def.advancedSettings?.enforceGenuineAnthropic || false);
     setFormDeFactoThinking(def.advancedSettings?.deFactoThinking || false);
+    setFormNudgeThinking(def.advancedSettings?.nudgeThinking || false);
+    setFormMandateCoT(def.advancedSettings?.mandateCoT || false);
+    setFormTreatEmptyOutputAsError(def.advancedSettings?.treatEmptyOutputAsError || false);
     setShowAdvanced(false);
   };
 
@@ -119,6 +127,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormIsSubscription(def.advancedSettings?.isSubscription || false);
     setFormEnforceGenuineAnthropic(def.advancedSettings?.enforceGenuineAnthropic || false);
     setFormDeFactoThinking(def.advancedSettings?.deFactoThinking || false);
+    setFormNudgeThinking(def.advancedSettings?.nudgeThinking || false);
+    setFormMandateCoT(def.advancedSettings?.mandateCoT || false);
+    setFormTreatEmptyOutputAsError(def.advancedSettings?.treatEmptyOutputAsError || false);
     setShowAdvanced(true);
   };
 
@@ -138,6 +149,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormPruneThinking(false);
     setFormPruneEmptyText(false);
     setFormDeFactoThinking(false);
+    setFormNudgeThinking(false);
+    setFormMandateCoT(false);
+    setFormTreatEmptyOutputAsError(false);
     setShowAdvanced(false);
   };
 
@@ -175,11 +189,19 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
               .filter(Boolean)
           : undefined,
         advancedSettings:
-          formPruneThinking || formPruneEmptyText || formDeFactoThinking
+          formPruneThinking ||
+          formPruneEmptyText ||
+          formDeFactoThinking ||
+          formNudgeThinking ||
+          formMandateCoT ||
+          formTreatEmptyOutputAsError
             ? {
                 ...(formPruneThinking && { pruneThinking: true }),
                 ...(formPruneEmptyText && { pruneEmptyText: true }),
                 ...(formDeFactoThinking && { deFactoThinking: true }),
+                ...(formNudgeThinking && { nudgeThinking: true }),
+                ...(formMandateCoT && { mandateCoT: true }),
+                ...(formTreatEmptyOutputAsError && { treatEmptyOutputAsError: true }),
               }
             : undefined,
         createdAt: editingId
@@ -211,6 +233,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formPruneThinking,
     formPruneEmptyText,
     formDeFactoThinking,
+    formNudgeThinking,
+    formMandateCoT,
+    formTreatEmptyOutputAsError,
     editingId,
     apiDefinitions,
     formBaseUrl,
@@ -233,13 +258,19 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
           formPruneEmptyText ||
           formIsSubscription ||
           formEnforceGenuineAnthropic ||
-          formDeFactoThinking
+          formDeFactoThinking ||
+          formNudgeThinking ||
+          formMandateCoT ||
+          formTreatEmptyOutputAsError
             ? {
                 ...(formPruneThinking && { pruneThinking: true }),
                 ...(formPruneEmptyText && { pruneEmptyText: true }),
                 ...(formIsSubscription && { isSubscription: true }),
                 ...(formEnforceGenuineAnthropic && { enforceGenuineAnthropic: true }),
                 ...(formDeFactoThinking && { deFactoThinking: true }),
+                ...(formNudgeThinking && { nudgeThinking: true }),
+                ...(formMandateCoT && { mandateCoT: true }),
+                ...(formTreatEmptyOutputAsError && { treatEmptyOutputAsError: true }),
               }
             : undefined,
         updatedAt: new Date(),
@@ -256,6 +287,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formIsSubscription,
     formEnforceGenuineAnthropic,
     formDeFactoThinking,
+    formNudgeThinking,
+    formMandateCoT,
+    formTreatEmptyOutputAsError,
     saveAPIDefinition,
   ]);
 
@@ -454,9 +488,51 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           />
                           <span className="text-sm text-gray-700">Enforce genuine Anthropic</span>
                         </label>
-                        <p className="mb-4 ml-6 text-xs text-gray-500">
+                        <p className="mb-3 ml-6 text-xs text-gray-500">
                           Rejects responses with zero cache activity or unsigned thinking blocks —
                           catches API routers silently forwarding to non-Anthropic providers.
+                        </p>
+
+                        <label className="mb-2 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={formNudgeThinking}
+                            onChange={e => setFormNudgeThinking(e.target.checked)}
+                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">Nudge model to think</span>
+                        </label>
+                        <p className="mb-3 ml-6 text-xs text-gray-500">
+                          Appends a thinking prompt to the last user message. Useful for models that
+                          need a nudge to use chain-of-thought.
+                        </p>
+
+                        <label className="mb-2 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={formMandateCoT}
+                            onChange={e => setFormMandateCoT(e.target.checked)}
+                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">Mandate chain-of-thought</span>
+                        </label>
+                        <p className="mb-3 ml-6 text-xs text-gray-500">
+                          Requires at least one response with reasoning tokens or thinking blocks
+                          per agentic run. Triggers minion savepoint rollback on retry.
+                        </p>
+
+                        <label className="mb-2 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={formTreatEmptyOutputAsError}
+                            onChange={e => setFormTreatEmptyOutputAsError(e.target.checked)}
+                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">Treat empty output as error</span>
+                        </label>
+                        <p className="mb-4 ml-6 text-xs text-gray-500">
+                          Returns an error when a turn produces text that trims to empty and has no
+                          tool calls. Catches degenerate responses from unreliable providers.
                         </p>
 
                         <div className="flex justify-end gap-2">
@@ -715,9 +791,37 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         />
                         <span className="text-sm text-gray-700">De facto thinking mode</span>
                       </label>
-                      <p className="ml-6 text-xs text-gray-500">
+                      <p className="mb-3 ml-6 text-xs text-gray-500">
                         Sends {'{'}thinking: {'{'}type: enabled/disabled{'}'}
                         {'}'} in request body. Used by DeepSeek, Kimi, MiMo, and other providers.
+                      </p>
+
+                      <label className="mb-2 flex cursor-pointer items-center">
+                        <input
+                          type="checkbox"
+                          checked={formNudgeThinking}
+                          onChange={e => setFormNudgeThinking(e.target.checked)}
+                          className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">Nudge model to think</span>
+                      </label>
+                      <p className="mb-3 ml-6 text-xs text-gray-500">
+                        Appends a thinking prompt to the last user message. Useful for models that
+                        need a nudge to use chain-of-thought.
+                      </p>
+
+                      <label className="mb-2 flex cursor-pointer items-center">
+                        <input
+                          type="checkbox"
+                          checked={formMandateCoT}
+                          onChange={e => setFormMandateCoT(e.target.checked)}
+                          className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">Mandate chain-of-thought</span>
+                      </label>
+                      <p className="ml-6 text-xs text-gray-500">
+                        Requires at least one response with reasoning tokens or thinking blocks per
+                        agentic run. Triggers minion savepoint rollback on retry.
                       </p>
                     </div>
                   ) : (

@@ -47,28 +47,19 @@ async function writeMeta(filePath: string, meta: VersionMeta): Promise<void> {
 
 /**
  * Save current file content as the next version snapshot.
- * Call this BEFORE overwriting the file.
+ * Call this AFTER writing the file so the latest version matches the live file.
  */
 export async function saveVersion(filePath: string): Promise<number> {
   const vd = verDir(filePath);
   let meta = await readMeta(filePath);
 
   if (!meta) {
-    // First version — initialize
     meta = { currentVersion: 0, createdAt: Date.now() };
   }
 
   meta.currentVersion += 1;
   await fs.mkdir(vd, { recursive: true });
-
-  // Copy current content to version file
-  try {
-    await fs.copyFile(filePath, path.join(vd, String(meta.currentVersion)));
-  } catch {
-    // File might not exist yet (first write) — no version to save
-    meta.currentVersion = 0;
-  }
-
+  await fs.copyFile(filePath, path.join(vd, String(meta.currentVersion)));
   await writeMeta(filePath, meta);
   return meta.currentVersion;
 }

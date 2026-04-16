@@ -45,6 +45,8 @@ import { createTokenTotals, addTokens } from '../../utils/tokenTotals';
 import { toolRegistry } from './clientSideTools';
 import { apiService } from '../api/apiService';
 import { formatFileWithLineNumbers } from '../../utils/formatFileContent';
+import { JsVMContext } from './jsvm/JsVMContext';
+import type { HookInputMessage } from '../agentic/dummyHookRuntime';
 
 // Tool names that minions cannot use
 const MINION_EXCLUDED_TOOLS = ['minion'];
@@ -151,6 +153,10 @@ interface MinionInput {
   displayName?: string;
   /** VFS file paths to inject as context. Contents are prepended to the message. */
   injectFiles?: string[];
+  /** Delegate to a remote human operator instead of an LLM sub-agent */
+  remote?: boolean;
+  /** Hook file name (without .js) in /hooks/ to verify minion output before savepoint advances */
+  verifyHook?: string;
 }
 
 /** Result of rolling back messages to a savepoint */
@@ -331,6 +337,210 @@ function buildInfoGroup(
   return { category: 'backstage', blocks: [infoBlock] };
 }
 
+/** Default total remote timeout (10 minutes) */
+const REMOTE_DEFAULT_TIMEOUT_MS = 600_000;
+
+/**
+ * Execute a remote human minion call.
+ *
+ * Creates or reuses a session on the Touch Grass backend, sends the message,
+ * and long-polls until the human responds or the total timeout is exceeded.
+ */
+async function* executeRemoteMinion(
+  minionInput: MinionInput,
+  minionChat: MinionChat,
+  toolOptions: ToolOptions,
+  endpoint: string,
+  injectedFileEntries: Array<{ path: string; content: string; error?: boolean }>,
+  injectedFilesPrefix: string
+): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
+  const password = typeof toolOptions.remotePassword === 'string' ? toolOptions.remotePassword : '';
+  const callerId = 'gremlinofa';
+  const authHeader = 'Basic ' + btoa(`${callerId}:${password}`);
+  const totalTimeoutMs =
+    typeof toolOptions.remoteTimeoutMs === 'number'
+      ? toolOptions.remoteTimeoutMs
+      : REMOTE_DEFAULT_TIMEOUT_MS;
+
+  // Create or reuse remote session
+  let sessionId = minionChat.remoteSessionId;
+  if (!sessionId) {
+    try {
+      const createRes = await fetch(`${endpoint}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+        body: JSON.stringify({ displayName: minionChat.displayName ?? minionInput.displayName }),
+      });
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        return {
+          content: truncateError(`Error creating remote session: ${createRes.status} ${errText}`),
+          isError: true,
+        };
+      }
+      const createBody = (await createRes.json()) as { sessionId: string };
+      sessionId = createBody.sessionId;
+      minionChat.remoteSessionId = sessionId;
+      await storage.saveMinionChat(minionChat);
+    } catch (err) {
+      return {
+        content: truncateError(
+          `Error connecting to remote backend: ${err instanceof Error ? err.message : String(err)}`
+        ),
+        isError: true,
+      };
+    }
+  }
+
+  // Send message + files to the remote session
+  const fullMessage = injectedFilesPrefix + minionInput.message;
+  const files = injectedFileEntries
+    .filter(f => !f.error)
+    .map(f => ({ path: f.path, content: f.content }));
+
+  let requestId: string;
+  try {
+    const msgRes = await fetch(`${endpoint}/api/sessions/${sessionId}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+      body: JSON.stringify({ content: fullMessage, files: files.length > 0 ? files : undefined }),
+    });
+    if (!msgRes.ok) {
+      const errText = await msgRes.text();
+      return {
+        content: truncateError(`Error sending remote message: ${msgRes.status} ${errText}`),
+        isError: true,
+      };
+    }
+    const msgBody = (await msgRes.json()) as { requestId: string };
+    requestId = msgBody.requestId;
+  } catch (err) {
+    return {
+      content: truncateError(
+        `Error sending to remote backend: ${err instanceof Error ? err.message : String(err)}`
+      ),
+      isError: true,
+    };
+  }
+
+  // Save the AI message to local minion chat storage
+  const aiMessage: Message<unknown> = {
+    id: generateUniqueId('msg_user'),
+    role: 'user',
+    content: { type: 'text', content: fullMessage },
+    timestamp: new Date(),
+  };
+  await storage.saveMinionMessage(minionChat.id, aiMessage);
+
+  // Build info group for display
+  const personaLabel = minionChat.displayName ?? minionInput.displayName;
+  const infoBlock: ToolInfoRenderBlock = {
+    type: 'tool_info',
+    input: minionInput.message,
+    chatId: minionChat.id,
+    persona: personaLabel,
+    displayName: minionChat.displayName ?? minionInput.displayName,
+  };
+  const infoGroup: RenderingBlockGroup = { category: 'backstage', blocks: [infoBlock] };
+
+  // Long-poll loop
+  const startTime = Date.now();
+  let humanResponse: string | undefined;
+
+  while (Date.now() - startTime < totalTimeoutMs) {
+    // Yield status update
+    const waitingGroup: RenderingBlockGroup = {
+      category: 'backstage',
+      blocks: [
+        {
+          type: 'tool_result',
+          name: 'minion',
+          tool_use_id: '',
+          content: 'Waiting for human response...',
+          status: 'running',
+        } as ToolResultRenderBlock,
+      ],
+    };
+    yield { type: 'groups_update' as const, groups: [infoGroup, waitingGroup] };
+
+    try {
+      const pollRes = await fetch(`${endpoint}/api/requests/${requestId}/poll`, {
+        headers: { Authorization: authHeader },
+      });
+      if (!pollRes.ok) {
+        return {
+          content: truncateError(`Error polling remote: ${pollRes.status}`),
+          isError: true,
+        };
+      }
+      const pollBody = (await pollRes.json()) as {
+        status: 'pending' | 'answered' | 'expired';
+        response?: { content: string };
+      };
+
+      if (pollBody.status === 'answered' && pollBody.response) {
+        humanResponse = pollBody.response.content;
+        break;
+      }
+      if (pollBody.status === 'expired') {
+        return {
+          content: truncateError('Remote request expired before human responded.'),
+          isError: true,
+          renderingGroups: [infoGroup],
+        };
+      }
+      // status === 'pending': loop again
+    } catch (err) {
+      return {
+        content: truncateError(
+          `Error polling remote: ${err instanceof Error ? err.message : String(err)}`
+        ),
+        isError: true,
+        renderingGroups: [infoGroup],
+      };
+    }
+  }
+
+  if (humanResponse === undefined) {
+    return {
+      content: truncateError(
+        `Remote minion timed out after ${Math.round(totalTimeoutMs / 1000)}s without a human response.`
+      ),
+      isError: true,
+      renderingGroups: [infoGroup],
+    };
+  }
+
+  // Save human response to local minion chat storage
+  const humanMessage: Message<unknown> = {
+    id: generateUniqueId('msg_asst'),
+    role: 'assistant',
+    content: { type: 'text', content: humanResponse },
+    timestamp: new Date(),
+  };
+  await storage.saveMinionMessage(minionChat.id, humanMessage);
+
+  // Update savepoint
+  minionChat.savepoint = humanMessage.id;
+  minionChat.lastModifiedAt = new Date();
+  await storage.saveMinionChat(minionChat);
+
+  // Build result rendering
+  const resultBlock: ToolResultRenderBlock = {
+    type: 'tool_result',
+    name: 'minion',
+    tool_use_id: '',
+    content: humanResponse,
+    status: 'complete',
+  };
+  const resultGroup: RenderingBlockGroup = { category: 'text', blocks: [resultBlock] };
+
+  return {
+    content: `[Remote human response]\n\nminionChatId: ${minionChat.id}\n\n${humanResponse}`,
+    renderingGroups: [infoGroup, resultGroup],
+  };
+}
+
 /**
  * Execute the minion tool as an async generator.
  *
@@ -408,6 +618,7 @@ async function* executeMinion(
     if (minionInput.displayName !== undefined) minionChat.displayName = minionInput.displayName;
     if (minionInput.persona !== undefined) minionChat.persona = minionInput.persona;
     if (minionInput.enabledTools !== undefined) minionChat.enabledTools = minionInput.enabledTools;
+    if (minionInput.verifyHook !== undefined) minionChat.verifyHook = minionInput.verifyHook;
 
     if (action === 'retry') {
       // Retry: roll back to savepoint before proceeding
@@ -476,6 +687,7 @@ async function* executeMinion(
       displayName: minionInput.displayName,
       persona: minionInput.persona,
       enabledTools: minionInput.enabledTools,
+      verifyHook: minionInput.verifyHook,
       createdAt: new Date(),
       lastModifiedAt: new Date(),
     };
@@ -693,6 +905,30 @@ async function* executeMinion(
       };
     }
     injectedFilesPrefix = sections.join('\n\n') + '\n\n';
+  }
+
+  // ── Remote human minion branch ──
+  if (minionInput.remote === true) {
+    const remoteEndpoint =
+      typeof minionToolOptions.remoteEndpoint === 'string'
+        ? minionToolOptions.remoteEndpoint.replace(/\/+$/, '')
+        : '';
+    if (!remoteEndpoint) {
+      return {
+        content: truncateError(
+          'Error: remote=true but no remoteEndpoint configured in minion tool options.'
+        ),
+        isError: true,
+      };
+    }
+    return yield* executeRemoteMinion(
+      minionInput,
+      minionChat,
+      minionToolOptions,
+      remoteEndpoint,
+      injectedFileEntries,
+      injectedFilesPrefix
+    );
   }
 
   // Build info group for streaming display (include persona name for non-default personas)
@@ -1007,6 +1243,7 @@ async function* executeMinion(
   const accumulatedGroups: RenderingBlockGroup[] = [];
   // Text content from all assistant messages in this turn
   const accumulatedText: string[] = [];
+  let assistantMessageCount = 0;
   let usedReturnTool = false;
   let returnValue: string | undefined;
 
@@ -1045,6 +1282,9 @@ async function* executeMinion(
             case 'message_created':
               // Save message to minion chat
               await storage.saveMinionMessage(minionChat.id, event.message);
+              if (event.message.role === 'assistant') {
+                assistantMessageCount++;
+              }
               // Accumulate rendering content, mark as tool-generated
               if (event.message.content.renderingContent) {
                 const markedGroups = event.message.content.renderingContent.map(g => ({
@@ -1155,6 +1395,16 @@ async function* executeMinion(
       break;
     }
 
+    // Guard: no assistant message produced at all
+    if (assistantMessageCount === 0) {
+      return {
+        content: truncateError('Minion completed but no assistant message was produced'),
+        isError: true,
+        renderingGroups: [infoGroup, ...accumulatedGroups],
+        tokenTotals: totals,
+      };
+    }
+
     // Determine stop reason from last assistant message
     let stopReason = 'end_turn';
     if (lastFinalResult && lastFinalResult.messages.length > 0) {
@@ -1177,6 +1427,101 @@ async function* executeMinion(
         renderingGroups: [infoGroup, ...accumulatedGroups],
         tokenTotals: totals,
       };
+    }
+
+    // ── Verify hook: run VFS-based JS to validate minion output before savepoint ──
+    if (minionChat.verifyHook) {
+      const hookPath = `/hooks/${minionChat.verifyHook}.js`;
+      const hookAdapter = context.createVfsAdapter();
+      let hookCode: string | null = null;
+      try {
+        hookCode = await hookAdapter.readFile(hookPath);
+      } catch {
+        // VFS error — treat as missing
+      }
+      if (!hookCode) {
+        return {
+          content: truncateError(`Verify hook file not found: ${hookPath}`),
+          isError: true,
+          renderingGroups: [infoGroup, ...accumulatedGroups],
+          tokenTotals: totals,
+        };
+      }
+
+      // Gather new messages from this run
+      const allStoredMessages = await storage.getMinionMessages(minionChat.id);
+      const newMessages = allStoredMessages.slice(existingMessages.length);
+
+      // Condense to HookInputMessage format
+      const condensed: HookInputMessage[] = newMessages.map(msg => {
+        const entry: HookInputMessage = {
+          id: msg.id,
+          role: msg.role as 'user' | 'assistant' | 'system',
+        };
+        const textContent = msg.content.content as string | undefined;
+        if (textContent?.trim()) entry.text = textContent;
+        if (msg.content.toolCalls?.length) {
+          entry.toolCalls = msg.content.toolCalls.map(tc => ({
+            id: tc.id,
+            name: tc.name,
+            input: tc.input,
+          }));
+        }
+        if (msg.content.toolResults?.length) {
+          entry.toolResults = msg.content.toolResults.map(tr => ({
+            tool_use_id: tr.tool_use_id,
+            name: tr.name ?? 'unknown',
+            content: tr.content,
+            ...(tr.is_error ? { is_error: true } : {}),
+          }));
+        }
+        return entry;
+      });
+
+      // Run hook in QuickJS sandbox
+      const vm = await JsVMContext.create(hookAdapter, false, false);
+      try {
+        const wrappedCode = `
+          (async function() {
+            var __verifyFn = await (async function() {
+              ${hookCode}
+            })();
+            if (typeof __verifyFn !== 'function') {
+              throw new Error('verifyHook file must return a function');
+            }
+            return __verifyFn(${JSON.stringify(condensed)});
+          })()
+        `;
+
+        const evalResult = await vm.evaluate(wrappedCode, 'verifyHook');
+
+        if (evalResult.isError) {
+          return {
+            content: truncateError(
+              `Verify hook error: ${String(evalResult.value ?? 'Unknown error')}`
+            ),
+            isError: true,
+            renderingGroups: [infoGroup, ...accumulatedGroups],
+            tokenTotals: totals,
+          };
+        }
+
+        // Nullish → pass; string → rejection
+        if (evalResult.value !== null && evalResult.value !== undefined) {
+          const errorMsg =
+            typeof evalResult.value === 'string'
+              ? evalResult.value
+              : JSON.stringify(evalResult.value);
+          return {
+            content: truncateError(`Verify hook rejected: ${errorMsg}`),
+            isError: true,
+            renderingGroups: [infoGroup, ...accumulatedGroups],
+            tokenTotals: totals,
+          };
+        }
+      } finally {
+        vm.dispose();
+      }
     }
 
     // Advance savepoint to the last message after successful execution
@@ -1278,6 +1623,14 @@ function renderMinionInput(input: Record<string, unknown>): string {
 
   if (minionInput.displayName) {
     lines.push(`Display: ${minionInput.displayName}`);
+  }
+
+  if (minionInput.remote) {
+    lines.push('Remote: human');
+  }
+
+  if (minionInput.verifyHook) {
+    lines.push(`VerifyHook: ${minionInput.verifyHook}`);
   }
 
   if (minionInput.injectFiles?.length) {
@@ -1428,7 +1781,8 @@ function getMinionDescription(opts: ToolOptions): string {
   lines.push(
     '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)',
     '- Provide a displayName to label this minion in the UI',
-    '- Inject file context via injectFiles (array of VFS paths). Contents are prepended to the message.'
+    '- Inject file context via injectFiles (array of VFS paths). Contents are prepended to the message.',
+    '- Provide a verifyHook (name of a /hooks/<name>.js file) to validate minion output before savepoint advances. The hook returns null to approve or a string to reject.'
   );
 
   if (opts.namespacedMinion && opts.namespacedMinion !== 'off') {
@@ -1443,6 +1797,10 @@ function getMinionDescription(opts: ToolOptions): string {
         '- Select a model via the model parameter. Available models are listed in the schema enum.'
       );
     }
+  }
+
+  if (typeof opts.remoteEndpoint === 'string' && opts.remoteEndpoint) {
+    lines.push('- Set remote=true to delegate to a human operator via the remote minion backend');
   }
 
   if (resolveReturnMode(opts) !== 'no-return') {
@@ -1494,6 +1852,11 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     items: { type: 'string' },
     description: 'VFS file paths to inject as context. Contents are prepended to the message.',
   };
+  properties.verifyHook = {
+    type: 'string',
+    description:
+      'Name of a hook file in /hooks/ (without .js) that verifies minion output before savepoint advances. The hook must return a function(messages). Return null to approve, or a string error message to reject.',
+  };
 
   if (opts.allowWebSearch === true) {
     properties.enableWeb = {
@@ -1519,6 +1882,13 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
         description: 'Model to use for this minion call. Omit to use the default minion model.',
       };
     }
+  }
+
+  if (typeof opts.remoteEndpoint === 'string' && opts.remoteEndpoint) {
+    properties.remote = {
+      type: 'boolean',
+      description: 'Delegate to a remote human operator instead of an LLM sub-agent.',
+    };
   }
 
   return {
@@ -1704,6 +2074,30 @@ export const minionTool: ClientSideTool = {
         { value: 'separate-block', label: 'Separate Blocks' },
         { value: 'as-file', label: 'Document Blocks' },
       ],
+    },
+    {
+      type: 'text',
+      id: 'remoteEndpoint',
+      label: 'Remote Minion Endpoint',
+      subtitle: 'URL of the Touch Grass backend for human delegation',
+      default: '',
+      placeholder: 'http://localhost:3004',
+    },
+    {
+      type: 'text',
+      id: 'remotePassword',
+      label: 'Remote Minion Password',
+      subtitle: 'API password for the remote backend',
+      default: '',
+      placeholder: 'shared-secret',
+    },
+    {
+      type: 'number',
+      id: 'remoteTimeoutMs',
+      label: 'Remote Timeout (ms)',
+      subtitle: 'Total time to wait for a human response before giving up',
+      default: 600000,
+      min: 10000,
     },
   ],
 

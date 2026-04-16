@@ -255,6 +255,50 @@ describe('WorkerTransport', () => {
     await expect(projectsPromise).resolves.toEqual([]);
   });
 
+  it('lets dormant-callable methods (generateNewCEK) post before init resolves', async () => {
+    // Regression: OOBE on the IndexedDB "fresh" path calls
+    // gremlinClient.generateNewCEK() *before* configureWorker + init. If
+    // the transport waits on initPromise for this method the OOBE flow
+    // hangs forever (no UI hint, just a spinner), and the user can't
+    // start the app from a clean origin.
+    const lateWorker = new FakeWorker();
+    const lateTransport = new WorkerTransport(lateWorker as unknown as Worker);
+    lateWorker.simulateMessage({ kind: 'worker_ready' });
+
+    const cekPromise = lateTransport.request('generateNewCEK', {});
+    // The envelope must be posted immediately — no init in flight.
+    await Promise.resolve();
+    await Promise.resolve();
+    const cekEnvelope = lateWorker.posted.find(
+      m => (m as { kind?: string; method?: string }).method === 'generateNewCEK'
+    ) as { requestId: string };
+    expect(cekEnvelope).toBeDefined();
+
+    lateWorker.simulateMessage({
+      kind: 'response',
+      requestId: cekEnvelope.requestId,
+      result: 'mock_base32_cek',
+    });
+
+    // Race against a short timer so a regression that hangs fails the
+    // test instead of hanging the whole suite.
+    const settled = await Promise.race([
+      cekPromise.then(v => ({ ok: true, value: v })),
+      new Promise<{ ok: false }>(resolve => setTimeout(() => resolve({ ok: false }), 200)),
+    ]);
+    expect(settled).toEqual({ ok: true, value: 'mock_base32_cek' });
+
+    // Sanity: a non-exempt method called in the same dormant state still
+    // queues — we only lifted the gate for the exempt set.
+    lateTransport.request('listProjects', {}).catch(() => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    const queued = lateWorker.posted.find(
+      m => (m as { kind?: string; method?: string }).method === 'listProjects'
+    );
+    expect(queued).toBeUndefined();
+  });
+
   it('dispose() terminates the worker', () => {
     const terminate = vi.spyOn(worker, 'terminate');
     transport.dispose();

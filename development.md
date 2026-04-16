@@ -1704,6 +1704,12 @@ When `iconOnRight` is `true`:
 
 ## Known Issues 🐛
 
+### OOBE hang on IndexedDB fresh start (fixed)
+
+`WorkerTransport.request()` blocked every non-`init` RPC on `initPromise`, but Phase 1's dormant-callable design means OOBE calls `generateNewCEK` / `normalizeCEK` / `deriveUserIdFromCEK` _before_ `init`. The transport's hardcoded `method !== 'init'` gate disagreed with `GremlinServer`'s `INIT_EXEMPT_METHODS` set, so the first OOBE RPC awaited a promise that was never resolved and the spinner spun forever.
+
+Fix: promoted `INIT_EXEMPT_METHODS` to an exported const in `src/shared/protocol/methods.ts` (re-exported via the protocol barrel). Both `GremlinServer.handleRequest` and `WorkerTransport.request` now read the same set. Regression test added in `WorkerTransport.test.ts` (`'lets dormant-callable methods (generateNewCEK) post before init resolves'`).
+
 ### Backend singleton encapsulation refactor (Phase 4 partially done)
 
 Worker-side code held module-level singletons (`storage`, `encryptionService`, `apiService`, `toolRegistry`) that depended on someone calling an init function at the right module-load moment. The first to bite was `toolRegistry` (commit `ba57e42`). The next was `storage` — at worker module load the in-memory `localStorage` shim is empty, so the singleton wrapped a never-initialized `IndexedDBAdapter`. The minion tool threw `Tool execution failed: IndexedDB not initialized` whenever the user was on remote storage, because it imported `{ storage }` directly and hit the broken instance instead of the one `GremlinServer.init()` built from the storage config it received.

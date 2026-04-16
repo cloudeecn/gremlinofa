@@ -110,6 +110,32 @@ export function mergeExtraModels(discoveredModels: Model[], apiDefinition: APIDe
   return extraModels.length > 0 ? [...discoveredModels, ...extraModels] : discoveredModels;
 }
 
+/**
+ * Shallow-clone the last user message and append the thinking nudge
+ * to its text content. Returns a new array; original messages are untouched.
+ */
+export function applyNudgeThinking(messages: Message<unknown>[]): Message<unknown>[] {
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx === -1) return messages;
+
+  const original = messages[lastUserIdx];
+  const result = messages.slice();
+  result[lastUserIdx] = {
+    ...original,
+    content: {
+      ...original.content,
+      content: original.content.content + '\n\n<<WITH THINKING STEPS>>',
+    },
+  };
+  return result;
+}
+
 // Main API service that routes to the correct client
 class APIService {
   private clients: Map<APIType, APIClient> = new Map();
@@ -196,6 +222,11 @@ class APIService {
 
     if (!client) {
       throw new Error(`Cannot get client for ${apiDefinition.apiType}`);
+    }
+
+    // Nudge thinking: append prompt to last user message (send-time only)
+    if (apiDefinition.advancedSettings?.nudgeThinking) {
+      messages = applyNudgeThinking(messages);
     }
 
     // Use the real client

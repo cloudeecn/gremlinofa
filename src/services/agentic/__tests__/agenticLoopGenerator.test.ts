@@ -513,6 +513,273 @@ describe('agenticLoopGenerator', () => {
     });
   });
 
+  describe('mandateCoT', () => {
+    it('returns error when entire run has no CoT and mandateCoT is enabled', async () => {
+      const mockResult = {
+        textContent: 'Hello!',
+        fullContent: [{ type: 'text', text: 'Hello!' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+        hasCoT: false,
+        reasoningTokens: 0,
+      };
+
+      const mockStream = createMockStream([{ type: 'content', content: 'Hello!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), advancedSettings: { mandateCoT: true } },
+      });
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('error');
+      if (result.status === 'error') {
+        expect(result.error.message).toContain('Mandate CoT');
+      }
+    });
+
+    it('passes when response has hasCoT=true', async () => {
+      const mockResult = {
+        textContent: 'Hello!',
+        fullContent: [{ type: 'text', text: 'Hello!' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+        hasCoT: true,
+        reasoningTokens: 0,
+      };
+
+      const mockStream = createMockStream([{ type: 'content', content: 'Hello!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), advancedSettings: { mandateCoT: true } },
+      });
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+    });
+
+    it('passes when response has reasoningTokens > 0', async () => {
+      const mockResult = {
+        textContent: 'Hello!',
+        fullContent: [{ type: 'text', text: 'Hello!' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+        hasCoT: false,
+        reasoningTokens: 500,
+      };
+
+      const mockStream = createMockStream([{ type: 'content', content: 'Hello!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), advancedSettings: { mandateCoT: true } },
+      });
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+    });
+
+    it('skips check when result already has an error', async () => {
+      const mockResult = {
+        textContent: '',
+        fullContent: [],
+        stopReason: undefined,
+        inputTokens: 0,
+        outputTokens: 0,
+        hasCoT: false,
+        reasoningTokens: 0,
+        error: { message: 'API rate limit' },
+      };
+
+      const mockStream = createMockStream([], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), advancedSettings: { mandateCoT: true } },
+      });
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('error');
+      if (result.status === 'error') {
+        expect(result.error.message).toBe('API rate limit');
+      }
+    });
+
+    it('is not checked when mandateCoT is off', async () => {
+      const mockResult = {
+        textContent: 'Hello!',
+        fullContent: [{ type: 'text', text: 'Hello!' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+        hasCoT: false,
+        reasoningTokens: 0,
+      };
+
+      const mockStream = createMockStream([{ type: 'content', content: 'Hello!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions();
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+    });
+  });
+
+  describe('treatEmptyOutputAsError', () => {
+    it('returns error when response text is empty and no tool calls', async () => {
+      const mockResult = {
+        textContent: '',
+        fullContent: [],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 5,
+        hasCoT: false,
+        reasoningTokens: 0,
+      };
+
+      const mockStream = createMockStream([{ type: 'content', content: '' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), advancedSettings: { treatEmptyOutputAsError: true } },
+      });
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('error');
+      if (result.status === 'error') {
+        expect(result.error.message).toContain('Treat empty output as error');
+      }
+    });
+
+    it('returns error when response text is whitespace-only', async () => {
+      const mockResult = {
+        textContent: '   \n  ',
+        fullContent: [{ type: 'text', text: '   \n  ' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 5,
+        hasCoT: false,
+        reasoningTokens: 0,
+      };
+
+      const mockStream = createMockStream([{ type: 'content', content: '   \n  ' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), advancedSettings: { treatEmptyOutputAsError: true } },
+      });
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('error');
+      if (result.status === 'error') {
+        expect(result.error.message).toContain('Treat empty output as error');
+      }
+    });
+
+    it('passes when response has non-empty text', async () => {
+      const mockResult = {
+        textContent: 'Hello!',
+        fullContent: [{ type: 'text', text: 'Hello!' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+        hasCoT: false,
+        reasoningTokens: 0,
+      };
+
+      const mockStream = createMockStream([{ type: 'content', content: 'Hello!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), advancedSettings: { treatEmptyOutputAsError: true } },
+      });
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+    });
+
+    it('allows empty output when setting is disabled', async () => {
+      const mockResult = {
+        textContent: '',
+        fullContent: [],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 5,
+        hasCoT: false,
+        reasoningTokens: 0,
+      };
+
+      const mockStream = createMockStream([{ type: 'content', content: '' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions();
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('complete');
+    });
+
+    it('does not mask existing API error', async () => {
+      const mockResult = {
+        textContent: '',
+        fullContent: [],
+        stopReason: undefined,
+        inputTokens: 0,
+        outputTokens: 0,
+        hasCoT: false,
+        reasoningTokens: 0,
+        error: { message: 'API rate limit' },
+      };
+
+      const mockStream = createMockStream([], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), advancedSettings: { treatEmptyOutputAsError: true } },
+      });
+      const context = [createMockUserMessage('Test')];
+
+      const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+      expect(result.status).toBe('error');
+      if (result.status === 'error') {
+        expect(result.error.message).toBe('API rate limit');
+      }
+    });
+  });
+
   describe('collectAgenticLoop', () => {
     it('consumes generator and returns final result', async () => {
       const mockResult = {

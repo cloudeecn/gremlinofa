@@ -1,0 +1,28 @@
+[Unit]
+Description=GremlinOFA Touch Grass Backend - Remote human minion interface
+Documentation=https://github.com/cloudeecn/gremlinofa
+After=network.target
+
+[Service]
+Type=simple
+User=gremlinofa
+Group=gremlinofa
+WorkingDirectory=/opt/gremlinofa-touch-grass
+ExecStart=/usr/bin/node /opt/gremlinofa-touch-grass/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/gremlinofa-touch-grass
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gremlinofa-touch-grass
+
+[Install]
+WantedBy=multi-user.target

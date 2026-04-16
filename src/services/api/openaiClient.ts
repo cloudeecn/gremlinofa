@@ -502,6 +502,21 @@ export class OpenAIClient implements APIClient {
         let fullContent = accumulator.finalize();
         let textContent = accumulator.getContent();
 
+        // Error on completely empty stream (no content, no tool calls, no finish reason)
+        if (!finishReason && !textContent && !fullContent.tool_calls?.length) {
+          return {
+            textContent: '',
+            fullContent,
+            error: {
+              message: 'Stream completed with no content, no tool calls, and no finish reason',
+            },
+            inputTokens,
+            outputTokens,
+            cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+            reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
+          };
+        }
+
         // Prepend prefill if provided
         if (options.preFillResponse) {
           textContent = options.preFillResponse + textContent;
@@ -530,6 +545,16 @@ export class OpenAIClient implements APIClient {
 
         const message = response.choices[0]?.message;
         finishReason = response.choices[0]?.finish_reason || null;
+
+        if (!message) {
+          return {
+            textContent: '',
+            fullContent: { role: 'assistant', content: null, refusal: null },
+            error: { message: 'API returned no message (empty choices)' },
+            inputTokens: 0,
+            outputTokens: 0,
+          };
+        }
 
         // Yield StreamChunks for renderingContent
         if (message) {

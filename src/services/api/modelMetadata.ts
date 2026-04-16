@@ -10,6 +10,7 @@ import { XAI_MODELS } from './model_metadatas/xai';
 import { GOOGLE_MODELS } from './model_metadatas/google';
 import { XIAOMI_MODELS } from './model_metadatas/xiaomi';
 import { DEEPSEEK_MODELS } from './model_metadatas/deepseek';
+import { OTHER_MODELS } from './model_metadatas/others';
 
 // Combined model knowledge from all providers
 const ALL_MODEL_KNOWLEDGE: ModelKnowledge[] = [
@@ -19,6 +20,7 @@ const ALL_MODEL_KNOWLEDGE: ModelKnowledge[] = [
   ...GOOGLE_MODELS,
   ...XIAOMI_MODELS,
   ...DEEPSEEK_MODELS,
+  ...OTHER_MODELS,
 ];
 
 // Flattened match entry with single match condition
@@ -110,6 +112,7 @@ function buildModelKnowledgeStorage(apiDefinition: APIDefinition): ModelKnowledg
 
   // Step 1 & 2: Flatten and filter matches
   for (const knowledge of ALL_MODEL_KNOWLEDGE) {
+    if (!knowledge) continue;
     for (const match of knowledge.matches) {
       // Check apiType match
       if (!match.apiType.includes(apiType)) continue;

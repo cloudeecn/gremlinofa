@@ -92,6 +92,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Disable Math toggle (⋯ menu: renders `$...$` as literal text instead of KaTeX)
 - [x] Always Auto Scroll (⋯ menu: keeps auto-scroll active regardless of scroll position)
 - [x] DUMMY System (LLM-registered JS hooks intercept the agentic loop before API calls — synthetic responses, user handoff, or passthrough; async hooks and top-level await supported)
+- [x] Remote human minion ("Touch Grass") — delegates minion tasks to a human via `touch-grass-backend/`. Minion tool gains `remote` parameter + `remoteEndpoint`/`remotePassword` options. Backend provides web UI for human operators with session list, chat view, and long-poll delivery.
 
 **API & Pricing**
 
@@ -101,6 +102,8 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
   - [x] Prune empty text blocks (removes empty text blocks from historical messages)
   - [x] Enforce genuine Anthropic (rejects responses with zero cache activity or unsigned thinking blocks)
   - [x] De facto thinking mode (sends `{thinking: {type: enabled/disabled}}` for DeepSeek, Kimi, MiMo, etc. — settable per model metadata or per provider)
+  - [x] Nudge model to think (appends `<<WITH THINKING STEPS>>` to last user message at send time — for models that skip chain-of-thought without a nudge)
+  - [x] Mandate chain-of-thought (requires at least one response with reasoning tokens/thinking blocks per agentic run — triggers minion savepoint rollback on retry)
 - [x] Pricing display in Model Selector
 - [x] Cache pricing fallback (cache tokens priced at inputPrice when no cache-specific price)
 - [x] Cache pricing display
@@ -1128,6 +1131,7 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 | `model`        | string   | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` is not `off` + `models` configured. |
 | `displayName`  | string   | No                   | Display name shown in the UI for this minion call. If omitted, persona name is used.                |
 | `injectFiles`  | string[] | No                   | VFS file paths to inject as context. Injection method controlled by `fileInjectionMode` option.     |
+| `verifyHook`   | string   | No                   | Hook file name (without `.js`) in `/hooks/` to verify minion output before savepoint advances.      |
 
 **Tool Options:**
 
@@ -1188,7 +1192,7 @@ Minion conversations stored separately for debugging visibility:
 - Cascade deletion when parent chat is deleted
 - `savepoint?: string` field stores last message ID of the last successful run (for rollback). New chats start with `SAVEPOINT_START` sentinel (`'_start'`). Savepoint advances only after successful execution, never before. On retry, `rollbackToSavepoint()` helper handles message slicing, content stashing (including `renderingContent` for file bars), token subtraction, and message deletion. Three-state semantics: `undefined` = legacy chat (no rollback), `SAVEPOINT_START` = new chat (rollback = delete all), `'msg_xxx'` = normal (rollback = delete after).
 - `autoRollback` tool option: when enabled, `action` is hidden from schema and on continuation the system auto-detects messages after savepoint and rolls them back before proceeding. When disabled (default), explicit `action: 'retry'` is available.
-- Persisted settings: `displayName`, `persona`, `apiDefinitionId`, `modelId`, `enabledTools` — stored on creation and updated on continuation. Enables stored-model and stored-tools fallback when continuing without re-specifying them.
+- Persisted settings: `displayName`, `persona`, `apiDefinitionId`, `modelId`, `enabledTools`, `verifyHook` — stored on creation and updated on continuation. Enables stored-model and stored-tools fallback when continuing without re-specifying them.
 
 **Result Handling:**
 
@@ -1314,6 +1318,8 @@ Each API client owns a `tidyMessages()` function that combines three concerns in
 2. **Thinking pruning** (per-definition `advancedSettings.pruneThinking`): strips thinking/reasoning blocks from messages before the last text user message. Messages in the current agentic loop keep their thinking. Google: also strips `thoughtSignature` from remaining parts.
 3. **Empty text pruning** (per-definition `advancedSettings.pruneEmptyText`): removes empty/whitespace text blocks from messages before the last text user message.
 4. **Genuine Anthropic enforcement** (per-definition `advancedSettings.enforceGenuineAnthropic`): post-response validation in `anthropicClient.ts` via `validateAnthropicResponse()`. Checks: (a) if input_tokens > 4096 and both cache_creation/read are zero → not genuine Anthropic; (b) if thinking blocks exist but lack cryptographic `signature` field → not genuine Anthropic. Both checks throw, caught by existing error handler.
+5. **Nudge thinking** (per-definition `advancedSettings.nudgeThinking`): applied in `apiService.sendMessageStream()` before client dispatch via `applyNudgeThinking()`. Shallow-clones the last user message and appends `\n\n<<WITH THINKING STEPS>>` to its text content. Send-time only — stored messages are untouched.
+6. **Mandate CoT** (per-definition `advancedSettings.mandateCoT`): per-run check in `agenticLoopGenerator.ts`. Tracks `loopHasCoT` across all iterations (unified: `hasCoT` or `reasoningTokens > 0`). At run completion, rejects if no iteration produced chain-of-thought. Allows runs where CoT appears in one response but not others. Returns an error status that triggers minion savepoint rollback on retry.
 
 Messages with mismatched `modelFamily` or missing `fullContent` are handled via shared helpers in `contextTidy.ts` (`findCheckpointIndex`, `findThinkingBoundary`, `tidyAgnosticMessage`).
 
@@ -1452,6 +1458,7 @@ type AgenticLoopResult =
 - Cost/token accumulation across iterations
 - Read-only storage access (reads attachments, consumer handles persistence)
 - Error handling with cleanup
+- Empty response detection: API client returns `result.error` for empty choices (non-streaming) or empty stream (no content, no tool calls, no finish reason). The loop checks `result.error` → returns `status: 'error'`. Minion tool has a final guard: if zero assistant messages were produced, returns `isError: true`.
 
 **Tool Execution Helper:**
 

@@ -61,6 +61,9 @@ export interface APIDefinition {
     isSubscription?: boolean; // Flat-rate subscription — all cost tracked as $0
     enforceGenuineAnthropic?: boolean; // Reject responses with zero cache activity or unsigned thinking blocks
     deFactoThinking?: boolean; // Send { thinking: { type: "enabled" | "disabled" } } in request body (DeepSeek, Kimi, MiMo, etc.)
+    nudgeThinking?: boolean; // Append "<<WITH THINKING STEPS>>" to last user message
+    mandateCoT?: boolean; // Reject responses without chain-of-thought reasoning tokens
+    treatEmptyOutputAsError?: boolean; // Reject turns that produce empty text and no tool calls
   };
   createdAt: Date;
   updatedAt: Date;
@@ -756,6 +759,10 @@ export interface MinionChat {
   modelId?: string;
   /** Tools enabled for this minion (persisted for continuation) */
   enabledTools?: string[];
+  /** Hook name in /hooks/ for verifying minion output before savepoint advances */
+  verifyHook?: string;
+  /** Remote session ID for touch-grass backend (human delegation) */
+  remoteSessionId?: string;
 }
 
 // Virtual Filesystem (VFS) types

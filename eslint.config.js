@@ -13,6 +13,7 @@ export default defineConfig([
     'storage-backend/**',
     'cors-proxy/**',
     'vfs-backend/**',
+    'touch-grass-backend/**',
     '**/__tests__/**',
     '**/*.test.ts',
     '**/*.test.tsx',

@@ -1332,6 +1332,30 @@ export async function* runAgenticLoop(
     ? [...options.checkpointMessageIds]
     : [];
 
+  const mandateCoT = apiDef.advancedSettings?.mandateCoT === true;
+  const treatEmptyOutputAsError = apiDef.advancedSettings?.treatEmptyOutputAsError === true;
+
+  /** Convert a successful result to an error if mandateCoT is on and no CoT was seen in the run */
+  function applyMandateCoT(result: AgenticLoopResult): AgenticLoopResult {
+    if (
+      mandateCoT &&
+      (result.status === 'complete' || result.status === 'max_iterations') &&
+      !loopHasCoT
+    ) {
+      return {
+        status: 'error',
+        messages: result.messages,
+        tokens: result.tokens,
+        hasCoT: undefined,
+        error: new Error(
+          'Mandate CoT: no chain-of-thought reasoning detected in this agentic run. ' +
+            'Enable thinking/reasoning for this model or disable "Mandate CoT" in advanced settings.'
+        ),
+      };
+    }
+    return result;
+  }
+
   // DUMMY System: load hook runtime if active (mutable — register/unregister can swap at runtime)
   let activeHookName: string | null = options.activeHook ?? null;
   let hookRuntime = activeHookName ? await DummyHookRuntime.load(vfsAdapter, activeHookName) : null;
@@ -1377,13 +1401,13 @@ export async function* runAgenticLoop(
         if (storedReturnValue !== undefined) {
           console.debug('[agenticLoopGen] breakLoop ignored: deferred return already captured');
         }
-        return {
+        return applyMandateCoT({
           status: 'complete',
           messages,
           tokens: totals,
           hasCoT: loopHasCoT || undefined,
           returnValue: storedReturnValue ?? breakResult.breakLoop.returnValue,
-        };
+        });
       }
 
       // Inject trailing context (e.g., user follow-up message pre-saved by caller)
@@ -1573,7 +1597,10 @@ export async function* runAgenticLoop(
           };
         }
 
-        // Track chain-of-thought across iterations
+        // Unify CoT detection: reasoning tokens count as chain-of-thought
+        if (!result.hasCoT && result.reasoningTokens && result.reasoningTokens > 0) {
+          result.hasCoT = true;
+        }
         if (result.hasCoT) loopHasCoT = true;
 
         // Extract tokens and calculate cost
@@ -1635,6 +1662,28 @@ export async function* runAgenticLoop(
           }
 
           if (!hasToolBlocks) {
+            if (!result.textContent && !result.error) {
+              console.debug('[agenticLoopGen] Complete with empty response (no text, no tools)');
+            }
+
+            // Per-turn check: treat empty output as error
+            if (
+              treatEmptyOutputAsError &&
+              !result.error &&
+              (!result.textContent || result.textContent.trim() === '')
+            ) {
+              return {
+                status: 'error',
+                messages,
+                tokens: totals,
+                hasCoT: loopHasCoT || undefined,
+                error: new Error(
+                  'Treat empty output as error: model returned an empty response with no tool calls. ' +
+                    'This may indicate a provider issue. Disable "Treat empty output as error" in advanced settings to allow empty responses.'
+                ),
+              };
+            }
+
             // Checkpoint auto-continue: instead of returning, send a continue message
             // and let the loop re-enter for a fresh API call
             if (checkpointSet) {
@@ -1659,13 +1708,13 @@ export async function* runAgenticLoop(
               continue; // Re-enter the while loop for a new API call
             }
 
-            return {
+            return applyMandateCoT({
               status: 'complete',
               messages,
               tokens: totals,
               hasCoT: loopHasCoT || undefined,
               returnValue: storedReturnValue,
-            };
+            });
           }
         }
 
@@ -1701,13 +1750,13 @@ export async function* runAgenticLoop(
           checkpointSet = false;
           continue;
         }
-        return {
+        return applyMandateCoT({
           status: 'complete',
           messages,
           tokens: totals,
           hasCoT: loopHasCoT || undefined,
           returnValue: storedReturnValue,
-        };
+        });
       }
 
       // Check soft stop before executing tools
@@ -1760,13 +1809,13 @@ export async function* runAgenticLoop(
         if (storedReturnValue !== undefined) {
           console.debug('[agenticLoopGen] breakLoop ignored: deferred return already captured');
         }
-        return {
+        return applyMandateCoT({
           status: 'complete',
           messages,
           tokens: totals,
           hasCoT: loopHasCoT || undefined,
           returnValue: storedReturnValue ?? breakResult.breakLoop.returnValue,
-        };
+        });
       }
 
       // Force stop: deferred return captured too many rounds ago
@@ -1775,13 +1824,13 @@ export async function* runAgenticLoop(
         iteration - deferredReturnIteration >= forceStopRounds
       ) {
         console.debug('[agenticLoopGen] Deferred return force stop at iteration', iteration);
-        return {
+        return applyMandateCoT({
           status: 'complete',
           messages,
           tokens: totals,
           hasCoT: loopHasCoT || undefined,
           returnValue: storedReturnValue,
-        };
+        });
       }
 
       // Check soft stop after tool execution
@@ -1821,13 +1870,13 @@ export async function* runAgenticLoop(
     }
 
     // Max iterations reached
-    return {
+    return applyMandateCoT({
       status: 'max_iterations',
       messages,
       tokens: totals,
       hasCoT: loopHasCoT || undefined,
       returnValue: storedReturnValue,
-    };
+    });
   } catch (error) {
     const errorObj = error instanceof Error ? error : new Error(String(error));
     console.error('[agenticLoopGen] Error:', errorObj.message);

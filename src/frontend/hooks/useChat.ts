@@ -111,6 +111,67 @@ function extractToolResultIdsFromMessage(message: Message<unknown>): Set<string>
 }
 
 /** True iff the last assistant message has tool calls without matching results. */
+/**
+ * For claude-agent chats: compute the SDK rewind to apply when deleting
+ * messages from `cutoffIndex` onward (i.e., editing a user message at
+ * cutoffIndex, which removes it and everything after). The next send
+ * should resume the SDK "up to and including" the most recent assistant
+ * message strictly before cutoffIndex.
+ *
+ * - If a prior assistant message with `claudeAgentMessageUuid` exists →
+ *   set `claudeAgentResumeAt = thatUuid` (sessionId preserved).
+ * - Otherwise → drop the session entirely so the next send starts a
+ *   fresh SDK session.
+ *
+ * Returns `{}` for non-claude-agent chats — nothing to plumb.
+ */
+function computeClaudeAgentRewindBefore(
+  chat: Chat,
+  messages: Message<unknown>[],
+  cutoffIndex: number
+): Pick<Chat, 'claudeAgentResumeAt' | 'claudeAgentSessionId'> {
+  if (!chat.claudeAgentSessionId) return {};
+  for (let i = cutoffIndex - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'assistant' && m.metadata?.claudeAgentMessageUuid) {
+      console.debug(
+        '[useChat] claude-agent rewind: resumeAt=%s (assistant msg %d)',
+        m.metadata.claudeAgentMessageUuid,
+        i
+      );
+      return { claudeAgentResumeAt: m.metadata.claudeAgentMessageUuid };
+    }
+  }
+  console.debug('[useChat] claude-agent rewind: no prior assistant — fresh session');
+  return { claudeAgentSessionId: undefined, claudeAgentResumeAt: undefined };
+}
+
+/**
+ * Variant for rollback-on-assistant: keeps the message at `targetIndex`
+ * (which the UI guarantees is an assistant message) and discards
+ * everything after. SDK should resume "up to and including" the target.
+ */
+function computeClaudeAgentRewindKeeping(
+  chat: Chat,
+  messages: Message<unknown>[],
+  targetIndex: number
+): Pick<Chat, 'claudeAgentResumeAt' | 'claudeAgentSessionId'> {
+  if (!chat.claudeAgentSessionId) return {};
+  const target = messages[targetIndex];
+  if (target?.role === 'assistant' && target.metadata?.claudeAgentMessageUuid) {
+    console.debug(
+      '[useChat] claude-agent rollback: resumeAt=%s (kept assistant msg %d)',
+      target.metadata.claudeAgentMessageUuid,
+      targetIndex
+    );
+    return { claudeAgentResumeAt: target.metadata.claudeAgentMessageUuid };
+  }
+  // Target isn't an assistant with a stored UUID — fall back to the
+  // "rewind to before" semantics so the SDK at least lands on a sane
+  // boundary instead of staying stuck on stale state.
+  return computeClaudeAgentRewindBefore(chat, messages, targetIndex + 1);
+}
+
 function getUnresolvedToolCalls(messages: Message<unknown>[]): ToolUseBlock[] | null {
   if (messages.length === 0) return null;
 
@@ -961,10 +1022,17 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       }
     }
 
+    // claude-agent: rewind the SDK session to the assistant turn that
+    // preceded the message being edited. If no prior assistant exists
+    // (e.g., editing the first user message), drop the session so the
+    // next send starts a fresh one.
+    const sdkRewind = computeClaudeAgentRewindBefore(chat, messages, messageIndex);
+
     const updatedChat = {
       ...chat,
       contextWindowUsage,
       lastModifiedAt: new Date(),
+      ...sdkRewind,
     };
 
     setChat(updatedChat);
@@ -997,10 +1065,17 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       }
     }
 
+    // claude-agent: rollback target is itself an assistant message (UI
+    // hides this button on user messages for claude-agent chats). Resume
+    // "up to and including" THIS assistant so the SDK history matches
+    // what we kept locally.
+    const sdkRewind = computeClaudeAgentRewindKeeping(chat, messages, messageIndex);
+
     const updatedChat = {
       ...chat,
       contextWindowUsage,
       lastModifiedAt: new Date(),
+      ...sdkRewind,
     };
 
     setChat(updatedChat);

@@ -677,6 +677,7 @@ describe('Minion Integration', () => {
             reasoningBudgetTokens: 8192,
             reasoningEffort: 'high',
             temperature: 0.3,
+            maxOutputTokens: 2048,
             systemPrompt: 'Be concise.',
           },
           toolOptions,
@@ -686,10 +687,12 @@ describe('Minion Integration', () => {
 
       expect(result.isError).toBeUndefined();
 
-      // Verify the overrides were used in the API call
+      // Verify the overrides were used in the API call (2048 differs from the
+      // project default of 4096, proving the per-call override applied)
       const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
       const loopOpts = callArgs[3];
       expect(loopOpts.temperature).toBe(0.3);
+      expect(loopOpts.maxTokens).toBe(2048);
       expect(loopOpts.enableReasoning).toBe(true);
       expect(loopOpts.reasoningBudgetTokens).toBe(8192);
       expect(loopOpts.reasoningEffort).toBe('high');
@@ -703,6 +706,7 @@ describe('Minion Integration', () => {
       expect(created!.reasoningBudgetTokens).toBe(8192);
       expect(created!.reasoningEffort).toBe('high');
       expect(created!.temperature).toBe(0.3);
+      expect(created!.maxOutputTokens).toBe(2048);
       expect(created!.systemPrompt).toBe('Be concise.');
 
       // Step 2: Continue WITHOUT re-specifying overrides — they should carry forward
@@ -724,6 +728,7 @@ describe('Minion Integration', () => {
       const callArgs2 = vi.mocked(apiService.sendMessageStream).mock.calls[0];
       const loopOpts2 = callArgs2[3];
       expect(loopOpts2.temperature).toBe(0.3);
+      expect(loopOpts2.maxTokens).toBe(2048);
       expect(loopOpts2.enableReasoning).toBe(true);
       expect(loopOpts2.reasoningBudgetTokens).toBe(8192);
       expect(loopOpts2.reasoningEffort).toBe('high');
@@ -741,6 +746,7 @@ describe('Minion Integration', () => {
         enableReasoning: true,
         reasoningBudgetTokens: 4096,
         temperature: 0.5,
+        maxOutputTokens: 2048,
       };
       mockStorageData.minionChats.set('minion_override_test', existingChat);
       mockStorageData.minionMessages.set('minion_override_test', [
@@ -788,6 +794,7 @@ describe('Minion Integration', () => {
             message: 'Continue with changes',
             minionChatId: 'minion_override_test',
             temperature: 0.9,
+            maxOutputTokens: 1024,
             enableReasoning: false,
           },
           toolOptions,
@@ -801,11 +808,13 @@ describe('Minion Integration', () => {
       const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
       const loopOpts = callArgs[3];
       expect(loopOpts.temperature).toBe(0.9);
+      expect(loopOpts.maxTokens).toBe(1024);
       expect(loopOpts.enableReasoning).toBe(false);
 
       // The stored values should be updated
       const updatedChat = mockStorageData.minionChats.get('minion_override_test');
       expect(updatedChat?.temperature).toBe(0.9);
+      expect(updatedChat?.maxOutputTokens).toBe(1024);
       expect(updatedChat?.enableReasoning).toBe(false);
       // Unchanged fields should still have original values
       expect(updatedChat?.reasoningBudgetTokens).toBe(4096);
@@ -2435,6 +2444,132 @@ describe('Minion Integration', () => {
       expect(result.isError).toBe(true);
       expect(result.content).toContain('/a.ts');
       expect(result.content).toContain('/b.ts');
+      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('systemPromptFile (string and array)', () => {
+    function buildAdapterFactory(files: Record<string, string | Error>) {
+      const adapter = {
+        readFile: vi.fn(async (path: string) => {
+          const v = files[path];
+          if (v instanceof Error) throw v;
+          if (v === undefined) throw new Error(`Path not found: ${path}`);
+          return v;
+        }),
+      } as unknown as VfsAdapter;
+      return () => adapter;
+    }
+
+    const okStream = () => {
+      const mockResult = {
+        textContent: 'ok',
+        fullContent: [{ type: 'text', text: 'ok' }],
+        stopReason: 'end_turn',
+        inputTokens: 10,
+        outputTokens: 5,
+      };
+      return createMockStream([{ type: 'content', content: 'ok' }], mockResult);
+    };
+
+    it('accepts a single string path (backward compatible)', async () => {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const factory = buildAdapterFactory({ '/p/base.md': 'BASE_PROMPT_BODY' });
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+        systemPrompt: 'You are a minion.',
+      };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: factory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute({ message: 'go', systemPromptFile: '/p/base.md' }, toolOptions, context)
+      );
+
+      expect(result.isError).toBeUndefined();
+      const loopOpts = vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      expect(loopOpts.systemPrompt).toContain('BASE_PROMPT_BODY');
+    });
+
+    it('accepts an array of paths and joins contents in order with blank lines', async () => {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const factory = buildAdapterFactory({
+        '/p/a.md': 'FRAGMENT_A',
+        '/p/b.md': 'FRAGMENT_B',
+        '/p/c.md': 'FRAGMENT_C',
+      });
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: factory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'go', systemPromptFile: ['/p/a.md', '/p/b.md', '/p/c.md'] },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+      const loopOpts = vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      const sp = loopOpts.systemPrompt as string;
+      const idxA = sp.indexOf('FRAGMENT_A');
+      const idxB = sp.indexOf('FRAGMENT_B');
+      const idxC = sp.indexOf('FRAGMENT_C');
+      expect(idxA).toBeGreaterThan(-1);
+      expect(idxB).toBeGreaterThan(idxA);
+      expect(idxC).toBeGreaterThan(idxB);
+      // Fragments separated by a blank line (\n\n appears between them).
+      expect(sp).toMatch(/FRAGMENT_A\n\nFRAGMENT_B\n\nFRAGMENT_C/);
+    });
+
+    it('returns an error naming the specific failing path when an array entry fails', async () => {
+      const factory = buildAdapterFactory({
+        '/p/a.md': 'FRAGMENT_A',
+        '/p/missing.md': new Error('Not found: /p/missing.md'),
+      });
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: factory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'go', systemPromptFile: ['/p/a.md', '/p/missing.md'] },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('/p/missing.md');
+      expect(result.content).not.toContain('/p/a.md');
       expect(apiService.sendMessageStream).not.toHaveBeenCalled();
     });
   });

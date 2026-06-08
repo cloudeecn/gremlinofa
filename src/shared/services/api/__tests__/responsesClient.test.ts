@@ -510,7 +510,10 @@ describe('ResponsesClient', () => {
     it('builds result from stream events when useStreamAccumulator is enabled', async () => {
       // Provider returns empty `output` from finalResponse(), but the stream
       // delivers actual content events. With the accumulator opt-in, the
-      // result should still contain text and tool calls.
+      // result should still contain text and tool calls. Also covers
+      // OpenRouter-style `response.keep_alive` frames: the accumulator path
+      // iterates the raw `.create({stream:true})` stream, so these unknown
+      // frames pass through harmlessly instead of crashing the SDK snapshot.
       const messages: Message<any>[] = [
         {
           id: 'msg1',
@@ -521,6 +524,10 @@ describe('ResponsesClient', () => {
       ];
 
       const mockEvents: any[] = [
+        // OpenRouter sends keep-alive frames during long reasoning. The SDK's
+        // `.stream()` would throw on this; the raw `.create()` stream must
+        // tolerate it.
+        { type: 'response.keep_alive', sequence_number: 0 },
         {
           type: 'response.output_item.added',
           output_index: 0,
@@ -583,30 +590,20 @@ describe('ResponsesClient', () => {
         },
       ];
 
-      // Empty finalResponse — simulates the broken third-party provider.
-      const emptyFinalResponse = {
-        output: [],
-        usage: {
-          input_tokens: 20,
-          output_tokens: 10,
-          input_tokens_details: { cached_tokens: 5 },
-          output_tokens_details: { reasoning_tokens: 0 },
-        },
-      };
-
-      const mockStream = {
+      // Raw async-iterable returned by `.create({stream:true})`. No
+      // finalResponse() — the accumulator builds the result directly.
+      const rawStream = {
         [Symbol.asyncIterator]: async function* () {
           for (const event of mockEvents) {
             yield event;
           }
         },
-        finalResponse: vi.fn().mockResolvedValue(emptyFinalResponse),
       };
 
       const mockClient = {
         responses: {
-          stream: vi.fn().mockReturnValue(mockStream),
-          create: vi.fn(),
+          stream: vi.fn(),
+          create: vi.fn().mockResolvedValue(rawStream),
         },
       };
 
@@ -634,8 +631,13 @@ describe('ResponsesClient', () => {
       }
       const result = iteratorResult.value as any;
 
-      // finalResponse should NOT be called when accumulator is opted in.
-      expect(mockStream.finalResponse).not.toHaveBeenCalled();
+      // Accumulator path must bypass the SDK snapshot — `.stream()` is never
+      // called; `.create({stream:true})` is what we iterate.
+      expect(mockClient.responses.stream).not.toHaveBeenCalled();
+      expect(mockClient.responses.create).toHaveBeenCalledWith(
+        expect.objectContaining({ stream: true }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      );
 
       // Result should contain accumulated text and tool calls despite empty finalResponse.
       expect(result.textContent).toBe('Pinging now');

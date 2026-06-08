@@ -104,6 +104,10 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     project?.useAnthropicOneHourCache || false
   );
   const [noLineNumbers, setNoLineNumbers] = useState(project?.noLineNumbers || false);
+  const [cacheRoutingScope, setCacheRoutingScope] = useState<'project' | 'chat'>(
+    project?.cacheRoutingScope ?? 'project'
+  );
+  const [flexTierEnabled, setFlexTierEnabled] = useState(project?.flexTierEnabled || false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRemoteVfs, setShowRemoteVfs] = useState(false);
   const [remoteVfsUrl, setRemoteVfsUrl] = useState(project?.remoteVfsUrl || '');
@@ -175,6 +179,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setExtendedContext(project.extendedContext || false);
       setUseAnthropicOneHourCache(project.useAnthropicOneHourCache || false);
       setNoLineNumbers(project.noLineNumbers || false);
+      setCacheRoutingScope(project.cacheRoutingScope ?? 'project');
+      setFlexTierEnabled(project.flexTierEnabled || false);
       setRemoteVfsUrl(project.remoteVfsUrl || '');
       setRemoteVfsPassword(project.remoteVfsPassword || '');
     }
@@ -183,6 +189,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   // Get API definition and model names for display
   const apiDef = selectedApiDefId ? apiDefinitions.find(a => a.id === selectedApiDefId) : null;
   const selectedApiType: APIType | null = apiDef?.apiType ?? null;
+  const flexSupported = !!apiDef?.advancedSettings?.flexTierSupported;
 
   // Check if any API has credentials configured (or is marked as local)
   const hasConfiguredApis = apiDefinitions.some(def => def.isLocal || def.apiKey?.trim());
@@ -309,6 +316,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         extendedContext: extendedContext || undefined,
         useAnthropicOneHourCache: useAnthropicOneHourCache || undefined,
         noLineNumbers: noLineNumbers || undefined,
+        cacheRoutingScope: cacheRoutingScope === 'chat' ? 'chat' : undefined,
+        flexTierEnabled: flexTierEnabled || undefined,
         remoteVfsUrl: isServerMode ? undefined : remoteVfsUrl.trim() || undefined,
         remoteVfsPassword: isServerMode ? undefined : remoteVfsPassword || undefined,
         remoteVfsEncrypt: undefined,
@@ -349,6 +358,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     extendedContext,
     useAnthropicOneHourCache,
     noLineNumbers,
+    cacheRoutingScope,
+    flexTierEnabled,
     remoteVfsUrl,
     remoteVfsPassword,
     updateProject,
@@ -1541,6 +1552,75 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       onChange={e => setUseAnthropicOneHourCache(e.target.checked)}
                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
+                  </div>
+
+                  {/* Cache Routing Scope */}
+                  <div>
+                    <div className="mb-2">
+                      <span className="text-sm font-medium text-gray-900">Cache Routing Scope</span>
+                      <p className="text-xs text-gray-500">
+                        Opaque ID sent as <code>prompt_cache_key</code> (OpenAI) or{' '}
+                        <code>metadata.user_id</code> (Anthropic). Steers the provider's shard so
+                        the same prefix lands on the same backend.
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex cursor-pointer items-start gap-2">
+                        <input
+                          type="radio"
+                          name="cacheRoutingScope"
+                          value="project"
+                          checked={cacheRoutingScope === 'project'}
+                          onChange={() => setCacheRoutingScope('project')}
+                          className="mt-0.5 h-4 w-4 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">
+                          <span className="font-medium">Project</span> (default) — every chat in
+                          this project shares one routing bucket. Best cache hit rate.
+                        </span>
+                      </label>
+                      <label className="flex cursor-pointer items-start gap-2">
+                        <input
+                          type="radio"
+                          name="cacheRoutingScope"
+                          value="chat"
+                          checked={cacheRoutingScope === 'chat'}
+                          onChange={() => setCacheRoutingScope('chat')}
+                          className="mt-0.5 h-4 w-4 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">
+                          <span className="font-medium">Per chat</span> — isolates each chat and
+                          each minion sub-chat. Use if parallel chats fight for the same cache slot.
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Flex / batch tier */}
+                  <div>
+                    <label className="flex cursor-pointer items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={flexTierEnabled}
+                        onChange={e => setFlexTierEnabled(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-2 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-700">
+                        <span className="font-medium">
+                          Use flex / batch tier on supported providers
+                        </span>{' '}
+                        — opt into the discounted, lower-priority tier. Evaluated per call against
+                        the active provider, so minions on a flex-supporting provider get the
+                        discount even when the main provider doesn't. Cost is reported at 0.5×.
+                        {!flexSupported && (
+                          <span className="mt-1 block text-xs text-gray-500">
+                            This project's current provider does not have "Supports flex tier"
+                            enabled, so the flag is a no-op for direct calls here. Minions using a
+                            different provider can still use it.
+                          </span>
+                        )}
+                      </span>
+                    </label>
                   </div>
                 </div>
               )}

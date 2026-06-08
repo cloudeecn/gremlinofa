@@ -19,6 +19,7 @@ export default function MessageBubble({
   expandMinions,
   disableMath,
   isLastMessage,
+  isClaudeAgentChat,
 }: MessageBubbleProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
@@ -133,6 +134,7 @@ export default function MessageBubble({
           onDeleteMessage={onDeleteMessage}
           focusMode={focusMode}
           isLastMessage={isLastMessage}
+          isClaudeAgentChat={isClaudeAgentChat}
         />
       )}
 

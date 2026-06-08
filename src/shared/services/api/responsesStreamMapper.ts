@@ -455,6 +455,7 @@ export function convertOutputToStreamChunks(
       }
 
       // Explicitly skip unhandled SDK types
+      case 'additional_tools':
       case 'file_search_call':
       case 'computer_call':
       case 'compaction':

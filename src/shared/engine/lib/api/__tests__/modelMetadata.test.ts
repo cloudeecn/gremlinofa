@@ -99,6 +99,25 @@ describe('modelMetadata', () => {
         expect(result.inputPrice).toBe(3);
       });
 
+      it('resolves claude-opus-4-8 to its own entry, not the claude-opus catch-all', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        // The opus-4-6 entry carries a `claude-opus` catch-all that also
+        // prefix-matches 4-8 at the same specificity score; the dedicated
+        // opus-4-8 entry must win on array order. Its onlyAdaptiveReasoning /
+        // supportsXhighEffort flags (absent on opus-4-6) prove which entry hit.
+        for (const id of ['claude-opus-4-8', 'claude-opus-4-8-20260301']) {
+          const result = getModelMetadataFor(apiDef, id);
+          expect(result.matchedMode).toBe('fuzz');
+          expect(result.onlyAdaptiveReasoning).toBe(true);
+          expect(result.supportsXhighEffort).toBe(true);
+          expect(result.maxOutputTokens).toBe(128000);
+        }
+
+        // Sanity: opus-4-6 lacks those flags, so the assertions above can't pass by accident
+        const opus46 = getModelMetadataFor(apiDef, 'claude-opus-4-6-20260101');
+        expect(opus46.onlyAdaptiveReasoning).toBeUndefined();
+      });
+
       it('prioritizes more specific fuzz matches', () => {
         const apiDef = createApiDef({ apiType: 'chatgpt' });
 
@@ -417,6 +436,35 @@ describe('modelMetadata', () => {
       const read5m = calculateCost(model, 0, 0, 0, 0, 1_000_000, undefined, '5m');
       const read1h = calculateCost(model, 0, 0, 0, 0, 1_000_000, undefined, '1h');
       expect(read1h).toBeCloseTo(read5m);
+    });
+
+    it('applies tierMultiplier to token-priced lines', () => {
+      const model = createModel({
+        inputPrice: 1.0,
+        outputPrice: 2.0,
+        cacheReadPrice: 0.5,
+        cacheWritePrice: 1.5,
+      });
+      const full = calculateCost(model, 1_000_000, 1_000_000, 0, 1_000_000, 1_000_000);
+      const half = calculateCost(
+        model,
+        1_000_000,
+        1_000_000,
+        0,
+        1_000_000,
+        1_000_000,
+        undefined,
+        undefined,
+        0.5
+      );
+      expect(half).toBeCloseTo(full * 0.5);
+    });
+
+    it('does not discount per-request fees with tierMultiplier', () => {
+      const model = createModel({ inputPrice: 0, outputPrice: 0, webSearchPrice: 0.01 });
+      const full = calculateCost(model, 0, 0, 0, 0, 0, 5);
+      const halfTier = calculateCost(model, 0, 0, 0, 0, 0, 5, undefined, 0.5);
+      expect(halfTier).toBeCloseTo(full);
     });
   });
 

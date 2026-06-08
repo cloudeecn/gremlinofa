@@ -239,6 +239,8 @@ export class OpenAIClient implements APIClient {
       signal: AbortSignal;
       checkpointMessageId?: string;
       tidyToolNames?: Set<string>;
+      cacheRoutingKey?: string;
+      flexTierEnabled?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<CompletionMessage>, unknown> {
     try {
@@ -433,6 +435,8 @@ export class OpenAIClient implements APIClient {
         max_completion_tokens: options.maxTokens,
         messages: openaiMessages,
         store: false,
+        ...(options.cacheRoutingKey && { prompt_cache_key: options.cacheRoutingKey }),
+        ...(options.flexTierEnabled && { service_tier: 'flex' as const }),
       };
 
       if (options.webSearchEnabled) {

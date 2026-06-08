@@ -13,6 +13,8 @@ export interface MessageBubbleProps {
   expandMinions?: boolean;
   disableMath?: boolean;
   isLastMessage?: boolean;
+  /** True for chats backed by the Claude Agent SDK — hides Edit/Fork. */
+  isClaudeAgentChat?: boolean;
 }
 
 export interface UserMessageBubbleProps {
@@ -22,6 +24,8 @@ export interface UserMessageBubbleProps {
   onDeleteMessage?: (messageId: string) => void;
   focusMode?: boolean;
   isLastMessage?: boolean;
+  /** True for chats backed by the Claude Agent SDK — hides Edit/Fork. */
+  isClaudeAgentChat?: boolean;
 }
 
 export interface AssistantMessageBubbleProps {
@@ -53,6 +57,8 @@ export interface MessageListProps {
   expandMinions?: boolean;
   disableMath?: boolean;
   alwaysAutoScroll?: boolean;
+  /** True for chats backed by the Claude Agent SDK — hides Edit/Fork. */
+  isClaudeAgentChat?: boolean;
   /** Number of pending tool calls (for banner display) */
   pendingToolCount?: number;
   /** Callback when user clicks Reject on pending tool calls */

@@ -42,6 +42,7 @@ import type {
 } from '../../protocol/types';
 import { type ToolResultRenderBlock, type ToolUseRenderBlock } from '../../protocol/types/content';
 import { generateUniqueId } from '../../protocol/idGenerator';
+import { sha256Hex } from '../../utils/sha256Hex';
 import { createTokenTotals, addTokens, hasTokenUsage } from '../../engine/lib/tokenTotals';
 import type { VfsAdapter } from '../vfs/vfsAdapter';
 import { DummyHookRuntime, type HookInput, type HookInputMessage } from './dummyHookRuntime';
@@ -116,6 +117,15 @@ export interface AgenticLoopOptions {
   // Only honored when apiDef.apiType === 'anthropic'.
   useAnthropicOneHourCache?: boolean;
   noLineNumbers?: boolean;
+  // Cache-routing key scope. 'project' (default) → hash projectId,
+  // 'chat' → hash chatId. Resolved into `cacheRoutingKey` in streamOptions
+  // at call time. See `Project.cacheRoutingScope`.
+  cacheRoutingScope?: 'project' | 'chat';
+  // Effective flex tier flag: project.flexTierEnabled AND
+  // apiDef.advancedSettings.flexTierSupported. Gated at buildLoopOptions so
+  // downstream consumers (request-body injection, cost multiplier) read a
+  // single source of truth.
+  flexTierEnabled?: boolean;
   // Thinking nudge text appended to the last user message at send time.
   // Resolved at loop-build time from `apiDef.advancedSettings.nudgeThinking`
   // (→ NUDGE_THINKING_DEFAULT) and overridable by callers like `minionTool`.
@@ -183,6 +193,13 @@ export interface AgenticLoopOptions {
   // DUMMY System: active hook file name (loaded from /hooks/<name>.js on VFS)
   activeHook?: string;
 
+  // Claude Agent SDK — chat-level session state. Threaded through to the
+  // API client so the SDK session can be created on first turn, resumed
+  // on follow-ups, or rewound via resumeSessionAt when claudeAgentResumeAt
+  // is set (UI rollback / minion verifyHook retry).
+  claudeAgentSessionId?: string;
+  claudeAgentResumeAt?: string;
+
   /**
    * Hard-abort signal. When the controlling AbortController fires, the loop
    * unwinds, finalizes any in-flight assembler into a partial assistant
@@ -222,7 +239,16 @@ export type AgenticLoopEvent =
   | { type: 'dummy_hook_start'; hookName: string }
   | { type: 'dummy_hook_end'; result: 'passthrough' | 'user_stop' | 'intercepted' }
   | { type: 'active_hook_changed'; hookName: string | null }
-  | { type: 'chat_metadata_updated'; name?: string; summary?: string };
+  | { type: 'chat_metadata_updated'; name?: string; summary?: string }
+  | {
+      /**
+       * Emitted after each claude-agent API turn. The dispatcher persists
+       * `sessionId` onto the Chat/MinionChat row (idempotent), then clears
+       * `claudeAgentResumeAt` since the SDK has already consumed it.
+       */
+      type: 'claude_agent_turn';
+      sessionId: string;
+    };
 
 /**
  * Final result returned when loop completes.
@@ -621,7 +647,8 @@ function extractIterationTokens(
     webSearchCount?: number;
   },
   model: Model,
-  cacheTtl?: '5m' | '1h'
+  cacheTtl?: '5m' | '1h',
+  tierMultiplier: number = 1.0
 ): TokenTotals {
   const inputTokens = result.inputTokens ?? 0;
   const outputTokens = result.outputTokens ?? 0;
@@ -638,7 +665,8 @@ function extractIterationTokens(
     cacheCreationTokens,
     cacheReadTokens,
     webSearchCount,
-    cacheTtl
+    cacheTtl,
+    tierMultiplier
   );
 
   const costUnreliable = isCostUnreliable(
@@ -672,6 +700,7 @@ function buildAssistantMessage(
     fullContent: unknown;
     stopReason?: string;
     error?: { message: string; status?: number; stack?: string };
+    providerExtra?: Record<string, unknown>;
   },
   assembler: StreamingContentAssembler,
   apiType: APIType,
@@ -679,6 +708,10 @@ function buildAssistantMessage(
   iterTokens: TokenTotals,
   registry: ClientSideToolRegistry | undefined
 ): Message<unknown> {
+  const providerUuid =
+    typeof result.providerExtra?.claudeAgentMessageUuid === 'string'
+      ? (result.providerExtra.claudeAgentMessageUuid as string)
+      : undefined;
   const { renderingContent, stopReason } = result.error
     ? {
         renderingContent: assembler.finalizeWithError(result.error),
@@ -729,6 +762,7 @@ function buildAssistantMessage(
       contextWindow: 0, // Consumer should fill from model
       contextWindowUsage,
       costUnreliable: iterTokens.costUnreliable || undefined,
+      ...(providerUuid ? { claudeAgentMessageUuid: providerUuid } : {}),
     },
   };
 }
@@ -796,6 +830,18 @@ function safeGenNext(
   );
 }
 
+/**
+ * Like safeGenNext, but waits `delayMs` before kicking off the generator. Used
+ * to stagger parallel launches within a throttle group without blocking the
+ * kick-off of other groups.
+ */
+function delayedGenNext(
+  ag: ActiveToolGen,
+  delayMs: number
+): Promise<{ index: number; result: IteratorResult<ToolStreamEvent, ToolResult> }> {
+  return new Promise(resolve => setTimeout(resolve, delayMs)).then(() => safeGenNext(ag));
+}
+
 /** Result from executeToolsParallel for a single tool */
 interface ParallelToolResult {
   toolResult: ToolResultBlock;
@@ -844,23 +890,39 @@ async function* executeToolsParallel(
     };
   }
 
-  // Kick off first .next() for each generator, with per-tool-name stagger
-  const toolStartCount = new Map<string, number>();
+  // Kick off first .next() for each generator. Tools with parallelThrottleMs are
+  // staggered per throttle group (default: tool name): the Nth launch in a group
+  // is delayed by N*throttleMs. Groups run on independent timelines, so a delayed
+  // group never holds back launches in another group (e.g. minions on different
+  // API definitions all start at t≈0; same-definition minions space out).
+  const groupCount = new Map<string, number>();
   for (const ag of activeGens) {
-    const throttleMs = toolContext.toolRegistry.get(ag.toolUse.name)?.parallelThrottleMs;
-    if (throttleMs) {
-      const count = toolStartCount.get(ag.toolUse.name) ?? 0;
-      if (count > 0) {
+    const tool = toolContext.toolRegistry.get(ag.toolUse.name);
+    const throttleMs = tool?.parallelThrottleMs;
+    if (tool && throttleMs) {
+      const group = tool.getParallelThrottleGroup
+        ? await tool.getParallelThrottleGroup(
+            ag.toolUse.input,
+            toolOptions[ag.toolUse.name],
+            toolContext
+          )
+        : ag.toolUse.name;
+      const count = groupCount.get(group) ?? 0;
+      groupCount.set(group, count + 1);
+      const delay = count * throttleMs;
+      if (delay > 0) {
         console.debug(
           '[agenticLoopGen] Throttling',
           ag.toolUse.name,
+          'group',
+          group,
           'launch by',
-          throttleMs,
+          delay,
           'ms'
         );
-        await new Promise(resolve => setTimeout(resolve, throttleMs));
+        ag.pendingNext = delayedGenNext(ag, delay);
+        continue;
       }
-      toolStartCount.set(ag.toolUse.name, count + 1);
     }
     ag.pendingNext = safeGenNext(ag);
   }
@@ -1458,6 +1520,13 @@ export async function* runAgenticLoop(
   const mandateCoT = apiDef.advancedSettings?.mandateCoT === true;
   const treatEmptyOutputAsError = apiDef.advancedSettings?.treatEmptyOutputAsError === true;
 
+  // Opaque cache-routing key for this run. Providers map it to
+  // `prompt_cache_key` (OpenAI) or `metadata.user_id` (Anthropic).
+  // Anthropic forbids PII in user_id, so we always hash. 'chat' scope falls
+  // back to projectId if the run has no chatId (e.g. some sub-agent paths).
+  const routingScopeSource = options.cacheRoutingScope === 'chat' && chatId ? chatId : projectId;
+  const cacheRoutingKey = await sha256Hex(routingScopeSource);
+
   /** Convert a successful result to an error if mandateCoT is on and no CoT was seen in the run */
   function applyMandateCoT(result: AgenticLoopResult): AgenticLoopResult {
     if (
@@ -1653,15 +1722,32 @@ export async function* runAgenticLoop(
           disableStream: options.disableStream,
           extendedContext: effectiveExtendedContext,
           useAnthropicOneHourCache: options.useAnthropicOneHourCache,
+          flexTierEnabled: options.flexTierEnabled,
           signal: options.signal,
           checkpointMessageId: tidyBoundaryId,
           tidyToolNames: deriveTidyToolNames(toolOptions),
           nudgeThinking: options.nudgeThinking,
+          claudeAgentSessionId: options.claudeAgentSessionId,
+          claudeAgentResumeAt: options.claudeAgentResumeAt,
+          cacheRoutingKey,
+          // Forwarded only for the claude-agent provider: its in-process MCP
+          // bridge dispatches our internal tools through `executeClientSideTool`
+          // using this same context. Ignored by every other client.
+          toolContext,
         };
 
         // Create assembler for streaming
         const assembler = new StreamingContentAssembler({
           getToolIcon: (toolName: string) => options.deps.toolRegistry.get(toolName)?.iconInput,
+          // Renders claude-agent's bridged `tool_result` chunks with the same
+          // icon + pre-rendered output the loop applies to other providers.
+          getToolResultMeta: (toolName: string, content: string, isError: boolean) => {
+            const tool = options.deps.toolRegistry.get(toolName);
+            return {
+              icon: isError ? '❌' : (tool?.iconOutput ?? '✅'),
+              renderedContent: tool?.renderOutput?.(content, isError) ?? content,
+            };
+          },
         });
         // Track for the abort path so a hard-abort mid-stream can finalize
         // whatever the model produced into an `incomplete` partial message.
@@ -1765,7 +1851,8 @@ export async function* runAgenticLoop(
         const iterTokens = extractIterationTokens(
           result,
           model,
-          apiDef.apiType === 'anthropic' && options.useAnthropicOneHourCache ? '1h' : '5m'
+          apiDef.apiType === 'anthropic' && options.useAnthropicOneHourCache ? '1h' : '5m',
+          options.flexTierEnabled ? 0.5 : 1.0
         );
         if (apiDef.advancedSettings?.isSubscription) {
           iterTokens.cost = 0;
@@ -1773,6 +1860,17 @@ export async function* runAgenticLoop(
         }
         addTokens(totals, iterTokens);
         yield { type: 'tokens_consumed', tokens: iterTokens };
+
+        // claude-agent: the SDK runs our bridged tools (e.g. minion) inside
+        // its own turn, so their sub-agent costs come back on the StreamResult
+        // separately from the assistant usage above. Fold them in AFTER the
+        // subscription cost-zeroing so a free assistant turn doesn't wipe the
+        // (often non-subscription) tool costs. Mirrors the loop's own tool-cost
+        // path (`isToolCost: true`).
+        if (result.toolTokenTotals && hasTokenUsage(result.toolTokenTotals)) {
+          addTokens(totals, result.toolTokenTotals);
+          yield { type: 'tokens_consumed', tokens: result.toolTokenTotals, isToolCost: true };
+        }
 
         // Build and record assistant message
         assistantMessage = buildAssistantMessage(
@@ -1793,6 +1891,21 @@ export async function* runAgenticLoop(
 
         messages.push(assistantMessage);
         yield { type: 'message_created', message: assistantMessage };
+
+        // claude-agent: surface session lifecycle so the dispatcher can
+        // persist the session ID on the chat row and clear any pending
+        // resumeAt mark. Idempotent — the dispatcher writes only when
+        // the value is new or the resumeAt flag still set.
+        if (
+          apiDef.apiType === 'claude-agent' &&
+          typeof result.providerExtra?.claudeAgentSessionId === 'string'
+        ) {
+          yield {
+            type: 'claude_agent_turn',
+            sessionId: result.providerExtra.claudeAgentSessionId,
+          };
+        }
+
         // Stream finalized into a real message — clear so the abort path
         // doesn't synthesize a duplicate partial.
         inFlightAssembler = null;

@@ -236,6 +236,8 @@ export class ResponsesClient implements APIClient {
       signal: AbortSignal;
       checkpointMessageId?: string;
       tidyToolNames?: Set<string>;
+      cacheRoutingKey?: string;
+      flexTierEnabled?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.Responses.ResponseInputItem[]>, unknown> {
     let requestParams: OpenAI.Responses.ResponseCreateParams = {};
@@ -429,6 +431,8 @@ export class ResponsesClient implements APIClient {
         input: input,
         max_output_tokens: options.maxTokens,
         store: false, // Keep chat history in the app
+        ...(options.cacheRoutingKey && { prompt_cache_key: options.cacheRoutingKey }),
+        ...(options.flexTierEnabled && { service_tier: 'flex' as const }),
       };
 
       // Get model metadata for reasoning configuration
@@ -442,27 +446,32 @@ export class ResponsesClient implements APIClient {
 
       // Use streaming unless explicitly disabled
       if (!options.disableStream) {
-        // STREAMING PATH - use mapper functions
-        const stream = client.responses.stream(
-          {
-            ...requestParams,
-            stream: true,
-          },
-          { signal: options.signal }
-        );
-
         let mapperState = createMapperState();
         const useAccumulator = apiDefinition.advancedSettings?.useStreamAccumulator === true;
 
         // === Stream accumulator path (opt-in) ===
-        // For third-party Responses API providers whose `stream.finalResponse()`
-        // returns an empty `output` even though events were streamed. The
-        // accumulator builds `textContent` and `fullContent` from the same
-        // events that were already rendered to the user.
+        // For third-party Responses API providers (e.g. OpenRouter) that:
+        //   - emit non-spec frames like `response.keep_alive` during long
+        //     reasoning calls — the SDK's `.stream()` wraps every event
+        //     through a strict snapshot accumulator that throws on the first
+        //     non-`response.created` event, killing the stream; OR
+        //   - return an empty `output` from `stream.finalResponse()` even
+        //     though events were streamed.
+        // We bypass `.stream()` entirely and iterate the raw event stream from
+        // `.create({stream:true})`, then build `textContent` / `fullContent`
+        // from the same events the user already saw.
         if (useAccumulator) {
+          const rawStream = await client.responses.create(
+            {
+              ...requestParams,
+              stream: true,
+            },
+            { signal: options.signal }
+          );
+
           const accumulator = new ResponsesStreamAccumulator();
 
-          for await (const event of stream) {
+          for await (const event of rawStream) {
             const sseEvent = parseResponsesStreamEvent(event);
             const result = mapResponsesEventToStreamChunks(sseEvent, mapperState);
             mapperState = result.state;
@@ -481,6 +490,14 @@ export class ResponsesClient implements APIClient {
         // Stock OpenAI and well-behaved providers return a complete
         // `Response.output` from `stream.finalResponse()`, which we hand to
         // `processResponse` to build the StreamResult.
+        const stream = client.responses.stream(
+          {
+            ...requestParams,
+            stream: true,
+          },
+          { signal: options.signal }
+        );
+
         for await (const event of stream) {
           // Convert SDK event to SSE event format for mapper
           // ResponseStreamEvent is a union type - cast through unknown to access generic properties

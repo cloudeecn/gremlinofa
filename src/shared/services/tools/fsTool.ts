@@ -901,6 +901,7 @@ export const fsTool: ClientSideTool = {
   name: 'filesystem',
   displayName: 'Filesystem Access',
   displaySubtitle: 'Read/write VFS files (/memories readonly)',
+  claudeAgentBridgeable: true,
   // No options - just enable/disable
   description: `Access the project's virtual filesystem. Read/write files anywhere except /memories (readonly, managed by memory tool). Use for: storing code, data files, configuration, scripts.
 Binary file support: view returns dataUrl format for binary files, create accepts dataUrl format (data:<mime>;base64,<data>) to write binary files. str_replace, insert, and append are blocked on binary files.

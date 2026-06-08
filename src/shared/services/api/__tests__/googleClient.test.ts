@@ -1,6 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { Part, GenerateContentResponse } from '@google/genai';
+import type { APIDefinition } from '../../../protocol/types';
 import { GoogleClient } from '../googleClient';
+
+// Mock the SDK so discoverModels' pager can be driven deterministically. Only
+// GoogleGenAI is replaced; everything else (ThinkingLevel, types) stays real.
+const { mockModelsList } = vi.hoisted(() => ({ mockModelsList: vi.fn() }));
+vi.mock('@google/genai', async importOriginal => {
+  const actual = await importOriginal<typeof import('@google/genai')>();
+  return {
+    ...actual,
+    GoogleGenAI: class {
+      models = { list: mockModelsList };
+    },
+  };
+});
 import {
   createMapperState,
   mapGoogleChunkToStreamChunks,
@@ -303,6 +317,107 @@ describe('GoogleClient', () => {
 
     it('returns empty for non-array input', () => {
       expect(client.extractToolUseBlocks('not an array')).toEqual([]);
+    });
+  });
+
+  describe('discoverModels pagination', () => {
+    const apiDef = {
+      id: 'g1',
+      name: 'Test Google',
+      apiType: 'google',
+      apiKey: 'k',
+    } as unknown as APIDefinition;
+
+    // A model entry as returned by ai.models.list(). name carries the "models/" prefix.
+    const gm = (modelId: string, supported = true, displayName?: string) => ({
+      name: `models/${modelId}`,
+      displayName,
+      supportedActions: supported ? ['generateContent'] : ['embedContent'],
+    });
+
+    // Minimal stand-in for the SDK Pager: page() / params.config.pageToken / nextPage().
+    function fakePager(opts: {
+      itemsFor: (i: number) => ReturnType<typeof gm>[];
+      tokenFor: (i: number) => string | undefined;
+    }) {
+      let i = 0;
+      const nextPage = vi.fn(async () => {
+        i++;
+        return opts.itemsFor(i);
+      });
+      return {
+        get page() {
+          return opts.itemsFor(i);
+        },
+        get params() {
+          return { config: { pageToken: opts.tokenFor(i) } };
+        },
+        nextPage,
+      };
+    }
+
+    beforeEach(() => {
+      mockModelsList.mockReset();
+    });
+
+    it('stops after one page when the final nextPageToken is an empty string', async () => {
+      // Empty-string token is the bug trigger: the SDK's hasNextPage() would loop forever.
+      const pager = fakePager({
+        itemsFor: () => [gm('gemini-a'), gm('gemini-embed', false), gm('gemini-b')],
+        tokenFor: () => '',
+      });
+      mockModelsList.mockResolvedValue(pager);
+
+      const models = await client.discoverModels(apiDef);
+
+      expect(pager.nextPage).not.toHaveBeenCalled();
+      expect(models.map(m => m.name)).toEqual(['gemini-a', 'gemini-b']); // non-generateContent filtered
+    });
+
+    it('stops when the nextPageToken repeats (cycling pagination)', async () => {
+      const pager = fakePager({
+        itemsFor: i => [gm(`gemini-${i}`)],
+        tokenFor: () => 'LOOP',
+      });
+      mockModelsList.mockResolvedValue(pager);
+
+      const models = await client.discoverModels(apiDef);
+
+      expect(pager.nextPage).toHaveBeenCalledTimes(1); // page0 -> page1, duplicate token then breaks
+      expect(models.map(m => m.name)).toEqual(['gemini-0', 'gemini-1']);
+    });
+
+    it('caps runaway pagination at 20 pages and warns', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pager = fakePager({
+        itemsFor: i => [gm(`gemini-${i}`)],
+        tokenFor: i => `tok-${i}`, // unique token every page → never self-terminates
+      });
+      mockModelsList.mockResolvedValue(pager);
+
+      const models = await client.discoverModels(apiDef);
+
+      expect(models).toHaveLength(20);
+      expect(pager.nextPage).toHaveBeenCalledTimes(19); // 20 pages walked, break before the 20th fetch
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('20-page cap'));
+      warn.mockRestore();
+    });
+
+    it('walks every page on a normal multi-page list', async () => {
+      const pages = [
+        { items: [gm('gemini-1')], token: 'tok2' as string | undefined },
+        { items: [gm('gemini-2')], token: undefined as string | undefined },
+      ];
+      const pager = fakePager({
+        itemsFor: i => pages[i].items,
+        tokenFor: i => pages[i].token,
+      });
+      mockModelsList.mockResolvedValue(pager);
+
+      const models = await client.discoverModels(apiDef);
+
+      expect(pager.nextPage).toHaveBeenCalledTimes(1);
+      expect(models.map(m => m.name)).toEqual(['gemini-1', 'gemini-2']);
     });
   });
 });

@@ -75,6 +75,7 @@ export const sketchbookTool: ClientSideTool = {
   name: 'sketchbook',
   displayName: 'Sketchbook',
   displaySubtitle: 'Append-only notepad for drafts and working notes',
+  claudeAgentBridgeable: true,
   optionDefinitions,
 
   description:

@@ -202,6 +202,10 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
         await rollbackToMessage(chatId, messageId);
       }
     } else if (action === 'fork') {
+      if (chat?.claudeAgentSessionId) {
+        // Forking a claude-agent chat would split the SDK session — not supported in MVP.
+        return;
+      }
       const forkedChat = await forkChat(chatId, messageId);
       if (forkedChat) {
         navigate(`/chat/${forkedChat.id}`);
@@ -531,6 +535,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           streamingGroups={streamingGroups}
           currentApiDefId={currentApiDefId}
           currentModelId={currentModelId}
+          isClaudeAgentChat={!!chat?.claudeAgentSessionId}
           pendingToolCount={unresolvedToolCalls?.length}
           onPendingToolReject={() => {
             const text = inputMessage.trim() || undefined;

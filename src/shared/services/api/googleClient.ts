@@ -196,20 +196,42 @@ export class GoogleClient implements APIClient {
     const models: Model[] = [];
     const pager = await ai.models.list();
 
-    for await (const m of pager) {
-      // Filter for models that support generateContent
-      if (!m.supportedActions?.includes('generateContent')) {
-        continue;
+    // Drive pagination ourselves instead of `for await (const m of pager)`. The
+    // SDK's Pager.hasNextPage() returns true whenever the response carried any
+    // non-undefined nextPageToken — including an empty string. Endpoints (or CORS
+    // proxies) that echo `nextPageToken: ""` on the final page make the built-in
+    // iterator request the same page forever, tripping Google's per-minute model
+    // listing quota (429). Guard with empty/duplicate-token checks + a page cap.
+    const MAX_PAGES = 20; // ~1000 models at the default page size; real lists are 1-2 pages
+    const seenTokens = new Set<string>();
+
+    for (let pageCount = 1; ; pageCount++) {
+      for (const m of pager.page) {
+        // Filter for models that support generateContent
+        if (!m.supportedActions?.includes('generateContent')) {
+          continue;
+        }
+
+        // Model name comes as "models/gemini-2.5-flash" — extract the ID part
+        const modelId = m.name?.replace(/^models\//, '') ?? '';
+        if (!modelId) continue;
+
+        models.push({
+          ...getModelMetadataFor(apiDefinition, modelId),
+          name: m.displayName || modelId,
+        });
       }
 
-      // Model name comes as "models/gemini-2.5-flash" — extract the ID part
-      const modelId = m.name?.replace(/^models\//, '') ?? '';
-      if (!modelId) continue;
-
-      models.push({
-        ...getModelMetadataFor(apiDefinition, modelId),
-        name: m.displayName || modelId,
-      });
+      const nextToken = pager.params.config?.pageToken;
+      if (!nextToken || seenTokens.has(nextToken)) break;
+      if (pageCount >= MAX_PAGES) {
+        console.warn(
+          `[GoogleClient] model pagination hit the ${MAX_PAGES}-page cap for ${apiDefinition.name}; stopping (likely an empty/looping nextPageToken)`
+        );
+        break;
+      }
+      seenTokens.add(nextToken);
+      await pager.nextPage();
     }
 
     console.debug(`[GoogleClient] Discovered ${models.length} models for ${apiDefinition.name}`);
@@ -242,6 +264,7 @@ export class GoogleClient implements APIClient {
       signal: AbortSignal;
       checkpointMessageId?: string;
       tidyToolNames?: Set<string>;
+      flexTierEnabled?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<GoogleFullContent>, unknown> {
     try {
@@ -272,6 +295,9 @@ export class GoogleClient implements APIClient {
       const config: GenerateContentConfig = {
         maxOutputTokens: options.maxTokens,
         abortSignal: options.signal,
+        // serviceTier may lag in @google/genai typings; cast for the single
+        // field rather than weakening the whole config.
+        ...(options.flexTierEnabled ? ({ serviceTier: 'flex' } as Record<string, unknown>) : null),
       };
 
       // Temperature (omit for reasoning models when reasoning is enabled)

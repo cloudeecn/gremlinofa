@@ -169,6 +169,58 @@ describe('nextStreamingDelta + applyGroupsDelta round-trip', () => {
     expect(third).toEqual({ kind: 'append', target: 'last_text', text: ' there' });
   });
 
+  it('init payload is frozen against later in-place mutation', () => {
+    // Regression: the emitter must not alias the producer's live block. The
+    // background loop pump can grow the block while the init delta is still
+    // queued for the wire; the payload must keep the value it had at emit time.
+    const emitter = makeEmitterState(infoGroup);
+    const liveBlock = { type: 'text' as const, text: 'He' };
+    const liveGroup: RenderingBlockGroup = { category: 'text', blocks: [liveBlock] };
+
+    const init = nextStreamingDelta(emitter, [liveGroup]);
+    expect(init?.kind).toBe('init');
+
+    // Producer races ahead after the init was emitted.
+    liveBlock.text = 'Hello';
+
+    expect(init?.kind === 'init' && init.streamingGroups).toEqual([textGroup('He')]);
+  });
+
+  it('no duplication when producer mutates between emit and apply', () => {
+    // End-to-end: emit init at "He", let the producer grow to "Hello", then
+    // emit the next delta. Applying both on a fresh receiver must land on
+    // "Hello" — not "Hellollo" (the overlap re-shipped by the next append).
+    const emitter = makeEmitterState(infoGroup);
+    const liveBlock = { type: 'text' as const, text: 'He' };
+    const liveGroup: RenderingBlockGroup = { category: 'text', blocks: [liveBlock] };
+
+    const init = nextStreamingDelta(emitter, [liveGroup])!;
+    liveBlock.text = 'Hello';
+    const next = nextStreamingDelta(emitter, [liveGroup])!;
+    expect(next).toEqual({ kind: 'append', target: 'last_text', text: 'llo' });
+
+    let st = applyGroupsDelta(undefined, init);
+    st = applyGroupsDelta(st, next);
+    expect(st?.streamingGroups).toEqual([textGroup('Hello')]);
+  });
+
+  it('replace_streaming payload is frozen against later in-place mutation', () => {
+    const emitter = makeEmitterState(infoGroup);
+    applyGroupsDelta(undefined, nextStreamingDelta(emitter, [textGroup('hi')])!);
+
+    // Structural change (text → thinking) forces replace_streaming.
+    const liveBlock = { type: 'thinking' as const, thinking: 'pondering' };
+    const liveGroup: RenderingBlockGroup = { category: 'text', blocks: [liveBlock] };
+    const replace = nextStreamingDelta(emitter, [liveGroup]);
+    expect(replace?.kind).toBe('replace_streaming');
+
+    liveBlock.thinking = 'pondering harder';
+
+    expect(replace?.kind === 'replace_streaming' && replace.streamingGroups).toEqual([
+      thinkingGroup('pondering'),
+    ]);
+  });
+
   it('structural change yields replace_streaming and resyncs receiver', () => {
     const emitter = makeEmitterState(infoGroup);
     let st = applyGroupsDelta(undefined, nextStreamingDelta(emitter, [textGroup('H')])!);

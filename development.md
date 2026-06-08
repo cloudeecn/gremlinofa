@@ -31,6 +31,8 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Image attachments (resize, compress, multi-select, preview, lightbox)
 - [x] Virtual scrolling for long message histories with scroll-to-bottom button and hysteresis bounce protection
 - [x] API clients (OpenAI Responses, OpenAI Chat Completions, Anthropic, Google Gemini, Bedrock) with streaming and cross-model tool call reconstruction
+- [x] Cache-routing key (`prompt_cache_key` for OpenAI/Responses, `metadata.user_id` for Anthropic) — defaults to sha256(projectId); per-project Advanced toggle switches to sha256(chatId) (minion sub-loops naturally key off their own chatId). Gemini and claude-agent have no equivalent field and are unaffected.
+- [x] Flex / batch tier (≈50% discount, lower priority). Per-provider `flexTierSupported` toggle gates the per-project `flexTierEnabled` opt-in; OpenAI clients inject `service_tier: 'flex'`, Google Gemini injects `serviceTier: 'flex'`. Cost calc applies a 0.5× multiplier to token-priced lines (per-request fees not discounted). Doubao Seed 2.0/1.8 + gemini-3.5-flash metadata added at the same time.
 - [x] Model discovery and caching per API definition
 - [x] Pricing system with per-message cost snapshots
 - [x] Encrypted storage (IndexedDB + AES-256-GCM)
@@ -492,6 +494,25 @@ connecting → connected ⇄ stale → disconnected → reconnecting → connect
 - `OpenAIClient` (Chat Completions with o-series/GPT-5 support)
 - `AnthropicClient` (thinking blocks, prompt caching, web search/fetch, citations, Bedrock via `@anthropic-ai/bedrock-sdk` - see below)
 - `BedrockClient` (AWS Bedrock Converse API for non-Claude models - see Bedrock Client section below)
+- `ClaudeAgentClient` (`@anthropic-ai/claude-agent-sdk`, server-mode only — see Claude Agent Provider section below)
+
+### Claude Agent Provider
+
+Bills Claude Max subscription credit by going through `@anthropic-ai/claude-agent-sdk`, which spawns the host `claude` CLI subprocess. Reverse-engineering the OAuth header is banned; the SDK is the sanctioned path.
+
+- **Server-mode only.** Worker mode registers `ClaudeAgentStubClient` which throws "requires server mode". `nodeEntry.ts` injects the real `ClaudeAgentClient` via `GremlinServer.setBootstrapClaudeAgentClientFactory` so the SDK stays out of the worker bundle. The host `claude` CLI must be on PATH; server startup probes `claude --version` and warns if missing.
+- **Session-per-chat.** Each chat owns one SDK session (UUID v4) stored on disk at `<sessionDir>/<sessionId>.jsonl`. `Chat.claudeAgentSessionId` is set on first turn; presence locks the chat to claude-agent. Session dir defaults to `./data/claude-agent-sessions/` (override via `CLAUDE_AGENT_SESSION_DIR`).
+- **Rollback as metadata.** The UI rollback button (and minion `verifyHook` failures) just set `chat.claudeAgentResumeAt` to the assistant message UUID stored on the rollback target's `MessageMetadata.claudeAgentMessageUuid`. The next user send passes it as `resumeSessionAt` to `query()`. No SDK call happens at rollback time.
+- **Auth.** Empty `apiKey` → SDK uses host CLI credentials (`apiKeySource: 'none'`). Tokens starting with `sk-ant-oat01-` → `CLAUDE_CODE_OAUTH_TOKEN` env (subscription billing). Other keys → `ANTHROPIC_API_KEY` (API billing — defeats the purpose).
+- **Supported knobs:** `enableReasoning` + `reasoningBudgetTokens` → SDK `thinking`; `reasoningEffort` → SDK `effort`; `injectFiles` with `inline`/`separate-block` modes (prepended to user prompt). `verifyHook` runs in our app after the SDK returns; rejection sets `claudeAgentResumeAt` for the next retry.
+- **Tool bridging (in-process MCP).** Tools flagged `claudeAgentBridgeable` (`filesystem`, `memory`, `javascript`, `sketchbook`, `minion`) are exposed to the SDK as an in-process MCP server (`src/server/claudeAgentToolBridge.ts`, server name `gremlin`; tools surface to the model as `mcp__gremlin__<name>`). The exposed set is `run.enabledTools ∩ bridgeable`; with none enabled, `mcpServers` stays `{}` (no behavior change). Since the SDK owns the loop, calls are dispatched through `executeToolSimple` with the agentic loop's prebuilt `ToolContext` (threaded via `streamOptions.toolContext`), not `executeToolsParallel`. The MCP handler is the sole emitter of `tool_use`/`tool_result` StreamChunks — pushed onto a side-channel queue the client merges with the SDK message stream (`Promise.race`), so bridged tools render like other providers. Sub-agent (minion) costs return on `StreamResult.toolTokenTotals`; the loop folds them into chat totals _after_ the subscription cost-zeroing so non-subscription minion costs survive. Schema fidelity: we drive the low-level MCP `Server` (`tools/list` + `tools/call`) with our exact JSON Schema (minion's dynamic `anyOf` intact) — `McpServer.registerTool` is bypassed because it forces a Zod shape. **Built-in host tools (Read/Write/Edit/Bash) stay OFF** and `allowedTools` whitelists exactly the `mcp__gremlin__*` set (plus the web tools when web search is on — see next bullet), so the model never gets host-fs/Bash access; our tools are VFS-scoped. Hidden (not bridged): `return`/`checkpoint`/`dummy` (loop-control signals meaningful only to the bypassed loop) and `metadata` (its `chatMetadata` side-effect is owned by ChatRunner — a follow-up can route it via `providerExtra`).
+- **Web search / fetch.** The project `webSearchEnabled` toggle now applies to claude-agent: when on, the SDK's built-in `WebSearch` + `WebFetch` are added to the `tools` allowlist and `allowedTools` (alongside any `mcp__gremlin__*`). The `tools` allowlist only ever lists those two web tools — `Read`/`Write`/`Edit`/`Bash` are never added — so host-fs/Bash stay off (parity with the Anthropic direct client, which pairs `web_search` + `web_fetch` under the same flag). The CLI's `server_tool_use` + `web_search_tool_result`/`web_fetch_tool_result` blocks are mapped onto the shared `web_search.*`/`web_fetch.*` StreamChunks in `handleSdkMessage`, so queries and source links render like other providers. `webSearchCount` is surfaced for display only — cost is subscription-zeroed.
+- **Unsupported knobs** (silently logged via `console.debug`): `temperature`, `maxOutputTokens`, `nudgeThinking`, `thinkingKeepTurns`, `pruneThinkingBeforeApiCall`, `fileInjectionMode: 'as-file' | 'mock-tool-call'`. Provider-level advanced settings (`pruneThinking`, `enforceGenuineAnthropic`, etc.) are hidden in the SettingsPage UI for this apiType. Model discovery returns a hard-coded list (`claude-opus-4-8`, `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`); the Models Endpoint / Extra Model IDs UI is hidden too.
+- **UI gating** (`isClaudeAgentChat` prop): hides Edit/Fork buttons on user messages; Rollback remains and re-purposes to `resumeSessionAt`. Subscription chats are not convertible to ordinary chats — start a fresh chat to switch providers.
+- **Minion integration.** A claude-agent _parent_ chat can call the `minion` tool via the tool bridge (above). A minion whose _own_ apiDef is `claude-agent` still forces `returnMode = 'no-return'` and `enabledTools = []` (that sub-agent's SDK turn has no tool plumbing of its own). Inline file injection still works. `MinionChat.claudeAgentSessionId` / `claudeAgentResumeAt` mirror the parent-chat fields.
+- **Event plumbing.** `agenticLoopGenerator` emits `claude_agent_turn` after each successful claude-agent stream. `ChatRunner` and `minionTool` both consume it to persist the session ID and clear any pending `resumeAt` flag.
+- **Live streaming (`includePartialMessages`).** The SDK is asked for raw token-by-token `stream_event`s (`SDKPartialAssistantMessage` = a `BetaRawMessageStreamEvent`) so claude-agent turns render live like every other provider. The partial events are routed through the shared `mapAnthropicEventToStreamChunks` (`src/shared/services/api/anthropicStreamMapper.ts`, reused unchanged) — the partial stream is the **sole live emitter** for text / thinking / web-search-intent. Three chunk types are filtered out of the mapper output: `tool_use` (the MCP side-channel owns bridged tool calls), `token_usage` (the `result` message is the authoritative subscription-usage source), and `web_search.result`/`web_fetch.result` (the `assistant` branch is the single results emitter — the assembler's result handler appends, so it must run once). **The SDK's actual message shape:** for one model turn it emits a `message_start`/`message_stop` pair of `stream_event`s wrapping the token deltas, PLUS a separate coalesced `assistant` message **per finished content block** (thinking, text, tool*use each arrive as their own `assistant`, interleaved with that block's partial deltas) — \_not* one batched `assistant` per Beta message. So the partial stream and the per-block `assistant` messages describe the same content twice. Reconciliation is a single per-turn flag, `partialsActive`, set on the first `stream_event`: once partials are streaming, every per-block `assistant` is **`fullContent` + metadata only** (no re-emit → no double-render or block-boundary corruption); the partial stream alone renders text/thinking live. The lone exception is `*_tool_result` blocks, which the partial stream never emits (filtered) — the `assistant` branch is their sole emitter, always. When the CLI never streams partials (older SDK / not honored), `partialsActive` stays false and the per-block `assistant` messages emit the old way (graceful degradation). `result.textContent` (`textBuf`) comes from the partial deltas when streaming, else from the coalesced blocks — one source, so it matches what the assembler rendered (incl. recovered partial text on a cut-off turn). _History note:_ an earlier per-message / per-content-kind FIFO "coverage queue" was wrong for this shape — `message_stop` lands after all the per-block `assistant` messages, so the queue was always empty when each `assistant` was processed (→ double-render) and the one entry it did push was consumed by the next Beta message's first block (off-by-one). The per-turn flag replaced it.
+- **Empty-turn surfacing.** A claude-agent turn can close `subtype=success` / `stop=end_turn` while rendering nothing — the SDK swallows the real signal in places the result message doesn't echo. The client captures, per turn: the assistant `BetaMessage.stop_reason` (`pause_turn` / `refusal` / `max_tokens` / `model_context_window_exceeded`) — also read from the partial `message_delta.delta.stop_reason`; the assistant-level `error` (`rate_limit` / `max_output_tokens` / `server_error` / `billing_error` / `overloaded`); the latest `rate_limit_event.status` (`rejected` means the subscription quota was actually hit); and refusal `stop_details` (`{ category, explanation }`, from either the coalesced `BetaMessage` or the partial `message_delta`). **Refusals always error** — whenever `stop_reason === 'refusal'`, `result.error` is set to `claude-agent: refused — <explanation> (category: <cat>)` even if partial text streamed first (`finalizeWithError` keeps the streamed blocks + appends the error). The other triggers fire only when the turn produced no text and no thinking — one of `hardAssistantError` / `badStop` / `rate_limit rejected`, or it burned its budget on omitted thinking with no text, no tool call, and no distinguishing signal (`thinkingOnly`). A milder fallback runs first: when no text block was produced at all but the result message carried a `result` string, that text is adopted — guarded on `sawTextBlock` (not just an empty `textBuf`) so a turn with real text blocks never collapses into the flat result string. `rateLimitStatus` rides out on `providerExtra`. The SDK's `rate_limit_event` / `api_retry` / non-`init` `system` telemetry are logged as `console.debug` one-liners; per-token `stream_event`s are not (only message_delta stop_reason + first-token `ttft_ms`).
 
 **AnthropicClient Bedrock Support:**
 
@@ -626,6 +647,8 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   - `displaySubtitle?: string` - Description shown below toggle in ProjectSettings
   - `internal?: boolean` - Internal tools not shown in ProjectSettings UI (e.g., `return` for minions)
   - `complex?: boolean` - Complex tools run in a later phase after simple tools (e.g., `minion`)
+  - `parallelThrottleMs?: number` - Stagger parallel launches of this tool; the Nth call in a throttle group starts N×throttleMs later (`minion`: 2000ms)
+  - `getParallelThrottleGroup?(input, toolOptions, context)` - Resolve the throttle group for one call; same group → staggered, different groups → concurrent. Defaults to the tool name. `minion` returns `minion:<apiDefinitionId>` so parallel minions on different API definitions don't delay each other
   - `optionDefinitions?: ToolOptionDefinition[]` - Tool-specific boolean options configurable per-project
   - `description: string | ((opts) => string)` - Static or dynamic description based on toolOptions
   - `inputSchema: ToolInputSchema | ((opts) => ToolInputSchema)` - Static or dynamic input schema
@@ -1142,34 +1165,36 @@ If no console output and result is undefined: `undefined`
 
 The `JsVMContext` class provides a browser-like JavaScript execution environment:
 
-- **Event Loop**: Promise-based via `executePendingJobs(1)` per tick with browser yields
-- **Timeout**: 60s execution limit via `setInterruptHandler()` (kills infinite loops mid-execution)
+- **Event Loop**: microtasks drained via `executePendingJobs(1)` per tick (with host yields), then host-scheduled timers fired
+- **Timeout**: 300s execution limit via `setInterruptHandler()` (kills infinite loops mid-execution); also caps total real timer sleep
 - **Console Capture**: All console methods (log, warn, error, info, debug) captured
 
 **Event Loop Semantics:**
 
 1. User code evaluates synchronously
-2. While `hasPendingJob()` is true:
-   - Yield to browser (`setTimeout(0)`)
-   - `executePendingJobs(1)` processes one microtask
-   - Check 60s timeout deadline
-3. setTimeout uses `Promise.resolve().then(wrapper)` internally
+2. While there are pending jobs, fs ops, or scheduled timers:
+   - Check 300s timeout deadline
+   - Drain pending fs operations
+   - If a microtask is pending: yield to host (`setTimeout(0)`), run one with `executePendingJobs(1)`, loop
+   - Else sleep (via the host's real `setTimeout`) until the earliest timer is due, then fire every due timer in `(wakeAt, insertion)` order
+3. Microtasks always fully drain before any timer fires (real event-loop ordering)
+4. `setTimeout`/`setInterval` register host-side timers honoring the real delay; the drain loop owns the registry (`clearTimeout`/`clearInterval` remove entries)
 
 **Polyfills (injected into every context):**
 
-| API                      | Description                                             |
-| ------------------------ | ------------------------------------------------------- |
-| `self`                   | Points to `globalThis` (UMD/IIFE library compatibility) |
-| `setTimeout(cb, delay?)` | Queues callback to microtask queue (delay ignored)      |
-| `clearTimeout(id)`       | Cancels pending timeout                                 |
-| `setInterval`            | Stub (runs once, returns ID)                            |
-| `clearInterval`          | Same as clearTimeout                                    |
-| `TextEncoder`            | UTF-8 string to bytes                                   |
-| `TextDecoder`            | UTF-8 bytes to string                                   |
-| `btoa(str)`              | Base64 encode                                           |
-| `atob(str)`              | Base64 decode                                           |
-| `halt(message)`          | Immediately stop execution, preserve logs before halt   |
-| `fs` / `__fs`            | VFS filesystem API (see below)                          |
+| API                       | Description                                             |
+| ------------------------- | ------------------------------------------------------- |
+| `self`                    | Points to `globalThis` (UMD/IIFE library compatibility) |
+| `setTimeout(cb, delay?)`  | Schedules a host-side timer honoring the real delay     |
+| `clearTimeout(id)`        | Cancels a pending timer                                 |
+| `setInterval(cb, delay?)` | Fires once (no repeat) but honors the delay, returns ID |
+| `clearInterval(id)`       | Same as clearTimeout                                    |
+| `TextEncoder`             | UTF-8 string to bytes                                   |
+| `TextDecoder`             | UTF-8 bytes to string                                   |
+| `btoa(str)`               | Base64 encode                                           |
+| `atob(str)`               | Base64 decode                                           |
+| `halt(message)`           | Immediately stop execution, preserve logs before halt   |
+| `fs` / `__fs`             | VFS filesystem API (see below)                          |
 
 **UMD/IIFE Library Compatibility:**
 
@@ -1268,26 +1293,27 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 
 **Input Parameters:**
 
-| Parameter               | Type     | Required             | Description                                                                                                              |
-| ----------------------- | -------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `action`                | string   | No                   | `'message'` (default) or `'retry'`. Retry rolls back to savepoint and re-executes.                                       |
-| `message`               | string   | For `message` action | Task to send to minion. For `retry`: omit to re-send original, or provide replacement.                                   |
-| `minionChatId`          | string   | For `retry` action   | Existing minion chat ID to continue or retry                                                                             |
-| `enableWeb`             | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)                                         |
-| `enabledTools`          | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                                                     |
-| `persona`               | string   | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is not `off`.                                  |
-| `model`                 | string   | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` is not `off` + `models` configured.                      |
-| `displayName`           | string   | No                   | Display name shown in the UI for this minion call. If omitted, persona name is used.                                     |
-| `injectFiles`           | string[] | No                   | VFS file paths to inject as context. Injection method controlled by `fileInjectionMode` option.                          |
-| `verifyHook`            | string   | No                   | Hook file name (without `.js`) in `/hooks/` to verify minion output before savepoint advances.                           |
-| `enableReasoning`       | boolean  | No                   | Override reasoning on/off for this call                                                                                  |
-| `reasoningBudgetTokens` | number   | No                   | Override reasoning budget. 0 = adaptive on supported models.                                                             |
-| `reasoningEffort`       | string   | No                   | Override reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`)                                               |
-| `temperature`           | number   | No                   | Override temperature for this call                                                                                       |
-| `fileInjectionMode`     | string   | No                   | Override file injection mode (`inline`/`separate-block`/`as-file`/`mock-tool-call`)                                      |
-| `systemPrompt`          | string   | No                   | Additional system prompt text, appended after persona/configured prompt                                                  |
-| `systemPromptFile`      | string   | No                   | VFS file path to system prompt file. Content appended after `systemPrompt`.                                              |
-| `nudgeThinking`         | string   | No                   | Text appended to last user message to nudge CoT. Empty string disables. Persists on the minion chat for follow-up calls. |
+| Parameter               | Type               | Required             | Description                                                                                                              |
+| ----------------------- | ------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `action`                | string             | No                   | `'message'` (default) or `'retry'`. Retry rolls back to savepoint and re-executes.                                       |
+| `message`               | string             | For `message` action | Task to send to minion. For `retry`: omit to re-send original, or provide replacement.                                   |
+| `minionChatId`          | string             | For `retry` action   | Existing minion chat ID to continue or retry                                                                             |
+| `enableWeb`             | boolean            | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)                                         |
+| `enabledTools`          | string[]           | No                   | Tools for minion (validated against project tools, defaults to none)                                                     |
+| `persona`               | string             | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is not `off`.                                  |
+| `model`                 | string             | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` is not `off` + `models` configured.                      |
+| `displayName`           | string             | No                   | Display name shown in the UI for this minion call. If omitted, persona name is used.                                     |
+| `injectFiles`           | string[]           | No                   | VFS file paths to inject as context. Injection method controlled by `fileInjectionMode` option.                          |
+| `verifyHook`            | string             | No                   | Hook file name (without `.js`) in `/hooks/` to verify minion output before savepoint advances.                           |
+| `enableReasoning`       | boolean            | No                   | Override reasoning on/off for this call                                                                                  |
+| `reasoningBudgetTokens` | number             | No                   | Override reasoning budget. 0 = adaptive on supported models.                                                             |
+| `reasoningEffort`       | string             | No                   | Override reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`)                                               |
+| `temperature`           | number             | No                   | Override temperature for this call                                                                                       |
+| `maxOutputTokens`       | number             | No                   | Override max output tokens for this call (default: project setting). Persists on the minion chat for follow-up calls.    |
+| `fileInjectionMode`     | string             | No                   | Override file injection mode (`inline`/`separate-block`/`as-file`/`mock-tool-call`)                                      |
+| `systemPrompt`          | string             | No                   | Additional system prompt text, appended after persona/configured prompt                                                  |
+| `systemPromptFile`      | string \| string[] | No                   | VFS file path(s) to system prompt file(s). Single string or array; contents appended after `systemPrompt` in order.      |
+| `nudgeThinking`         | string             | No                   | Text appended to last user message to nudge CoT. Empty string disables. Persists on the minion chat for follow-up calls. |
 
 **Adding a new minion override parameter — checklist:**
 
@@ -1805,7 +1831,8 @@ Headers use `h-14` (56px) for content, but adding `safe-area-inset-top` as paddi
 - **Fixed footers** (`ChatInput`, `ProjectSettingsView`) use wrapper pattern with `safe-area-inset-bottom` spacer
 - **Sidebar footer** uses `safe-area-inset-bottom` directly (no fixed height constraint)
 - **Scrollable containers** use `scroll-safe-bottom` for bottom padding
-- **Root container** (`App.tsx`) uses `safe-area-inset-x` for left/right padding
+- **Root container** (`App.tsx`) uses `safe-area-inset-x` for left/right padding plus `bg-white` as the always-on baseline for the notch area
+- **Mobile sidebar overlay** (`App.tsx`) uses `pt-[env(safe-area-inset-top)]` on its fixed wrapper so the gray sidebar bg starts BELOW the notch (body white shows through). It also fully unmounts after the slide-out transition (`onTransitionEnd` checking `e.propertyName === 'transform'`) — not just `translateX` off-screen — because iOS Safari's notch tinting samples the top-edge color and can stick after transform-only changes.
 
 **Modal Pattern:** Conditional rendering (unmount when closed), not opacity toggle.
 
@@ -1888,11 +1915,13 @@ Two-wave fix:
 
 Emission path: `minionTool` runs the diff at each yield site (lines ~488 touch-grass, ~1583 streaming_chunk, ~1599 message_created, ~1731 auto-enforce). `agenticLoopGenerator` forwards `groups_delta` as wire-level `tool_groups_delta`. `LoopRegistry.recordPendingToolResultEvent` applies the same delta to a per-`toolUseId` `groupsState`. `GremlinServer.attachChat` emits `tool_groups_snapshot` during replay so a reconnecting subscriber rehydrates without waiting for the next live delta.
 
+**Value-stability invariant:** every emitted delta must carry a frozen snapshot, never a reference into `StreamingContentAssembler.getGroups()`. That helper returns a fresh outer array but keeps the inner block objects, growing `.text` in place. Deltas sit in `attachChat`'s broadcast queue while `GremlinServer.startLoop`'s background pump races ahead, so an aliased `init`/`replace_streaming` payload would serialize the grown text rather than the baseline its diff was computed against — the next `append` then re-ships the overlap and the receiver duplicates the early characters until `message_finalized` resets the streaming state. `nextStreamingDelta` snapshots once up front and emits from that snapshot; `append` is inherently safe (it carries an immutable string slice). The legacy `groups_update` → `tool_block_update` path (`agenticLoopGenerator.ts:957`) still aliases `event.groups` — latent, since no current tool streams via `groups_update`; freeze it there too if one ever does.
+
 Consumption path: `useChat.ts` maintains a `toolGroupsRef: Map<toolUseId, ToolGroupsState>`, applies deltas, projects assembled `[info, ...accum, ...streaming]` into the placeholder message's `renderingContent` via the existing `applyToolBlockBatch` machinery (200 ms throttle, same channel as `tool_block_update`). `reconnect_start` cancels the projection timer but preserves the ref — `tool_groups_snapshot` from attach replay overwrites entries, `loop_ended` cleans up.
 
 Regression tests:
 
-- `src/shared/services/tools/__tests__/toolGroupsDelta.test.ts` — 17 tests covering diff/apply round-trip, defensive paths, and a bandwidth assertion that the delta stream is ≥10x smaller than equivalent snapshots.
+- `src/shared/services/tools/__tests__/toolGroupsDelta.test.ts` — diff/apply round-trip, defensive paths, a bandwidth assertion that the delta stream is ≥10x smaller than equivalent snapshots, and value-stability cases proving `init`/`replace_streaming` payloads stay frozen when the producer mutates blocks in place after emit (no first-character duplication).
 - `src/frontend/hooks/__tests__/useChat.test.ts` — `'rehydrates minion streaming UI from tool_groups_snapshot on reconnect'`, `'applies tool_groups_delta append events to placeholder rendering'`.
 - Wave 1's `'preserves in-flight pending_tool_result placeholder past snapshot_complete trim'` is unaffected and still passes.
 
@@ -1939,6 +1968,7 @@ Post-import migration runs automatically after CSV import (skippable via checkbo
 
 - Hardcoded pricing needs maintenance mechanism
 - Accessibility audit needed
+- **claude-agent debug logs**: `[claudeAgent]`, `[useChat] claude-agent`, and `[minionTool] claude-agent` `console.debug` calls were added for live-debugging the rollback/resume flow. Strip the verbose ones (per-SDK-message dumps, prompt content) before opening a PR; keep the lifecycle one-liners if they're useful. Files: `src/server/claudeAgentClient.ts`, `src/frontend/hooks/useChat.ts`, `src/shared/services/tools/minionTool.ts`.
 
 ## Future Considerations
 

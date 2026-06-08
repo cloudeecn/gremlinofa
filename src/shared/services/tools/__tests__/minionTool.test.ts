@@ -11,6 +11,7 @@ import {
   SAVEPOINT_START,
   formatModelString,
   parseModelString,
+  resolveMinionModelRef,
   truncateError,
   parseSimplifiedOutput,
   stripNsPrefix,
@@ -483,6 +484,43 @@ describe('minionTool', () => {
 
     it('returns undefined for string without colon', () => {
       expect(parseModelString('nocolon')).toBeUndefined();
+    });
+  });
+
+  describe('resolveMinionModelRef', () => {
+    const chat = { apiDefinitionId: 'api_chat', modelId: 'model-chat' };
+    const defaultOption = { model: { apiDefinitionId: 'api_default', modelId: 'model-default' } };
+
+    it('prefers an explicitly requested model', () => {
+      expect(resolveMinionModelRef({ model: 'api_x:model-x' }, chat, defaultOption)).toEqual({
+        apiDefinitionId: 'api_x',
+        modelId: 'model-x',
+      });
+    });
+
+    it('falls back to the chat-stored model on continuation', () => {
+      expect(resolveMinionModelRef({}, chat, defaultOption)).toEqual({
+        apiDefinitionId: 'api_chat',
+        modelId: 'model-chat',
+      });
+    });
+
+    it('falls back to the default option when no model and no chat', () => {
+      expect(resolveMinionModelRef({}, undefined, defaultOption)).toEqual({
+        apiDefinitionId: 'api_default',
+        modelId: 'model-default',
+      });
+    });
+
+    it('skips an unparseable input.model and uses the next source', () => {
+      expect(resolveMinionModelRef({ model: 'nocolon' }, chat, defaultOption)).toEqual({
+        apiDefinitionId: 'api_chat',
+        modelId: 'model-chat',
+      });
+    });
+
+    it('returns undefined when nothing resolves', () => {
+      expect(resolveMinionModelRef({}, undefined, undefined)).toBeUndefined();
     });
   });
 

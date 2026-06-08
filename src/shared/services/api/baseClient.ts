@@ -1,4 +1,11 @@
-import type { APIDefinition, Message, Model, ToolUseBlock } from '../../protocol/types';
+import type {
+  APIDefinition,
+  Message,
+  Model,
+  RenderingBlockGroup,
+  TokenTotals,
+  ToolUseBlock,
+} from '../../protocol/types';
 
 // Common interface for all API clients
 export interface APIClient {
@@ -37,6 +44,9 @@ export interface APIClient {
       // Context tidy (checkpoint tool)
       checkpointMessageId?: string;
       tidyToolNames?: Set<string>;
+      // Claude Agent SDK — chat-level session state (server-mode only)
+      claudeAgentSessionId?: string;
+      claudeAgentResumeAt?: string;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown>;
 
@@ -64,6 +74,18 @@ export type StreamChunk =
   | { type: 'citation'; url: string; title?: string; citedText?: string } // Citation for current text block
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> } // Client-side tool invocation
   | {
+      // Result of a client-side tool the provider ran inside its own turn.
+      // Only the claude-agent MCP bridge emits these (other providers route
+      // tool results through the agentic loop's tool_block_update events).
+      type: 'tool_result';
+      tool_use_id: string;
+      name: string;
+      content: string;
+      isError?: boolean;
+      renderingGroups?: RenderingBlockGroup[]; // nested (minion) rendering
+      tokenTotals?: TokenTotals; // sub-agent costs incurred by this tool call
+    }
+  | {
       type: 'token_usage';
       inputTokens?: number;
       outputTokens?: number;
@@ -90,4 +112,17 @@ export interface StreamResult<T> {
   cacheCreationTokens?: number;
   cacheReadTokens?: number;
   webSearchCount?: number;
+  /**
+   * Provider-specific payload surfaced to ChatRunner for persistence on
+   * the chat/message row. claude-agent populates this with
+   * `{ claudeAgentSessionId, claudeAgentMessageUuid }`.
+   */
+  providerExtra?: Record<string, unknown>;
+  /**
+   * Token/cost totals incurred by client-side tools the provider executed
+   * inside its own turn (claude-agent MCP bridge: minion sub-agent costs).
+   * The agentic loop folds this into chat totals after the per-iteration
+   * usage so subscription cost-zeroing doesn't wipe non-subscription tool costs.
+   */
+  toolTokenTotals?: TokenTotals;
 }

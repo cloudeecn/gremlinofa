@@ -33,6 +33,12 @@ const server = app.listen(config.port, () => {
   console.log(`CORS proxy listening on port ${config.port}`);
   console.log(`  CORS: ${corsDisplay}`);
   console.log(`  Allowed targets: ${targetDisplay}`);
+  console.log(`  Auth: ${config.proxyAuthToken ? 'X-Proxy-Auth required' : 'none'}`);
+  if (!config.proxyAuthToken) {
+    console.warn(
+      '  ⚠ Running as an OPEN proxy — set PROXY_AUTH_TOKEN or keep it behind an authenticating reverse proxy / private network.'
+    );
+  }
 });
 
 process.on('SIGTERM', () => {

@@ -62,6 +62,17 @@ export type LoopEvent =
   | { type: 'streaming_start' }
   | { type: 'streaming_chunk'; groups: RenderingBlockGroup[] }
   | { type: 'streaming_end' }
+  /**
+   * Full assembled streaming state for the in-flight assistant turn, fired
+   * during `attachChat` replay so a reconnecting/joining subscriber rehydrates
+   * the partially-streamed bubble without waiting for the next live
+   * `streaming_chunk`. The one-shot rehydration counterpart to
+   * `streaming_chunk` (mirrors `tool_groups_snapshot` ↔ `tool_groups_delta`).
+   * Steady-state never emits this. Matters most for the claude-agent provider,
+   * whose single `sendMessageStream` spans a whole multi-tool SDK turn with
+   * long no-token gaps where nothing else would repaint the bubble.
+   */
+  | { type: 'streaming_snapshot'; groups: RenderingBlockGroup[] }
   | { type: 'first_chunk' }
   | { type: 'message_created'; message: Message<unknown> }
   /**

@@ -171,15 +171,12 @@ export function useProject({ projectId, callbacks }: UseProjectProps): UseProjec
   const updateProject = async (updates: Partial<Project>) => {
     if (!project) return;
 
-    const updatedProject = {
-      ...project,
-      ...updates,
-      lastUsedAt: new Date(),
-    };
-
     try {
-      await app.saveProject(updatedProject);
+      // Patch only the changed fields (+ touch lastUsedAt) so edits made while
+      // a loop runs in this project survive its final lastUsedAt bump.
+      await app.patchProject(project.id, updates, { touch: true });
       console.debug('[useProject] Project updated');
+      const updatedProject = { ...project, ...updates, lastUsedAt: new Date() };
       setProject(updatedProject);
       callbacks?.onProjectLoaded?.(project.id, updatedProject);
     } catch (error) {

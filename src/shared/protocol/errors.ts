@@ -14,6 +14,8 @@ export type ProtocolErrorCode =
   | 'CHAT_BUSY'
   | 'CHAT_INCOMPLETE_TAIL'
   | 'CHAT_NOT_FOUND'
+  | 'PROJECT_NOT_FOUND'
+  | 'MINION_CHAT_NOT_FOUND'
   | 'LOOP_NOT_FOUND'
   | 'LOOPS_RUNNING'
   | 'METHOD_NOT_FOUND'

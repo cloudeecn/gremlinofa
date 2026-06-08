@@ -57,6 +57,7 @@ export interface APIDefinition {
   modelsEndpoint?: string; // Custom endpoint for fetching models list (no auth)
   modelsEndpointDisabled?: boolean; // Skip model discovery — only use extraModelIds
   proxyUrl?: string; // CORS proxy URL — when set, SDK traffic routes through this proxy
+  proxyAuthToken?: string; // Shared secret sent as X-Proxy-Auth to the CORS proxy (its own auth, not the provider key)
   extraModelIds?: string[]; // Manually-added model IDs not returned by provider discovery
   advancedSettings?: {
     pruneThinking?: boolean; // Strip thinking/reasoning blocks from messages before latest user message

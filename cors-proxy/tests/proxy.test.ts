@@ -58,6 +58,7 @@ targetApp.get('/check-headers', (req, res) => {
   res.json({
     authorization: req.headers['authorization'],
     'x-proxy-target': req.headers['x-proxy-target'],
+    'x-proxy-auth': req.headers['x-proxy-auth'],
     host: req.headers['host'],
   });
 });
@@ -94,6 +95,7 @@ targetApp.get('/slow-stream', (_req, res) => {
 // --- Proxy server (import app modules) ---
 import { cors } from '../src/middleware.js';
 import { proxyHandler } from '../src/proxy.js';
+import { config } from '../src/config.js';
 
 const proxyApp = express();
 proxyApp.use(cors);
@@ -334,6 +336,66 @@ describe('response buffering', () => {
 
     const fullBody = decoder.decode(Buffer.concat(parts));
     expect(fullBody).toBe('chunk1|chunk2|chunk3|chunk4|chunk5');
+  });
+});
+
+describe('authentication', () => {
+  // `config` is a plain runtime object (`as const` is type-only), so we can
+  // toggle the token for this suite and restore it afterward. proxyHandler
+  // reads config.proxyAuthToken per request, so the change takes effect live.
+  const token = 'super-secret-token';
+  const setToken = (value: string | undefined): void => {
+    (config as { proxyAuthToken?: string }).proxyAuthToken = value;
+  };
+
+  beforeAll(() => setToken(token));
+  afterAll(() => setToken(undefined));
+
+  it('rejects request without X-Proxy-Auth when a token is configured', async () => {
+    const res = await fetch(proxyUrl('/echo'), {
+      headers: { 'X-Proxy-Target': targetBase() },
+    });
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe('Unauthorized');
+  });
+
+  it('rejects request with a wrong X-Proxy-Auth value', async () => {
+    const res = await fetch(proxyUrl('/echo'), {
+      headers: { 'X-Proxy-Target': targetBase(), 'X-Proxy-Auth': 'wrong-token' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('proxies request with the correct X-Proxy-Auth value', async () => {
+    const res = await fetch(proxyUrl('/echo'), {
+      headers: { 'X-Proxy-Target': targetBase(), 'X-Proxy-Auth': token },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.method).toBe('GET');
+  });
+
+  it('does not forward X-Proxy-Auth upstream', async () => {
+    const res = await fetch(proxyUrl('/check-headers'), {
+      headers: { 'X-Proxy-Target': targetBase(), 'X-Proxy-Auth': token },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body['x-proxy-auth']).toBeUndefined();
+  });
+
+  it('allows OPTIONS preflight without X-Proxy-Auth', async () => {
+    const res = await fetch(proxyUrl('/anything'), {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://localhost:5173',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'Content-Type, Authorization, X-Proxy-Target',
+      },
+    });
+    expect(res.status).toBeLessThan(500);
+    expect(res.status).not.toBe(401);
   });
 });
 

@@ -29,6 +29,15 @@ export interface AppContextType {
   projects: Project[];
   refreshProjects: () => Promise<void>;
   saveProject: (project: Project) => Promise<void>;
+  /**
+   * Surgically update a project (merge-not-overwrite) so concurrent edits and a
+   * finishing loop's `lastUsedAt` bump don't clobber. Returns the merged project.
+   */
+  patchProject: (
+    projectId: string,
+    fields: Partial<Project>,
+    opts?: { touch?: boolean; unset?: (keyof Project)[] }
+  ) => Promise<Project>;
   deleteProject: (id: string) => Promise<void>;
 
   // Models - now keyed by API definition ID

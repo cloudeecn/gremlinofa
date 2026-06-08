@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { LoopRegistry } from '../LoopRegistry';
 import type { ActiveLoop, LoopEvent } from '../../protocol/protocol';
-import type { Message, ToolResultBlock } from '../../protocol/types';
+import type { Message, RenderingBlockGroup, ToolResultBlock } from '../../protocol/types';
 
 const mkLoop = (overrides: Partial<ActiveLoop> = {}): ActiveLoop => ({
   loopId: `loop_${Math.random().toString(36).slice(2, 8)}`,
@@ -361,6 +361,82 @@ describe('LoopRegistry', () => {
       const trs = (msg.content as { toolResults?: ToolResultBlock[] }).toolResults;
       expect(trs).toHaveLength(1);
       expect(trs?.[0].tool_use_id).toBe('tu_x');
+    });
+  });
+
+  describe('streaming groups cache', () => {
+    const mkGroups = (text: string): RenderingBlockGroup[] => [
+      { category: 'text', blocks: [{ type: 'text', text }] },
+    ];
+
+    const assistantMessage = (id: string): Message<unknown> =>
+      ({
+        id,
+        role: 'assistant',
+        timestamp: new Date(),
+        content: { type: 'text', content: '' },
+      }) as unknown as Message<unknown>;
+
+    it('caches the latest streaming_chunk groups, overwriting (not merging)', () => {
+      const reg = new LoopRegistry();
+      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hel') });
+      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hello') });
+      expect(reg.getStreamingGroups('chat_1')).toEqual(mkGroups('hello'));
+    });
+
+    it('getStreamingGroups returns undefined when no turn is mid-stream', () => {
+      const reg = new LoopRegistry();
+      expect(reg.getStreamingGroups('chat_none')).toBeUndefined();
+    });
+
+    it('returns a fresh outer array — mutating the result does not corrupt the cache', () => {
+      const reg = new LoopRegistry();
+      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hi') });
+      const got = reg.getStreamingGroups('chat_1');
+      got!.length = 0;
+      expect(reg.getStreamingGroups('chat_1')).toHaveLength(1);
+    });
+
+    it('clears the cache when an assistant message_created supersedes the stream', () => {
+      const reg = new LoopRegistry();
+      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hi') });
+      reg.broadcastChatEvent('chat_1', {
+        type: 'message_created',
+        message: assistantMessage('msg_1'),
+      });
+      expect(reg.getStreamingGroups('chat_1')).toBeUndefined();
+    });
+
+    it('does NOT clear on a user/tool_result message_created — only assistant supersedes', () => {
+      const reg = new LoopRegistry();
+      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hi') });
+      const userMsg = {
+        id: 'msg_tr',
+        role: 'user',
+        timestamp: new Date(),
+        content: { type: 'text', content: '', toolResults: [] },
+      } as unknown as Message<unknown>;
+      reg.broadcastChatEvent('chat_1', { type: 'message_created', message: userMsg });
+      expect(reg.getStreamingGroups('chat_1')).toEqual(mkGroups('hi'));
+    });
+
+    it('loop_ended clears the streaming cache (abort / no-message safety net)', () => {
+      const reg = new LoopRegistry();
+      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hi') });
+      reg.broadcastChatEvent('chat_1', { type: 'loop_ended', loopId: 'loop_1', status: 'aborted' });
+      expect(reg.getStreamingGroups('chat_1')).toBeUndefined();
+    });
+
+    it('is per-chat — a stream on chat_1 is independent of chat_2', () => {
+      const reg = new LoopRegistry();
+      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('a') });
+      reg.broadcastChatEvent('chat_2', { type: 'streaming_chunk', groups: mkGroups('b') });
+      reg.broadcastChatEvent('chat_1', {
+        type: 'message_created',
+        message: assistantMessage('m1'),
+      });
+      expect(reg.getStreamingGroups('chat_1')).toBeUndefined();
+      expect(reg.getStreamingGroups('chat_2')).toEqual(mkGroups('b'));
     });
   });
 });

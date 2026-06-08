@@ -83,6 +83,7 @@ vi.mock('../../client', () => {
       getProject: vi.fn(),
       getAPIDefinition: vi.fn(),
       saveChat: vi.fn(),
+      patchChat: vi.fn(),
       saveMessage: vi.fn(),
       deleteMessageAndAfter: vi.fn(),
       cloneChat: vi.fn(),
@@ -485,8 +486,10 @@ describe('useChat', () => {
         await result.current.editMessage('chat_123', 'msg_assistant_2', '');
       });
 
-      expect(gremlinClient.saveChat).toHaveBeenCalledWith(
-        expect.objectContaining({ contextWindowUsage: 100 })
+      expect(gremlinClient.patchChat).toHaveBeenCalledWith(
+        'chat_123',
+        expect.objectContaining({ contextWindowUsage: 100 }),
+        expect.objectContaining({ touch: true })
       );
     });
 
@@ -676,8 +679,10 @@ describe('useChat', () => {
 
       await result.current.overrideModel('chat_123', 'api_new', 'gpt-3.5');
 
-      expect(gremlinClient.saveChat).toHaveBeenCalledWith(
-        expect.objectContaining({ apiDefinitionId: 'api_new', modelId: 'gpt-3.5' })
+      expect(gremlinClient.patchChat).toHaveBeenCalledWith(
+        'chat_123',
+        expect.objectContaining({ apiDefinitionId: 'api_new', modelId: 'gpt-3.5' }),
+        expect.objectContaining({ touch: true })
       );
       expect(mockCallbacks.onChatMetadataChanged).toHaveBeenCalled();
     });
@@ -689,9 +694,9 @@ describe('useChat', () => {
 
       await waitFor(() => expect(result.current.chat).toBeTruthy());
 
-      const callsBefore = vi.mocked(gremlinClient.saveChat).mock.calls.length;
+      const callsBefore = vi.mocked(gremlinClient.patchChat).mock.calls.length;
       await result.current.overrideModel('chat_different', 'api_new', 'gpt-3.5');
-      expect(vi.mocked(gremlinClient.saveChat).mock.calls.length).toBe(callsBefore);
+      expect(vi.mocked(gremlinClient.patchChat).mock.calls.length).toBe(callsBefore);
     });
   });
 
@@ -705,8 +710,10 @@ describe('useChat', () => {
 
       await result.current.updateChatName('chat_123', 'New Name');
 
-      expect(gremlinClient.saveChat).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'New Name' })
+      expect(gremlinClient.patchChat).toHaveBeenCalledWith(
+        'chat_123',
+        expect.objectContaining({ name: 'New Name' }),
+        expect.objectContaining({ touch: true })
       );
       expect(mockCallbacks.onChatMetadataChanged).toHaveBeenCalled();
     });
@@ -718,9 +725,9 @@ describe('useChat', () => {
 
       await waitFor(() => expect(result.current.chat).toBeTruthy());
 
-      const callsBefore = vi.mocked(gremlinClient.saveChat).mock.calls.length;
+      const callsBefore = vi.mocked(gremlinClient.patchChat).mock.calls.length;
       await result.current.updateChatName('chat_different', 'New Name');
-      expect(vi.mocked(gremlinClient.saveChat).mock.calls.length).toBe(callsBefore);
+      expect(vi.mocked(gremlinClient.patchChat).mock.calls.length).toBe(callsBefore);
     });
 
     it('ignores empty names', async () => {
@@ -730,9 +737,9 @@ describe('useChat', () => {
 
       await waitFor(() => expect(result.current.chat).toBeTruthy());
 
-      const callsBefore = vi.mocked(gremlinClient.saveChat).mock.calls.length;
+      const callsBefore = vi.mocked(gremlinClient.patchChat).mock.calls.length;
       await result.current.updateChatName('chat_123', '   ');
-      expect(vi.mocked(gremlinClient.saveChat).mock.calls.length).toBe(callsBefore);
+      expect(vi.mocked(gremlinClient.patchChat).mock.calls.length).toBe(callsBefore);
     });
   });
 
@@ -1373,6 +1380,49 @@ describe('useChat', () => {
           expect(block.renderingGroups).toBeDefined();
           expect(block.renderingGroups).toHaveLength(2); // info + streaming
           expect(result.current.loopPhase).toBe('streaming');
+          expect(result.current.isLoading).toBe(true);
+        },
+        { timeout: 1000 }
+      );
+    });
+
+    it('rehydrates the in-flight assistant bubble from streaming_snapshot on reconnect', async () => {
+      // Parallel to the tool_groups_snapshot path: a reconnecting subscriber
+      // receives `streaming_snapshot` from `GremlinServer.attachChat` carrying
+      // the partially-streamed assistant groups. The frontend applies them
+      // directly so the bubble repaints immediately instead of going blank
+      // until the next live `streaming_chunk` (worst on claude-agent, whose
+      // turns have long no-token gaps).
+      const msgs = [makeMsg('m1'), makeMsg('m2', 'assistant')];
+      const streamingGroup = {
+        category: 'text' as const,
+        blocks: [{ type: 'text' as const, text: 'partial answer so far' }],
+      };
+
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      act(() => emitInitialSnapshot(msgs));
+      await waitFor(() => expect(result.current.messages).toHaveLength(2));
+
+      // reconnect_start clears any prior streaming groups; the snapshot refills
+      // them via streaming_snapshot, which lands after the (assistant)
+      // message_created that would otherwise clear the bubble.
+      act(() => {
+        activeSession!.fireEvent({ type: 'reconnect_start' });
+        activeSession!.fireEvent({ type: 'chat_updated', chat: mockChat });
+        activeSession!.fireEvent({ type: 'message_created', message: msgs[0] });
+        activeSession!.fireEvent({ type: 'message_created', message: msgs[1] });
+        activeSession!.fireEvent({ type: 'loop_started', loopId: 'loop_1' });
+        activeSession!.fireEvent({ type: 'streaming_snapshot', groups: [streamingGroup] });
+        activeSession!.fireEvent({ type: 'snapshot_complete' });
+      });
+
+      await waitFor(
+        () => {
+          expect(result.current.streamingGroups).toEqual([streamingGroup]);
           expect(result.current.isLoading).toBe(true);
         },
         { timeout: 1000 }

@@ -4,6 +4,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { UnifiedStorage, CekOracleMismatchError, CEK_ORACLE_KEY } from '../unifiedStorage';
+import { CachedStorageAdapter } from '../adapters/CachedStorageAdapter';
+import type { StorageAdapter } from '../StorageAdapter';
 import type { EncryptionCore } from '../../encryption/encryptionCore';
 import {
   createMockAdapter,
@@ -415,6 +417,102 @@ describe('UnifiedStorage', () => {
       // Should have exactly 1 message (msg-1 only, with new ID but same content)
       expect(messages.length).toBe(1);
       expect(messages[0].content.content).toBe('First message');
+    });
+  });
+
+  describe('Surgical patches', () => {
+    beforeEach(async () => {
+      await storage.initialize();
+      await storage.saveProject(createTestProject());
+      await storage.saveChat(createTestChat({ name: 'Original', totalCost: 5 }));
+    });
+
+    it('patchChat overlays only the given fields, preserving the rest', async () => {
+      const merged = await storage.patchChat('test-chat-1', { totalInputTokens: 42 });
+
+      expect(merged.totalInputTokens).toBe(42);
+      // Untouched fields survive.
+      expect(merged.name).toBe('Original');
+      expect(merged.totalCost).toBe(5);
+
+      const reloaded = await storage.getChat('test-chat-1');
+      expect(reloaded?.totalInputTokens).toBe(42);
+      expect(reloaded?.name).toBe('Original');
+    });
+
+    it('patchChat with touch bumps lastModifiedAt; without touch it does not', async () => {
+      const before = (await storage.getChat('test-chat-1'))!.lastModifiedAt.getTime();
+
+      const noTouch = await storage.patchChat('test-chat-1', { totalOutputTokens: 1 });
+      expect(noTouch.lastModifiedAt.getTime()).toBe(before);
+
+      const touched = await storage.patchChat('test-chat-1', {}, { touch: true });
+      expect(touched.lastModifiedAt.getTime()).toBeGreaterThanOrEqual(before);
+    });
+
+    it('patchChat clears a field via unset (survives the JSON round-trip)', async () => {
+      await storage.patchChat('test-chat-1', { claudeAgentSessionId: 'sess-abc' });
+      expect((await storage.getChat('test-chat-1'))?.claudeAgentSessionId).toBe('sess-abc');
+
+      await storage.patchChat('test-chat-1', {}, { unset: ['claudeAgentSessionId'] });
+      const reloaded = await storage.getChat('test-chat-1');
+      expect(reloaded?.claudeAgentSessionId).toBeUndefined();
+    });
+
+    it('patchChat on a missing chat throws and writes nothing', async () => {
+      adapter.save.mockClear();
+      await expect(storage.patchChat('nope', { name: 'x' })).rejects.toThrow(/not found/);
+      expect(adapter.save).not.toHaveBeenCalled();
+    });
+
+    it('patchProject on a missing project throws PROJECT_NOT_FOUND', async () => {
+      await expect(storage.patchProject('nope', { name: 'x' })).rejects.toThrow(/not found/);
+    });
+
+    it('concurrent disjoint patches on the same chat do not lose each other', async () => {
+      // Fire both without awaiting between — the per-record lock must serialize
+      // the read-merge-write so neither field is dropped. Without it this is a
+      // classic lost-update (last write wins on the whole row).
+      await Promise.all([
+        storage.patchChat('test-chat-1', { name: 'Renamed' }),
+        storage.patchChat('test-chat-1', { summary: 'A summary' }),
+      ]);
+
+      const reloaded = await storage.getChat('test-chat-1');
+      expect(reloaded?.name).toBe('Renamed');
+      expect(reloaded?.summary).toBe('A summary');
+    });
+
+    it('concurrent disjoint patches on the same project do not lose each other', async () => {
+      await Promise.all([
+        storage.patchProject('test-project-1', { systemPrompt: 'edited' }),
+        storage.patchProject('test-project-1', {}, { touch: true }),
+      ]);
+
+      const reloaded = await storage.getProject('test-project-1');
+      expect(reloaded?.systemPrompt).toBe('edited');
+    });
+
+    it('composes with CachedStorageAdapter — invalidation + lock prevent stale-read clobber', async () => {
+      const cachedStorage = new UnifiedStorage(
+        new CachedStorageAdapter(createMockAdapter() as unknown as StorageAdapter),
+        mockEncryption as unknown as EncryptionCore
+      );
+      await cachedStorage.initialize();
+      await cachedStorage.saveProject(createTestProject());
+      await cachedStorage.saveChat(createTestChat({ name: 'Original' }));
+      // Prime the get-cache so a stale cached read would be observable if the
+      // patch didn't read fresh under the lock.
+      await cachedStorage.getChat('test-chat-1');
+
+      await Promise.all([
+        cachedStorage.patchChat('test-chat-1', { name: 'Renamed' }),
+        cachedStorage.patchChat('test-chat-1', { summary: 'S' }),
+      ]);
+
+      const reloaded = await cachedStorage.getChat('test-chat-1');
+      expect(reloaded?.name).toBe('Renamed');
+      expect(reloaded?.summary).toBe('S');
     });
   });
 

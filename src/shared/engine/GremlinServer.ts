@@ -226,12 +226,14 @@ export class GremlinServer {
    * Dispatch a one-shot RPC. Throws `ProtocolError` (or any other Error) on
    * failure; the transport is responsible for wrapping into an envelope.
    *
-   * Note: this method does *not* enforce that `init()` has been called.
-   * The Phase 2 WebSocket transport gates non-init RPCs at the *transport*
-   * layer (a connection isn't accepted until the first `init` envelope is
-   * processed). The Phase 1 in-process server is happy to lazy-init storage
-   * on first call — `dispatchOneShot` calls `ensureInitialized` for any
-   * non-init method below.
+   * Note: this method enforces only that *some* init has populated `_deps`
+   * (via `ensureInitialized`); it does not bind a request to a specific
+   * connection. Per-connection auth lives in the WebSocket transport, which
+   * rejects every non-`INIT_EXEMPT_METHODS` request until that socket has
+   * completed its own successful `init` (see `WebSocketTransportServer.onMessage`).
+   * That gate is what makes "prove you hold the CEK" a per-connection
+   * requirement rather than an instance-global flag. The in-process worker
+   * transport is a single trusted MessageChannel peer and needs no such gate.
    */
   async handleRequest<M extends keyof GremlinMethods>(
     method: M,
@@ -308,6 +310,11 @@ export class GremlinServer {
       case 'saveProject':
         await this.storage.saveProject(params.project);
         return { ok: true };
+      case 'patchProject':
+        return this.storage.patchProject(params.projectId, params.fields, {
+          touch: params.touch,
+          unset: params.unset as (keyof import('../protocol/types').Project)[] | undefined,
+        });
       case 'deleteProject':
         await this.storage.deleteProject(params.projectId);
         return { ok: true };
@@ -320,6 +327,11 @@ export class GremlinServer {
       case 'saveChat':
         await this.storage.saveChat(params.chat);
         return { ok: true };
+      case 'patchChat':
+        return this.storage.patchChat(params.chatId, params.fields, {
+          touch: params.touch,
+          unset: params.unset as (keyof import('../protocol/types').Chat)[] | undefined,
+        });
       case 'deleteChat':
         await this.storage.deleteChat(params.chatId);
         return { ok: true };
@@ -935,6 +947,19 @@ export class GremlinServer {
         }
       }
 
+      // Rehydrate the in-flight assistant bubble (partially-streamed text +
+      // thinking + any provider-side tool results) captured by the live
+      // broadcast path while no one was subscribed. Without this a reconnecting
+      // / re-navigating subscriber stares at a blank bubble until the next live
+      // `streaming_chunk` — instant for token-streaming providers, but seconds
+      // for claude-agent during its internal tool/subprocess gaps. The synthetic
+      // `loop_started` yielded above already set the loop active, so the
+      // frontend renders this immediately.
+      const streamingGroups = this.registry.getStreamingGroups(chatId);
+      if (streamingGroups && streamingGroups.length > 0) {
+        yield { type: 'streaming_snapshot', groups: streamingGroups };
+      }
+
       // Authoritative incomplete-tail lock state, computed from the same
       // messages we just delivered. Yielded directly (not broadcast through
       // the chat pubsub) so the consumer always sees its own snapshot value
@@ -1125,7 +1150,9 @@ export class GremlinServer {
     for (const chat of chats) {
       if (chat.messageCount == undefined) {
         chat.messageCount = await this.storage.getMessageCount(chat.id);
-        await this.storage.saveChat(chat);
+        // Backfill surgically — a whole-object save here (list can run mid-loop
+        // from the sidebar) would clobber an in-flight loop's token totals.
+        await this.storage.patchChat(chat.id, { messageCount: chat.messageCount });
       }
     }
 

@@ -16,7 +16,7 @@ const HOP_BY_HOP = new Set([
 ]);
 
 /** Headers stripped from outgoing proxy request */
-const STRIP_FROM_REQUEST = new Set([...HOP_BY_HOP, 'host', 'x-proxy-target']);
+const STRIP_FROM_REQUEST = new Set([...HOP_BY_HOP, 'host', 'x-proxy-target', 'x-proxy-auth']);
 
 /** Headers stripped from target response before returning to client */
 const STRIP_FROM_RESPONSE = new Set([...HOP_BY_HOP]);

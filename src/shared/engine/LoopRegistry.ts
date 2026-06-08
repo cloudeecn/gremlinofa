@@ -19,7 +19,7 @@
  */
 
 import type { ToolResultRenderBlock } from '../protocol/types/content';
-import type { Message, ToolResultBlock } from '../protocol/types';
+import type { Message, RenderingBlockGroup, ToolResultBlock } from '../protocol/types';
 import type { ActiveLoop, ActiveLoopsChange, LoopEvent, LoopId } from '../protocol/protocol';
 import { applyGroupsDelta, type ToolGroupsState } from '../services/tools/toolGroupsDelta';
 
@@ -109,6 +109,28 @@ export class LoopRegistry {
     string, // chatId
     Map<string, PendingToolResultSnapshot>
   >();
+
+  /**
+   * Per-chat snapshot of the latest in-flight `streaming_chunk` groups — the
+   * partially-assembled assistant message. Same problem and lifecycle as
+   * `pendingToolResults`: the assembled groups are never persisted until the
+   * turn's `message_created`, and the live broadcast drops on the floor when no
+   * one is subscribed. Caching the latest groups lets `attachChat` replay them
+   * via `streaming_snapshot` so a reconnecting / re-navigating subscriber sees
+   * the in-flight bubble immediately instead of staring at a blank one until
+   * the next token.
+   *
+   * Each `streaming_chunk` already carries the full accumulated state (not a
+   * delta), so latest-wins overwrite is correct — no merge needed. Cleared when
+   * the assistant `message_created` supersedes it (mirrors `useChat`'s own
+   * clear) and on `loop_ended` as the abort/no-message safety net.
+   *
+   * This is the single rehydration path for the claude-agent provider's whole
+   * in-flight UI: its text, thinking, and bridged tool results all live in
+   * these groups (the bridged results ride the MCP side-channel into the
+   * assembler, not the `pendingToolResults` placeholder path).
+   */
+  private readonly streamingGroupsByChat = new Map<string, RenderingBlockGroup[]>();
 
   /**
    * Register a new running loop. The caller owns the `AbortController`; the
@@ -324,9 +346,22 @@ export class LoopRegistry {
   }
 
   /**
-   * Update the pending tool result cache from a broadcast LoopEvent.
-   * Three event types matter:
+   * Latest cached in-flight `streaming_chunk` groups for a chat, or `undefined`
+   * when no turn is mid-stream. Used by `GremlinServer.attachChat` to replay the
+   * partially-streamed assistant bubble as a `streaming_snapshot`. Returns a
+   * shallow copy of the outer array so callers don't hold a live reference.
+   */
+  getStreamingGroups(chatId: string): RenderingBlockGroup[] | undefined {
+    const groups = this.streamingGroupsByChat.get(chatId);
+    return groups ? groups.slice() : undefined;
+  }
+
+  /**
+   * Update the per-chat replay caches (pending tool results + in-flight
+   * streaming groups) from a broadcast LoopEvent. Event types that matter:
    *
+   *   - `streaming_chunk`: overwrite the chat's cached assistant groups with
+   *     the latest full accumulated state (replayed as `streaming_snapshot`).
    *   - `pending_tool_result`: insert/replace one entry per `toolUseId`
    *     referenced by the placeholder message's `content.toolResults`.
    *     `mergedBlock` starts empty — the first `tool_block_update` for
@@ -337,12 +372,21 @@ export class LoopRegistry {
    *     placeholder yet) create a placeholder-less entry — defensive,
    *     normally never triggers because the loop yields the placeholder
    *     before any updates.
-   *   - `message_created` carrying a tool_result message: the persisted
-   *     final supersedes the placeholder; clear its toolUseIds.
-   *   - `loop_ended`: nuke every entry for the chat as a final cleanup
-   *     for paths that never produced a `message_created` (abort, etc.).
+   *   - `message_created`: an assistant message clears the cached streaming
+   *     groups (the persisted message supersedes them); a tool_result message
+   *     clears its toolUseIds from the pending cache.
+   *   - `loop_ended`: nuke every entry for the chat (both caches) as a final
+   *     cleanup for paths that never produced a `message_created` (abort, etc.).
    */
   private recordPendingToolResultEvent(chatId: string, event: LoopEvent): void {
+    if (event.type === 'streaming_chunk') {
+      // Latest accumulated assistant groups — overwrite (each chunk is the full
+      // state, not a delta). `getGroups()` returns a fresh outer array, so the
+      // stored reference is safe to keep.
+      this.streamingGroupsByChat.set(chatId, event.groups);
+      return;
+    }
+
     if (event.type === 'pending_tool_result') {
       const toolResults = (event.message.content as { toolResults?: ToolResultBlock[] })
         .toolResults;
@@ -386,6 +430,13 @@ export class LoopRegistry {
     }
 
     if (event.type === 'message_created') {
+      // A finalized assistant message supersedes the in-flight streaming groups
+      // (mirrors `useChat` clearing `streamingGroups` on an assistant
+      // `message_created`). Runs before the tool-result early return below,
+      // which only concerns user-role tool_result placeholder messages.
+      if (event.message.role === 'assistant') {
+        this.streamingGroupsByChat.delete(chatId);
+      }
       const toolResults = (event.message.content as { toolResults?: ToolResultBlock[] })
         .toolResults;
       if (!toolResults || toolResults.length === 0) return;
@@ -400,6 +451,7 @@ export class LoopRegistry {
 
     if (event.type === 'loop_ended') {
       this.pendingToolResults.delete(chatId);
+      this.streamingGroupsByChat.delete(chatId);
       return;
     }
   }

@@ -389,11 +389,16 @@ export class ChatRunner {
 
             case 'tokens_consumed': {
               addTokens(totals, event.tokens);
-              const tokenChat: Chat = applyTokensToChat(currentChat, event);
-              currentChat = tokenChat;
-              await this.storage.saveChat(tokenChat);
+              // Patch only the loop-owned token totals (absolutes — CHAT_BUSY
+              // makes this loop the sole writer of them), so a concurrent
+              // rename / model override survives. No `touch`: per-token writes
+              // must not bump lastModifiedAt and reorder the chat list.
+              currentChat = await this.storage.patchChat(
+                ctx.chat.id,
+                tokenFieldsFor(currentChat, event)
+              );
               yield { type: 'tokens_consumed', tokens: event.tokens, isToolCost: event.isToolCost };
-              yield { type: 'chat_updated', chat: tokenChat };
+              yield { type: 'chat_updated', chat: currentChat };
               break;
             }
 
@@ -418,42 +423,34 @@ export class ChatRunner {
               break;
 
             case 'checkpoint_set': {
-              const cpChat: Chat = {
-                ...currentChat,
+              currentChat = await this.storage.patchChat(ctx.chat.id, {
                 checkpointMessageIds: [
                   ...(currentChat.checkpointMessageIds ?? []),
                   event.messageId,
                 ],
-              };
-              currentChat = cpChat;
-              await this.storage.saveChat(cpChat);
+              });
               yield { type: 'checkpoint_set', messageId: event.messageId };
-              yield { type: 'chat_updated', chat: cpChat };
+              yield { type: 'chat_updated', chat: currentChat };
               break;
             }
 
             case 'active_hook_changed': {
-              const hookChat: Chat = {
-                ...currentChat,
-                activeHook: event.hookName ?? undefined,
-              };
-              currentChat = hookChat;
-              await this.storage.saveChat(hookChat);
+              const hookName = event.hookName ?? undefined;
+              currentChat = hookName
+                ? await this.storage.patchChat(ctx.chat.id, { activeHook: hookName })
+                : await this.storage.patchChat(ctx.chat.id, {}, { unset: ['activeHook'] });
               yield { type: 'active_hook_changed', hookName: event.hookName };
-              yield { type: 'chat_updated', chat: hookChat };
+              yield { type: 'chat_updated', chat: currentChat };
               break;
             }
 
             case 'chat_metadata_updated': {
-              const metaChat: Chat = {
-                ...currentChat,
-                ...(event.name !== undefined && { name: event.name }),
-                ...(event.summary !== undefined && { summary: event.summary }),
-              };
-              currentChat = metaChat;
-              await this.storage.saveChat(metaChat);
+              const metaFields: Partial<Chat> = {};
+              if (event.name !== undefined) metaFields.name = event.name;
+              if (event.summary !== undefined) metaFields.summary = event.summary;
+              currentChat = await this.storage.patchChat(ctx.chat.id, metaFields);
               yield { type: 'chat_metadata_updated', name: event.name, summary: event.summary };
-              yield { type: 'chat_updated', chat: metaChat };
+              yield { type: 'chat_updated', chat: currentChat };
               break;
             }
 
@@ -469,14 +466,12 @@ export class ChatRunner {
               const needsSessionSave = currentChat.claudeAgentSessionId !== event.sessionId;
               const needsResumeClear = currentChat.claudeAgentResumeAt !== undefined;
               if (needsSessionSave || needsResumeClear) {
-                const sessionChat: Chat = {
-                  ...currentChat,
-                  claudeAgentSessionId: event.sessionId,
-                  claudeAgentResumeAt: undefined,
-                };
-                currentChat = sessionChat;
-                await this.storage.saveChat(sessionChat);
-                yield { type: 'chat_updated', chat: sessionChat };
+                currentChat = await this.storage.patchChat(
+                  ctx.chat.id,
+                  { claudeAgentSessionId: event.sessionId },
+                  needsResumeClear ? { unset: ['claudeAgentResumeAt'] } : undefined
+                );
+                yield { type: 'chat_updated', chat: currentChat };
               }
               break;
             }
@@ -487,22 +482,24 @@ export class ChatRunner {
       // result.done — final result is in result.value
       const finalResult = result.value;
 
-      // Final chat save: rolls in lastContextWindowUsage + new messageCount.
-      const finalChat: Chat = {
-        ...currentChat,
+      // Final chat patch: roll in lastContextWindowUsage + new messageCount and
+      // bump lastModifiedAt (touch). costUnreliable is sticky — only ever set
+      // true, never cleared (a clear here would wipe a flag an earlier turn
+      // raised).
+      const finalFields: Partial<Chat> = {
         contextWindowUsage: lastContextWindowUsage,
         messageCount: (ctx.chat.messageCount ?? 0) + finalResult.messages.length - context.length,
-        lastModifiedAt: new Date(),
-        costUnreliable: hasUnreliableCost || currentChat.costUnreliable || undefined,
       };
-      await this.storage.saveChat(finalChat);
-      yield { type: 'chat_updated', chat: finalChat };
+      if (hasUnreliableCost || currentChat.costUnreliable) {
+        finalFields.costUnreliable = true;
+      }
+      currentChat = await this.storage.patchChat(ctx.chat.id, finalFields, { touch: true });
+      yield { type: 'chat_updated', chat: currentChat };
 
-      const finalProject: Project = {
-        ...ctx.project,
-        lastUsedAt: new Date(),
-      };
-      await this.storage.saveProject(finalProject);
+      // Project patch: only bump lastUsedAt. Reading-merging under the project
+      // lock means two loops in the same project (and a concurrent settings
+      // edit) no longer clobber each other's whole-object writes.
+      const finalProject = await this.storage.patchProject(ctx.project.id, {}, { touch: true });
       yield { type: 'project_updated', project: finalProject };
 
       return { status: finalResult.status };
@@ -513,16 +510,18 @@ export class ChatRunner {
 }
 
 /**
- * Apply a `tokens_consumed` event to a chat object, returning a new chat
- * with the cumulative totals updated. Mirrors the equivalent block in
- * `useChat.ts`'s `consumeAgenticLoop`.
+ * Compute the loop-owned token-total fields after a `tokens_consumed` event —
+ * the new cumulative absolutes (the loop is the sole writer of these, so
+ * absolutes are safe). Returns only those fields so `patchChat` can merge them
+ * onto the latest stored chat without disturbing user-owned fields (name,
+ * model override, …). `costUnreliable` is only ever set true, never cleared.
+ * Mirrors the equivalent block in `useChat.ts`'s `consumeAgenticLoop`.
  */
-function applyTokensToChat(
+function tokenFieldsFor(
   chat: Chat,
   event: { tokens: import('../protocol/types/content').TokenTotals; isToolCost?: boolean }
-): Chat {
-  return {
-    ...chat,
+): Partial<Chat> {
+  const fields: Partial<Chat> = {
     totalInputTokens: (chat.totalInputTokens ?? 0) + event.tokens.inputTokens,
     totalOutputTokens: (chat.totalOutputTokens ?? 0) + event.tokens.outputTokens,
     totalReasoningTokens: (chat.totalReasoningTokens ?? 0) + event.tokens.reasoningTokens,
@@ -530,17 +529,21 @@ function applyTokensToChat(
       (chat.totalCacheCreationTokens ?? 0) + event.tokens.cacheCreationTokens,
     totalCacheReadTokens: (chat.totalCacheReadTokens ?? 0) + event.tokens.cacheReadTokens,
     totalCost: (chat.totalCost ?? 0) + event.tokens.cost,
-    costUnreliable: event.tokens.costUnreliable || chat.costUnreliable || undefined,
-    ...(event.isToolCost && {
-      minionTotalInputTokens: (chat.minionTotalInputTokens ?? 0) + event.tokens.inputTokens,
-      minionTotalOutputTokens: (chat.minionTotalOutputTokens ?? 0) + event.tokens.outputTokens,
-      minionTotalReasoningTokens:
-        (chat.minionTotalReasoningTokens ?? 0) + event.tokens.reasoningTokens,
-      minionTotalCacheCreationTokens:
-        (chat.minionTotalCacheCreationTokens ?? 0) + event.tokens.cacheCreationTokens,
-      minionTotalCacheReadTokens:
-        (chat.minionTotalCacheReadTokens ?? 0) + event.tokens.cacheReadTokens,
-      minionTotalCost: (chat.minionTotalCost ?? 0) + event.tokens.cost,
-    }),
   };
+  if (event.tokens.costUnreliable || chat.costUnreliable) {
+    fields.costUnreliable = true;
+  }
+  if (event.isToolCost) {
+    fields.minionTotalInputTokens = (chat.minionTotalInputTokens ?? 0) + event.tokens.inputTokens;
+    fields.minionTotalOutputTokens =
+      (chat.minionTotalOutputTokens ?? 0) + event.tokens.outputTokens;
+    fields.minionTotalReasoningTokens =
+      (chat.minionTotalReasoningTokens ?? 0) + event.tokens.reasoningTokens;
+    fields.minionTotalCacheCreationTokens =
+      (chat.minionTotalCacheCreationTokens ?? 0) + event.tokens.cacheCreationTokens;
+    fields.minionTotalCacheReadTokens =
+      (chat.minionTotalCacheReadTokens ?? 0) + event.tokens.cacheReadTokens;
+    fields.minionTotalCost = (chat.minionTotalCost ?? 0) + event.tokens.cost;
+  }
+  return fields;
 }

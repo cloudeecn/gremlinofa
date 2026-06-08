@@ -61,4 +61,18 @@ describe('getProxyConfig', () => {
     });
     expect(result?.baseURL).toBe('https://my-proxy.example.com/cors-proxy');
   });
+
+  it('adds X-Proxy-Auth header when proxyAuthToken is set', () => {
+    const result = getProxyConfig({
+      ...baseDef,
+      proxyUrl: '/proxy',
+      proxyAuthToken: 'shared-secret',
+    });
+    expect(result?.headers['X-Proxy-Auth']).toBe('shared-secret');
+  });
+
+  it('omits X-Proxy-Auth header when proxyAuthToken is not set', () => {
+    const result = getProxyConfig({ ...baseDef, proxyUrl: '/proxy' });
+    expect(result?.headers['X-Proxy-Auth']).toBeUndefined();
+  });
 });

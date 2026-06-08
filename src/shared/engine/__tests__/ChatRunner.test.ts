@@ -13,7 +13,11 @@ import { LoopRegistry } from '../LoopRegistry';
 import type { BackendDeps } from '../backendDeps';
 import type { APIService } from '../../services/api/apiService';
 import type { EncryptionCore } from '../../services/encryption/encryptionCore';
-import type { UnifiedStorage } from '../../services/storage/unifiedStorage';
+import { UnifiedStorage } from '../../services/storage/unifiedStorage';
+import {
+  createMockAdapter,
+  createMockEncryptionService,
+} from '../../services/storage/__tests__/testUtils';
 import type { ClientSideToolRegistry } from '../../services/tools/clientSideTools';
 import type {
   AgenticLoopEvent,
@@ -127,7 +131,8 @@ const mkAssistantMessage = (id: string, text: string, incomplete?: boolean): Mes
 });
 
 function makeStorageStub(): UnifiedStorage {
-  return {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stub: any = {
     initialize: vi.fn(async () => {}),
     getChat: vi.fn(async () => null),
     getProject: vi.fn(async () => null),
@@ -139,7 +144,32 @@ function makeStorageStub(): UnifiedStorage {
     saveChat: vi.fn(async () => {}),
     saveProject: vi.fn(async () => {}),
     deleteMessageAndAfter: vi.fn(async () => {}),
-  } as unknown as UnifiedStorage;
+  };
+  // patchChat/patchProject merge `fields` onto the mocked getChat/getProject
+  // result so the runner's `currentChat = patch(...)` chain behaves like real
+  // storage without a full UnifiedStorage instance.
+  stub.patchChat = vi.fn(
+    async (
+      chatId: string,
+      fields: Partial<Chat>,
+      opts?: { touch?: boolean; unset?: (keyof Chat)[] }
+    ) => {
+      const base = (await stub.getChat(chatId)) ?? mkChat(chatId, 'p1');
+      const merged: Record<string, unknown> = { ...base, ...fields };
+      for (const key of opts?.unset ?? []) delete merged[key as string];
+      if (opts?.touch) merged.lastModifiedAt = new Date();
+      return merged;
+    }
+  );
+  stub.patchProject = vi.fn(
+    async (projectId: string, fields: Partial<Project>, opts?: { touch?: boolean }) => {
+      const base = (await stub.getProject(projectId)) ?? mkProject(projectId);
+      const merged: Record<string, unknown> = { ...base, ...fields };
+      if (opts?.touch) merged.lastUsedAt = new Date();
+      return merged;
+    }
+  );
+  return stub as unknown as UnifiedStorage;
 }
 
 /**
@@ -274,8 +304,9 @@ describe('ChatRunner', () => {
         expect.objectContaining({ role: 'user' })
       );
 
-      // Project lastUsedAt updated.
-      expect(storage.saveProject).toHaveBeenCalled();
+      // Project lastUsedAt bumped via a surgical patch (touch), not a
+      // whole-object save.
+      expect(storage.patchProject).toHaveBeenCalledWith('p1', {}, { touch: true });
 
       // Registry should be empty after the loop ends.
       expect(registry.list()).toEqual([]);
@@ -370,11 +401,17 @@ describe('ChatRunner', () => {
       const tokensEvent = events.find(e => e.type === 'tokens_consumed');
       expect(tokensEvent).toBeDefined();
 
-      // saveChat should have been called at least twice: once on
-      // tokens_consumed and once on the final chat update.
+      // patchChat should have been called at least twice: once on
+      // tokens_consumed and once on the final chat update — surgically, never
+      // a whole-object saveChat.
       expect(
-        (storage.saveChat as ReturnType<typeof vi.fn>).mock.calls.length
+        (storage.patchChat as ReturnType<typeof vi.fn>).mock.calls.length
       ).toBeGreaterThanOrEqual(2);
+      expect(storage.saveChat).not.toHaveBeenCalled();
+
+      // The chat_updated event carries the running token totals.
+      const chatUpdated = events.find(e => e.type === 'chat_updated');
+      expect(chatUpdated).toMatchObject({ chat: { totalInputTokens: 100, totalOutputTokens: 50 } });
     });
   });
 
@@ -532,5 +569,74 @@ describe('ChatRunner', () => {
         }
       }).rejects.toMatchObject({ code: 'CHAT_NOT_FOUND' });
     });
+  });
+});
+
+/**
+ * Regression: a user edit (rename) made WHILE a loop runs must survive the
+ * loop's final persist. The runner used to write the whole in-memory chat back
+ * at the end, clobbering any concurrent edit; it now patches only the fields it
+ * owns. Driven against a REAL UnifiedStorage so the read-merge-write actually
+ * happens.
+ */
+describe('ChatRunner surgical persistence', () => {
+  let storage: UnifiedStorage;
+  let registry: LoopRegistry;
+  let runner: ChatRunner;
+
+  beforeEach(async () => {
+    const adapter = createMockAdapter();
+    const encryption = createMockEncryptionService() as unknown as EncryptionCore;
+    storage = new UnifiedStorage(adapter, encryption);
+    await storage.initialize();
+
+    await storage.saveProject(mkProject('p1'));
+    await storage.saveChat({ ...mkChat('c1', 'p1'), name: 'Original', totalInputTokens: 0 });
+    await storage.saveAPIDefinition(mkAPIDef('api_1'));
+    await storage.saveModels('api_1', [mkModel('m1')]);
+
+    registry = new LoopRegistry();
+    runner = new ChatRunner(makeBackendDepsStub(storage, registry), registry);
+    runAgenticLoopMock.mockReset();
+  });
+
+  it('keeps a concurrent rename and still records the loop token totals', async () => {
+    const assistantMsg = mkAssistantMessage('msg_a1', 'hi');
+    const tokens = {
+      inputTokens: 10,
+      outputTokens: 5,
+      reasoningTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      webSearchCount: 0,
+      cost: 0.001,
+      costUnreliable: false,
+    };
+
+    runAgenticLoopMock.mockImplementation(() => {
+      async function* gen() {
+        yield { type: 'streaming_start' } as AgenticLoopEvent;
+        yield { type: 'message_created', message: assistantMsg } as AgenticLoopEvent;
+        yield { type: 'tokens_consumed', tokens, isToolCost: false } as AgenticLoopEvent;
+        // Simulate the user renaming the chat mid-run (after the loop already
+        // snapshotted it at start). A whole-object final save would lose this.
+        await storage.patchChat('c1', { name: 'Renamed' }, { touch: true });
+        return { status: 'complete', messages: [assistantMsg], tokens } as AgenticLoopResult;
+      }
+      return gen();
+    });
+
+    const gen = runner.run(
+      { chatId: 'c1', mode: 'send', content: 'hi' },
+      new AbortController(),
+      'loop_x'
+    );
+    for await (const _ev of gen) {
+      // drain
+    }
+
+    const finalChat = await storage.getChat('c1');
+    expect(finalChat?.name).toBe('Renamed');
+    expect(finalChat?.totalInputTokens).toBe(10);
   });
 });

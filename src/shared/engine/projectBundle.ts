@@ -1,14 +1,10 @@
 /**
  * Project bundle export / import runtime + pure helpers.
  *
- * Phase 1.8 consolidation: the previous setup split this code across
- * three files — pure helpers in `src/utils/projectExport.ts` and
- * `src/utils/projectImport.ts`, types in the same files, and the
- * impure runtime here. The Phase 1.8 cleanup pulls all of it into one
- * place: types live on the protocol surface
- * (`src/shared/protocol/types/projectBundle.ts`), the DOM-touching
- * download trigger lives in `src/frontend/lib/projectExport.ts`, and
- * everything else is here so the worker has a single import target.
+ * Layout: types live on the protocol surface
+ * (`src/shared/protocol/types/projectBundle.ts`), the DOM-touching download
+ * trigger lives in `src/frontend/lib/projectExport.ts`, and everything else
+ * is here so the worker has a single import target.
  */
 
 import { Tables } from '../services/storage/StorageAdapter';
@@ -27,8 +23,7 @@ import type { ProjectExportEvent } from '../protocol/protocol';
 import { ProtocolError } from './GremlinServer';
 
 /**
- * Default values for optional Project fields. Mirrors the constant from
- * the previous `src/utils/projectImport.ts` so a hand-crafted bundle that
+ * Default values for optional Project fields so a hand-crafted bundle that
  * omits fields still produces a valid `Project`.
  */
 const PROJECT_DEFAULTS: Partial<Project> = {

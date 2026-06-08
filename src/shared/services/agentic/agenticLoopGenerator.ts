@@ -42,7 +42,7 @@ import type {
 } from '../../protocol/types';
 import { type ToolResultRenderBlock, type ToolUseRenderBlock } from '../../protocol/types/content';
 import { generateUniqueId } from '../../protocol/idGenerator';
-import { sha256Hex } from '../../utils/sha256Hex';
+import { sha256Hex } from '../../protocol/sha256Hex';
 import { createTokenTotals, addTokens, hasTokenUsage } from '../../engine/lib/tokenTotals';
 import type { VfsAdapter } from '../vfs/vfsAdapter';
 import { DummyHookRuntime, type HookInput, type HookInputMessage } from './dummyHookRuntime';

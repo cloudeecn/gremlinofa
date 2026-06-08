@@ -49,6 +49,10 @@ export function extractToolUseBlocks(apiType: APIType, fullContent: unknown): To
       // empty here mirrors what the singleton `apiService.extractToolUseBlocks`
       // did via the missing-client fallthrough.
       return [];
+    case 'claude-agent':
+      // MVP has no tools wired through the SDK — claude-agent never produces
+      // tool_use blocks, so there's nothing to extract.
+      return [];
   }
 }
 

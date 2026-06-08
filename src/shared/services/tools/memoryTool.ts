@@ -1066,6 +1066,7 @@ export const memoryTool: ClientSideTool = {
   name: 'memory',
   displayName: 'Memory',
   displaySubtitle: 'Use a virtual FS to remember across conversations (Optimized for Anthropic)',
+  claudeAgentBridgeable: true,
   optionDefinitions: [
     {
       type: 'boolean',

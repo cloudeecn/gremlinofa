@@ -41,6 +41,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formMandateCoT, setFormMandateCoT] = useState(false);
   const [formTreatEmptyOutputAsError, setFormTreatEmptyOutputAsError] = useState(false);
   const [formUseStreamAccumulator, setFormUseStreamAccumulator] = useState(false);
+  const [formFlexTierSupported, setFormFlexTierSupported] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -66,6 +67,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormMandateCoT(false);
     setFormTreatEmptyOutputAsError(false);
     setFormUseStreamAccumulator(false);
+    setFormFlexTierSupported(false);
     setShowAdvanced(false);
   };
 
@@ -75,7 +77,13 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     { id: 'anthropic', name: 'Anthropic', icon: '✨' },
     { id: 'bedrock', name: 'AWS Bedrock', icon: '☁️' },
     { id: 'google', name: 'Google Gemini', icon: '💎' },
+    { id: 'claude-agent', name: 'Claude Agent (subscription)', icon: '🅒' },
   ] as const;
+
+  // The Claude Agent SDK ignores the entire advancedSettings surface and
+  // discovers no models — hide both UI sections to avoid promising knobs
+  // that don't apply. Sender already drops anything that leaked through.
+  const isClaudeAgentForm = formApiType === 'claude-agent';
 
   const handleStartEdit = (def: APIDefinition) => {
     setEditingId(def.id);
@@ -99,6 +107,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormMandateCoT(def.advancedSettings?.mandateCoT || false);
     setFormTreatEmptyOutputAsError(def.advancedSettings?.treatEmptyOutputAsError || false);
     setFormUseStreamAccumulator(def.advancedSettings?.useStreamAccumulator || false);
+    setFormFlexTierSupported(def.advancedSettings?.flexTierSupported || false);
     setShowAdvanced(false);
   };
 
@@ -115,6 +124,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormMandateCoT(def.advancedSettings?.mandateCoT || false);
     setFormTreatEmptyOutputAsError(def.advancedSettings?.treatEmptyOutputAsError || false);
     setFormUseStreamAccumulator(def.advancedSettings?.useStreamAccumulator || false);
+    setFormFlexTierSupported(def.advancedSettings?.flexTierSupported || false);
     setShowAdvanced(true);
   };
 
@@ -140,6 +150,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormMandateCoT(false);
     setFormTreatEmptyOutputAsError(false);
     setFormUseStreamAccumulator(false);
+    setFormFlexTierSupported(false);
     setShowAdvanced(false);
   };
 
@@ -151,7 +162,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     }
 
     // API key is required unless the provider is marked as local (Ollama, LM Studio, etc.)
-    if (!formIsLocal && !formApiKey.trim()) {
+    // claude-agent is exempt — empty key falls back to the host `claude` CLI's
+    // OAuth credentials (the whole point of the subscription path).
+    if (!formIsLocal && formApiType !== 'claude-agent' && !formApiKey.trim()) {
       await showAlert('Error', 'API Key is required for this provider (or mark as Local)');
       return;
     }
@@ -185,7 +198,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
           formNudgeThinking ||
           formMandateCoT ||
           formTreatEmptyOutputAsError ||
-          formUseStreamAccumulator
+          formUseStreamAccumulator ||
+          formFlexTierSupported
             ? {
                 ...(formPruneThinking && { pruneThinking: true }),
                 ...(formPruneEmptyText && { pruneEmptyText: true }),
@@ -196,6 +210,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                 ...(formMandateCoT && { mandateCoT: true }),
                 ...(formTreatEmptyOutputAsError && { treatEmptyOutputAsError: true }),
                 ...(formUseStreamAccumulator && { useStreamAccumulator: true }),
+                ...(formFlexTierSupported && { flexTierSupported: true }),
               }
             : undefined,
         createdAt: editingId
@@ -233,6 +248,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formMandateCoT,
     formTreatEmptyOutputAsError,
     formUseStreamAccumulator,
+    formFlexTierSupported,
     editingId,
     apiDefinitions,
     formBaseUrl,
@@ -259,7 +275,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
           formNudgeThinking ||
           formMandateCoT ||
           formTreatEmptyOutputAsError ||
-          formUseStreamAccumulator
+          formUseStreamAccumulator ||
+          formFlexTierSupported
             ? {
                 ...(formPruneThinking && { pruneThinking: true }),
                 ...(formPruneEmptyText && { pruneEmptyText: true }),
@@ -270,6 +287,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                 ...(formMandateCoT && { mandateCoT: true }),
                 ...(formTreatEmptyOutputAsError && { treatEmptyOutputAsError: true }),
                 ...(formUseStreamAccumulator && { useStreamAccumulator: true }),
+                ...(formFlexTierSupported && { flexTierSupported: true }),
               }
             : undefined,
         updatedAt: new Date(),
@@ -290,6 +308,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formMandateCoT,
     formTreatEmptyOutputAsError,
     formUseStreamAccumulator,
+    formFlexTierSupported,
     saveAPIDefinition,
   ]);
 
@@ -545,7 +564,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                             <p className="mb-4 ml-6 text-xs text-gray-500">
                               Builds the response from streaming events instead of relying on the
                               SDK's final response object. Enable for third-party Responses API
-                              providers that return empty content from{' '}
+                              providers (e.g. OpenRouter) that emit non-spec frames like{' '}
+                              <code className="rounded bg-gray-100 px-1">response.keep_alive</code>{' '}
+                              during long reasoning calls, or that return empty content from{' '}
                               <code className="rounded bg-gray-100 px-1">
                                 stream.finalResponse()
                               </code>
@@ -553,6 +574,24 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                             </p>
                           </>
                         )}
+
+                        <label className="mb-2 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={formFlexTierSupported}
+                            onChange={e => setFormFlexTierSupported(e.target.checked)}
+                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-sm text-gray-700">Supports flex / batch tier</span>
+                        </label>
+                        <p className="mb-4 ml-6 text-xs text-gray-500">
+                          Provider accepts{' '}
+                          <code className="rounded bg-gray-100 px-1">service_tier: "flex"</code>{' '}
+                          (OpenAI) or{' '}
+                          <code className="rounded bg-gray-100 px-1">serviceTier: "flex"</code>{' '}
+                          (Gemini) for a discounted, lower-priority service tier. Enable only if
+                          your provider documents this — most OpenAI-compatible endpoints don't.
+                        </p>
 
                         <div className="flex justify-end gap-2">
                           <button
@@ -841,15 +880,35 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                               Use stream accumulator (Responses API)
                             </span>
                           </label>
-                          <p className="ml-6 text-xs text-gray-500">
+                          <p className="mb-3 ml-6 text-xs text-gray-500">
                             Builds the response from streaming events instead of relying on the
                             SDK's final response object. Enable for third-party Responses API
-                            providers that return empty content from{' '}
+                            providers (e.g. OpenRouter) that emit non-spec frames like{' '}
+                            <code className="rounded bg-gray-100 px-1">response.keep_alive</code>{' '}
+                            during long reasoning calls, or that return empty content from{' '}
                             <code className="rounded bg-gray-100 px-1">stream.finalResponse()</code>
                             . Has no effect on stock OpenAI or non-Responses providers.
                           </p>
                         </>
                       )}
+
+                      <label className="mb-2 flex cursor-pointer items-center">
+                        <input
+                          type="checkbox"
+                          checked={formFlexTierSupported}
+                          onChange={e => setFormFlexTierSupported(e.target.checked)}
+                          className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-700">Supports flex / batch tier</span>
+                      </label>
+                      <p className="ml-6 text-xs text-gray-500">
+                        Provider accepts{' '}
+                        <code className="rounded bg-gray-100 px-1">service_tier: "flex"</code>{' '}
+                        (OpenAI) or{' '}
+                        <code className="rounded bg-gray-100 px-1">serviceTier: "flex"</code>{' '}
+                        (Gemini) for a discounted, lower-priority service tier. Enable only if your
+                        provider documents this — most OpenAI-compatible endpoints don't.
+                      </p>
                     </div>
                   ) : (
                     <>
@@ -944,52 +1003,70 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                       </label>
 
                       <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                        API Key {formIsLocal ? '(Optional)' : '*'}
+                        API Key {formIsLocal || isClaudeAgentForm ? '(Optional)' : '*'}
                       </label>
                       <input
                         type="password"
-                        className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                        placeholder="Enter your API key"
+                        className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        placeholder={
+                          isClaudeAgentForm
+                            ? 'Leave blank to use host `claude` CLI credentials'
+                            : 'Enter your API key'
+                        }
                         value={formApiKey}
                         onChange={e => setFormApiKey(e.target.value)}
                       />
+                      {isClaudeAgentForm && (
+                        <p className="mb-4 text-xs text-gray-500">
+                          Empty → host CLI OAuth (subscription billed). Paste an{' '}
+                          <code className="rounded bg-gray-100 px-1">sk-ant-oat01-…</code> OAuth
+                          token for explicit subscription auth, or an{' '}
+                          <code className="rounded bg-gray-100 px-1">sk-ant-api03-…</code> key for
+                          pay-per-token (defeats the purpose).
+                        </p>
+                      )}
+                      {!isClaudeAgentForm && <div className="mb-3" />}
 
-                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                        Models Endpoint (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        className={`mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formModelsEndpointDisabled ? 'cursor-not-allowed bg-gray-100 text-gray-400' : ''}`}
-                        placeholder="SDK default"
-                        value={formModelsEndpoint}
-                        onChange={e => setFormModelsEndpoint(e.target.value)}
-                        disabled={formModelsEndpointDisabled}
-                      />
-                      <label className="mb-4 flex items-center gap-2 text-sm text-gray-600">
-                        <input
-                          type="checkbox"
-                          checked={formModelsEndpointDisabled}
-                          onChange={e => setFormModelsEndpointDisabled(e.target.checked)}
-                          className="rounded border-gray-300"
-                        />
-                        Models endpoint not supported
-                      </label>
+                      {!isClaudeAgentForm && (
+                        <>
+                          <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                            Models Endpoint (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            className={`mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formModelsEndpointDisabled ? 'cursor-not-allowed bg-gray-100 text-gray-400' : ''}`}
+                            placeholder="SDK default"
+                            value={formModelsEndpoint}
+                            onChange={e => setFormModelsEndpoint(e.target.value)}
+                            disabled={formModelsEndpointDisabled}
+                          />
+                          <label className="mb-4 flex items-center gap-2 text-sm text-gray-600">
+                            <input
+                              type="checkbox"
+                              checked={formModelsEndpointDisabled}
+                              onChange={e => setFormModelsEndpointDisabled(e.target.checked)}
+                              className="rounded border-gray-300"
+                            />
+                            Models endpoint not supported
+                          </label>
 
-                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                        Extra Model IDs (Optional)
-                      </label>
-                      <textarea
-                        className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                        placeholder="one-model-id-per-line"
-                        rows={3}
-                        value={formExtraModelIds}
-                        onChange={e => setFormExtraModelIds(e.target.value)}
-                      />
-                      <p className="mb-4 text-xs text-gray-500">
-                        Add model IDs not listed by the provider (one per line)
-                      </p>
+                          <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                            Extra Model IDs (Optional)
+                          </label>
+                          <textarea
+                            className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                            placeholder="one-model-id-per-line"
+                            rows={3}
+                            value={formExtraModelIds}
+                            onChange={e => setFormExtraModelIds(e.target.value)}
+                          />
+                          <p className="mb-4 text-xs text-gray-500">
+                            Add model IDs not listed by the provider (one per line)
+                          </p>
+                        </>
+                      )}
 
-                      {formApiType !== 'bedrock' && (
+                      {formApiType !== 'bedrock' && formApiType !== 'claude-agent' && (
                         <>
                           <label className="mb-1.5 block text-sm font-medium text-gray-700">
                             CORS Proxy URL (Optional)
@@ -1008,12 +1085,14 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                       )}
 
                       <div className="flex justify-end gap-2">
-                        <button
-                          onClick={() => setShowAdvanced(true)}
-                          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
-                        >
-                          Advanced
-                        </button>
+                        {!isClaudeAgentForm && (
+                          <button
+                            onClick={() => setShowAdvanced(true)}
+                            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                          >
+                            Advanced
+                          </button>
+                        )}
                         <button
                           onClick={handleCancel}
                           className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"

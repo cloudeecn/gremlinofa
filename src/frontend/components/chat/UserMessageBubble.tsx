@@ -17,6 +17,7 @@ export default function UserMessageBubble({
   onDeleteMessage,
   focusMode,
   isLastMessage,
+  isClaudeAgentChat,
 }: UserMessageBubbleProps) {
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
 
@@ -110,6 +111,10 @@ export default function UserMessageBubble({
         >
           {onAction && (
             <>
+              {/* Edit is supported for claude-agent: it rewinds the SDK to
+                  the prior assistant turn and drops this user message text
+                  back into the input box. Fork stays hidden — splitting an
+                  SDK session in two isn't supported. */}
               <button
                 onClick={handleEdit}
                 className="transition-colors hover:text-gray-700"
@@ -117,14 +122,19 @@ export default function UserMessageBubble({
               >
                 📝 Edit
               </button>
-              <button
-                onClick={handleFork}
-                className="transition-colors hover:text-gray-700"
-                title="Fork chat from here"
-              >
-                🔀 Fork
-              </button>
-              {!isLastMessage && (
+              {!isClaudeAgentChat && (
+                <button
+                  onClick={handleFork}
+                  className="transition-colors hover:text-gray-700"
+                  title="Fork chat from here"
+                >
+                  🔀 Fork
+                </button>
+              )}
+              {/* Rollback-to-user-message is not supported for claude-agent:
+                  the SDK can only rewind to assistant message UUIDs. Use the
+                  rollback button on the assistant message above instead. */}
+              {!isLastMessage && !isClaudeAgentChat && (
                 <button
                   onClick={handleRollback}
                   className="transition-colors hover:text-orange-600"

@@ -1234,6 +1234,100 @@ describe('agenticLoopGenerator', () => {
       expect(result.value.status).toBe('complete');
     });
 
+    it('staggers parallel calls per throttle group, not across groups', async () => {
+      // A tool with a 60ms throttle that groups by input.group. Three parallel
+      // calls: A, B, A. Same-group (the two A's) should space out by ~throttleMs;
+      // the B call shares no group with them and should launch immediately.
+      const THROTTLE = 60;
+      const throttleRegistry = {
+        get: vi.fn((name: string) => {
+          if (name === 'throttled') {
+            return {
+              complex: false,
+              parallelThrottleMs: THROTTLE,
+              getParallelThrottleGroup: (input: Record<string, unknown>) => String(input.group),
+            };
+          }
+          return { complex: name === 'minion' };
+        }),
+      };
+
+      const toolUseBlocks = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_1',
+          name: 'throttled',
+          input: { group: 'A', tag: 'a1' },
+        },
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_2',
+          name: 'throttled',
+          input: { group: 'B', tag: 'b1' },
+        },
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_3',
+          name: 'throttled',
+          input: { group: 'A', tag: 'a2' },
+        },
+      ];
+
+      const toolUseResult = {
+        textContent: '',
+        fullContent: toolUseBlocks,
+        stopReason: 'tool_use',
+        inputTokens: 100,
+        outputTokens: 50,
+      };
+      const finalResult = {
+        textContent: 'Done!',
+        fullContent: [{ type: 'text', text: 'Done!' }],
+        stopReason: 'end_turn',
+        inputTokens: 120,
+        outputTokens: 60,
+      };
+
+      setupMultiIterationMock(
+        [createMockStream([], toolUseResult), createMockStream([], finalResult)],
+        [toolUseBlocks, []]
+      );
+
+      // Record when each generator BODY starts running. executeClientSideTool is
+      // called upfront for all blocks; the throttle delays the first .next(), so
+      // the body's first statement reflects the stagger.
+      const t0 = Date.now();
+      const startByTag: Record<string, number> = {};
+      vi.mocked(executeClientSideTool).mockImplementation((_name, input) => {
+        return (async function* () {
+          startByTag[String((input as Record<string, unknown>).tag)] = Date.now() - t0;
+          return { content: 'ok', isError: false };
+        })() as ReturnType<typeof executeClientSideTool>;
+      });
+
+      const deps = createMockDeps();
+      const options = createMockOptions({
+        enabledTools: ['throttled'],
+        deps: {
+          ...deps,
+          toolRegistry:
+            throttleRegistry as unknown as import('../../tools/clientSideTools').ClientSideToolRegistry,
+        },
+      });
+
+      const result = await collectAgenticLoop(
+        runAgenticLoop(options, [createMockUserMessage('Run three')])
+      );
+
+      expect(result.status).toBe('complete');
+      expect(executeClientSideTool).toHaveBeenCalledTimes(3);
+      expect(Object.keys(startByTag).sort()).toEqual(['a1', 'a2', 'b1']);
+      // Second A call is staggered behind the first by ~THROTTLE.
+      expect(startByTag.a2 - startByTag.a1).toBeGreaterThanOrEqual(THROTTLE - 20);
+      // The B call belongs to a different group and is not held back.
+      expect(startByTag.b1 - startByTag.a1).toBeLessThan(THROTTLE - 20);
+    });
+
     it('sends error result for return tool when called in parallel — other tools still execute', async () => {
       const toolUseBlocks = [
         {

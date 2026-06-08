@@ -10,6 +10,7 @@ import { XAI_MODELS } from './model_metadatas/xai';
 import { GOOGLE_MODELS } from './model_metadatas/google';
 import { XIAOMI_MODELS } from './model_metadatas/xiaomi';
 import { DEEPSEEK_MODELS } from './model_metadatas/deepseek';
+import { BYTEDANCE_MODELS } from './model_metadatas/bytedance';
 import { OTHER_MODELS } from './model_metadatas/others';
 
 // Combined model knowledge from all providers
@@ -20,6 +21,7 @@ const ALL_MODEL_KNOWLEDGE: ModelKnowledge[] = [
   ...GOOGLE_MODELS,
   ...XIAOMI_MODELS,
   ...DEEPSEEK_MODELS,
+  ...BYTEDANCE_MODELS,
   ...OTHER_MODELS,
 ];
 
@@ -347,6 +349,9 @@ export function isCostUnreliable(
  * @param cacheTtl - Anthropic cache TTL ('5m' default = the 1.25× input
  *   multiplier already baked into `cacheWritePrice`; '1h' = 2× input, so we
  *   scale the stored price by 2/1.25 = 1.6× for writes only. Reads cost the same.)
+ * @param tierMultiplier - Service-tier price multiplier (1.0 default, 0.5 for
+ *   the flex/batch tier). Applied to every token-priced line; per-request
+ *   fees (webSearchPrice, requestPrice) are not discounted.
  * @returns Total cost in USD
  */
 export function calculateCost(
@@ -357,21 +362,22 @@ export function calculateCost(
   cacheCreationTokens?: number,
   cacheReadTokens?: number,
   webSearchCount?: number,
-  cacheTtl?: '5m' | '1h'
+  cacheTtl?: '5m' | '1h',
+  tierMultiplier: number = 1.0
 ): number {
   let cost = 0;
 
   // Token-based costs (per 1M tokens)
   if (model.inputPrice) {
-    cost += (inputTokens / 1_000_000) * model.inputPrice;
+    cost += (inputTokens / 1_000_000) * model.inputPrice * tierMultiplier;
   }
   if (model.outputPrice) {
-    cost += (outputTokens / 1_000_000) * model.outputPrice;
+    cost += (outputTokens / 1_000_000) * model.outputPrice * tierMultiplier;
   }
   if (reasoningTokens) {
     const price = model.reasoningPrice ?? model.outputPrice;
     if (price) {
-      cost += (reasoningTokens / 1_000_000) * price;
+      cost += (reasoningTokens / 1_000_000) * price * tierMultiplier;
     }
   }
   // Cache tokens use their specific price, falling back to inputPrice
@@ -379,17 +385,17 @@ export function calculateCost(
     const basePrice = model.cacheWritePrice ?? model.inputPrice;
     if (basePrice) {
       const price = cacheTtl === '1h' ? basePrice * 1.6 : basePrice;
-      cost += (cacheCreationTokens / 1_000_000) * price;
+      cost += (cacheCreationTokens / 1_000_000) * price * tierMultiplier;
     }
   }
   if (cacheReadTokens) {
     const price = model.cacheReadPrice ?? model.inputPrice;
     if (price) {
-      cost += (cacheReadTokens / 1_000_000) * price;
+      cost += (cacheReadTokens / 1_000_000) * price * tierMultiplier;
     }
   }
 
-  // Per-request costs
+  // Per-request costs (not discounted by tier — flat-rate)
   if (model.webSearchPrice && webSearchCount) {
     cost += webSearchCount * model.webSearchPrice;
   }

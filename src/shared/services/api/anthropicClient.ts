@@ -508,6 +508,8 @@ export class AnthropicClient implements APIClient {
       // Resolved upstream (loop option or minion input). Truthy ⇒ shift the tail
       // breakpoint off the nudge-mutated latest user message onto the last assistant.
       nudgeThinking?: string;
+      // Opaque hash forwarded as `metadata.user_id` (anti-PII; abuse field).
+      cacheRoutingKey?: string;
     }
   ): AsyncGenerator<
     StreamChunk,
@@ -871,6 +873,9 @@ export class AnthropicClient implements APIClient {
           ...(thinkingConfig && { thinking: thinkingConfig }),
           ...(outputConfig && { output_config: outputConfig }),
           ...(contextManagement && { context_management: contextManagement }),
+          ...(options.cacheRoutingKey && {
+            metadata: { user_id: options.cacheRoutingKey },
+          }),
         },
         { signal: options.signal }
       );

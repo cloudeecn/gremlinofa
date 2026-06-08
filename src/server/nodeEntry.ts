@@ -14,6 +14,8 @@ import { makeCreateVfsAdapter } from './adapters/createVfsAdapter';
 import { WebSocketTransportServer } from './websocketTransport';
 import { GremlinServer } from '../shared/engine/GremlinServer';
 import { RemoteVfsAdapter } from '../shared/services/vfs/RemoteVfsAdapter';
+import { ClaudeAgentClient } from './claudeAgentClient';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -67,6 +69,39 @@ server.setBootstrapAdapterFactories({
 // Stash storage config — Option A: always local, the SQLite factory
 // ignores this and builds from ServerConfig via closure.
 server.setBootstrapStorageConfig({ type: 'local' });
+
+// Server-only: register the Claude Agent SDK client. Spawns the host
+// `claude` CLI subprocess, so it can only run in Node. Worker entry
+// never imports this file → SDK stays out of the worker bundle.
+// Session dir resolved from ServerConfig (CLAUDE_AGENT_SESSION_DIR env
+// overrides the default); created lazily on first use so a deploy that
+// never uses claude-agent doesn't fail at startup on a missing dir.
+let claudeAgentSessionDirReady = false;
+server.setBootstrapClaudeAgentClientFactory(
+  deps =>
+    new ClaudeAgentClient(deps, {
+      sessionDir: () => {
+        if (!claudeAgentSessionDirReady) {
+          fs.mkdirSync(config.claudeAgentSessionDir, { recursive: true });
+          claudeAgentSessionDirReady = true;
+        }
+        return config.claudeAgentSessionDir;
+      },
+    })
+);
+
+// Best-effort: warn at startup if the host `claude` CLI is missing.
+// The SDK fails at first use otherwise, with a less obvious error.
+try {
+  const probe = spawnSync('claude', ['--version'], { stdio: 'ignore' });
+  if (probe.status !== 0) {
+    console.warn(
+      '[server] `claude` CLI not detected on PATH — claude-agent provider will fail until it is installed (see https://docs.anthropic.com/claude-code)'
+    );
+  }
+} catch {
+  console.warn('[server] `claude` CLI probe failed — claude-agent provider may not work');
+}
 
 // --------------------------------------------------------------------------
 // WebSocket transport

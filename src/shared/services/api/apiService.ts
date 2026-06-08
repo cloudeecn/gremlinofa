@@ -6,6 +6,7 @@ import type {
   Model,
   ToolUseBlock,
   ToolOptions,
+  ToolContext,
 } from '../../protocol/types';
 import type { EncryptionCore } from '../encryption/encryptionCore';
 import type { UnifiedStorage } from '../storage/unifiedStorage';
@@ -22,6 +23,7 @@ import { mergeExtraModels } from '../../engine/lib/api/mergeExtraModels';
 import { OpenAIClient } from './openaiClient';
 import { ResponsesClient } from './responsesClient';
 import { GoogleClient } from './googleClient';
+import { ClaudeAgentStubClient } from './claudeAgentStubClient';
 
 /**
  * Fetch models from a custom endpoint using plain fetch (no auth).
@@ -165,6 +167,19 @@ export class APIService {
     this.clients.set('chatgpt', new OpenAIClient(deps));
     this.clients.set('bedrock', new BedrockClient(deps));
     this.clients.set('google', new GoogleClient(deps));
+    // Worker-safe default. Server entry replaces this with the real
+    // ClaudeAgentClient via `setClient` during GremlinServer.init().
+    this.clients.set('claude-agent', new ClaudeAgentStubClient());
+  }
+
+  /**
+   * Swap the client registered for an API type. Used by the server-only
+   * bootstrap channel to install the real `ClaudeAgentClient` once
+   * GremlinServer.init() runs in Node — keeps the SDK out of the worker
+   * bundle.
+   */
+  setClient(apiType: APIType, client: APIClient): void {
+    this.clients.set(apiType, client);
   }
 
   // Get the appropriate client for an API type
@@ -232,11 +247,25 @@ export class APIService {
       webSearchEnabled?: boolean;
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
+      // The agentic loop's prebuilt ToolContext, forwarded only for the
+      // claude-agent provider so its in-process MCP bridge can dispatch our
+      // tools through `executeClientSideTool`. Other clients ignore it.
+      toolContext?: ToolContext;
       disableStream?: boolean;
       extendedContext?: boolean;
       // Use 1h cache TTL on Anthropic cache_control blocks (default 5m).
       // Only honored by the Anthropic client.
       useAnthropicOneHourCache?: boolean;
+      // Opt into the provider's discounted/lower-priority service tier.
+      // OpenAI clients inject `service_tier: 'flex'`; Google client injects
+      // `serviceTier: 'flex'`. Gated upstream by buildLoopOptions to only
+      // be true when both the project toggle and the API definition's
+      // `flexTierSupported` are on.
+      flexTierEnabled?: boolean;
+      // Opaque hash of projectId or chatId. Forwarded as
+      // `prompt_cache_key` (OpenAI / Responses) or `metadata.user_id`
+      // (Anthropic). Per-provider routing scope is decided upstream.
+      cacheRoutingKey?: string;
       // Hard-abort signal (frontend/backend split — see plan)
       signal: AbortSignal;
       // Context tidy (checkpoint tool)

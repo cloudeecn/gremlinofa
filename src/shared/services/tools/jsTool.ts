@@ -149,6 +149,7 @@ export const jsTool: ClientSideTool = {
   name: 'javascript',
   displayName: 'JavaScript Execution',
   displaySubtitle: 'Execute code in a secure sandbox in your browser',
+  claudeAgentBridgeable: true,
   optionDefinitions: [
     {
       type: 'boolean',
@@ -168,7 +169,7 @@ export const jsTool: ClientSideTool = {
   description: `
 Execute JavaScript in a QuickJS sandbox (ES2023). Code runs inside an async function body, so use \`return\` to output values and \`await\` is supported at top level.
   - Usage: calculations, data transformation, string/JSON processing, algorithm implementation, file operations.
-  - Available APIs: ES2023 core, setTimeout, TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await, halt.
+  - Available APIs: ES2023 core, setTimeout (honors the real delay — use it to sleep), TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await, halt.
   - fs API (async only, use with await): fs.readFile, fs.writeFile, fs.exists, fs.mkdir, fs.readdir, fs.unlink, fs.rmdir, fs.rename, fs.stat.
     - readFile(path) returns ArrayBuffer (binary), readFile(path, 'utf-8') returns string.
     - writeFile(path, data) accepts string or ArrayBuffer for binary files.
@@ -176,7 +177,7 @@ Execute JavaScript in a QuickJS sandbox (ES2023). Code runs inside an async func
     - Example: \`const data = await fs.readFile('/data.json', 'utf-8'); return JSON.parse(data);\`
     - Note: /memories is read-only.
   - halt(message): Immediately stops execution and outputs message at ERROR level.
-  - Limitations: No fetch or DOM. setInterval runs once only. No ES modules.
+  - Limitations: No fetch or DOM. setInterval fires once only (but honors its delay). Total run time is capped at 300s, so a long setTimeout can hit that cap. No ES modules.
   - Each call runs in a fresh context. Variables do NOT persist between calls. To persist data, use the fs API to write to files.
   - If /share/lib exists, its .js files are pre-loaded first (shared across namespaces). Then /lib scripts are loaded (per-project).
   - Output example: \`return 1 + 1\` → 2`,

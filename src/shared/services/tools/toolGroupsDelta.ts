@@ -261,28 +261,39 @@ export function nextStreamingDelta(
   state: DeltaEmitterState,
   nextStreamingGroups: RenderingBlockGroup[]
 ): ToolGroupsDelta | null {
+  // Snapshot up front and emit from the snapshot — never from the live
+  // `nextStreamingGroups`. `getGroups()` hands back block objects the producer
+  // keeps growing in place, and a delta can sit in the broadcast queue while
+  // the background loop races ahead. If we emitted the live ref, the payload
+  // would serialize whatever text the producer reached by flush time instead
+  // of the baseline this frame's diff was computed against — and `init` /
+  // `replace_streaming` carrying grown text while `state.streamingGroups`
+  // stays frozen makes the next `append` re-ship the overlap, duplicating the
+  // early characters on the receiver. The snapshot is value-stable.
+  const snapshot = snapshotStreamingGroups(nextStreamingGroups);
+
   if (!state.initEmitted) {
     state.initEmitted = true;
-    state.streamingGroups = snapshotStreamingGroups(nextStreamingGroups);
+    state.streamingGroups = snapshot;
     return {
       kind: 'init',
       infoGroup: state.infoGroup,
       accumulatedGroups: state.accumulatedGroups,
-      streamingGroups: nextStreamingGroups,
+      streamingGroups: snapshot,
     };
   }
-  const delta = diffStreamingGroups(state.streamingGroups, nextStreamingGroups);
+  const delta = diffStreamingGroups(state.streamingGroups, snapshot);
   // `replace_streaming` with identical contents is a no-op — the diff
   // returns it for empty-prior or no-change edge cases. Filter so we don't
   // ship a ~kilobyte payload for zero change.
   if (
     delta.kind === 'replace_streaming' &&
-    state.streamingGroups.length === nextStreamingGroups.length &&
-    state.streamingGroups.every((g, i) => groupsStructurallyEqual(g, nextStreamingGroups[i]))
+    state.streamingGroups.length === snapshot.length &&
+    state.streamingGroups.every((g, i) => groupsStructurallyEqual(g, snapshot[i]))
   ) {
     return null;
   }
-  state.streamingGroups = snapshotStreamingGroups(nextStreamingGroups);
+  state.streamingGroups = snapshot;
   return delta;
 }
 

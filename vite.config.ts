@@ -6,6 +6,11 @@ import { VitePWA } from 'vite-plugin-pwa';
 import tailwindcss from '@tailwindcss/vite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const nodeBuiltinsShim = path.resolve(__dirname, 'src/frontend/lib/nodeBuiltinsShim.ts');
+const awsCredentialProvidersShim = path.resolve(
+  __dirname,
+  'src/frontend/lib/awsCredentialProvidersShim.ts'
+);
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => {
@@ -21,6 +26,23 @@ export default defineConfig(({ command }) => {
       alias: {
         // Redirect Node.js smithy package to browser version for @anthropic-ai/bedrock-sdk
         '@smithy/eventstream-serde-node': '@smithy/eventstream-serde-browser',
+        // @anthropic-ai/bedrock-sdk lazily imports this Node-only AWS credential
+        // chain; it's never used client-side (we auth with an explicit bearer
+        // token) and currently can't bundle due to an @aws-sdk version skew.
+        '@aws-sdk/credential-providers': awsCredentialProvidersShim,
+        // Shim Node built-ins that bundled SDKs statically import but never call
+        // client-side (@anthropic-ai/sdk agent file-tools, @aws-sdk credential
+        // providers). See src/frontend/lib/nodeBuiltinsShim.ts.
+        'node:fs/promises': nodeBuiltinsShim,
+        'node:fs': nodeBuiltinsShim,
+        'node:path': nodeBuiltinsShim,
+        'node:os': nodeBuiltinsShim,
+        'node:crypto': nodeBuiltinsShim,
+        'node:util': nodeBuiltinsShim,
+        'node:child_process': nodeBuiltinsShim,
+        'node:stream/promises': nodeBuiltinsShim,
+        'node:stream': nodeBuiltinsShim,
+        'node:readline': nodeBuiltinsShim,
         '@shared': path.resolve(__dirname, 'src/shared'),
         '@frontend': path.resolve(__dirname, 'src/frontend'),
         '@worker': path.resolve(__dirname, 'src/worker'),

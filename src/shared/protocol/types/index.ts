@@ -32,6 +32,7 @@ export type APIType =
   | 'responses_api'
   | 'bedrock'
   | 'google'
+  | 'claude-agent'
   | 'ds01-dummy-system';
 
 /** Type-safe tool definition overrides for each API type */
@@ -41,6 +42,7 @@ export interface APIToolOverrides {
   responses_api?: OpenAI.Responses.Tool;
   bedrock?: BedrockTool;
   google?: unknown;
+  'claude-agent'?: Anthropic.Beta.BetaToolUnion;
 }
 
 export interface APIDefinition {
@@ -66,6 +68,11 @@ export interface APIDefinition {
     mandateCoT?: boolean; // Reject responses without chain-of-thought reasoning tokens
     treatEmptyOutputAsError?: boolean; // Reject turns that produce empty text and no tool calls
     useStreamAccumulator?: boolean; // Build result from stream events instead of stream.finalResponse() — for Responses API providers that return empty finalResponse
+    // Provider accepts the flex/batch service tier param (OpenAI service_tier,
+    // Gemini serviceTier). When false (default), the project's flex toggle is a
+    // no-op for this provider so we don't send unknown fields to compatible APIs
+    // (Doubao, DeepSeek, aihubmix, etc.) that may error or silently drop them.
+    flexTierSupported?: boolean;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -253,6 +260,16 @@ export interface Project {
   useAnthropicOneHourCache?: boolean;
   // Strip line numbers from filesystem/memory tool output
   noLineNumbers?: boolean;
+  // Scope for the per-request cache-routing key (OpenAI `prompt_cache_key`,
+  // Anthropic `metadata.user_id`). 'project' (default) maximizes cache hits
+  // across every chat in the project; 'chat' isolates routing per chat —
+  // including each minion sub-loop, since they run with their own chatId.
+  cacheRoutingScope?: 'project' | 'chat';
+  // Opt into the provider's discounted/lower-priority service tier when supported.
+  // Honored only when the active APIDefinition has advancedSettings.flexTierSupported.
+  // OpenAI: sets `service_tier: 'flex'`. Gemini: sets `serviceTier: 'flex'`.
+  // Cost calc applies a 0.5× token-price multiplier when active.
+  flexTierEnabled?: boolean;
   // Remote VFS configuration
   remoteVfsUrl?: string; // URL of remote VFS backend
   remoteVfsPassword?: string; // Server-wide password
@@ -313,6 +330,18 @@ export interface Chat {
   checkpointMessageIds?: string[];
   // DUMMY System: active hook file name (e.g., 'auto-search')
   activeHook?: string;
+  /**
+   * Claude Agent SDK session ID (UUID v4). Set on first claude-agent turn.
+   * Presence locks the chat to claude-agent — provider switching disabled,
+   * edit/fork hidden in UI. See development.md "Claude Agent provider".
+   */
+  claudeAgentSessionId?: string;
+  /**
+   * SDK assistant message UUID to rewind to on next user send (via
+   * resumeSessionAt). Set by rollback UI / verifyHook-driven retry; cleared
+   * once the SDK has accepted the rewind.
+   */
+  claudeAgentResumeAt?: string;
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system';
@@ -372,6 +401,8 @@ export interface MessageMetadata {
   contextWindow?: number; // Model's max context window in tokens
   contextWindowUsage?: number; // Model's context window usage in tokens
   costUnreliable?: boolean; // True if cost calculation may be inaccurate
+  /** Claude Agent SDK message UUID — target for resumeSessionAt rewinds. */
+  claudeAgentMessageUuid?: string;
 }
 
 export interface Message<T> {
@@ -821,6 +852,29 @@ export interface ClientSideTool {
   complex?: boolean;
   /** Delay (ms) between launching parallel calls of this same tool. First call starts immediately. */
   parallelThrottleMs?: number;
+  /**
+   * Resolve the throttle group for one parallel call. Calls that resolve to the
+   * same group are staggered by `parallelThrottleMs`; different groups launch
+   * concurrently. Defaults to the tool name when omitted (every call shares one
+   * group). Used by `minion` to scope its stagger to one upstream API definition
+   * so unrelated providers don't delay each other.
+   */
+  getParallelThrottleGroup?(
+    input: Record<string, unknown>,
+    toolOptions: ToolOptions | undefined,
+    context: ToolContext
+  ): string | Promise<string>;
+  /**
+   * Opt this tool into the claude-agent SDK bridge. When set, a claude-agent
+   * chat exposes the tool to the host `claude` CLI as an in-process MCP tool
+   * (`mcp__gremlin__<name>`) and dispatches its calls through
+   * `executeClientSideTool`. Tools whose `ToolResult` only carries
+   * `content`/`isError`/`renderingGroups`/`tokenTotals` bridge cleanly; loop-
+   * control tools (return/checkpoint/dummy) and chat-side-effect tools
+   * (metadata) are intentionally left off — their `ToolResult` signals are
+   * meaningful only to the GremlinOFA agentic loop, which the SDK bypasses.
+   */
+  claudeAgentBridgeable?: boolean;
   /** Tool description - can be static string or function for dynamic content */
   description: string | ((options: ToolOptions) => string);
   /** Input schema - can be static or function for dynamic content */
@@ -900,12 +954,14 @@ export interface MinionChat {
   reasoningEffort?: ReasoningEffort;
   /** Override: temperature */
   temperature?: number;
+  /** Override: max output tokens */
+  maxOutputTokens?: number;
   /** Override: file injection mode (inline, separate-block, as-file) */
   fileInjectionMode?: string;
   /** Override: inline system prompt appended to minion prompt */
   systemPrompt?: string;
-  /** Override: VFS path to system prompt file */
-  systemPromptFile?: string;
+  /** Override: VFS path(s) to system prompt file(s). String or array of strings. */
+  systemPromptFile?: string | string[];
   /** Override: thinking-nudge text appended to last user message. Empty string = explicitly off. */
   nudgeThinking?: string;
   /** Override: thinkingKeepTurns (forwarded to API as server-side context edit). */
@@ -914,6 +970,10 @@ export interface MinionChat {
   pruneThinkingBeforeApiCall?: boolean;
   /** Remote session ID for touch-grass backend (human delegation) */
   remoteSessionId?: string;
+  /** Claude Agent SDK session ID (UUID v4). Set on first claude-agent turn. */
+  claudeAgentSessionId?: string;
+  /** SDK assistant UUID to rewind to on next minion send. Cleared after consumption. */
+  claudeAgentResumeAt?: string;
 }
 
 // Virtual Filesystem (VFS) types

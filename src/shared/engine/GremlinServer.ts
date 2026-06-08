@@ -21,6 +21,7 @@
  */
 
 import { APIService } from '../services/api/apiService';
+import type { APIClient } from '../services/api/baseClient';
 import {
   UnifiedStorage,
   CekOracleMismatchError,
@@ -170,6 +171,23 @@ export class GremlinServer {
     vfsMode?: 'filesystem' | 'encrypted';
   }): void {
     this.bootstrapAdapterFactories = factories;
+  }
+
+  /**
+   * Out-of-band bootstrap channel for the server-only Claude Agent SDK
+   * client. The node entry imports `ClaudeAgentClient` (which statically
+   * imports `@anthropic-ai/claude-agent-sdk`) and passes a factory here.
+   * `init()` swaps the worker stub for the real client after constructing
+   * the per-server `APIService`. Worker entry never sets it; the SDK
+   * stays out of the worker bundle.
+   */
+  private bootstrapClaudeAgentClientFactory:
+    | ((deps: import('../services/api/apiService').APIServiceDeps) => APIClient)
+    | null = null;
+  setBootstrapClaudeAgentClientFactory(
+    factory: (deps: import('../services/api/apiService').APIServiceDeps) => APIClient
+  ): void {
+    this.bootstrapClaudeAgentClientFactory = factory;
   }
 
   /**
@@ -1440,6 +1458,15 @@ export class GremlinServer {
       // per-server `storage` / `toolRegistry` / `encryption` via
       // constructor injection (no singleton imports inside the worker).
       const apiService = new APIService({ storage, toolRegistry, encryption });
+
+      // Server-only Claude Agent SDK client: nodeEntry sets the factory.
+      // Worker entry leaves it null and the stub stays registered.
+      if (this.bootstrapClaudeAgentClientFactory) {
+        apiService.setClient(
+          'claude-agent',
+          this.bootstrapClaudeAgentClientFactory({ storage, toolRegistry, encryption })
+        );
+      }
 
       // The loop registry stays stable across re-init: clients may
       // already be subscribed via `subscribeActiveLoops`, and the same

@@ -279,6 +279,54 @@ describe('JsVMContext', () => {
 
       expect(result.value).toBe('number');
     });
+
+    it('waits the real delay before resolving', async () => {
+      vm = await JsVMContext.create();
+      const start = Date.now();
+      const result = await vm.evaluate(`
+        (async () => {
+          await new Promise(resolve => setTimeout(resolve, 60));
+          return 'done';
+        })()
+      `);
+      const elapsed = Date.now() - start;
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toBe('done');
+      // Allow a little slack below the 60ms delay for timer coarseness.
+      expect(elapsed).toBeGreaterThanOrEqual(50);
+    });
+
+    it('fires callbacks in delay order, not registration order', async () => {
+      vm = await JsVMContext.create();
+      const result = await vm.evaluate(`
+        (async () => {
+          const order = [];
+          setTimeout(() => order.push('a'), 50);
+          setTimeout(() => order.push('b'), 10);
+          await new Promise(resolve => setTimeout(resolve, 90));
+          return order;
+        })()
+      `);
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toEqual(['b', 'a']);
+    });
+
+    it('setInterval honors its delay but fires once (no repeat)', async () => {
+      vm = await JsVMContext.create();
+      const result = await vm.evaluate(`
+        (async () => {
+          let count = 0;
+          setInterval(() => { count++; }, 20);
+          await new Promise(resolve => setTimeout(resolve, 90));
+          return count;
+        })()
+      `);
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toBe(1);
+    });
   });
 
   describe('polyfills', () => {

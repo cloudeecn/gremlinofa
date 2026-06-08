@@ -30,6 +30,7 @@ export default function MessageList({
   alwaysAutoScroll,
   snapshotLoading,
   dummyHookStatus,
+  isClaudeAgentChat,
 }: MessageListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -204,6 +205,7 @@ export default function MessageList({
               expandMinions={expandMinions}
               disableMath={disableMath}
               isLastMessage={index === messages.length - 1}
+              isClaudeAgentChat={isClaudeAgentChat}
             />
           ))}
 

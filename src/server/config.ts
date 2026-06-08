@@ -12,6 +12,17 @@ export interface ServerConfig {
   vfsMode: 'encrypted' | 'filesystem';
   vfsBasePath: string;
   vfsAccessConfig: VfsAccessConfig;
+  /**
+   * Working directory for the spawned `claude` CLI when serving claude-agent
+   * provider requests. Defaults to `<dirname(storagePath)>/claude-agent-sessions`
+   * so it lands next to the SQLite DB. The SDK doesn't write its session JSONL
+   * here (that goes to `$HOME/.claude/projects/...`) — but the dir does need
+   * to exist and be writable so the subprocess can chdir into it.
+   *
+   * Override with `CLAUDE_AGENT_SESSION_DIR` when the storage parent is
+   * read-only (typical for `/opt`-style deploys).
+   */
+  claudeAgentSessionDir: string;
 }
 
 export function loadServerConfig(): ServerConfig {
@@ -32,5 +43,22 @@ export function loadServerConfig(): ServerConfig {
   const vfsBasePath = process.env.VFS_BASE_PATH ?? './data/vfs';
   const vfsAccessConfig = loadVfsAccessConfig();
 
-  return { port, host, storagePath, vfsMode, vfsBasePath, vfsAccessConfig };
+  // Default sits next to the SQLite DB so a single STORAGE_PATH override
+  // also relocates claude-agent's working dir. CLAUDE_AGENT_SESSION_DIR
+  // wins when set explicitly.
+  const storageDir = storagePath.includes('/')
+    ? storagePath.slice(0, storagePath.lastIndexOf('/'))
+    : '.';
+  const claudeAgentSessionDir =
+    process.env.CLAUDE_AGENT_SESSION_DIR ?? `${storageDir}/claude-agent-sessions`;
+
+  return {
+    port,
+    host,
+    storagePath,
+    vfsMode,
+    vfsBasePath,
+    vfsAccessConfig,
+    claudeAgentSessionDir,
+  };
 }

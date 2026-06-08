@@ -7,6 +7,7 @@ const API_TYPE_DISPLAY_NAMES: Record<APIType, string> = {
   anthropic: 'Anthropic',
   bedrock: 'Bedrock',
   google: 'Google Gemini',
+  'claude-agent': 'Claude Agent (subscription)',
   'ds01-dummy-system': 'DUMMY',
 };
 
@@ -17,6 +18,7 @@ const API_TYPE_DEFAULT_ICONS: Record<APIType, string> = {
   anthropic: '✨',
   bedrock: '☁️',
   google: '💎',
+  'claude-agent': '🅒',
   'ds01-dummy-system': '✨',
 };
 

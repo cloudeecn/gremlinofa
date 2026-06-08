@@ -4,7 +4,29 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
+        modelIdFuzz: [
+          { modelIdPrefix: 'claude-opus-4-8' },
+          { modelIdPrefix: 'anthropic.claude-opus-4-8' },
+        ],
+      },
+    ],
+    inputPrice: 5,
+    outputPrice: 25,
+    cacheWritePrice: 6.25,
+    cacheReadPrice: 0.5,
+    webSearchPrice: 0.01,
+    contextWindow: 200000,
+    maxOutputTokens: 128000,
+    supportsExtendedContext: true,
+    supportsAdaptiveReasoning: true,
+    onlyAdaptiveReasoning: true,
+    supportsXhighEffort: true,
+  },
+  {
+    matches: [
+      {
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-opus-4-7' },
           { modelIdPrefix: 'anthropic.claude-opus-4-7' },
@@ -26,7 +48,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-opus', unreliable: true }, // fuzz match all future opus
           { modelIdPrefix: 'claude-opus-4-6' },
@@ -47,7 +69,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-opus-4-5' },
           { modelIdPrefix: 'anthropic.claude-opus-4-5' },
@@ -65,7 +87,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-opus-4' },
           { modelIdPrefix: 'anthropic.claude-opus-4' },
@@ -83,7 +105,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-sonnet', unreliable: true }, // fuzz match all future sonnet
           { modelIdPrefix: 'claude-sonnet-4-6' },
@@ -104,7 +126,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-sonnet-4-5' },
           { modelIdPrefix: 'anthropic.claude-sonnet-4-5' },
@@ -123,7 +145,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-sonnet-4' },
           { modelIdPrefix: 'anthropic.claude-sonnet-4' },
@@ -142,7 +164,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-3-7-sonnet' },
           { modelIdPrefix: 'anthropic.claude-3-7-sonnet' },
@@ -160,7 +182,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-3-5-sonnet' },
           { modelIdPrefix: 'anthropic.claude-3-5-sonnet' },
@@ -178,7 +200,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-haiku', unreliable: true }, // fuzz match all haiku
           { modelIdPrefix: 'claude-haiku-4-5' },
@@ -197,7 +219,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-3-5-haiku' },
           { modelIdPrefix: 'anthropic.claude-3-5-haiku' },
@@ -215,7 +237,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-opus-3' },
           { modelIdPrefix: 'anthropic.claude-opus-3' },
@@ -233,7 +255,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
   {
     matches: [
       {
-        apiType: ['anthropic'],
+        apiType: ['anthropic', 'claude-agent'],
         modelIdFuzz: [
           { modelIdPrefix: 'claude-3-haiku' },
           { modelIdPrefix: 'anthropic.claude-3-haiku' },

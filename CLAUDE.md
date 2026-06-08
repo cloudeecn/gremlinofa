@@ -10,7 +10,6 @@ This is a general-purpose AI chatbot built with React (Vite).
 - **Always update `development.md`** periodically when working on any task. Keep the task lists current by marking completed tasks and adding new ones as they're discovered.
 - After your fix a bug, add an item in your task check list to explictly check if similar bugs existing in the files you have already known the content. This makes the best use of your token cache.
 - Use `console.debug` to print debug message instead of `console.log`. Don't concat strings in debug message for performance considerations.
-- ALWAYS keep your todo/task_progress list when condensing the conversation. The TODO list does not take much tokens and is essential to preserve the context. Even the completed item ensures you have the full picture.
 - NEVER use `sed -i` to modify file. It corrupts file and make you lose situational awareness.
 - Before completing a task, run following checklist:
   - Look for any slop in modified file base on anti-slop rules, fix them.

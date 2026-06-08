@@ -13,6 +13,7 @@ describe('loadServerConfig', () => {
     delete process.env.VFS_BASE_PATH;
     delete process.env.VFS_FOLLOW_SYMLINKS;
     delete process.env.VFS_EXTRA_ROOTS;
+    delete process.env.CLAUDE_AGENT_SESSION_DIR;
   });
 
   afterEach(() => {
@@ -32,6 +33,7 @@ describe('loadServerConfig', () => {
         globalAllowedRoots: [],
         projectAllowedRoots: new Map(),
       },
+      claudeAgentSessionDir: './data/claude-agent-sessions',
     });
   });
 
@@ -48,6 +50,15 @@ describe('loadServerConfig', () => {
     expect(config.storagePath).toBe('/tmp/test.db');
     expect(config.vfsMode).toBe('encrypted');
     expect(config.vfsBasePath).toBe('/tmp/vfs');
+    // STORAGE_PATH override moves the default claude-agent session dir alongside it.
+    expect(config.claudeAgentSessionDir).toBe('/tmp/claude-agent-sessions');
+  });
+
+  it('CLAUDE_AGENT_SESSION_DIR overrides the STORAGE_PATH-derived default', () => {
+    process.env.STORAGE_PATH = '/opt/gremlinofa-server/data/gremlin.db';
+    process.env.CLAUDE_AGENT_SESSION_DIR = '/var/lib/gremlinofa/claude-agent';
+    const config = loadServerConfig();
+    expect(config.claudeAgentSessionDir).toBe('/var/lib/gremlinofa/claude-agent');
   });
 
   it('should throw on invalid PORT', () => {

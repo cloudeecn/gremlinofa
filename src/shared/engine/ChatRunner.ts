@@ -464,6 +464,22 @@ export class ChatRunner {
             case 'dummy_hook_end':
               yield { type: 'dummy_hook_end', result: event.result };
               break;
+
+            case 'claude_agent_turn': {
+              const needsSessionSave = currentChat.claudeAgentSessionId !== event.sessionId;
+              const needsResumeClear = currentChat.claudeAgentResumeAt !== undefined;
+              if (needsSessionSave || needsResumeClear) {
+                const sessionChat: Chat = {
+                  ...currentChat,
+                  claudeAgentSessionId: event.sessionId,
+                  claudeAgentResumeAt: undefined,
+                };
+                currentChat = sessionChat;
+                await this.storage.saveChat(sessionChat);
+                yield { type: 'chat_updated', chat: sessionChat };
+              }
+              break;
+            }
           }
         }
       } while (!result.done);

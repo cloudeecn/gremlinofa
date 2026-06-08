@@ -14,6 +14,7 @@ import type {
   RenderingContentBlock,
   TextRenderBlock,
   ThinkingRenderBlock,
+  ToolResultRenderBlock,
   ToolUseRenderBlock,
   WebFetchRenderBlock,
   WebSearchRenderBlock,
@@ -24,6 +25,17 @@ import { categorizeBlock } from '../../protocol/types/content';
 export interface StreamingAssemblerOptions {
   /** Optional callback to get tool icon by name (for streaming display) */
   getToolIcon?: (toolName: string) => string | undefined;
+  /**
+   * Optional callback for tool-result presentation — icon + pre-rendered
+   * content derived from the tool definition. Lets the claude-agent MCP
+   * bridge render its `tool_result` chunks identically to the tool_result
+   * blocks the agentic loop produces for other providers.
+   */
+  getToolResultMeta?: (
+    name: string,
+    content: string,
+    isError: boolean
+  ) => { icon?: string; renderedContent?: string };
 }
 
 export class StreamingContentAssembler {
@@ -103,6 +115,10 @@ export class StreamingContentAssembler {
 
       case 'tool_use':
         this.handleToolUse(chunk.id, chunk.name, chunk.input);
+        break;
+
+      case 'tool_result':
+        this.handleToolResult(chunk);
         break;
     }
   }
@@ -343,6 +359,25 @@ export class StreamingContentAssembler {
       icon: this.options.getToolIcon?.(name),
     };
     this.addBlockToGroups(toolUseBlock);
+    this.lastEndedBlockType = null;
+  }
+
+  private handleToolResult(chunk: Extract<StreamChunk, { type: 'tool_result' }>): void {
+    const isError = chunk.isError ?? false;
+    const meta = this.options.getToolResultMeta?.(chunk.name, chunk.content, isError);
+    const toolResultBlock: ToolResultRenderBlock = {
+      type: 'tool_result',
+      name: chunk.name,
+      tool_use_id: chunk.tool_use_id,
+      content: chunk.content,
+      is_error: isError,
+      status: isError ? 'error' : 'complete',
+      icon: meta?.icon ?? (isError ? '❌' : '✅'),
+      renderedContent: meta?.renderedContent ?? chunk.content,
+      ...(chunk.renderingGroups ? { renderingGroups: chunk.renderingGroups } : {}),
+      ...(chunk.tokenTotals ? { tokenTotals: chunk.tokenTotals } : {}),
+    };
+    this.addBlockToGroups(toolResultBlock);
     this.lastEndedBlockType = null;
   }
 

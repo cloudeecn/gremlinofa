@@ -2,7 +2,8 @@
  * JsVMContext - QuickJS context wrapper with event loop and polyfills
  *
  * Provides a browser-like JavaScript execution environment in QuickJS:
- * - Event loop via Promise-based setTimeout
+ * - Event loop that drains microtasks, then fires host-scheduled timers
+ * - setTimeout/setInterval honor real delays (bounded by the 300s cap)
  * - Promise/async-await support via executePendingJobs(1) per tick
  * - Common polyfills (TextEncoder, atob, etc.)
  * - Console output capture
@@ -50,8 +51,8 @@ async function getModule(): Promise<QuickJSWASMModule> {
  *
  * Provides a browser-like execution environment where:
  * - async/await works via Promise job queue
- * - setTimeout queues via Promise.resolve().then()
- * - clearTimeout cancels pending callbacks
+ * - setTimeout/setInterval register host-side timers honoring real delays
+ * - clearTimeout cancels pending timers
  * - 300s timeout enforced via interrupt handler
  */
 export class JsVMContext {
@@ -59,8 +60,10 @@ export class JsVMContext {
   private consoleOutput: ConsoleEntry[] = [];
   private libraryConsoleOutput: ConsoleEntry[] = [];
   private nextTimerId = 1;
-  private cancelledTimers = new Set<number>();
-  private pendingCallbacks = new Map<number, QuickJSHandle>();
+  private timerSeq = 0;
+  /** Host-side timer registry. Each entry holds the VM callback handle and its
+   *  absolute wake time; the drain loop sleeps until the earliest one is due. */
+  private timers = new Map<number, { callback: QuickJSHandle; wakeAt: number; seq: number }>();
   private fsBridge: FsBridge | null = null;
   private isHalted = false;
   private haltMessage = '';
@@ -166,34 +169,11 @@ export class JsVMContext {
               result.value.dispose();
             }
 
-            // Drain pending jobs and fs operations from this script
+            // Drain pending jobs, fs operations, and timers from this script
             const deadline = Date.now() + TIMEOUT_MS;
-            while (
-              this.context.runtime.hasPendingJob() ||
-              (this.fsBridge && this.fsBridge.hasPendingOps())
-            ) {
-              // Drain fs operations first
-              const fsError = await this.drainFsOperations(deadline);
-              if (fsError) {
-                console.error('[JsVMContext] FS error in', filePath, ':', fsError);
-                break;
-              }
-
-              // Execute promise jobs
-              while (this.context.runtime.hasPendingJob()) {
-                const pendingResult = this.context.runtime.executePendingJobs(1);
-                if (pendingResult.error) {
-                  const errorValue = this.context.dump(pendingResult.error);
-                  pendingResult.error.dispose();
-                  console.error('[JsVMContext] Async error in', filePath, ':', errorValue);
-                  break;
-                }
-              }
-
-              // Check if we have more fs operations after promise jobs resolved
-              if (!this.fsBridge || !this.fsBridge.hasPendingOps()) {
-                break;
-              }
+            const drainError = await this.drainPendingJobs(deadline);
+            if (drainError) {
+              console.error('[JsVMContext] Error draining', filePath, ':', drainError);
             }
 
             // Only add header + output if this library produced console output
@@ -224,9 +204,10 @@ export class JsVMContext {
    * @returns Result with value, console output, and error flag
    */
   async evaluate(code: string, filename?: string): Promise<EvalResult> {
-    // Clear state from previous eval
+    // Clear state from previous eval. Dispose any timers left over from a
+    // previous run that was aborted (timeout/halt) before they could fire.
     this.consoleOutput = [];
-    this.cancelledTimers.clear();
+    this.clearTimers();
 
     // Reset halt state
     this.isHalted = false;
@@ -396,15 +377,19 @@ export class JsVMContext {
   }
 
   /**
-   * Process pending jobs one at a time, yielding to browser between each.
-   * Also processes pending fs operations before each job execution.
-   * Returns error message if something goes wrong, undefined on success.
+   * Run the event loop until there is no more work: drains microtasks one at a
+   * time (yielding to the host between each), processes pending fs operations,
+   * then — once microtasks are quiet — sleeps until the earliest scheduled
+   * timer is due and fires every timer that has come due. Microtasks always
+   * drain before any timer fires, matching real event-loop ordering.
+   *
+   * Returns an error message if something goes wrong, undefined on success.
    */
   private async drainPendingJobs(deadline: number): Promise<string | undefined> {
-    // Keep looping while there are pending jobs OR pending fs operations
     while (
       this.context.runtime.hasPendingJob() ||
-      (this.fsBridge && this.fsBridge.hasPendingOps())
+      (this.fsBridge && this.fsBridge.hasPendingOps()) ||
+      this.timers.size > 0
     ) {
       // Check timeout
       if (Date.now() > deadline) {
@@ -417,11 +402,11 @@ export class JsVMContext {
         return fsError;
       }
 
-      // Yield to browser
-      await new Promise(resolve => globalThis.setTimeout(resolve, 0));
-
-      // Execute one pending job if there are any
+      // Drain microtasks before advancing to timers
       if (this.context.runtime.hasPendingJob()) {
+        // Yield to host
+        await new Promise(resolve => globalThis.setTimeout(resolve, 0));
+
         const pendingResult = this.context.runtime.executePendingJobs(1);
         if (pendingResult.error) {
           const errorValue = this.context.dump(pendingResult.error);
@@ -434,21 +419,84 @@ export class JsVMContext {
 
           return this.formatError(errorValue);
         }
+        continue;
+      }
+
+      // No microtasks left — advance to the next due timer (if any)
+      if (this.timers.size > 0) {
+        const timerError = await this.fireDueTimers(deadline);
+        if (timerError) {
+          return timerError;
+        }
       }
     }
     return undefined;
   }
 
   /**
+   * Sleep until the earliest scheduled timer is due (capped at the deadline,
+   * via the host's real setTimeout), then invoke every timer whose wake time
+   * has passed, in (wakeAt, insertion order). A fired callback may schedule or
+   * clear timers, so cancellation is re-checked just before each invocation.
+   *
+   * Returns an error message if a callback throws/halts, undefined otherwise.
+   */
+  private async fireDueTimers(deadline: number): Promise<string | undefined> {
+    let earliest = Infinity;
+    for (const timer of this.timers.values()) {
+      if (timer.wakeAt < earliest) earliest = timer.wakeAt;
+    }
+
+    const waitMs = Math.min(earliest, deadline) - Date.now();
+    if (waitMs > 0) {
+      await new Promise(resolve => globalThis.setTimeout(resolve, waitMs));
+    }
+    if (Date.now() > deadline) {
+      return 'Error: Execution timeout (300s)';
+    }
+
+    const now = Date.now();
+    const due = [...this.timers.entries()]
+      .filter(([, timer]) => timer.wakeAt <= now)
+      .sort((a, b) => a[1].wakeAt - b[1].wakeAt || a[1].seq - b[1].seq);
+
+    for (const [id, timer] of due) {
+      // A previously-fired callback may have cleared this one.
+      if (!this.timers.has(id)) continue;
+      this.timers.delete(id);
+
+      try {
+        const callResult = this.context.callFunction(timer.callback, this.context.undefined);
+        if (callResult.error) {
+          const errorValue = this.context.dump(callResult.error);
+          callResult.error.dispose();
+          if (this.isHalted) {
+            return `HALT:${this.haltMessage}`;
+          }
+          return this.formatError(errorValue);
+        }
+        callResult.value.dispose();
+      } finally {
+        timer.callback.dispose();
+      }
+    }
+    return undefined;
+  }
+
+  /** Dispose every scheduled timer's callback handle and clear the registry. */
+  private clearTimers(): void {
+    for (const timer of this.timers.values()) {
+      timer.callback.dispose();
+    }
+    this.timers.clear();
+  }
+
+  /**
    * Dispose the context and release resources.
    */
   dispose(): void {
-    // Dispose any pending callback handles that haven't run yet
-    for (const handle of this.pendingCallbacks.values()) {
-      handle.dispose();
-    }
-    this.pendingCallbacks.clear();
-    this.cancelledTimers.clear();
+    // Dispose any timer callback handles that haven't fired yet
+    this.clearTimers();
     this.context.dispose();
   }
 
@@ -498,100 +546,55 @@ export class JsVMContext {
   }
 
   /**
-   * Set up setTimeout/clearTimeout using Promise-based approach.
-   * setTimeout queues callback via Promise.resolve().then()
-   * clearTimeout marks timer ID as cancelled
+   * Set up setTimeout/setInterval/clearTimeout/clearInterval backed by the
+   * host-side timer registry. Both setTimeout and setInterval schedule a single
+   * fire that honors the real delay; the drain loop sleeps until each is due.
+   * setInterval does NOT repeat — a documented limitation.
    */
   private setupTimers(): void {
-    // Helper to create wrapper that checks cancellation
-    const createTimeoutWrapper = this.context.newFunction(
-      '__createTimeoutWrapper',
-      (callbackHandle: QuickJSHandle, idHandle: QuickJSHandle) => {
-        const id = this.context.getNumber(idHandle);
-        const callback = callbackHandle.dup();
+    const schedule = (callbackHandle: QuickJSHandle, delayHandle?: QuickJSHandle): number => {
+      const id = this.nextTimerId++;
+      const rawDelay = delayHandle ? this.context.getNumber(delayHandle) : 0;
+      const delay = Number.isFinite(rawDelay) && rawDelay > 0 ? rawDelay : 0;
+      this.timers.set(id, {
+        callback: callbackHandle.dup(),
+        wakeAt: Date.now() + delay,
+        seq: this.timerSeq++,
+      });
+      return id;
+    };
 
-        // Track the callback handle for cleanup on dispose
-        this.pendingCallbacks.set(id, callback);
-
-        // Return a new function that checks cancellation before calling
-        return this.context.newFunction('__timeoutWrapper', () => {
-          // Remove from pending (we're about to handle it)
-          this.pendingCallbacks.delete(id);
-
-          try {
-            if (!this.cancelledTimers.has(id)) {
-              this.context.callFunction(callback, this.context.undefined);
-            }
-            this.cancelledTimers.delete(id);
-          } finally {
-            callback.dispose();
-          }
-        });
-      }
-    );
-    this.context.setProp(this.context.global, '__createTimeoutWrapper', createTimeoutWrapper);
-    createTimeoutWrapper.dispose();
-
-    // setTimeout implementation in JS using Promise.resolve().then()
-    const setTimeoutCode = `
-      (function() {
-        let __nextTimerId = 1;
-        globalThis.setTimeout = function(callback, delay) {
-          const id = __nextTimerId++;
-          const wrapper = __createTimeoutWrapper(callback, id);
-          Promise.resolve().then(wrapper);
-          return id;
-        };
-      })();
-    `;
-    this.context.evalCode(setTimeoutCode);
-
-    // clearTimeout - just marks the ID as cancelled (host-side)
-    const clearTimeoutFn = this.context.newFunction('clearTimeout', (idHandle: QuickJSHandle) => {
+    const cancel = (idHandle: QuickJSHandle): void => {
       const id = this.context.getNumber(idHandle);
-      this.cancelledTimers.add(id);
-    });
-    this.context.setProp(this.context.global, 'clearTimeout', clearTimeoutFn);
-    clearTimeoutFn.dispose();
+      const timer = this.timers.get(id);
+      if (timer) {
+        timer.callback.dispose();
+        this.timers.delete(id);
+      }
+    };
 
-    // setInterval stub - returns ID but doesn't actually repeat
+    const setTimeoutFn = this.context.newFunction(
+      'setTimeout',
+      (callbackHandle: QuickJSHandle, delayHandle?: QuickJSHandle) =>
+        this.context.newNumber(schedule(callbackHandle, delayHandle))
+    );
+    this.context.setProp(this.context.global, 'setTimeout', setTimeoutFn);
+    setTimeoutFn.dispose();
+
+    // setInterval honors its delay but fires once (no repeat) — documented limitation.
     const setIntervalFn = this.context.newFunction(
       'setInterval',
-      (callbackHandle: QuickJSHandle, _delayHandle?: QuickJSHandle) => {
-        // Just do one setTimeout, no repeat
-        const id = this.nextTimerId++;
-        const callback = callbackHandle.dup();
-        const wrapper = this.context.newFunction('__intervalWrapper', () => {
-          try {
-            if (!this.cancelledTimers.has(id)) {
-              this.context.callFunction(callback, this.context.undefined);
-            }
-            this.cancelledTimers.delete(id);
-          } finally {
-            callback.dispose();
-          }
-        });
-
-        // Queue via Promise
-        const promiseCode = `Promise.resolve().then`;
-        const thenResult = this.context.evalCode(promiseCode);
-        if (!thenResult.error) {
-          this.context.callFunction(thenResult.value, this.context.undefined, wrapper);
-          thenResult.value.dispose();
-        }
-        wrapper.dispose();
-
-        return this.context.newNumber(id);
-      }
+      (callbackHandle: QuickJSHandle, delayHandle?: QuickJSHandle) =>
+        this.context.newNumber(schedule(callbackHandle, delayHandle))
     );
     this.context.setProp(this.context.global, 'setInterval', setIntervalFn);
     setIntervalFn.dispose();
 
-    // clearInterval - same as clearTimeout
-    const clearIntervalFn = this.context.newFunction('clearInterval', (idHandle: QuickJSHandle) => {
-      const id = this.context.getNumber(idHandle);
-      this.cancelledTimers.add(id);
-    });
+    const clearTimeoutFn = this.context.newFunction('clearTimeout', cancel);
+    this.context.setProp(this.context.global, 'clearTimeout', clearTimeoutFn);
+    clearTimeoutFn.dispose();
+
+    const clearIntervalFn = this.context.newFunction('clearInterval', cancel);
     this.context.setProp(this.context.global, 'clearInterval', clearIntervalFn);
     clearIntervalFn.dispose();
   }

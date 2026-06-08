@@ -72,6 +72,36 @@ export function parseModelString(str: string): ModelReference | undefined {
   return { apiDefinitionId: str.substring(0, idx), modelId: str.substring(idx + 1) };
 }
 
+/**
+ * Resolve which model a minion run will use, by precedence:
+ *   input.model (requested by the LLM) > model stored on the minion chat
+ *   (continuation) > the project's default model option.
+ *
+ * Pure precedence only — no validation. `executeMinion` validates an explicitly
+ * requested `input.model` (format / membership) before relying on this, while
+ * the parallel-throttle grouping uses it best-effort to find the upstream API
+ * definition. Keep this the single source of the precedence ladder so the two
+ * callers can't drift.
+ */
+export function resolveMinionModelRef(
+  input: { model?: unknown },
+  minionChat: { apiDefinitionId?: string; modelId?: string } | null | undefined,
+  toolOptions: ToolOptions | undefined
+): ModelReference | undefined {
+  if (typeof input.model === 'string') {
+    const parsed = parseModelString(input.model);
+    if (parsed) return parsed;
+  }
+  if (minionChat?.apiDefinitionId && minionChat.modelId) {
+    return { apiDefinitionId: minionChat.apiDefinitionId, modelId: minionChat.modelId };
+  }
+  const defaultRef = toolOptions?.model;
+  if (defaultRef && isModelReference(defaultRef)) {
+    return defaultRef;
+  }
+  return undefined;
+}
+
 /** Strip a namespace prefix from a path for minion-facing display */
 export function stripNsPrefix(path: string, prefix?: string): string {
   if (!prefix) return path;
@@ -168,12 +198,14 @@ interface MinionInput {
   reasoningEffort?: string;
   /** Override temperature for this minion call */
   temperature?: number;
+  /** Override max output tokens for this minion call */
+  maxOutputTokens?: number;
   /** Override how injected files are sent to the minion */
   fileInjectionMode?: string;
   /** Additional system prompt text, appended after persona/configured prompt */
   systemPrompt?: string;
-  /** VFS file path to a system prompt file. Content appended after systemPrompt. */
-  systemPromptFile?: string;
+  /** VFS file path(s) to system prompt file(s). String or array of strings; contents appended after systemPrompt in order. */
+  systemPromptFile?: string | string[];
   /** Override nudge text appended to the last user message for this minion call. Empty string disables. */
   nudgeThinking?: string;
   /** Override how many recent user turns of thinking blocks to keep. -1 = all, 0+ = exact count. */
@@ -294,6 +326,30 @@ async function rollbackToSavepoint(
  * Resolve the effective return mode from tool options, with backward
  * compat for legacy `noReturnTool` / `returnOnly` booleans.
  */
+/**
+ * Walk back through stored minion messages to find the most recent assistant
+ * message at-or-before `savepoint` that carries a `claudeAgentMessageUuid`.
+ * Used to compute the `resumeSessionAt` target when a verifyHook failure
+ * needs the SDK to rewind on the next turn.
+ */
+function findPriorAssistantClaudeAgentUuid(
+  messages: { id: string; role: string; metadata?: { claudeAgentMessageUuid?: string } }[],
+  savepoint: string | undefined
+): string | undefined {
+  if (!savepoint || savepoint === SAVEPOINT_START) {
+    return undefined;
+  }
+  const savepointIdx = messages.findIndex(m => m.id === savepoint);
+  if (savepointIdx < 0) return undefined;
+  for (let i = savepointIdx; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'assistant' && m.metadata?.claudeAgentMessageUuid) {
+      return m.metadata.claudeAgentMessageUuid;
+    }
+  }
+  return undefined;
+}
+
 function resolveReturnMode(opts: ToolOptions): string {
   if (typeof opts.returnMode === 'string') return opts.returnMode;
   if (opts.noReturnTool === true) return 'no-return';
@@ -670,6 +726,8 @@ async function* executeMinion(
     if (minionInput.reasoningEffort !== undefined)
       minionChat.reasoningEffort = minionInput.reasoningEffort as ReasoningEffort;
     if (minionInput.temperature !== undefined) minionChat.temperature = minionInput.temperature;
+    if (minionInput.maxOutputTokens !== undefined)
+      minionChat.maxOutputTokens = minionInput.maxOutputTokens;
     if (minionInput.fileInjectionMode !== undefined)
       minionChat.fileInjectionMode = minionInput.fileInjectionMode;
     if (minionInput.systemPrompt !== undefined) minionChat.systemPrompt = minionInput.systemPrompt;
@@ -756,6 +814,7 @@ async function* executeMinion(
       reasoningBudgetTokens: minionInput.reasoningBudgetTokens,
       reasoningEffort: minionInput.reasoningEffort as ReasoningEffort,
       temperature: minionInput.temperature,
+      maxOutputTokens: minionInput.maxOutputTokens,
       fileInjectionMode: minionInput.fileInjectionMode,
       systemPrompt: minionInput.systemPrompt,
       systemPromptFile: minionInput.systemPromptFile,
@@ -796,11 +855,10 @@ async function* executeMinion(
     (minionToolOptions.fileInjectionMode as InjectionMode) ??
     'inline';
 
-  // Resolve effective model: input.model (from LLM) > minionChat stored model > toolOptions.model (default)
-  let effectiveModelRef: ModelReference | undefined;
-
+  // Resolve effective model: input.model (from LLM) > minionChat stored model > toolOptions.model
+  // (default). Precedence lives in resolveMinionModelRef (shared with parallel-throttle grouping);
+  // here we additionally validate an explicitly-requested model before relying on it.
   if (minionInput.model) {
-    // LLM specified a model — validate against configured models list
     const modelsList = minionToolOptions.models;
     if (!isModelReferenceArray(modelsList) || modelsList.length === 0) {
       return {
@@ -833,21 +891,9 @@ async function* executeMinion(
         isError: true,
       };
     }
-
-    effectiveModelRef = parsed;
-  } else if (minionChat.apiDefinitionId && minionChat.modelId) {
-    // Continuation: use model stored from previous minion run
-    effectiveModelRef = {
-      apiDefinitionId: minionChat.apiDefinitionId,
-      modelId: minionChat.modelId,
-    };
-  } else {
-    // Fall back to default model option
-    const defaultRef = minionToolOptions.model;
-    if (defaultRef && isModelReference(defaultRef)) {
-      effectiveModelRef = defaultRef;
-    }
   }
+
+  const effectiveModelRef = resolveMinionModelRef(minionInput, minionChat, minionToolOptions);
 
   if (!effectiveModelRef) {
     return {
@@ -892,7 +938,35 @@ async function* executeMinion(
   }
 
   const projectTools = project.enabledTools ?? [];
-  const effectiveEnabledTools = minionInput.enabledTools ?? minionChat.enabledTools;
+  let effectiveEnabledTools = minionInput.enabledTools ?? minionChat.enabledTools;
+
+  // claude-agent MVP: no MCP tool plumbing yet, no `return` tool support
+  // (SDK call is single-turn from our side). Force tools off and text-only
+  // return mode; log everything else we're silently dropping.
+  const isClaudeAgent = apiDef.apiType === 'claude-agent';
+  if (isClaudeAgent) {
+    if (effectiveEnabledTools && effectiveEnabledTools.length > 0) {
+      console.debug(
+        '[minionTool] claude-agent: ignoring enabledTools (no tool plumbing in MVP):',
+        effectiveEnabledTools
+      );
+    }
+    effectiveEnabledTools = [];
+    const unsupportedInputs: string[] = [];
+    if (minionInput.enableWeb) unsupportedInputs.push('enableWeb');
+    if (typeof minionInput.temperature === 'number') unsupportedInputs.push('temperature');
+    if (typeof minionInput.maxOutputTokens === 'number') unsupportedInputs.push('maxOutputTokens');
+    if (typeof minionInput.nudgeThinking === 'string') unsupportedInputs.push('nudgeThinking');
+    if (minionInput.thinkingKeepTurns !== undefined) unsupportedInputs.push('thinkingKeepTurns');
+    if (minionInput.pruneThinkingBeforeApiCall !== undefined)
+      unsupportedInputs.push('pruneThinkingBeforeApiCall');
+    if (unsupportedInputs.length > 0) {
+      console.debug(
+        '[minionTool] claude-agent: dropping unsupported minion params:',
+        unsupportedInputs.join(', ')
+      );
+    }
+  }
 
   if (effectiveEnabledTools && effectiveEnabledTools.length > 0) {
     const projectToolSet = new Set(projectTools);
@@ -909,7 +983,7 @@ async function* executeMinion(
     }
   }
 
-  const returnMode = resolveReturnMode(minionToolOptions);
+  const returnMode = isClaudeAgent ? 'no-return' : resolveReturnMode(minionToolOptions);
   const includeReturn = returnMode !== 'no-return';
   const disableReasoning = minionToolOptions.disableReasoning === true;
   const minionTools = buildMinionTools(effectiveEnabledTools, projectTools, includeReturn);
@@ -1313,20 +1387,27 @@ async function* executeMinion(
     minionSystemPrompt = [minionSystemPrompt, effectiveSystemPrompt].filter(Boolean).join('\n\n');
   }
 
-  // Append systemPromptFile content (read from VFS), falling back to stored value
+  // Append systemPromptFile content(s) (read from VFS), falling back to stored value.
+  // Accepts a single path or an array of paths; arrays are read in order and joined with blank lines.
   const effectiveSystemPromptFile = minionInput.systemPromptFile ?? minionChat.systemPromptFile;
-  if (effectiveSystemPromptFile) {
+  const promptFilePaths =
+    typeof effectiveSystemPromptFile === 'string'
+      ? [effectiveSystemPromptFile]
+      : (effectiveSystemPromptFile ?? []);
+  if (promptFilePaths.length > 0) {
     const promptFileAdapter = context.createVfsAdapter();
-    try {
-      const fileContent = await promptFileAdapter.readFile(effectiveSystemPromptFile);
-      minionSystemPrompt = [minionSystemPrompt, fileContent].filter(Boolean).join('\n\n');
-    } catch (err) {
-      return {
-        content: truncateError(
-          `Error: Failed to read system prompt file: ${effectiveSystemPromptFile}. ${err instanceof Error ? err.message : String(err)}`
-        ),
-        isError: true,
-      };
+    for (const path of promptFilePaths) {
+      try {
+        const fileContent = await promptFileAdapter.readFile(path);
+        minionSystemPrompt = [minionSystemPrompt, fileContent].filter(Boolean).join('\n\n');
+      } catch (err) {
+        return {
+          content: truncateError(
+            `Error: Failed to read system prompt file: ${path}. ${err instanceof Error ? err.message : String(err)}`
+          ),
+          isError: true,
+        };
+      }
     }
   }
 
@@ -1429,7 +1510,12 @@ async function* executeMinion(
         : minionChat.temperature !== undefined
           ? minionChat.temperature
           : (project.temperature ?? undefined),
-    maxTokens: project.maxOutputTokens,
+    maxTokens:
+      minionInput.maxOutputTokens !== undefined
+        ? minionInput.maxOutputTokens
+        : minionChat.maxOutputTokens !== undefined
+          ? minionChat.maxOutputTokens
+          : project.maxOutputTokens,
     systemPrompt: combinedSystemPrompt || undefined,
     preFillResponse: undefined, // Minions don't use prefill
     webSearchEnabled: allowWebSearch && (minionInput.enableWeb ?? false),
@@ -1538,6 +1624,8 @@ async function* executeMinion(
       toolRegistry: context.toolRegistry,
       loopRegistry: context.loopRegistry,
     },
+    claudeAgentSessionId: minionChat.claudeAgentSessionId,
+    claudeAgentResumeAt: minionChat.claudeAgentResumeAt,
   };
 
   // Delta-encoding emitter state. The minion ships `tool_groups_delta`
@@ -1634,6 +1722,20 @@ async function* executeMinion(
             case 'tokens_consumed':
               addTokens(totals, event.tokens);
               break;
+
+            case 'claude_agent_turn': {
+              // Persist SDK session ID on the MinionChat row and clear any
+              // pending resumeAt — same idempotent pattern ChatRunner uses
+              // for the parent-chat case.
+              const needsSessionSave = minionChat.claudeAgentSessionId !== event.sessionId;
+              const needsResumeClear = minionChat.claudeAgentResumeAt !== undefined;
+              if (needsSessionSave || needsResumeClear) {
+                minionChat.claudeAgentSessionId = event.sessionId;
+                minionChat.claudeAgentResumeAt = undefined;
+                await storage.saveMinionChat(minionChat);
+              }
+              break;
+            }
 
             case 'streaming_start':
             case 'streaming_end':
@@ -1857,6 +1959,34 @@ async function* executeMinion(
             typeof evalResult.value === 'string'
               ? evalResult.value
               : JSON.stringify(evalResult.value);
+          // claude-agent: mark the prior savepoint as the SDK rewind target
+          // so the next minion call (action: 'retry' or autoRollback) discards
+          // this rejected turn from the SDK's session history via
+          // resumeSessionAt. If the rejected turn was the very first one
+          // (no prior assistant exists), drop the SDK session entirely so
+          // the next call starts fresh — otherwise the SDK would happily
+          // continue from its stale, rejected history.
+          if (isClaudeAgent) {
+            const priorUuid = findPriorAssistantClaudeAgentUuid(
+              [...existingMessages, ...(lastFinalResult?.messages ?? [])],
+              minionChat.savepoint
+            );
+            if (priorUuid) {
+              minionChat.claudeAgentResumeAt = priorUuid;
+              console.debug(
+                '[minionTool] claude-agent verifyHook reject: resumeAt=%s (savepoint=%s)',
+                priorUuid,
+                minionChat.savepoint
+              );
+            } else {
+              minionChat.claudeAgentSessionId = undefined;
+              minionChat.claudeAgentResumeAt = undefined;
+              console.debug(
+                '[minionTool] claude-agent verifyHook reject: dropped SDK session (first turn, no prior assistant)'
+              );
+            }
+            await storage.saveMinionChat(minionChat);
+          }
           return {
             content: truncateError(`Verify hook rejected: ${errorMsg}`),
             isError: true,
@@ -2030,7 +2160,10 @@ function renderMinionInput(input: Record<string, unknown>): string {
   }
 
   if (minionInput.systemPromptFile) {
-    lines.push(`PromptFile: ${minionInput.systemPromptFile}`);
+    const files = Array.isArray(minionInput.systemPromptFile)
+      ? minionInput.systemPromptFile.join(', ')
+      : minionInput.systemPromptFile;
+    if (files) lines.push(`PromptFile: ${files}`);
   }
 
   if (minionInput.nudgeThinking !== undefined) {
@@ -2323,6 +2456,10 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     type: 'number',
     description: 'Override temperature (default: use project setting)',
   };
+  properties.maxOutputTokens = {
+    type: 'number',
+    description: 'Override max output tokens for this minion call (default: use project setting).',
+  };
   properties.fileInjectionMode = {
     type: 'string',
     enum: ['inline', 'separate-block', 'as-file', 'mock-tool-call'],
@@ -2333,8 +2470,9 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     description: 'Additional system prompt text, appended after persona/configured prompt.',
   };
   properties.systemPromptFile = {
-    type: 'string',
-    description: 'VFS file path to a system prompt file. Content appended after systemPrompt.',
+    anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+    description:
+      'VFS file path(s) to system prompt file(s). Pass a single string, or an array of strings to stitch multiple fragments in order. Contents are appended after systemPrompt, joined with blank lines.',
   };
   properties.nudgeThinking = {
     type: 'string',
@@ -2369,8 +2507,20 @@ export const minionTool: ClientSideTool = {
   name: 'minion',
   displayName: 'Minion',
   displaySubtitle: 'Delegate tasks to a sub-agent',
+  claudeAgentBridgeable: true,
   complex: true,
   parallelThrottleMs: 2000,
+  // Scope the 2s stagger to one upstream API definition: parallel minions on the
+  // same apiDefinitionId space out, but minions on different definitions (whether
+  // a different provider or just a different account/key) all launch immediately.
+  async getParallelThrottleGroup(input, toolOptions, context) {
+    const minionChat =
+      typeof input.minionChatId === 'string'
+        ? await context.storage.getMinionChat(input.minionChatId)
+        : undefined;
+    const ref = resolveMinionModelRef(input, minionChat, toolOptions);
+    return ref ? `minion:${ref.apiDefinitionId}` : 'minion:__default__';
+  },
   description: getMinionDescription,
   inputSchema: getMinionInputSchema,
   systemPrompt: getMinionSystemPromptInjection,

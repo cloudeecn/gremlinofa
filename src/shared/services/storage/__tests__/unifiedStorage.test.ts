@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { UnifiedStorage } from '../unifiedStorage';
+import { UnifiedStorage, CekOracleMismatchError, CEK_ORACLE_KEY } from '../unifiedStorage';
 import type { EncryptionCore } from '../../encryption/encryptionCore';
 import {
   createMockAdapter,
@@ -69,6 +69,69 @@ describe('UnifiedStorage', () => {
       await storage.initialize();
 
       expect(adapter.initialize).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('CEK Oracle', () => {
+    it('should create oracle on fresh init (no oracle in metadata)', async () => {
+      await storage.initialize();
+
+      // Oracle should have been saved to metadata
+      const saved = adapter._getStorage().app_metadata[CEK_ORACLE_KEY];
+      expect(saved).toBeDefined();
+      expect(saved.unencryptedData).toBeDefined();
+      const meta = JSON.parse(saved.unencryptedData);
+      // The value field holds the encrypted oracle ciphertext
+      expect(meta.value).toMatch(/^encrypted:/);
+    });
+
+    it('should pass verification when oracle decrypts to correct static marker', async () => {
+      // First init creates oracle
+      await storage.initialize();
+
+      // Second init on a fresh storage instance (simulates restart) should pass
+      const storage2 = new UnifiedStorage(adapter, mockEncryption as unknown as EncryptionCore);
+      // Should not throw
+      await storage2.initialize();
+    });
+
+    it('should throw CekOracleMismatchError when decrypt fails', async () => {
+      // First init creates oracle
+      await storage.initialize();
+
+      // Make decrypt fail (simulates wrong CEK)
+      const badEncryption = createMockEncryptionService();
+      badEncryption.decrypt.mockRejectedValue(new Error('bad key'));
+
+      const badStorage = new UnifiedStorage(adapter, badEncryption as unknown as EncryptionCore);
+      await expect(badStorage.initialize()).rejects.toThrow(CekOracleMismatchError);
+    });
+
+    it('should throw CekOracleMismatchError when static marker is wrong', async () => {
+      // First init creates oracle
+      await storage.initialize();
+
+      // Make decrypt return a valid JSON but with wrong static marker
+      const badEncryption = createMockEncryptionService();
+      badEncryption.decrypt.mockResolvedValue(JSON.stringify({ s: 'WRONG', r: 'aabb' }));
+
+      const badStorage = new UnifiedStorage(adapter, badEncryption as unknown as EncryptionCore);
+      await expect(badStorage.initialize()).rejects.toThrow(CekOracleMismatchError);
+    });
+
+    it('createCekOracle should accept an alternate encryption core', async () => {
+      await storage.initialize();
+
+      const altEncryption = createMockEncryptionService();
+      altEncryption.encrypt.mockImplementation((data: string) =>
+        Promise.resolve(`alt-encrypted:${data}`)
+      );
+
+      await storage.createCekOracle(altEncryption as unknown as EncryptionCore);
+
+      const saved = adapter._getStorage().app_metadata[CEK_ORACLE_KEY];
+      const meta = JSON.parse(saved.unencryptedData);
+      expect(meta.value).toMatch(/^alt-encrypted:/);
     });
   });
 

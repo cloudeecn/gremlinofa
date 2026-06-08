@@ -108,7 +108,8 @@ export type ActiveLoopsChange =
       type: 'ended';
       loopId: LoopId;
       status: 'complete' | 'error' | 'aborted' | 'soft_stopped' | 'max_iterations';
-    };
+    }
+  | { type: 'chat_title_changed'; chatId: string; title: string };
 
 // ============================================================================
 // Export / import streams
@@ -139,6 +140,15 @@ export type ImportProgress =
       estimatedTotal?: number;
     }
   | { type: 'warning'; message: string }
+  | {
+      type: 'vfs_migration_progress';
+      projectId: string;
+      projectName: string;
+      filesProcessed: number;
+      totalFiles: number;
+      versionsProcessed: number;
+    }
+  | { type: 'vfs_migration_skipped'; projectId: string; projectName: string; reason: string }
   | { type: 'done'; imported: number; skipped: number; errors: string[] };
 
 // ============================================================================

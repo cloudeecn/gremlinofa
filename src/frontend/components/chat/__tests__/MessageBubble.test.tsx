@@ -27,6 +27,12 @@ vi.mock('../../../lib/alerts', () => ({
   showAlert: vi.fn(),
 }));
 
+vi.mock('../../../client', () => ({
+  gremlinClient: {
+    getAttachments: vi.fn().mockResolvedValue([]),
+  },
+}));
+
 // Mock ResizeObserver - track instances for testing
 let mockResizeObserverInstance: {
   observe: ReturnType<typeof vi.fn>;

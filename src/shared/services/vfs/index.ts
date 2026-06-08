@@ -1,12 +1,11 @@
 /**
  * VFS barrel — re-exports the local adapter, utility helpers, and types.
  *
- * Phase 1.65 moved the per-project adapter dispatch (`getAdapter`) and
- * the `RemoteVfsAdapter` class out to `src/worker/adapters/createVfsAdapter.ts`
- * (and `src/worker/adapters/RemoteVfsAdapter.ts`). Production callers go
- * through `BackendDeps.createVfsAdapter`; this barrel only exposes the
- * pure pieces (local adapter, types, path helpers) that shared code can
- * still safely import.
+ * Phase 1.65 moved the per-project adapter dispatch (`getAdapter`) out
+ * to `src/worker/adapters/createVfsAdapter.ts`. `RemoteVfsAdapter` lives
+ * alongside the other adapters in this directory. Production callers go
+ * through `BackendDeps.createVfsAdapter`; this barrel exposes the pure
+ * pieces (adapters, types, path helpers) that shared code can import.
  */
 
 // Utility functions (no lock needed — pure or sync)
@@ -25,8 +24,9 @@ export {
   selectVersionsToKeep,
 } from './vfsService';
 
-// Local adapter (still safe — uses UnifiedStorage, no direct browser globals).
+// Adapters
 export { LocalVfsAdapter } from './localVfsAdapter';
+export { RemoteVfsAdapter } from './RemoteVfsAdapter';
 export type { VfsAdapter } from './vfsAdapter';
 
 // Types and classes

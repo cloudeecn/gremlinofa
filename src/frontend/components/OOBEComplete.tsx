@@ -9,7 +9,7 @@ import { useState } from 'react';
 interface OOBECompleteProps {
   mode: 'fresh' | 'import' | 'existing';
   cek: string;
-  storageType: 'indexeddb' | 'remote';
+  storageType: 'indexeddb' | 'remote' | 'server';
   importStats?: {
     imported: number;
     skipped: number;
@@ -100,15 +100,24 @@ export function OOBEComplete({ mode, cek, storageType, importStats }: OOBEComple
         {/* Storage info */}
         <div className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4">
           <div className="flex items-center gap-3">
-            <span className="text-2xl">{storageType === 'remote' ? '☁️' : '📦'}</span>
+            <span className="text-2xl">
+              {storageType === 'server' ? '🖥️' : storageType === 'remote' ? '☁️' : '📦'}
+            </span>
             <div>
               <div className="font-medium text-gray-900">
-                Storage: {storageType === 'remote' ? 'Remote Storage' : 'IndexedDB (Local)'}
+                Storage:{' '}
+                {storageType === 'server'
+                  ? 'Remote Backend'
+                  : storageType === 'remote'
+                    ? 'Remote Storage'
+                    : 'IndexedDB (Local)'}
               </div>
               <div className="text-sm text-gray-500">
-                {storageType === 'remote'
-                  ? 'Data synced via remote storage backend'
-                  : 'Data stored locally in your browser'}
+                {storageType === 'server'
+                  ? 'Server owns storage and runs the backend'
+                  : storageType === 'remote'
+                    ? 'Data synced via remote storage backend'
+                    : 'Data stored locally in your browser'}
               </div>
             </div>
           </div>

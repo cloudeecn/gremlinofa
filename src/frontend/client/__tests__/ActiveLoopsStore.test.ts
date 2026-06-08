@@ -12,7 +12,7 @@ import type {
  * synchronously and inspect the resulting snapshots.
  */
 function makeControllableStream() {
-  const queue: ActiveLoopsChange[] = [];
+  const queue: Array<ActiveLoopsChange | 'disconnect'> = [];
   let resolveNext: (() => void) | null = null;
   let closed = false;
 
@@ -24,6 +24,17 @@ function makeControllableStream() {
       r();
     }
   };
+
+  /** Simulate a transport disconnect — yields a stream_end with error. */
+  const disconnect = () => {
+    queue.push('disconnect');
+    if (resolveNext) {
+      const r = resolveNext;
+      resolveNext = null;
+      r();
+    }
+  };
+
   const close = () => {
     closed = true;
     if (resolveNext) {
@@ -43,19 +54,49 @@ function makeControllableStream() {
           });
           continue;
         }
-        const event = queue.shift()!;
+        const item = queue.shift()!;
+        if (item === 'disconnect') {
+          yield {
+            kind: 'stream_end' as const,
+            requestId: 'req_1',
+            status: 'error' as const,
+            detail: 'transport disconnected',
+          };
+          return;
+        }
         yield {
-          kind: 'stream_event',
+          kind: 'stream_event' as const,
           requestId: 'req_1',
           seq: seq++,
-          event,
+          event: item,
         };
       }
     }
     return gen();
   });
 
-  return { stream, push, close };
+  return { stream, push, disconnect, close };
+}
+
+/** Create a stream factory that returns a fresh controllable stream each call. */
+function makeStreamFactory() {
+  const streams: ReturnType<typeof makeControllableStream>[] = [];
+  let callIndex = 0;
+
+  const addStream = () => {
+    const s = makeControllableStream();
+    streams.push(s);
+    return s;
+  };
+
+  const factory = vi.fn(() => {
+    if (callIndex >= streams.length) {
+      addStream();
+    }
+    return streams[callIndex++].stream();
+  });
+
+  return { factory, streams, addStream };
 }
 
 describe('ActiveLoopsStore', () => {
@@ -70,6 +111,7 @@ describe('ActiveLoopsStore', () => {
     const client = {
       stream: ctrl.stream,
       abortLoop: vi.fn(async () => {}),
+      onReconnect: vi.fn(() => () => {}),
     } as unknown as GremlinClient;
     store = new ActiveLoopsStore(client);
   });
@@ -151,5 +193,107 @@ describe('ActiveLoopsStore', () => {
 
     unsubscribe();
     close();
+  });
+
+  describe('reconnect', () => {
+    it('restarts the stream when listeners are active', async () => {
+      const { factory, addStream } = makeStreamFactory();
+      const stream1 = addStream();
+      const stream2 = addStream();
+
+      let reconnectCb: (() => void) | undefined;
+      const client = {
+        stream: factory,
+        abortLoop: vi.fn(async () => {}),
+        onReconnect: vi.fn((cb: () => void) => {
+          reconnectCb = cb;
+          return () => {
+            reconnectCb = undefined;
+          };
+        }),
+      } as unknown as GremlinClient;
+
+      const reconnectStore = new ActiveLoopsStore(client);
+      const listener = vi.fn();
+      reconnectStore.subscribe(listener);
+
+      // First stream delivers initial data
+      stream1.push({
+        type: 'snapshot',
+        loops: [
+          {
+            loopId: 'loop_1',
+            chatId: 'c1',
+            startedAt: 1000,
+            status: 'running',
+            apiDefinitionId: 'api_1',
+            modelId: 'm1',
+          },
+        ],
+      });
+      await new Promise(r => setTimeout(r, 0));
+      expect(reconnectStore.getSnapshot()).toHaveLength(1);
+      expect(reconnectStore.getSnapshot()[0].loopId).toBe('loop_1');
+
+      // Simulate disconnect — stream_end with error
+      stream1.disconnect();
+      await new Promise(r => setTimeout(r, 0));
+      expect(reconnectStore.getSnapshot()).toHaveLength(0);
+
+      // Fire reconnect callback (simulates WebSocket reconnecting)
+      reconnectCb!();
+      expect(factory).toHaveBeenCalledTimes(2);
+
+      // Second stream delivers fresh snapshot
+      stream2.push({
+        type: 'snapshot',
+        loops: [
+          {
+            loopId: 'loop_2',
+            chatId: 'c2',
+            startedAt: 2000,
+            status: 'running',
+            apiDefinitionId: 'api_2',
+            modelId: 'm2',
+          },
+        ],
+      });
+      await new Promise(r => setTimeout(r, 0));
+      expect(reconnectStore.getSnapshot()).toHaveLength(1);
+      expect(reconnectStore.getSnapshot()[0].loopId).toBe('loop_2');
+
+      reconnectStore.dispose();
+      stream2.close();
+    });
+
+    it('does not restart after dispose()', async () => {
+      const { factory, addStream } = makeStreamFactory();
+      const stream1 = addStream();
+
+      let reconnectCb: (() => void) | undefined;
+      const client = {
+        stream: factory,
+        abortLoop: vi.fn(async () => {}),
+        onReconnect: vi.fn((cb: () => void) => {
+          reconnectCb = cb;
+          return () => {
+            reconnectCb = undefined;
+          };
+        }),
+      } as unknown as GremlinClient;
+
+      const reconnectStore = new ActiveLoopsStore(client);
+      reconnectStore.subscribe(vi.fn());
+
+      stream1.push({ type: 'snapshot', loops: [] });
+      await new Promise(r => setTimeout(r, 0));
+
+      reconnectStore.dispose();
+
+      // reconnectCb should have been deregistered by dispose
+      expect(reconnectCb).toBeUndefined();
+      // stream should only have been opened once
+      expect(factory).toHaveBeenCalledTimes(1);
+    });
   });
 });

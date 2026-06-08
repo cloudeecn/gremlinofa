@@ -48,6 +48,8 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Production source maps with runtime mapping for readable stack traces
 - [x] CORS proxy backend (`cors-proxy/` - Express, SSE streaming) with per-API-definition proxy URL
 - [ ] Bundle size analysis (chunk splitting for large KaTeX/highlight.js bundles)
+- [ ] Native TLS termination in the Node WebSocket server (currently requires reverse proxy)
+- [ ] Configurable DB backend for the server (currently hardcoded to `better-sqlite3`; candidates: `node:sqlite` (built-in, zero deps, Node 22.5+), external DB via pure JS drivers (`pg`, `mysql2`), or custom adapters)
 
 **PWA**
 
@@ -57,14 +59,16 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 **Storage & Data**
 
 - [x] Lightweight deployable remote storage (`storage-backend/` - SQLite + Express)
-- [x] Remote VFS backend (`vfs-backend/` - Express, real filesystem, per-file locking, server-side versioning)
-- [x] Remote VFS adapter (frontend `RemoteVfsAdapter` talks to vfs-backend, optional E2E encryption)
+- [x] VFS server (integrated build target in `src/server/vfsFacade/` + shared engine in `src/server/vfsEngine/`)
+- [x] Remote VFS adapter (frontend `RemoteVfsAdapter` talks to VFS server, E2E encryption deprecated — read-only for migration)
 - [x] VFS adapter routing — all callers (UI via `useVfsAdapter` hook, tools/JSVM/hooks via `ToolContext.vfsAdapter`, `createVfsAdapter` factory for cross-namespace access, system prompt generation via `SystemPromptContext.createVfsAdapter`)
 - [x] VFS Manager clickable root node (create files/dirs at `/`, download entire VFS as ZIP, upload ZIP)
 - [x] OOBE wizard (start fresh / import backup / use existing remote data)
 - [x] Attachment manager (view, select, delete, delete older than X days, missing attachment handling)
 - [x] Storage quota display (local IndexedDB only, shows usage/quota with warning at >100MB or >50%)
 - [ ] Data migration between localStorage and remote storage
+- [x] Server: CEK oracle verification on init — encrypted oracle in metadata table, verified before any data writes; wrong-CEK init returns `CEK_MISMATCH` and server stays dormant
+- [x] VFS migration during cross-backend import (see design below)
 - [x] Remote storage bulk operations (for faster export/import):
   - [x] Add `exportPaginated()` and `batchSave()` to `StorageAdapter` interface
   - [x] Implement in `RemoteStorageAdapter` (calls `/_export` and `/_batch` endpoints)
@@ -72,6 +76,10 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
   - [x] Add tests for both adapters
   - [x] Use in `dataExport.ts` for exporting (removed IndexedDB cursor hack)
   - [x] Use in `dataImport.ts` for faster batch importing
+- [ ] Storage convergence: absorb `storage-backend/` into main project as build target (like VFS server)
+  - Per-table schema with `userId` column (NULL for single-tenant, populated for multi-tenant)
+  - Server backend derives `userId` from CEK for multi-tenant readiness
+  - Schema migration approach: add column with ALTER TABLE, backfill existing rows
 
 **UI & UX**
 
@@ -145,6 +153,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Cross-adapter E2E roundtrip tests (fake-indexeddb + live storage-backend, real encryption)
 - [x] DUMMY System tests (dummyHookRuntime, dummyTool)
 - [x] Remote storage E2E tests (RemoteStorageAdapter against real storage-backend)
+- [x] Worker mode safety net (bridged integration test: WorkerTransport ↔ workerHandler ↔ GremlinServer ↔ fake-IndexedDB, shared STREAM_METHODS with compile-time exhaustiveness check, createVfsAdapter unit test)
 - [ ] E2E tests (full app)
 
 ## Data Model
@@ -235,7 +244,7 @@ src/
 │       └── vfs/        # VfsService + LocalVfsAdapter (1.65 hoisted RemoteVfsAdapter + adapter dispatch to worker/adapters/)
 ├── frontend/       # Browser main-thread UI layer
 │   ├── App.tsx, main.tsx
-│   ├── client/     # GremlinClient + transports (worker only)
+│   ├── client/     # GremlinClient + transports (worker + WebSocket)
 │   ├── components/ # Sidebar, Modals, project/, chat/, ui/, activeLoops/
 │   ├── contexts/   # React Context providers (App, Alert, Error)
 │   ├── hooks/      # Custom hooks (useChat, useProject, useVirtualScroll, etc.)
@@ -248,7 +257,11 @@ src/
 │   └── adapters/   # IndexedDBAdapter, RemoteStorageAdapter, RemoteVfsAdapter,
 │                   # createStorageAdapter, createVfsAdapter (factories injected
 │                   # into BackendDeps via setBootstrapAdapterFactories)
-├── server/         # Phase 2 Node WebSocket backend (placeholder)
+├── server/         # Phase 2 Node WebSocket backend
+│   ├── nodeEntry.ts           # Server entry — loads config, GremlinServer, WebSocket listener
+│   ├── config.ts              # Env-based config (PORT, STORAGE_PATH, VFS_MODE, etc.)
+│   ├── websocketTransport.ts  # Server-side ws handler — dispatches to GremlinServer
+│   └── adapters/              # SqliteStorageAdapter, FilesystemVfsAdapter, factories
 ├── test/           # Test configuration (Vitest setup)
 ├── index.css
 └── vite-env.d.ts
@@ -261,7 +274,7 @@ left untouched in the Phase 1.6 reshuffle (and the Phase 1.7 types move
 preserved relative paths via a one-shot Node script rather than switching
 to the alias).
 
-#### Frontend / Backend Split (Phase 1 complete; Phases 1.5–1.8 cleanup landed)
+#### Frontend / Backend Split (Phase 1 complete; Phase 2.0 in progress)
 
 The codebase is split into four runtime layers — `shared/` (pure), `frontend/` (browser main thread), `worker/` (Web Worker entry), and `server/` (Phase 2 Node placeholder). The RPC contract lives in `src/shared/protocol/` (TypeScript types only, split into focused files) and is shared by both sides. The agentic loop, storage, encryption, API clients, and tools run inside a Web Worker today and will hop into a Node WebSocket process in Phase 2 — both deployments share the same `src/shared/engine/GremlinServer` dispatcher.
 
@@ -269,9 +282,81 @@ The codebase is split into four runtime layers — `shared/` (pure), `frontend/`
 - **`src/shared/engine/`** — `GremlinServer` (method dispatcher; supports deferred mode where `_deps` is `null` until `init({cek})` arrives), `ChatRunner` (per-loop wrapper around `runAgenticLoop`, fires `message_created` for synthesized user messages, enforces incomplete-tail lock + soft-stop via `LoopRegistry.isSoftStopRequested`), `LoopRegistry` (also caches in-flight `pending_tool_result` + merged `tool_block_update` state per chat so `attachChat` can replay the in-progress tool UI when a consumer reattaches mid-stream — entries cleared on the matching `message_created` and as a safety net on `loop_ended`), `buildLoopOptions.ts` + `messageMetadata.ts`, `exportRunner.ts` + `importRunner.ts`, `dataExport.ts` + `dataImport.ts` + `projectBundle.ts`, `transports/inProcess.ts` (the in-process `Transport` interface + `InProcessTransport` implementation). Streaming methods wired: `runLoop`, `subscribeActiveLoops`, `attachChat`, `exportData`, `importData`, `vfsCompactProject`.
 - **`src/shared/services/`** — agentic loop, API clients + stream mappers, compression, encryption (`EncryptionCore`, the only encryption flavor that exists), storage (`UnifiedStorage` + `CachedStorageAdapter` decorator + the `StorageAdapter` interface — the browser-only inner adapters now live under `src/worker/adapters/`), streaming assembler, tools, VFS (`LocalVfsAdapter` + `treeLock` + `vfsService` — `RemoteVfsAdapter` and the per-project dispatch live under `src/worker/adapters/`).
 - **`src/frontend/`** — `App.tsx`, `main.tsx`, `components/`, `hooks/`, `contexts/`, `client/` (GremlinClient + GremlinSession + ActiveLoopsStore + bootstrapClient + worker transport), `lib/` (frontend-only helpers). The main thread no longer constructs an encryption instance — OOBE / Data Manager use `src/frontend/lib/localStorageBoot.ts` to read/write the CEK string and the dormant-callable RPCs (`generateNewCEK`, `normalizeCEK`, `deriveUserIdFromCEK`) on `gremlinClient` for format conversions, then post the string through `gremlinClient.init({cek})`.
-- **`src/worker/gremlinWorker.ts`** — Web Worker entry: boots dormant, calls `setBootstrapAdapterFactories` at module load (registers `createStorageAdapter` and `createVfsAdapter` from `src/worker/adapters/`), then accepts a non-protocol `worker_config` envelope for the storage config and handles a typed `init({cek})` to bring up encryption + storage + the rest of the engine.
+- **`src/worker/gremlinWorker.ts`** + **`src/worker/workerHandler.ts`** — Web Worker entry is a two-line bootstrap passing `self` to `createWorkerHandler(scope)`. The handler (extracted for testability) boots dormant, calls `setBootstrapAdapterFactories` (registers `createStorageAdapter` and `createVfsAdapter` from `src/worker/adapters/`), then accepts a non-protocol `worker_config` envelope for the storage config and handles a typed `init({cek})` to bring up encryption + storage + the rest of the engine. Stream vs one-shot dispatch uses the shared `STREAM_METHODS` set from `src/shared/protocol/streamMethods.ts` (compile-time exhaustiveness check against `GremlinMethods`).
 - **`src/worker/adapters/`** — browser-only adapter implementations + worker-side factories. Files: `IndexedDBAdapter.ts`, `RemoteStorageAdapter.ts`, `RemoteVfsAdapter.ts`, `createStorageAdapter.ts` (config → `CachedStorageAdapter`-wrapped inner adapter), `createVfsAdapter.ts` (project → `LocalVfsAdapter` or `RemoteVfsAdapter`). Phase 1.65 hoisted these out of `src/shared/` so the shared layer's lint rules can ban `indexedDB` / `navigator`.
-- **`src/frontend/client/`** — `GremlinClient` (typed RPC facade exposing every protocol method, plus `exportToBlob` / `importFromBytes` / `vfsCompactProject` / `configureWorker` helpers), `GremlinSession` (per-chat session adapter), `ActiveLoopsStore`, `bootstrapClient.ts` (reads CEK + storage config from localStorage, decodes the CEK, derives userId for remote configs, calls `gremlinClient.configureWorker(storageConfig)` then `gremlinClient.init({cek})` before React mounts), `transports/worker.ts` (`WorkerTransport` — waits for `worker_ready`, posts `worker_config` ahead of `init`, queues every non-`init` request until `init` succeeds, sends `stream_cancel` on consumer-side `break`). Singleton wired unconditionally to `WorkerTransport`; constructed lazily via a `Proxy` so jsdom-only component tests don't trigger worker spawn unless they actually call a method.
+- **`src/frontend/client/`** — `GremlinClient` (typed RPC facade exposing every protocol method, plus `exportToBlob` / `importFromBytes` / `vfsCompactProject` / `configureWorker` / `onReconnect` helpers), `GremlinSession` (per-chat session adapter; registers `onReconnect` to re-attach the `attachChat` stream after WebSocket reconnect), `ActiveLoopsStore`, `bootstrapClient.ts` (reads CEK + storage config from localStorage, derives userId for remote configs, calls `gremlinClient.configureWorker(storageConfig)` — skipped for `server` mode — then `gremlinClient.init({cek})` before React mounts), `transports/worker.ts` (`WorkerTransport` — waits for `worker_ready`, posts `worker_config` ahead of `init`, queues every non-`init` request until `init` succeeds, sends `stream_cancel` on consumer-side `break`), `transports/websocket.ts` (`WebSocketTransport` — see **WebSocket Anti-Zombie System** section below for heartbeat, stale detection, visibility probe, and `ConnectionStatusBanner`). Singleton transport selected by `getStorageConfig()` at construction time: `{ type: 'server' }` → `WebSocketTransport`, otherwise `WorkerTransport`. Constructed lazily via a `Proxy` so jsdom-only component tests don't trigger worker spawn unless they actually call a method.
+
+#### WebSocket Anti-Zombie System
+
+Detects and recovers from dead/zombie WebSocket connections — the kind that look `OPEN` but silently swallow messages. Applies only to server-mode (`WebSocketTransport`); worker transport is unaffected.
+
+**Problem:** When the user backgrounds the tab (app switch, laptop sleep), the OS may suspend the socket. On return the socket's `readyState` still reads `OPEN`, but it's dead — messages sent into it vanish. The user sees nothing wrong, clicks send, and the message goes to void.
+
+**Detection layers** (all in `src/frontend/client/transports/websocket.ts`):
+
+| Layer               | Timing                                               | What it does                                                                                                                                                     |
+| ------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Heartbeat ping/pong | every 2s (`HEARTBEAT_INTERVAL_MS`)                   | Sends `{ kind: 'ping' }`, server replies `{ kind: 'pong' }`. Any incoming message resets the timeout via `onPong()`.                                             |
+| Stale detection     | 4s without any server message (`STALE_THRESHOLD_MS`) | Checked inside the heartbeat interval. Sets `ConnectionState` to `'stale'` — banner warns user before they click send. Clears automatically when a pong arrives. |
+| Dead detection      | 5s pong timeout (`HEARTBEAT_TIMEOUT_MS`)             | If the stale warning didn't clear, socket is closed → triggers reconnect.                                                                                        |
+| Visibility probe    | on `document.visibilitychange` → `'visible'`         | Sends an immediate ping + arms the 5s timeout. Catches zombie sockets within seconds of tab-resume instead of waiting for the next 2s heartbeat tick.            |
+
+**State machine** (`ConnectionState` in `src/shared/protocol/transport.ts`):
+
+```
+connecting → connected ⇄ stale → disconnected → reconnecting → connected
+                                                      ↑              │
+                                                      └──────────────┘
+```
+
+- `connecting` — initial WebSocket handshake (first connection only)
+- `connected` — socket open, pongs arriving
+- `stale` — no pong for >4s, banner warns user (may self-heal if pong arrives)
+- `disconnected` — socket closed, in-flight streams terminated, one-shot requests queued for retry
+- `reconnecting` — backoff timer scheduled or `new WebSocket()` in progress
+
+**Reconnect resilience:**
+
+- Exponential backoff: 1s → 30s (`INITIAL_BACKOFF_MS` / `MAX_BACKOFF_MS`)
+- **Init replay on reconnect:** transport saves `lastInitParams` on first successful `init`, replays it as the first message after reconnect. Without this, the `initPromise` gate blocks all non-init RPCs forever → blank page. Server-side `init` is idempotent with the same CEK.
+- One-shot requests survive disconnect: `inflightEnvelopes` → `retryQueue`, replayed on reconnect (after init) with same `requestId` so the caller's promise eventually resolves
+- Streams don't survive: terminated with `status: 'error', detail: 'transport disconnected'`
+- `GremlinSession.onReconnect` re-attaches `attachChat` stream, replaying the chat snapshot
+
+**UI (banner):**
+
+- `src/frontend/components/ConnectionStatusBanner.tsx` — placed above `<Routes>` in `App.tsx`
+- `src/frontend/hooks/useConnectionState.ts` — subscribes to `gremlinClient.onConnectionStateChange`
+- `stale`: amber "Checking connection..." (shown immediately, no debounce — whole point is to warn before send)
+- `disconnected`: red "Connection lost — reconnecting..." (500ms debounce to avoid flicker)
+- `reconnecting`: amber "Reconnecting..."
+- Recovery: green "Reconnected" flash (1.5s) then hidden
+
+**Files:**
+
+| File                                                 | Role                                                                                      |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `src/frontend/client/transports/websocket.ts`        | Transport: heartbeat, stale/dead detection, visibility probe, state observable, reconnect |
+| `src/shared/protocol/transport.ts`                   | `ConnectionState` type + optional `Transport` interface members                           |
+| `src/frontend/client/GremlinClient.ts`               | Pass-through: `connectionState` getter + `onConnectionStateChange`                        |
+| `src/frontend/hooks/useConnectionState.ts`           | React hook subscribing to connection state                                                |
+| `src/frontend/components/ConnectionStatusBanner.tsx` | App-wide banner rendering connection state                                                |
+| `src/frontend/App.tsx`                               | Banner placement (above `<Routes>` in `AppContent`)                                       |
+
+**Tuning knobs** (constants at top of `websocket.ts`):
+
+- `HEARTBEAT_INTERVAL_MS` (2s) — ping frequency. Lower = faster detection, more traffic.
+- `HEARTBEAT_TIMEOUT_MS` (5s) — pong deadline before socket is closed.
+- `STALE_THRESHOLD_MS` (4s) — show warning banner before full disconnect.
+- `INITIAL_BACKOFF_MS` (1s) / `MAX_BACKOFF_MS` (30s) — reconnect backoff range.
+
+**Possible follow-up approaches to try:**
+
+- [ ] Queue outbound messages during `stale` state instead of letting them hit the maybe-dead socket (currently `send()` still fires if `readyState === OPEN`)
+- [ ] Disable the send button / show inline warning in ChatInput when stale or disconnected
+- [ ] Server-side dead-client detection (server pings client, closes if no pong — currently server is passive)
+- [ ] Adaptive heartbeat interval (slower when tab is hidden to save battery, faster on resume)
+
 - **`src/frontend/components/activeLoops/`** — `RunningLoopsSection.tsx` + `ActiveLoopRow.tsx`. Mounted in `Sidebar.tsx`, project-agnostic. The chat view's soft-stop stays; hard abort lives only in the sidebar. Minion sub-loops register themselves on the per-server `LoopRegistry` from inside `executeMinion` (parent chat id, parent loopId, persona/displayName label) so they appear as indented child rows under the parent and the STOP button can hard-abort one without touching its siblings. Each child has its own `AbortController`; aborting the parent cascades to every child via a one-shot `addEventListener('abort', ...)` listener wired in the minion tool, but child → parent abort is intentionally unidirectional. `BackendDeps.loopRegistry` is the same instance held by `GremlinServer.registry` — threaded through `ToolContext.loopRegistry` so tools never reach for the server directly.
 - **`useChat`** is a thin React adapter (~660 lines) that subscribes to a `GremlinSession` and translates `LoopEvent`s into React state with the same 200ms throttle. Tool-use block detection reads the backend-pre-extracted `message.content.toolUseBlocks` field (Phase 1.8 leak fix) — the frontend never imports the provider-specific parser. `isLockedByIncompleteTail` is now pushed by the backend via the `lock_state_changed` LoopEvent (Phase 1.7) — `useChat` stores the latest value and surfaces it as the `Delete Message` / `Roll Back to Checkpoint` banner predicate. The frontend no longer imports `isChatLockedByIncompleteTail` from `src/lib/`; the backend computes it in `GremlinServer.broadcastChatLockState` (called from `deleteMessageAndAfter` / `saveMessage` / `attachChat` snapshot) and from `ChatRunner.run`'s teardown so the abort path's incomplete tail flips the lock as soon as the loop unwinds.
 - **VFS facade** — Phase 1.7 deleted `useVfsAdapter`. Components that want a project-bound `VfsAdapter` call `gremlinClient.getVfsAdapter(projectId)` (typically wrapped in `useMemo`). The method returns a plain object whose every operation delegates back into the per-call `vfs*` RPCs on `GremlinClient`. The actual local/remote adapter is constructed and cached server-side in `GremlinServer.getProjectVfsAdapter`.
@@ -286,20 +371,20 @@ The codebase is split into four runtime layers — `shared/` (pure), `frontend/`
 - **Pragmatic deviations from the plan** — all resolved: (a) Browser storage adapters → `src/worker/adapters/` (Phase 1.65). (b) `src/types/` → `src/shared/protocol/types/` (Phase 1.7). (c) `src/lib/`, `src/utils/`, `src/constants/` → two-bucket split into `shared/engine/lib/` (backend-only) and `frontend/lib/` (frontend-only) with type splits into `shared/protocol/types/` (Phase 1.8). Only `src/test/`, `src/index.css`, `src/vite-env.d.ts` remain at the top level.
 - **Encryption split (Phase 1.5 + 1.65 + 1.8)**: `EncryptionCore` (`src/shared/services/encryption/encryptionCore.ts`) holds the runtime-agnostic crypto primitives — `derivedKey`, `initializeWithCEK`, `forget`, `encrypt`/`decrypt`, `encryptWithCompression`/`decryptWithDecompression`, `deriveUserId`, `hasSameKeyAs`. Zero `localStorage` coupling. The only path now is the worker constructing an `EncryptionCore` directly inside `GremlinServer.init` from the CEK string posted via `gremlinClient.init({cek})` — Phase 1.8 changed the wire format from `Uint8Array` to `string` so the frontend posts the localStorage CEK directly without decoding. CEK format helpers (`cekFormat.ts`) live under `shared/engine/lib/` — the frontend never imports them. Main-thread CEK lifecycle (read / write / clear) lives in `src/frontend/lib/localStorageBoot.ts`.
 - **CEK init-over-RPC**: the worker boots dormant. `src/frontend/main.tsx` awaits `bootstrap()` (in `src/frontend/client/bootstrapClient.ts`) which reads the CEK string + storage config from localStorage, derives userId for remote configs via the dormant-callable `gremlinClient.deriveUserIdFromCEK(cekString)` RPC, then calls `gremlinClient.configureWorker(storageConfig)` followed by `gremlinClient.init({cek: cekString})`. The worker stashes the storage config via `setBootstrapStorageConfig` (driven by the non-protocol `worker_config` envelope) and constructs `EncryptionCore` + `UnifiedStorage` from `params.cek` and the stashed config. OOBE writes localStorage on its own and calls `configureWorker` + `init` directly. Data Manager uses `gremlinClient.clearCek()` + `clearCachedCEK()` for detach. CEK rotation uses `gremlinClient.rotateCek({newCek})` which spins up a temp `EncryptionCore` for the new key, walks every table via `exportPaginated`, decrypts with the active core + re-encrypts under the temp core + `batchSave`s the rotated rows, then transitions the server to dormant (forgets the active core, drops the deps bundle) so the frontend reconnects with a fresh `init` carrying the new CEK.
-- **Init contract (locked Phase 1.5)**: `init` accepts only `{cek, subscriberId?}`. Posting any other field (notably the legacy `storageConfig`) is rejected with `INVALID_PARAMS`. Re-init with the same CEK is idempotent; re-init with a different CEK is rejected with `CEK_MISMATCH` — to change identity the caller must `purgeAllData` (or `clearCek`) first.
+- **Init contract (locked Phase 1.5)**: `init` accepts only `{cek, subscriberId?}`. Posting any other field (notably the legacy `storageConfig`) is rejected with `INVALID_PARAMS`. Re-init with the same CEK is idempotent; re-init with a different CEK is rejected with `CEK_MISMATCH` — to change identity the caller must `purgeAllData` (or `clearCek`) first. Calling `init({})` (no CEK) on an already-initialized server with a CEK oracle in metadata is rejected with `CEK_REQUIRED`. The WebSocket transport drops the connection (close code 4001) on `CEK_MISMATCH` or `CEK_REQUIRED`. OOBE defers `setCachedCEKString` to after `init` succeeds so a failed init never leaves a bad CEK in localStorage. `AppProvider.initializeApp` passes the cached CEK through `init({cek})` so `lastInitParams` always carries the CEK for reconnect replay.
 - **Destructive-op guards (Phase 1.5)**: `rotateCek`, `purgeAllData`, `importData`, and `clearCek` all run `assertNoLoopsRunning` (`src/lib/assertNoLoopsRunning.ts`) before touching storage. Refusal returns the new `LOOPS_RUNNING` protocol error code. The Data Manager UI subscribes to `activeLoopsStore` and disables the destructive buttons (Import Data, Detach Remote Storage, Delete All Data) when the snapshot count is non-zero, with an inline "stop all running loops first" hint.
 - **Worker localStorage shim deleted**: `src/backend/worker/workerLocalStorageShim.ts` is gone. After the encryption split + storage config out-of-band channel, no backend code touches `globalThis.localStorage` at module load time. `grep localStorage` in `src/shared/**` and `src/worker/**` returns zero hits outside comments.
 - **`messageCount` backfill** runs server-side in `GremlinServer.listChatsWithMessageCounts`. The frontend's `useProject` is a pure read-then-display effect — it never writes back.
-- **Migration status (Phase 1.8)**: complete. Phase 1.8 delivered: (1) CEK wire format changed from `Uint8Array` to `string` — three dormant-callable RPCs (`generateNewCEK`, `normalizeCEK`, `deriveUserIdFromCEK`) let the frontend operate on CEK strings without importing any format helpers; (2) `extractToolUseBlocks` pre-extracted backend-side via `prepareMessageForWire` at every message-yield boundary — the frontend reads the field instead of re-running the provider-specific parser; (3) `mergeExtraModels` absorbed into the backend's `discoverModels` dispatch arm (no-key fallback + error fallback + cache write); (4) `vfsPaths` inlined on the frontend (5 sites `getBasename`, 1 site `getPathSegments`); (5) every file under `src/lib/`, `src/utils/`, `src/constants/` relocated into `shared/engine/lib/` (backend-only) or `frontend/lib/` (frontend-only), with `StorageConfig` and `BundleFileEntry`/`ProjectBundle` types hoisted to `shared/protocol/types/`, `idGenerator` moved to `shared/protocol/`; (6) `attachLoop` method + dispatch stub deleted, `subscriber_joined`/`subscriber_left` event types deleted; (7) frontend lint rule tightened to "may only import from `shared/protocol/**` or `frontend/**`". Phase 2 (Node WebSocket server) is the next chunk — purely additive on top of the clean Phase 1.8 codebase.
+- **Migration status (Phase 1.8)**: complete. Phase 1.8 delivered: (1) CEK wire format changed from `Uint8Array` to `string` — three dormant-callable RPCs (`generateNewCEK`, `normalizeCEK`, `deriveUserIdFromCEK`) let the frontend operate on CEK strings without importing any format helpers; (2) `extractToolUseBlocks` pre-extracted backend-side via `prepareMessageForWire` at every message-yield boundary — the frontend reads the field instead of re-running the provider-specific parser; (3) `mergeExtraModels` absorbed into the backend's `discoverModels` dispatch arm (no-key fallback + error fallback + cache write); (4) `vfsPaths` inlined on the frontend (5 sites `getBasename`, 1 site `getPathSegments`); (5) every file under `src/lib/`, `src/utils/`, `src/constants/` relocated into `shared/engine/lib/` (backend-only) or `frontend/lib/` (frontend-only), with `StorageConfig` and `BundleFileEntry`/`ProjectBundle` types hoisted to `shared/protocol/types/`, `idGenerator` moved to `shared/protocol/`; (6) `attachLoop` method + dispatch stub deleted, `subscriber_joined`/`subscriber_left` event types deleted; (7) frontend lint rule tightened to "may only import from `shared/protocol/**` or `frontend/**`". Phase 2.0 Session 1 landed: `src/server/` skeleton with `nodeEntry.ts`, `config.ts` (env-based config), `SqliteStorageAdapter` (`better-sqlite3`), `FilesystemVfsAdapter` (real files + `.ver/` versioning mirroring `vfs-backend/`), adapter factories, `tsconfig.server.json`, `build:server` script (`esbuild`). The `GremlinServer` dispatcher is shared unchanged — the server entry calls `setBootstrapStorageConfig({type: 'local'})` and the SQLite factory ignores the config arg (captures `ServerConfig` via closure). Phase 2.0 Session 2 landed: `WebSocketTransportServer` (`src/server/websocketTransport.ts`) — `ws`-based server handler dispatching to `GremlinServer`, per-connection stream tracking, cancel + disconnect cleanup; `WebSocketTransport` (`src/frontend/client/transports/websocket.ts`) — browser-side client with auto-reconnect (exponential backoff 1s→30s), heartbeat ping/pong (30s interval, 10s timeout), `onReconnect` callback; `Transport` interface extended with optional `onReconnect`; `GremlinSession` registers reconnect handler to re-attach `attachChat` stream; `GremlinClient` exposes `onReconnect` passthrough. Phase 2.0 Session 3 landed: `StorageConfig` expanded with `{ type: 'server'; wsUrl: string }` variant; `createDefaultTransport()` in `client/index.ts` branches on storage config — `server` → `WebSocketTransport`, else `WorkerTransport`; `bootstrapClient.ts` skips `configureWorker` for server mode; OOBE wizard adds "Remote Backend" storage option with WS URL input; `OOBEScreen` persists server config early (before first `gremlinClient` method) so the lazy singleton creates the right transport; `DataManagerPage` shows server mode indicator + "Disconnect Backend" button; `OOBEComplete` renders server storage info. Phase 2.0 is complete.
 
 ### Storage & Encryption
 
 **Storage Adapter Pattern:**
 
 - `StorageAdapter.ts` interface defines adapter contract
-- Adapters: `IndexedDBAdapter.ts` (local), `RemoteStorageAdapter.ts` (remote API)
+- Adapters: `IndexedDBAdapter.ts` (browser, local), `RemoteStorageAdapter.ts` (browser, remote API), `SqliteStorageAdapter.ts` (server, `better-sqlite3`)
 - `unifiedStorage.ts` high-level API wraps adapter operations. `initialize()` requires the encryption core to already hold a CEK (it asserts via `isInitialized()` and throws otherwise — no implicit localStorage fallback).
-- `StorageConfig` type lives in `src/shared/protocol/types/storageConfig.ts` (Phase 1.8 split from the runtime helpers). Runtime helpers (read/write/clear/hash) live in `src/frontend/lib/localStorageBoot.ts`.
+- `StorageConfig` type lives in `src/shared/protocol/types/storageConfig.ts` (Phase 1.8 split from the runtime helpers; Phase 2.0 Session 3 added `{ type: 'server'; wsUrl: string }` variant for WebSocket backend). Runtime helpers (read/write/clear/hash) live in `src/frontend/lib/localStorageBoot.ts`.
 - Factory functions: `createStorage(config, encryption)` and `createStorageAdapter(config)` always require an explicit config — no localStorage fallback.
 - Tables: `api_definitions`, `models_cache`, `projects`, `chats`, `messages`, `attachments`, `memories`, `memory_journals`, `app_metadata`, `vfs_meta`, `vfs_files`, `vfs_versions`
 - All tables have the same columns
@@ -1577,12 +1662,13 @@ Chat loop state is managed by a single `loopPhase` enum (`'idle' | 'pending' | '
 
 - **IndexedDB (Local)**: Data stored in browser's IndexedDB
 - **Remote Storage**: Sync across devices via `storage-backend/` REST API
+- **Server (WebSocket)**: Node backend over WebSocket, SQLite + filesystem VFS
 
 **Initialization Modes:**
 
-- **Start Fresh**: Generate new CEK, initialize storage, create default API definitions
-- **Import from Backup**: User provides CSV backup file + source CEK, performs migration import
-- **Use Existing Data** (remote only): Connect to remote storage with existing CEK, verifies by decrypting one record
+- **Start Fresh**: Generate new CEK via dormant-callable `generateNewCEK` RPC, initialize storage, create default API definitions
+- **Import from Backup**: User provides CSV backup file + source CEK, validates via `normalizeCEK` RPC, performs migration import
+- **Use Existing Data** (remote/server): Connect to storage with existing CEK, verifies by decrypting one record
 
 **State Management:**
 
@@ -1737,6 +1823,35 @@ When using web search + memory tool together, citations in assistant messages ma
 ### TypeScript Warnings
 
 - useEffect missing dependency: Case-by-case investigation needed
+
+## Design: VFS Migration During Cross-Backend Import
+
+Global CSV export now includes VFS_META, VFS_FILES, VFS_VERSIONS tables. This covers local VFS (IndexedDB, SQLite encrypted mode) automatically. Projects using **remote VFS** or **server filesystem VFS** need a separate migration step because their file data isn't in storage tables.
+
+Remote VFS UI is hidden when connected to a server backend (`ProjectSettingsView` checks `getStorageConfig().type`). Server-side `createVfsAdapter` only supports `filesystem` and `encrypted` modes — no per-project remote VFS dispatch.
+
+### Migration scenarios
+
+**Scenario 2: webworker → webworker, different CEK.** [x] Implemented. Same remote VFS server, but `userId` (derived from CEK) differs between source and target instance. Post-import migration uses the old CEK to derive the old userId, connects to the remote VFS, copies files + versions to the new userId's space, then strips `remoteVfsUrl` from the project.
+
+**Scenario 3: webworker → remote backend.** [x] Implemented. The server backend doesn't support per-project remote VFS. Post-import migration reads files from the remote VFS (using the old CEK for userId derivation and E2E decryption if enabled) and writes them to the server's local VFS (`filesystem` or `encrypted` depending on `VFS_MODE`). Then strips `remoteVfsUrl` from the project.
+
+**Scenario 4: any source (local VFS) → server with filesystem VFS.** [x] Implemented. CSV import writes VFS_META/VFS_FILES/VFS_VERSIONS table records to SQLite, but `FilesystemVfsAdapter` reads from disk. Post-import migration reads table records via `LocalVfsAdapter`, writes to `FilesystemVfsAdapter`, then cleans up the orphaned table records.
+
+**Scenario 5: remote backend (filesystem VFS) → anything.** `FilesystemVfsAdapter` stores files on disk at `${vfsBasePath}/${projectId}/...` — zero storage table usage. VFS tables are empty in the CSV export. Need a dedicated pre-export step that reads from the filesystem, serializes into VFS_META/VFS_FILES records, so they can be imported by the target. **Not yet implemented** — explore a pre-export materialization step on the server.
+
+### Implementation (scenarios 2, 3, 4)
+
+Post-import migration runs automatically after CSV import (skippable via checkbox in import modal):
+
+- `RemoteVfsAdapter` moved to `src/shared/services/vfs/` so both worker and server can use it
+- `vfsMigration.ts` — core recursive walk + copy between any two `VfsAdapter` instances (files + version history), plus `migrateProjectVfsBulk` for pre-read data with parallel writes
+- `vfsMigrationDetector.ts` — scans projects for `remoteVfsUrl` or VFS table records needing migration
+- `importRunner.ts` — extended with post-import VFS migration phase. Scenario 4 uses bulk path: `vfsService.readAllForMigration()` (single tree load, batch DB fetch, parallel decryption) → `migrateProjectVfsBulk()` (bounded 8-way parallel file writes)
+- `BackendDeps` carries `buildMigrationSourceAdapter` factory and `vfsMode` for scenario dispatch
+- `VfsAdapter.writeFileWithHistory()` — bulk write method on all adapters; optimized on `FilesystemVfsAdapter` (writes version files directly, single meta write), fallback (sequential `writeFile`) on `LocalVfsAdapter` and `RemoteVfsAdapter`
+- Import modal hides "Migration Mode" on server backends, shows "Skip remote VFS file migration" checkbox in non-migration mode
+- Same-CEK optimization: when source and target CEKs match **and the target is a worker** (no `vfsMode`), remote VFS migration is skipped (files already accessible via `RemoteVfsAdapter`). Server backends always use local adapters so migration must run regardless of CEK match.
 
 ## Technical Debt
 

@@ -109,9 +109,7 @@ export class WorkerTransport implements Transport {
   ): Promise<MethodResult<M>> {
     await this.readyPromise;
     if (!INIT_EXEMPT_METHODS.has(method as string)) {
-      // Block every other RPC until `init` returns successfully. The
-      // exempt set covers `init` itself plus the dormant-callable CEK
-      // helpers that OOBE invokes before the worker has been initialized.
+      // Block every other RPC until `init` returns successfully.
       await this.initPromise;
     }
     const requestId = `req_${++this.requestCounter}`;

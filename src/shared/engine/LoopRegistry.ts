@@ -272,6 +272,13 @@ export class LoopRegistry {
    */
   broadcastChatEvent(chatId: string, event: LoopEvent): void {
     this.recordPendingToolResultEvent(chatId, event);
+
+    // Pipe chat title changes to the active-loops stream so the sidebar
+    // Running Loops section updates without a full re-fetch.
+    if (event.type === 'chat_metadata_updated' && event.name !== undefined) {
+      this.broadcast({ type: 'chat_title_changed', chatId, title: event.name });
+    }
+
     const set = this.chatSubscribers.get(chatId);
     if (!set) return;
     for (const cb of set) {

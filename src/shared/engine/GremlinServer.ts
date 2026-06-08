@@ -21,7 +21,11 @@
  */
 
 import { APIService } from '../services/api/apiService';
-import { UnifiedStorage } from '../services/storage/unifiedStorage';
+import {
+  UnifiedStorage,
+  CekOracleMismatchError,
+  CEK_ORACLE_KEY,
+} from '../services/storage/unifiedStorage';
 import { EncryptionCore } from '../services/encryption/encryptionCore';
 import { Tables, type StorageAdapter } from '../services/storage/StorageAdapter';
 import type { StorageConfig } from '../protocol/types/storageConfig';
@@ -34,7 +38,12 @@ import { mergeExtraModels } from './lib/api/mergeExtraModels';
 import { assertNoLoopsRunning } from './lib/assertNoLoopsRunning';
 import { isChatLockedByIncompleteTail } from './lib/incompleteTail';
 import { ProtocolError } from '../protocol/protocolError';
-import type { BackendDeps, CreateStorageAdapter, CreateVfsAdapter } from './backendDeps';
+import type {
+  BackendDeps,
+  CreateStorageAdapter,
+  CreateVfsAdapter,
+  BuildMigrationSourceAdapter,
+} from './backendDeps';
 import { ChatRunner } from './ChatRunner';
 import { LoopRegistry } from './LoopRegistry';
 import { runExport } from './exportRunner';
@@ -109,6 +118,8 @@ export class GremlinServer {
   private bootstrapAdapterFactories: {
     createStorageAdapter: CreateStorageAdapter;
     createVfsAdapter: CreateVfsAdapter;
+    buildMigrationSourceAdapter?: BuildMigrationSourceAdapter;
+    vfsMode?: 'filesystem' | 'encrypted';
   } | null = null;
   /**
    * Per-project VFS adapter cache. Reused across calls so the local
@@ -116,6 +127,10 @@ export class GremlinServer {
    * every operation.
    */
   private readonly vfsAdapters = new Map<string, VfsAdapter>();
+
+  /** Chunked upload buffers for large import files. */
+  private readonly pendingUploads = new Map<string, Uint8Array[]>();
+  private readonly completedUploads = new Set<string>();
 
   constructor(deps: BackendDeps | null = null) {
     this._deps = deps;
@@ -151,6 +166,8 @@ export class GremlinServer {
   setBootstrapAdapterFactories(factories: {
     createStorageAdapter: CreateStorageAdapter;
     createVfsAdapter: CreateVfsAdapter;
+    buildMigrationSourceAdapter?: BuildMigrationSourceAdapter;
+    vfsMode?: 'filesystem' | 'encrypted';
   }): void {
     this.bootstrapAdapterFactories = factories;
   }
@@ -374,6 +391,25 @@ export class GremlinServer {
         return { ok: true };
 
       // ----- storage / data -----
+      case 'importUploadChunk': {
+        const { uploadId, data, final } = params as {
+          uploadId: string;
+          data: Uint8Array;
+          final: boolean;
+        };
+        let chunks = this.pendingUploads.get(uploadId);
+        if (!chunks) {
+          chunks = [];
+          this.pendingUploads.set(uploadId, chunks);
+        }
+        chunks.push(data);
+        const received = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+        if (final) {
+          // Mark complete — importData will consume and clean up
+          this.completedUploads.add(uploadId);
+        }
+        return { ok: true as const, received };
+      }
       case 'getStorageQuota': {
         const quota = await this.storage.getStorageQuota();
         return quota ?? { usage: 0, quota: 0 };
@@ -915,7 +951,24 @@ export class GremlinServer {
    */
   private async *importData(params: ImportDataParams): AsyncGenerator<ImportProgress, void, void> {
     assertNoLoopsRunning(this.registry, 'importData');
-    yield* runImport(this.storage, this.deps.encryption, params);
+
+    // Resolve chunked upload: pass the chunk array directly to the runner
+    // (Blob accepts multiple parts without copying). Clean up upload state.
+    let uploadChunks: Uint8Array[] | undefined;
+    if (params.uploadId) {
+      const chunks = this.pendingUploads.get(params.uploadId);
+      if (!chunks || !this.completedUploads.has(params.uploadId)) {
+        throw new ProtocolError(
+          'INVALID_PARAMS',
+          `No completed upload found for id "${params.uploadId}"`
+        );
+      }
+      uploadChunks = chunks;
+      this.pendingUploads.delete(params.uploadId);
+      this.completedUploads.delete(params.uploadId);
+    }
+
+    yield* runImport(this.storage, this.deps.encryption, params, this.deps, uploadChunks);
   }
 
   /**
@@ -1087,7 +1140,9 @@ export class GremlinServer {
     password: string,
     userId: string
   ): Promise<{ ok: boolean; error?: string }> {
-    const factory = this.deps.createStorageAdapter;
+    // Use bootstrapAdapterFactories directly so this RPC can run before
+    // init (OOBE calls it to probe the remote endpoint before init).
+    const factory = this.bootstrapAdapterFactories?.createStorageAdapter;
     if (!factory) {
       throw new ProtocolError(
         'INTERNAL_ERROR',
@@ -1170,6 +1225,9 @@ export class GremlinServer {
     for (const table of tablesToRotate) {
       rotated += await this.rotateTable(adapter, table, tempCore);
     }
+
+    // Re-stamp the oracle with the new key before going dormant.
+    await this.storage.createCekOracle(tempCore);
 
     // Transition to dormant: drop the deps bundle and forget the
     // in-memory key. The next RPC throws `NOT_INITIALIZED` so the
@@ -1366,14 +1424,40 @@ export class GremlinServer {
         loopRegistry: this.registry,
         createStorageAdapter: this.bootstrapAdapterFactories.createStorageAdapter,
         createVfsAdapter: this.bootstrapAdapterFactories.createVfsAdapter,
+        buildMigrationSourceAdapter: this.bootstrapAdapterFactories.buildMigrationSourceAdapter,
+        vfsMode: this.bootstrapAdapterFactories.vfsMode,
       };
       this.initialized = false;
       this.vfsAdapters.clear();
-      await this.ensureInitialized();
+      try {
+        await this.ensureInitialized();
+      } catch (err) {
+        // Revert to dormant so the server accepts a retry with the
+        // correct CEK instead of deadlocking behind the re-init guard.
+        this._deps = null;
+        this.initialized = false;
+        if (err instanceof CekOracleMismatchError) {
+          throw new ProtocolError(
+            'CEK_MISMATCH',
+            'Cannot decrypt existing data — the encryption key does not match'
+          );
+        }
+        throw err;
+      }
     } else {
-      // Test path only: deps were pre-built and handed to the constructor.
-      // Production callers always pass a CEK. `ensureInitialized()` brings
-      // up storage on first use; subsequent re-confirmations are no-ops.
+      // No CEK supplied. If the server is already initialized and has a
+      // CEK oracle in metadata, encrypted data exists — require a CEK.
+      if (this._deps && this.initialized) {
+        const oracle = await this._deps.storage.getMetadata(CEK_ORACLE_KEY);
+        if (oracle) {
+          throw new ProtocolError(
+            'CEK_REQUIRED',
+            'init: encrypted data exists — supply a cek to authenticate'
+          );
+        }
+      }
+      // Test path: deps were pre-built via constructor, no oracle in stub
+      // storage. ensureInitialized() brings up storage on first use.
       await this.ensureInitialized();
     }
 

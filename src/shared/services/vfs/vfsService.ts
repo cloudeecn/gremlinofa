@@ -1388,15 +1388,27 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
   async function clearVfs(projectId: string): Promise<void> {
     const adapter = storage.getAdapter();
 
-    // Delete meta
+    // Collect file IDs so we can delete their versions
+    const fileIds: string[] = [];
+    let afterId: string | undefined;
+    while (true) {
+      const page = await adapter.exportPaginated(Tables.VFS_FILES, afterId, ['id', 'parentId']);
+      for (const row of page.rows) {
+        if (row.parentId === projectId && row.id) fileIds.push(row.id);
+      }
+      if (!page.hasMore) break;
+      afterId = page.rows[page.rows.length - 1]?.id;
+    }
+
+    // Delete versions for each file
+    for (const fileId of fileIds) {
+      await adapter.deleteMany(Tables.VFS_VERSIONS, { parentId: fileId });
+    }
+
+    // Delete files and meta
+    await adapter.deleteMany(Tables.VFS_FILES, { parentId: projectId });
     const metaId = `vfs_meta_${projectId}`;
     await adapter.delete(Tables.VFS_META, metaId);
-
-    // Delete all files for this project
-    await adapter.deleteMany(Tables.VFS_FILES, { parentId: projectId });
-
-    // Note: vfs_versions have parentId = fileId, so we'd need to track those
-    // For now, orphaned versions will be cleaned up by a future maintenance task
   }
 
   /**
@@ -1538,29 +1550,21 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     fileId: string,
     version: number
   ): Promise<string | null> {
-    // Version 1 is the initial create, not stored in vfs_versions
-    // Versions 2+ are stored in vfs_versions as the "before" state
-    // Current version is in vfs_files
+    if (version < 1) return null;
 
-    // First, load the current file to get its version
+    // Try the version table first (historical versions).
+    const versionData = await loadVersion(fileId, version);
+    if (versionData) return versionData.content;
+
+    // Not in version table — might be the current version (stored in
+    // vfs_files, not vfs_versions). Fall back to loadFile only when the
+    // version table lookup misses.
     const currentFile = await loadFile(fileId);
-    if (!currentFile) return null;
-
-    // If requesting current version, return current content
-    if (version === currentFile.version) {
+    if (currentFile && version === currentFile.version) {
       return currentFile.content;
     }
 
-    // If requesting version beyond current, not found
-    if (version > currentFile.version || version < 1) {
-      return null;
-    }
-
-    // Look up historical version
-    const versionData = await loadVersion(fileId, version);
-    if (!versionData) return null;
-
-    return versionData.content;
+    return null;
   }
 
   /**
@@ -2205,6 +2209,141 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
   }
 
   // ==========================================================================
+  // Bulk migration read
+  // ==========================================================================
+
+  /**
+   * Walk the in-memory tree and collect all file nodes with their paths.
+   * Pure tree traversal — no I/O.
+   */
+  function collectFileNodes(
+    children: Record<string, VfsNode>,
+    dir: string,
+    out: { path: string; fileId: string; isBinary: boolean; mime: string }[]
+  ): void {
+    for (const [name, node] of Object.entries(children)) {
+      if (node.deleted) continue;
+      const childPath = dir === '/' ? `/${name}` : `${dir}/${name}`;
+      if (node.type === 'dir' && node.children) {
+        collectFileNodes(node.children, childPath, out);
+      } else if (node.type === 'file' && node.fileId) {
+        out.push({
+          path: childPath,
+          fileId: node.fileId,
+          isBinary: node.isBinary ?? false,
+          mime: node.mime ?? 'text/plain',
+        });
+      }
+    }
+  }
+
+  /**
+   * Read all file data for a project in one optimized pass.
+   *
+   * Loads the tree once, batch-fetches all file and version records,
+   * then decrypts in parallel via Promise.all. Used by the migration
+   * path to avoid per-file tree lock / duplicate decrypt overhead.
+   */
+  async function readAllForMigration(projectId: string): Promise<MigrationFileData[]> {
+    const adapter = storage.getAdapter();
+    const tree = await loadTree(projectId);
+
+    const fileEntries: { path: string; fileId: string; isBinary: boolean; mime: string }[] = [];
+    collectFileNodes(tree.children, '/', fileEntries);
+    if (fileEntries.length === 0) return [];
+
+    // Batch-fetch all file records in one SQL query
+    const fileIds = fileEntries.map(e => e.fileId);
+    const fileRows = await adapter.batchGet(Tables.VFS_FILES, fileIds);
+    const fileRowMap = new Map(fileRows.rows.map(r => [r.id!, r.encryptedData!]));
+
+    // Parallel decrypt all file records
+    const decryptedFiles = await Promise.all(
+      fileEntries.map(async entry => {
+        const encrypted = fileRowMap.get(entry.fileId);
+        if (!encrypted) return null;
+        try {
+          const json = await encryptionService.decryptWithDecompression(encrypted);
+          return JSON.parse(json) as VfsFile;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    // Collect ALL version IDs across all files
+    const versionLookups: { entryIdx: number; version: number; id: string }[] = [];
+    for (let i = 0; i < fileEntries.length; i++) {
+      const file = decryptedFiles[i];
+      if (!file) continue;
+      const minVer = file.minStoredVersion ?? 1;
+      for (let v = minVer; v < file.version; v++) {
+        versionLookups.push({
+          entryIdx: i,
+          version: v,
+          id: `${fileEntries[i].fileId}_v${v}`,
+        });
+      }
+    }
+
+    // Single batchGet for ALL version records + parallel decrypt
+    let versionRowMap = new Map<string, string>();
+    if (versionLookups.length > 0) {
+      const versionRows = await adapter.batchGet(
+        Tables.VFS_VERSIONS,
+        versionLookups.map(v => v.id)
+      );
+      versionRowMap = new Map(versionRows.rows.map(r => [r.id!, r.encryptedData!]));
+    }
+
+    const decryptedVersions = await Promise.all(
+      versionLookups.map(async vl => {
+        const encrypted = versionRowMap.get(vl.id);
+        if (!encrypted) return null;
+        try {
+          const json = await encryptionService.decryptWithDecompression(encrypted);
+          const ver = JSON.parse(json) as VfsVersion;
+          return { entryIdx: vl.entryIdx, ...ver };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    // Group versions by file, assemble result
+    const versionsByEntry = new Map<
+      number,
+      { version: number; content: string; createdAt: number }[]
+    >();
+    for (const dv of decryptedVersions) {
+      if (!dv) continue;
+      let arr = versionsByEntry.get(dv.entryIdx);
+      if (!arr) {
+        arr = [];
+        versionsByEntry.set(dv.entryIdx, arr);
+      }
+      arr.push({ version: dv.version, content: dv.content, createdAt: dv.createdAt });
+    }
+
+    const result: MigrationFileData[] = [];
+    for (let i = 0; i < fileEntries.length; i++) {
+      const file = decryptedFiles[i];
+      if (!file) continue;
+      const versions = versionsByEntry.get(i) ?? [];
+      versions.sort((a, b) => a.version - b.version);
+      result.push({
+        path: fileEntries[i].path,
+        content: file.content,
+        isBinary: fileEntries[i].isBinary,
+        mime: fileEntries[i].mime,
+        versions,
+      });
+    }
+
+    return result;
+  }
+
+  // ==========================================================================
   // Public service object
   // ==========================================================================
 
@@ -2238,7 +2377,20 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     strReplace,
     insert,
     compactProject,
+    readAllForMigration,
   };
 }
 
 export type VfsService = ReturnType<typeof createVfsService>;
+
+/**
+ * File data extracted during bulk migration read.
+ * Contains the file's current content plus all historical versions.
+ */
+export interface MigrationFileData {
+  path: string;
+  content: string;
+  isBinary: boolean;
+  mime: string;
+  versions: { version: number; content: string; createdAt: number }[];
+}

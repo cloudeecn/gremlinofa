@@ -7,6 +7,17 @@ import type {
 
 export type { ExportProgressCallback, ImportProgressCallback };
 
+export interface ImportOptions {
+  skipVfsMigration?: boolean;
+  onVfsMigrationProgress?: (progress: {
+    projectId: string;
+    projectName: string;
+    filesProcessed: number;
+    totalFiles: number;
+    versionsProcessed: number;
+  }) => void;
+}
+
 export interface AppContextType {
   // API Definitions
   apiDefinitions: APIDefinition[];
@@ -34,12 +45,14 @@ export interface AppContextType {
   handleImport: (
     file: File,
     sourceCEK: string,
-    onProgress?: ImportProgressCallback
+    onProgress?: ImportProgressCallback,
+    options?: ImportOptions
   ) => Promise<{ imported: number; skipped: number; errors: string[] }>;
   handleMigrate: (
     file: File,
     sourceCEK: string,
-    onProgress?: ImportProgressCallback
+    onProgress?: ImportProgressCallback,
+    options?: ImportOptions
   ) => Promise<{ imported: number; skipped: number; errors: string[] }>;
   clearAllModelsCache: () => Promise<void>;
   handleCompressMessages: () => Promise<{

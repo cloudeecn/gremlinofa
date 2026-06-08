@@ -1,19 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { RemoteVfsAdapter } from '../RemoteVfsAdapter';
-import type { EncryptionCore } from '../../../shared/services/encryption/encryptionCore';
+import { RemoteVfsAdapter } from '../../../shared/services/vfs/RemoteVfsAdapter';
 
 // Mock fetch globally
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
-
-// Stub encryption — passed to the adapter via constructor instead of mocking
-// the module-level singleton (Phase 3 of the singleton refactor).
-const stubEncryption = {
-  encrypt: vi.fn((content: string) => Promise.resolve(`encrypted:${content}`)),
-  decrypt: vi.fn((content: string) =>
-    Promise.resolve(content.startsWith('encrypted:') ? content.slice(10) : content)
-  ),
-} as unknown as EncryptionCore;
 
 function jsonResponse(data: unknown, status = 200) {
   return Promise.resolve({
@@ -48,15 +38,13 @@ describe('RemoteVfsAdapter', () => {
   let adapter: RemoteVfsAdapter;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    adapter = new RemoteVfsAdapter(
-      'http://localhost:3003',
-      'testuser',
-      'pass',
-      'proj1',
-      false,
-      stubEncryption
-    );
+    vi.resetAllMocks();
+    adapter = new RemoteVfsAdapter({
+      baseUrl: 'http://localhost:3003',
+      userId: 'testuser',
+      password: 'pass',
+      projectId: 'proj1',
+    });
   });
 
   describe('readDir', () => {
@@ -98,6 +86,16 @@ describe('RemoteVfsAdapter', () => {
         expect.stringContaining('/api/write'),
         expect.objectContaining({ method: 'PUT' })
       );
+    });
+
+    it('sends plaintext content (no encryption)', async () => {
+      mockFetch.mockReturnValueOnce(emptyResponse());
+
+      await adapter.writeFile('/test.txt', 'plaintext');
+
+      const body = mockFetch.mock.calls[0][1].body;
+      expect(body).toBeInstanceOf(Blob);
+      expect(body.size).toBe(new Blob(['plaintext']).size);
     });
   });
 
@@ -187,7 +185,7 @@ describe('RemoteVfsAdapter', () => {
     });
   });
 
-  describe('compound ops without encryption', () => {
+  describe('compound ops', () => {
     it('strReplace calls server endpoint', async () => {
       mockFetch.mockReturnValueOnce(jsonResponse({ editLine: 2, snippet: 'new' }));
 
@@ -210,56 +208,6 @@ describe('RemoteVfsAdapter', () => {
     });
   });
 
-  describe('with encryption', () => {
-    let encAdapter: RemoteVfsAdapter;
-
-    beforeEach(() => {
-      encAdapter = new RemoteVfsAdapter(
-        'http://localhost:3003',
-        'testuser',
-        'pass',
-        'proj1',
-        true,
-        stubEncryption
-      );
-    });
-
-    it('encrypts content on write', async () => {
-      mockFetch.mockReturnValueOnce(emptyResponse());
-
-      await encAdapter.writeFile('/test.txt', 'secret');
-
-      // Verify fetch was called
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/write'),
-        expect.objectContaining({ method: 'PUT' })
-      );
-      // Body is a Blob containing encrypted content
-      const body = mockFetch.mock.calls[0][1].body;
-      expect(body).toBeInstanceOf(Blob);
-    });
-
-    it('decrypts content on read', async () => {
-      mockFetch.mockReturnValueOnce(textResponse('encrypted:secret'));
-
-      const content = await encAdapter.readFile('/test.txt');
-      expect(content).toBe('secret');
-    });
-
-    it('strReplace uses client-side fallback', async () => {
-      // Read call returns encrypted content
-      mockFetch.mockReturnValueOnce(textResponse('encrypted:hello old world'));
-      // Write call
-      mockFetch.mockReturnValueOnce(emptyResponse());
-
-      const result = await encAdapter.strReplace('/test.txt', 'old', 'new');
-      expect(result.editLine).toBe(1);
-
-      // Verify write was called with encrypted new content
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-    });
-  });
-
   describe('auth header', () => {
     it('sends Basic Auth with userId and password', async () => {
       mockFetch.mockReturnValueOnce(jsonResponse({ exists: true }));
@@ -272,15 +220,15 @@ describe('RemoteVfsAdapter', () => {
     });
   });
 
-  describe('getAdapter integration', () => {
-    it('getFileId returns path for existing file', async () => {
+  describe('getFileId', () => {
+    it('returns path for existing file', async () => {
       mockFetch.mockReturnValueOnce(jsonResponse({ exists: true }));
 
       const fileId = await adapter.getFileId('/test.txt');
       expect(fileId).toBe('/test.txt');
     });
 
-    it('getFileId returns null for non-existing file', async () => {
+    it('returns null for non-existing file', async () => {
       mockFetch.mockReturnValueOnce(jsonResponse({ exists: false }));
 
       const fileId = await adapter.getFileId('/nope.txt');

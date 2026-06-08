@@ -32,10 +32,8 @@ import type { LoopRegistry } from './LoopRegistry';
 export type CreateStorageAdapter = (config: StorageConfig) => CachedStorageAdapter;
 
 /**
- * Build a VFS adapter for a project. Phase 1.65 hoists this dispatch out
- * of the shared VFS barrel for the same reason: the remote VFS flavor
- * wants to live alongside the worker so the shared layer's lint rule can
- * forbid `fetch`-based browser adapters.
+ * Build a VFS adapter for a project. The worker and server each inject
+ * their own factory via `setBootstrapAdapterFactories`.
  */
 export type CreateVfsAdapter = (
   deps: BackendDeps,
@@ -43,6 +41,16 @@ export type CreateVfsAdapter = (
   userId: string,
   namespace?: string
 ) => VfsAdapter;
+
+/**
+ * Build a source VFS adapter for import-time migration. Connects to a
+ * remote VFS server using the old CEK's userId to read files that need
+ * migrating to the target backend.
+ */
+export type BuildMigrationSourceAdapter = (
+  project: Project,
+  sourceEncryption: EncryptionCore
+) => Promise<VfsAdapter>;
 
 export interface BackendDeps {
   storage: UnifiedStorage;
@@ -70,4 +78,14 @@ export interface BackendDeps {
    */
   createStorageAdapter?: CreateStorageAdapter;
   createVfsAdapter?: CreateVfsAdapter;
+  /**
+   * Factory for building a source VFS adapter during import-time migration.
+   * Constructs a `RemoteVfsAdapter` using the old CEK's userId.
+   */
+  buildMigrationSourceAdapter?: BuildMigrationSourceAdapter;
+  /**
+   * Server VFS mode. When `'filesystem'`, post-import migration writes
+   * VFS table records to the filesystem adapter and cleans up the tables.
+   */
+  vfsMode?: 'filesystem' | 'encrypted';
 }

@@ -223,9 +223,16 @@ export function finalizeCSVParser(state: CSVParserState): string[] | null {
 }
 
 /**
- * Read a file chunk using FileReader (for environments without ReadableStream)
+ * Read a blob slice as an ArrayBuffer. Prefers `blob.arrayBuffer()`
+ * (available in modern browsers, Web Workers, and Node.js 18+).
+ * Falls back to `FileReader` for older environments / jsdom test
+ * harnesses where `arrayBuffer()` isn't polyfilled.
  */
 function readChunk(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === 'function') {
+    return blob.arrayBuffer();
+  }
+  // Fallback for environments with FileReader but no Blob.arrayBuffer
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as ArrayBuffer);
@@ -260,7 +267,6 @@ export async function* streamCSVRows(
     const end = Math.min(offset + chunkSize, file.size);
     const blob = file.slice(offset, end);
 
-    // Use FileReader to read the chunk (more compatible than blob.text())
     const buffer = await readChunk(blob);
 
     // Decode chunk to string

@@ -50,6 +50,7 @@ import type {
 } from '../../shared/protocol/types/vfs';
 import type {
   ActiveLoop,
+  ConnectionState,
   GremlinMethods,
   InitParams,
   InitResult,
@@ -115,6 +116,34 @@ export class GremlinClient {
     if (this.transport.configureWorker) {
       await this.transport.configureWorker(config);
     }
+  }
+
+  /**
+   * Register a callback fired after the transport reconnects (WebSocket
+   * only). `GremlinSession` uses this to re-attach chats. No-op on
+   * transports that don't support reconnect (worker).
+   */
+  onReconnect(callback: () => void): () => void {
+    if (this.transport.onReconnect) {
+      return this.transport.onReconnect(callback);
+    }
+    return () => {};
+  }
+
+  /** Current connection state. `undefined` for non-WebSocket transports. */
+  get connectionState(): ConnectionState | undefined {
+    return this.transport.connectionState;
+  }
+
+  /**
+   * Subscribe to connection state changes. Returns an unsubscribe function.
+   * On non-WebSocket transports (worker), returns a no-op unsubscribe.
+   */
+  onConnectionStateChange(callback: (state: ConnectionState) => void): () => void {
+    if (this.transport.onConnectionStateChange) {
+      return this.transport.onConnectionStateChange(callback);
+    }
+    return () => {};
   }
 
   // ==========================================================================
@@ -628,6 +657,14 @@ export class GremlinClient {
       restoreOrphan: (fileId, targetPath) => this.vfsRestoreOrphan(projectId, fileId, targetPath),
       purgeOrphan: fileId => this.vfsPurgeOrphan(projectId, fileId),
 
+      // ---- bulk migration write ----
+      writeFileWithHistory: async (filePath, versions, currentContent, _isBinary) => {
+        for (const ver of versions) {
+          await this.vfsWrite(projectId, filePath, ver.content);
+        }
+        await this.vfsWrite(projectId, filePath, currentContent);
+      },
+
       // ---- compound ops ----
       copyFile: (src, dst, overwrite) => this.vfsCopyFile(projectId, src, dst, overwrite),
       deletePath: path => this.vfsDeletePath(projectId, path),
@@ -745,13 +782,56 @@ export class GremlinClient {
       skipped: number;
       errors: number;
       estimatedTotal?: number;
-    }) => void
+    }) => void,
+    options?: {
+      skipVfsMigration?: boolean;
+      onVfsMigrationProgress?: (progress: {
+        projectId: string;
+        projectName: string;
+        filesProcessed: number;
+        totalFiles: number;
+        versionsProcessed: number;
+      }) => void;
+      onUploadProgress?: (sent: number, total: number) => void;
+    }
   ): Promise<{ imported: number; skipped: number; errors: string[] }> {
     let imported = 0;
     let skipped = 0;
     let errors: string[] = [];
 
-    for await (const envelope of this.stream('importData', { data, sourceCEK, mode })) {
+    // Large files are sent in chunks to avoid WebSocket message-size
+    // limits and V8 JSON string-length limits. The threshold is
+    // conservative — even base64-encoded 10MB is fine for a single
+    // JSON message, but 100MB+ will hit ws maxPayload.
+    const CHUNK_THRESHOLD = 10 * 1024 * 1024; // 10 MB
+    const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB per chunk
+
+    let importParams: {
+      data?: Uint8Array;
+      uploadId?: string;
+      sourceCEK: string;
+      mode: 'merge' | 'replace';
+      skipVfsMigration?: boolean;
+    };
+
+    if (data.byteLength > CHUNK_THRESHOLD) {
+      const uploadId = `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const totalChunks = Math.ceil(data.byteLength / CHUNK_SIZE);
+      let chunksSent = 0;
+      for (let offset = 0; offset < data.byteLength; offset += CHUNK_SIZE) {
+        const end = Math.min(offset + CHUNK_SIZE, data.byteLength);
+        const chunk = data.subarray(offset, end);
+        const final = end >= data.byteLength;
+        await this.request('importUploadChunk', { uploadId, data: chunk, final });
+        chunksSent++;
+        options?.onUploadProgress?.(chunksSent, totalChunks);
+      }
+      importParams = { uploadId, sourceCEK, mode, skipVfsMigration: options?.skipVfsMigration };
+    } else {
+      importParams = { data, sourceCEK, mode, skipVfsMigration: options?.skipVfsMigration };
+    }
+
+    for await (const envelope of this.stream('importData', importParams)) {
       if (envelope.kind !== 'stream_event') continue;
       const event = envelope.event;
       switch (event.type) {
@@ -766,6 +846,23 @@ export class GremlinClient {
           break;
         case 'warning':
           console.warn('[GremlinClient] importData warning:', event.message);
+          break;
+        case 'vfs_migration_progress':
+          options?.onVfsMigrationProgress?.({
+            projectId: event.projectId,
+            projectName: event.projectName,
+            filesProcessed: event.filesProcessed,
+            totalFiles: event.totalFiles,
+            versionsProcessed: event.versionsProcessed,
+          });
+          break;
+        case 'vfs_migration_skipped':
+          console.debug(
+            '[GremlinClient] VFS migration skipped for',
+            event.projectName,
+            '—',
+            event.reason
+          );
           break;
         case 'done':
           imported = event.imported;

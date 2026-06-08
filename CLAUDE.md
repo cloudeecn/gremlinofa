@@ -19,13 +19,21 @@ This is a general-purpose AI chatbot built with React (Vite).
   - Check if `development.md` or `README.md` contains obsolete information, update if necessery.
 - DON'T TOUCH THE CONTENT BEFORE `## Overview` when updating `README.md`. Make sure any new document follows `documentation-tone`
 
+## Dual-mode parity (worker + server)
+
+The app runs in two modes sharing the same `GremlinServer` engine: **worker mode** (Web Worker + IndexedDB / Remote Storage, `src/worker/`) and **server mode** (Node + WebSocket + SQLite, `src/server/`). Any change to one side must be checked against the other:
+
+- When modifying `src/worker/workerHandler.ts`, check `src/server/websocketTransport.ts` for parity (and vice versa). They have parallel message routing.
+- When fixing a bug or adding a feature in any worker-side code (`src/worker/`), check if the same issue or feature gap exists in the server-side code (`src/server/`), and vice versa.
+- When modifying a storage adapter (IndexedDB, SQLite) or VFS adapter (Local, Remote, Filesystem), check the other mode's adapter.
+- Don't add server-only assumptions to `src/shared/`. Features requiring server capabilities must degrade or error cleanly in worker mode.
+
 ## standalone packages
 
 There are some standalone packages in this project's root.
 
 - storage-backend
 - cors-proxy
-- vfs-backend
 - touch-grass-backend
 
 In order to test compile and unit test these packages, you need to `cd <standalone-package-path>`, than run `npm run verify` and `npm run test:silent` accordingly.
@@ -38,12 +46,13 @@ They have their own package.json and config files.
   - Any update to the API must start with updating this file.
   - The reverse proxy may prepend a baseUrl, for example, when the main app access `{baseUrl}/api/{api}`, it is actually accessing `/api/{api}` in the storage backend.
 
-### vfs-backend
+### VFS server (integrated build target)
 
-- API definition is in `vfs-backend/vfs-api.yaml`. Use it as source of truth.
-- Filesystem-based VFS: files live on a real server directory, browsable and editable outside the app.
-- Per-file write locking (not per-project tree lock like the frontend).
-- Server-side versioning via hidden `.{filename}.ver/` directories.
+- Source lives in `src/server/vfsFacade/` (HTTP layer) + `src/server/vfsEngine/` (shared filesystem engine).
+- API definition is in `src/server/vfsFacade/vfs-api.yaml`. Use it as source of truth.
+- Build with `npm run build:vfs-server` → output in `dist/vfs-server/`.
+- Tests run as part of the main test suite: `src/server/vfsFacade/__tests__/api.test.ts`.
+- The `vfsEngine` module is also used by `FilesystemVfsAdapter` for the main server's filesystem VFS mode.
 
 ### touch-grass-backend
 

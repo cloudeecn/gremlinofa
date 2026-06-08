@@ -18,6 +18,16 @@ import { generateUniqueId } from '../../protocol/idGenerator';
 import type { EncryptionCore } from '../encryption/encryptionCore';
 import { type StorageAdapter, Tables } from './StorageAdapter';
 
+export class CekOracleMismatchError extends Error {
+  constructor() {
+    super('CEK oracle verification failed — wrong encryption key');
+    this.name = 'CekOracleMismatchError';
+  }
+}
+
+export const CEK_ORACLE_KEY = 'cek_oracle';
+const CEK_ORACLE_STATIC = 'GREMLIN_OK';
+
 export class UnifiedStorage {
   private adapter: StorageAdapter;
   private encryption: EncryptionCore;
@@ -121,6 +131,12 @@ export class UnifiedStorage {
     console.debug('[Storage] Initializing adapter...');
     await this.adapter.initialize();
     console.debug('[Storage] Adapter initialized');
+
+    // Verify the CEK oracle before touching any data. On mismatch the
+    // error propagates to GremlinServer.init(), which reverts to dormant.
+    console.debug('[Storage] Verifying CEK oracle...');
+    await this.verifyCekOracle();
+    console.debug('[Storage] CEK oracle verified');
 
     // Create default API definitions if needed
     console.debug('[Storage] Initializing default API definitions...');
@@ -1152,6 +1168,52 @@ export class UnifiedStorage {
     await this.adapter.save(Tables.METADATA, key, '__METADATA__', {
       unencryptedData: data,
     });
+  }
+
+  // ===== CEK Oracle =====
+
+  /**
+   * Verify the CEK oracle stored in metadata. If the oracle is missing
+   * (fresh install or legacy data), create one. If present, decrypt it
+   * and verify the static marker matches. On failure, throw
+   * `CekOracleMismatchError` so `GremlinServer.init()` can revert to
+   * dormant mode.
+   */
+  private async verifyCekOracle(): Promise<void> {
+    const stored = await this.getMetadata(CEK_ORACLE_KEY);
+    if (!stored) {
+      await this.createCekOracle();
+      return;
+    }
+    try {
+      const json = await this.encryption.decrypt(stored);
+      const parsed = JSON.parse(json);
+      if (parsed.s !== CEK_ORACLE_STATIC) {
+        throw new CekOracleMismatchError();
+      }
+    } catch (err) {
+      if (err instanceof CekOracleMismatchError) throw err;
+      throw new CekOracleMismatchError();
+    }
+  }
+
+  /**
+   * Create (or overwrite) the CEK oracle. The oracle is an encrypted
+   * JSON blob containing a static marker and random padding. Called
+   * during first init, after CEK rotation, and after import.
+   *
+   * @param encryption - optional encryption core override (used by
+   *   `rotateCek` to stamp the oracle with the new key before
+   *   forgetting the old one)
+   */
+  async createCekOracle(encryption?: EncryptionCore): Promise<void> {
+    const enc = encryption ?? this.encryption;
+    const randomBytes = new Uint8Array(8);
+    crypto.getRandomValues(randomBytes);
+    const randomHex = Array.from(randomBytes, b => b.toString(16).padStart(2, '0')).join('');
+    const plaintext = JSON.stringify({ s: CEK_ORACLE_STATIC, r: randomHex });
+    const ciphertext = await enc.encrypt(plaintext);
+    await this.setMetadata(CEK_ORACLE_KEY, ciphertext);
   }
 
   // ===== Initialization =====

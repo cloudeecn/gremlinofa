@@ -14,7 +14,7 @@ import {
   type StorageConfig,
 } from '../lib/localStorageBoot';
 
-type StorageType = 'indexeddb' | 'remote';
+type StorageType = 'indexeddb' | 'remote' | 'server';
 type InitMode = 'fresh' | 'import' | 'existing';
 
 interface OOBEResult {
@@ -59,6 +59,9 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
+  // Server (WebSocket) options
+  const [wsUrl, setWsUrl] = useState('');
+
   // Section 2: Init mode
   const [initMode, setInitMode] = useState<InitMode>('fresh');
 
@@ -70,6 +73,10 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
   // Status
   const [isProcessing, setIsProcessing] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
+  const [uploadProgress, setUploadProgress] = useState<{ sent: number; total: number } | null>(
+    null
+  );
+  const [vfsMigrationStatus, setVfsMigrationStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -123,11 +130,18 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
         }
       }
 
+      // Server mode: persist the storage config BEFORE calling any
+      // gremlinClient method so the lazy singleton creates a
+      // WebSocketTransport (which reads the config on first access).
+      if (storageType === 'server') {
+        setStorageConfig({ type: 'server', wsUrl });
+      }
+
       // Build the storage config + CEK pair we'll persist + post through init.
-      // userId derivation runs backend-side via the dormant-callable
-      // `deriveUserIdFromCEK` RPC so the OOBE shell never imports CEK
-      // format helpers.
       const buildStorageConfig = async (cek: string): Promise<StorageConfig> => {
+        if (storageType === 'server') {
+          return { type: 'server', wsUrl };
+        }
         if (storageType === 'remote') {
           const userId = await gremlinClient.deriveUserIdFromCEK(cek);
           return {
@@ -146,13 +160,19 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
         const cekString = await gremlinClient.generateNewCEK();
         const storageConfig = await buildStorageConfig(cekString);
 
-        // Persist for future app loads.
-        setCachedCEKString(cekString);
+        // Persist storage config before init (the lazy transport reads it).
         setStorageConfig(storageConfig);
 
-        // Bring up the worker.
-        await gremlinClient.configureWorker(storageConfig);
+        // Server mode: the Node backend reads config from env, no
+        // configureWorker needed. Worker/local modes still need it.
+        if (storageConfig.type !== 'server') {
+          await gremlinClient.configureWorker(storageConfig);
+        }
         await gremlinClient.init({ cek: cekString });
+
+        // Persist CEK only after init succeeds — a failed init must not
+        // leave a bad CEK in localStorage.
+        setCachedCEKString(cekString);
 
         onComplete({
           mode: 'fresh',
@@ -173,8 +193,9 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
         const cekString = importCEK.trim();
         const storageConfig = await buildStorageConfig(cekString);
 
-        // Probe the remote adapter via the backend (no main-thread RPC client).
-        if (storageType === 'remote' && storageConfig.type === 'remote') {
+        // Probe the remote storage adapter (server mode skips this — the
+        // server validates on init).
+        if (storageConfig.type === 'remote') {
           const probe = await gremlinClient.validateRemoteStorage(
             storageConfig.baseUrl,
             storageConfig.password,
@@ -187,14 +208,16 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
           }
         }
 
-        // Persist for future app loads.
-        setCachedCEKString(cekString);
+        // Persist storage config before init (the lazy transport reads it).
         setStorageConfig(storageConfig);
 
-        // Init the worker so subsequent gremlinClient calls land in the
-        // right encryption + storage context.
-        await gremlinClient.configureWorker(storageConfig);
+        if (storageConfig.type !== 'server') {
+          await gremlinClient.configureWorker(storageConfig);
+        }
         await gremlinClient.init({ cek: cekString });
+
+        // Persist CEK only after init succeeds.
+        setCachedCEKString(cekString);
 
         // Heuristic CEK verification: if storage has data but `getProjects`
         // and `listAPIDefinitions` both come back empty, decryption is
@@ -216,7 +239,7 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
         onComplete({
           mode: 'existing',
           cek: cekString,
-          storageType: 'remote',
+          storageType,
         });
         return;
       }
@@ -247,25 +270,42 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
 
       const storageConfig = await buildStorageConfig(normalizedCek);
 
-      // Persist for future app loads.
-      setCachedCEKString(normalizedCek);
+      // Persist storage config before init (the lazy transport reads it).
       setStorageConfig(storageConfig);
 
-      // Init the worker so the import stream has somewhere to write.
-      await gremlinClient.configureWorker(storageConfig);
+      if (storageConfig.type !== 'server') {
+        await gremlinClient.configureWorker(storageConfig);
+      }
       await gremlinClient.init({ cek: normalizedCek });
+
+      // Persist CEK only after init succeeds.
+      setCachedCEKString(normalizedCek);
 
       // Read the backup file and stream it through the import RPC. The
       // 'replace' mode clears the database first and re-encrypts everything
       // with `sourceCEK`, which then becomes the active CEK on the backend.
       const fileBytes = new Uint8Array(await importFile.arrayBuffer());
+      setUploadProgress(null);
       setImportProgress(0);
       const result = await gremlinClient.importFromBytes(
         fileBytes,
         sourceCekString,
         'replace',
         (progress: { processed: number }) => {
+          setUploadProgress(null);
+          setVfsMigrationStatus(null);
           setImportProgress(progress.processed);
+        },
+        {
+          onUploadProgress: (sent, total) => {
+            setUploadProgress({ sent, total });
+          },
+          onVfsMigrationProgress: progress => {
+            setImportProgress(0);
+            setVfsMigrationStatus(
+              `Migrating VFS: ${progress.projectName} (${progress.filesProcessed}/${progress.totalFiles} files)`
+            );
+          },
         }
       );
 
@@ -281,13 +321,18 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
       });
     } catch (err) {
       console.error('[OOBE] Error:', err);
+      // Defense-in-depth: clear any CEK that may have been persisted
+      // before the failure (e.g. by a code path added later).
+      clearCachedCEK();
       setError(err instanceof Error ? err.message : 'An unexpected error occurred');
       setIsProcessing(false);
     }
   };
 
   const canProceed =
-    (storageType === 'indexeddb' || (storageType === 'remote' && remoteUrl.trim())) &&
+    (storageType === 'indexeddb' ||
+      (storageType === 'remote' && remoteUrl.trim()) ||
+      (storageType === 'server' && wsUrl.trim())) &&
     (initMode === 'fresh' ||
       (initMode === 'import' && importFile && importCEK.trim()) ||
       (initMode === 'existing' && importCEK.trim()));
@@ -361,7 +406,58 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
               </div>
               {storageType === 'remote' && <div className="text-blue-500">✓</div>}
             </label>
+
+            {/* Remote Backend (WebSocket) option */}
+            <label
+              className={`flex cursor-pointer items-start rounded-lg border-2 p-4 transition-colors ${
+                storageType === 'server'
+                  ? 'border-blue-500 bg-blue-50'
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}
+            >
+              <input
+                type="radio"
+                name="storage"
+                value="server"
+                checked={storageType === 'server'}
+                onChange={() => {
+                  setStorageType('server');
+                  setError(null);
+                }}
+                disabled={isProcessing}
+                className="sr-only"
+              />
+              <div className="flex-1">
+                <div className="font-medium text-gray-900">Remote Backend</div>
+                <div className="text-sm text-gray-500">
+                  Full backend on a remote server (WebSocket)
+                </div>
+              </div>
+              {storageType === 'server' && <div className="text-blue-500">✓</div>}
+            </label>
           </div>
+
+          {/* Server options (shown when server selected) */}
+          {storageType === 'server' && (
+            <div className="mt-4 space-y-4 rounded-lg border border-gray-200 bg-gray-50 p-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">
+                  WebSocket URL
+                </label>
+                <input
+                  type="text"
+                  value={wsUrl}
+                  onChange={e => setWsUrl(e.target.value)}
+                  disabled={isProcessing}
+                  placeholder="ws://localhost:3100 or wss://gremlin.example.com"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  The server owns storage and runs the backend — your browser handles the UI
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Remote storage options (shown when remote selected) */}
           {storageType === 'remote' && (
@@ -478,8 +574,8 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
               {initMode === 'import' && <div className="text-blue-500">✓</div>}
             </label>
 
-            {/* Use Existing Data option (only for remote storage) */}
-            {storageType === 'remote' && (
+            {/* Use Existing Data option (for remote storage or server) */}
+            {(storageType === 'remote' || storageType === 'server') && (
               <label
                 className={`flex cursor-pointer items-start rounded-lg border-2 p-4 transition-colors ${
                   initMode === 'existing'
@@ -594,7 +690,11 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
                 ? 'Setting up...'
                 : initMode === 'existing'
                   ? 'Connecting...'
-                  : `Importing...${importProgress > 0 ? ` ${importProgress} entries` : ''}`}
+                  : vfsMigrationStatus
+                    ? vfsMigrationStatus
+                    : uploadProgress
+                      ? `Uploading... ${uploadProgress.sent}/${uploadProgress.total} chunks`
+                      : `Importing...${importProgress > 0 ? ` ${importProgress} entries` : ''}`}
             </>
           ) : (
             <>🚀 Get Started</>
@@ -603,9 +703,11 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
 
         {/* Footer note */}
         <p className="mt-4 text-center text-xs text-gray-400">
-          {storageType === 'remote'
-            ? 'Your data is encrypted before being sent to the server'
-            : 'Your data is encrypted and stored locally in your browser'}
+          {storageType === 'server'
+            ? 'The server owns storage and runs the backend — your browser handles the UI'
+            : storageType === 'remote'
+              ? 'Your data is encrypted before being sent to the server'
+              : 'Your data is encrypted and stored locally in your browser'}
         </p>
       </div>
     </div>

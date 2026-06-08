@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Build Pages
-        run: npm run build
+        run: npm run build:frontend
         env:
           VITE_BASE_PATH: /gremlinofa/
       - name: Setup Pages
@@ -42,8 +42,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository
-          path: 'dist/'
+          path: 'dist/frontend/'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

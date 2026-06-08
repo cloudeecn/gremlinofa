@@ -137,9 +137,14 @@ export async function resolveCanonicalPath(
   const cleaned = requestedPath.replace(/^\/+/, '');
   const lexical = path.resolve(ctx.projectRoot, cleaned);
 
-  // Lexical containment against project root (preserves existing safePath
-  // semantics — '..' escapes are caught here before we even touch FS).
-  if (!containedIn(lexical, ctx.projectRoot)) {
+  // Lexical containment against the project root, written as the recognized
+  // path.relative + '..' barrier so static taint analysis sees the
+  // sanitization (and so does a human). Semantics match the old containedIn()
+  // check: '..' escapes (and cross-device absolute results) are caught here,
+  // before we touch the FS. The realpath-target allow-list check below still
+  // backstops symlinks that resolve into VFS_EXTRA_ROOTS.
+  const relToRoot = path.relative(ctx.projectRoot, lexical);
+  if (relToRoot.startsWith('..') || path.isAbsolute(relToRoot)) {
     throw new FsError('Path traversal rejected', 403);
   }
 

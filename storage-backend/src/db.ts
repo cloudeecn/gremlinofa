@@ -1,6 +1,7 @@
 /**
  * SQLite database setup with better-sqlite3
- * Schema designed for multi-tenant storage with efficient indexing
+ * Rows are namespaced by userId with efficient indexing (separation, not hardened
+ * multi-tenant isolation — see index.ts)
  */
 
 import Database from 'better-sqlite3';

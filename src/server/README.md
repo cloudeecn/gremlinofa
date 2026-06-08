@@ -48,6 +48,8 @@ Configuration variables:
 | `VFS_MODE`      | `filesystem`        | `filesystem` (real files) or `encrypted` (blobs) |
 | `VFS_BASE_PATH` | `./data/vfs`        | Base directory for filesystem VFS                |
 
+> **Deploy this for yourself.** Server mode is single-tenant — there's no per-user authz here. With the default `VFS_MODE=filesystem`, your AI's files (and their paths) live **unencrypted** on disk: great for `ls`/`grep`/vim, but readable by anyone with disk access. Run it on hardware you trust, and put TLS + auth in front via a reverse proxy. (`VFS_MODE=encrypted` stores blobs instead if you want the files opaque at rest.)
+
 ## Deploy
 
 `dist/server/` is self-contained — rsync it to the target and `npm install` for the native bindings:

@@ -4,7 +4,7 @@ A SQLite-based remote storage backend for GremlinOFA. Vibe-coded, but it works.
 
 ## What This Does
 
-Provides HTTP APIs that mirror the `StorageAdapter` interface, storing encrypted blobs in SQLite - more reliably than browser storage. Multi-tenant by design, with each user's data isolated via userId in Basic Auth.
+Provides HTTP APIs that mirror the `StorageAdapter` interface, storing encrypted blobs in SQLite - more reliably than browser storage. Data is namespaced by userId via Basic Auth, but that's separation, not hardened multi-tenant isolation: the password is currently ignored (see [Authentication](#authentication)), so **deploy this for yourself** — your own devices, or behind a trusted auth layer — not as an open multi-user service. Everything it stores is client-side-encrypted, so it only ever sees blobs.
 
 ## Quick Start
 

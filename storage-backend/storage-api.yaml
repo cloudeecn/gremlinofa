@@ -4,12 +4,13 @@ info:
   description: |
     A SQLite-based remote storage backend for GremlinOFA. Vibe-coded, but it works.
 
-    This API mirrors the frontend `StorageAdapter` interface, storing encrypted blobs in SQLite - 
-    more reliably than browser storage. Multi-tenant by design, with each user's data isolated 
-    via userId in Basic Auth.
+    This API mirrors the frontend `StorageAdapter` interface, storing encrypted blobs in SQLite -
+    more reliably than browser storage. Data is namespaced by userId via Basic Auth — separation,
+    not hardened multi-tenant isolation (the password is ignored), so deploy it for yourself or
+    behind a trusted auth layer, not as an open multi-user service.
 
-    The backend stores encrypted blobs and indexes them by parentId and timestamp. 
-    Encryption/decryption happens client-side.
+    The backend stores encrypted blobs and indexes them by parentId and timestamp.
+    Encryption/decryption happens client-side, so the server only ever sees blobs.
   version: 1.0.0
   license:
     name: Apache-2.0

@@ -2,7 +2,9 @@
  * SQLite Storage Backend for GremlinOFA
  *
  * A standalone Express server that provides HTTP APIs matching the StorageAdapter interface.
- * Multi-tenant by design - all data isolated by userId from Basic Auth.
+ * Data is namespaced by userId from Basic Auth — separation, not hardened multi-tenant
+ * isolation (the password is ignored). Stores client-side-encrypted blobs only; deploy it
+ * for yourself or behind a trusted auth layer, not as an open multi-user service.
  */
 
 import express from 'express';

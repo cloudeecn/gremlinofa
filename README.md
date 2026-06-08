@@ -403,8 +403,8 @@ Sometimes the best model for the job runs on coffee, not electricity. Touch Gras
 Want to sync across devices without relying on someone else's cloud? There's a self-hostable storage backend for that.
 
 - **SQLite-based** — More reliable than browser storage, still lightweight
-- **Multi-tenant** — Each user's data isolated via userId (derived from your encryption key)
-- **Encrypted at rest** — The backend only sees blobs, decryption happens client-side
+- **Per-user namespaces** — Data is keyed by userId (derived from your encryption key). It's separation, not a hardened multi-tenant fortress — Basic Auth ignores the password today, so **deploy this for yourself** (your own devices) or behind a trusted auth layer, not as an open multi-user service.
+- **Encrypted at rest** — The backend only ever sees blobs; decryption happens client-side. So even on shared hardware, your conversations stay yours.
 - **Easy to deploy** — Single bundled file, systemd/OpenRC service files included
 
 On first launch, the OOBE wizard lets you choose between local (IndexedDB) or remote storage. You can also connect to an existing remote instance with your backup key.
@@ -419,7 +419,7 @@ Want your AI's memory files on a real filesystem instead of encrypted blobs? The
 - **Per-file locking** — Two writes to different files run in parallel. Server-side, so the frontend doesn't need to think about it.
 - **Server-side versioning** — Hidden `.ver/` directories track revision history. Rollback when your AI rewrites that config file for the fifth time.
 - **Compound operations** — `str-replace`, `insert`, `append` are atomic server-side. No TOCTOU races.
-- **Optional E2E encryption** — Content-only encryption if you still want privacy. Paths stay plaintext so the server can route.
+- **Plaintext on disk** — The flip side of `grep`-able: files and their paths sit unencrypted on the server. Anyone with disk access can read them, and it's single-tenant by nature, so **deploy this for yourself** on hardware you trust. (Legacy content-only E2E exists but is deprecated — read-only, migration use.)
 
 Configure per-project in Project Settings > Remote VFS. The backend runs standalone — same deployment story as the storage backend.
 
@@ -429,7 +429,7 @@ What started as a single React app got a full-blown architectural glow-up. The e
 
 **Web Worker (browser-only)** — The default. The backend runs in a Web Worker while React owns the main thread. You won't even feel a difference despite the full upgrade — except now you can step out to talk to your financial assistant without stopping your role-play character's output. Multiple chats, multiple agentic loops, all running in parallel without freezing your UI.
 
-**Node WebSocket Server (self-hosted)** — The same engine, but running as a standalone Node.js process with SQLite storage and real filesystem VFS. Your browser becomes a thin client over WebSocket. Files on disk are actual files — `ls` them, `grep` them, edit them in vim. And you can finally re-enable your screen lock on your phone — the server keeps working whether your screen is on or not.
+**Node WebSocket Server (self-hosted)** — The same engine, but running as a standalone Node.js process with SQLite storage and real filesystem VFS. Your browser becomes a thin client over WebSocket. Files on disk are actual files — `ls` them, `grep` them, edit them in vim. And you can finally re-enable your screen lock on your phone — the server keeps working whether your screen is on or not. Same caveat as the VFS backend: `VFS_MODE=filesystem` means real, **unencrypted** files, and it's single-tenant — serve yourself, and put TLS + auth in front via a reverse proxy.
 
 **Auto-reconnect** — WebSocket drops? The transport reconnects with exponential backoff, re-authenticates, and re-attaches all active chat subscriptions. Your session picks up where it left off.
 

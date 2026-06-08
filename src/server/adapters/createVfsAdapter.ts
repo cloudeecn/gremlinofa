@@ -21,7 +21,11 @@ export function makeCreateVfsAdapter(
   return (deps: BackendDeps, project: Project, _userId: string, namespace?: string): VfsAdapter => {
     if (serverConfig.vfsMode === 'filesystem') {
       const projectId = namespace ? `${project.id}/${namespace}` : project.id;
-      return new FilesystemVfsAdapter(serverConfig.vfsBasePath, projectId);
+      return new FilesystemVfsAdapter(
+        serverConfig.vfsBasePath,
+        projectId,
+        serverConfig.vfsAccessConfig
+      );
     }
     // Encrypted mode: reuse the shared VfsService over SQLite
     const vfsService = createVfsService(deps.storage, deps.encryption);

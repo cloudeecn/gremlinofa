@@ -10,10 +10,11 @@ import ToolResultView, { FocusedMinionView } from './ToolResultView';
 
 export interface ToolResultBubbleProps {
   message: Message<unknown>;
-  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
+  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'rollback', messageId: string) => void;
   onDeleteMessage?: (messageId: string) => void;
   focusMode?: boolean;
   expandMinions?: boolean;
+  isLastMessage?: boolean;
 }
 
 /**
@@ -29,6 +30,7 @@ export default function ToolResultBubble({
   onDeleteMessage,
   focusMode,
   expandMinions,
+  isLastMessage,
 }: ToolResultBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const { iconOnRight } = usePreferences();
@@ -150,8 +152,8 @@ export default function ToolResultBubble({
       )}
 
       {/* Complex results (with renderingGroups) */}
-      {complexResults.map((result, index) => (
-        <div key={`complex-${index}`} className="mb-2 w-full">
+      {complexResults.map(result => (
+        <div key={result.tool_use_id} className="mb-2 w-full">
           {expandMinions ? <FocusedMinionView block={result} /> : <ToolResultView block={result} />}
         </div>
       ))}
@@ -175,23 +177,14 @@ export default function ToolResultBubble({
                 ${message.metadata.messageCost!.toFixed(3)}
               </span>
             )}
-            {onAction && (
-              <>
-                <button
-                  onClick={() => onAction('resend', message.id)}
-                  className="text-[10px] text-gray-400 transition-colors hover:text-blue-600"
-                  title="Resend from here"
-                >
-                  🔄
-                </button>
-                <button
-                  onClick={() => onAction('delete', message.id)}
-                  className="text-[10px] text-gray-400 transition-colors hover:text-red-600"
-                  title="Delete this message and all after"
-                >
-                  🗑️
-                </button>
-              </>
+            {onAction && !isLastMessage && (
+              <button
+                onClick={() => onAction('rollback', message.id)}
+                className="text-[10px] text-gray-400 transition-colors hover:text-orange-600"
+                title="Roll back to here"
+              >
+                ⏪
+              </button>
             )}
             {onDeleteMessage && (
               <button

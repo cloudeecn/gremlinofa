@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import type { Project } from '../../../shared/protocol/types';
@@ -26,16 +26,19 @@ export default function ProjectNameIconModal({
   const [icon, setIcon] = useState(project.icon === DEFAULT_ICON ? '' : project.icon || '');
   const [isSaving, setIsSaving] = useState(false);
 
-  // Reset state when modal opens
-  const handleModalOpen = () => {
+  // Re-seed inputs from `project` whenever the modal opens or the project's
+  // displayed identity changes. Tracking the seed value during render is the
+  // React-recommended alternative to a setState-in-effect.
+  const seedKey = `${isOpen ? 'open' : 'closed'}::${project.name}::${project.icon ?? ''}`;
+  const [prevSeedKey, setPrevSeedKey] = useState(seedKey);
+  if (prevSeedKey !== seedKey) {
+    setPrevSeedKey(seedKey);
     if (isOpen) {
       setName(project.name);
       // Show empty input (with placeholder) when using default icon
       setIcon(project.icon === DEFAULT_ICON ? '' : project.icon || '');
     }
-  };
-
-  React.useEffect(handleModalOpen, [isOpen, project.name, project.icon]);
+  }
 
   // Effective icon for display and comparison (empty → default)
   const effectiveIcon = icon.trim() || DEFAULT_ICON;

@@ -19,8 +19,14 @@ export interface APIClient {
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
       thinkingKeepTurns?: number; // undefined = model default, -1 = all, 0+ = thinking_turns
+      // Client-side thinking-block pruning. When defined and >= 0, the client
+      // strips thinking blocks older than the N-th-from-last user text msg
+      // before sending. Distinct from `thinkingKeepTurns` (server-side context
+      // edit). Driven by the project's "Prune thinking blocks before API call"
+      // checkbox and overridable per minion call.
+      pruneThinkingKeepTurns?: number;
       // OpenAI/Responses-specific reasoning
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       // Common options
       systemPrompt?: string;

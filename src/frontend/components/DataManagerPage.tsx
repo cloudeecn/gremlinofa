@@ -58,7 +58,7 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
   const [isCompressing, setIsCompressing] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [localCEK, setLocalCEK] = useState(cek);
-  const [storageConfig, setStorageConfigState] = useState<StorageConfig | null>(null);
+  const [storageConfig] = useState<StorageConfig | null>(() => getStorageConfig());
   const [showImportData, setShowImportData] = useState(false);
   const [isClearingModels, setIsClearingModels] = useState(false);
   const [isImportingProject, setIsImportingProject] = useState(false);
@@ -69,11 +69,6 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
     skipped: number;
     errors: number;
   } | null>(null);
-
-  // Load storage config on mount
-  useEffect(() => {
-    setStorageConfigState(getStorageConfig());
-  }, []);
 
   useEffect(() => {
     refreshStorageQuota();

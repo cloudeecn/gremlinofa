@@ -179,10 +179,10 @@ describe('ToolResultView', () => {
       expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
     });
 
-    it('starts collapsed even when status is running', () => {
+    it('always shows collapsed indicator', () => {
       const runningBlock: ToolResultRenderBlock = { ...complexBlock, status: 'running' };
       renderWithOverlay(<ToolResultView block={runningBlock} />);
-      // Collapsed by default — shows ▶ not ▼
+      // Header always shows ▶ (modal opens separately)
       expect(screen.getByText('▶')).toBeInTheDocument();
     });
 
@@ -202,35 +202,35 @@ describe('ToolResultView', () => {
       expect(screen.getByText('minion_abc')).toBeInTheDocument();
     });
 
-    it('toggles expansion on header click', () => {
+    it('opens modal on header click and closes via close button', () => {
       renderWithOverlay(<ToolResultView block={complexBlock} />);
 
-      // Initially collapsed
+      // Initially no modal content
       expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
 
-      // Click to expand
+      // Click to open modal
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
       expect(screen.getByTestId('backstage-view')).toBeInTheDocument();
 
-      // Click to collapse
-      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+      // Close via the ✕ button
+      fireEvent.click(screen.getByText('✕'));
       expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
     });
 
     it('shows tool_info input in blue box when expanded', () => {
-      const { container } = renderWithOverlay(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
-      const blueBox = container.querySelector('.border-blue-300');
+      const blueBox = document.querySelector('.border-blue-300');
       expect(blueBox).toBeInTheDocument();
       expect(screen.getByText('Analyze this code')).toBeInTheDocument();
     });
 
     it('shows green result box when complete and not error', () => {
-      const { container } = renderWithOverlay(<ToolResultView block={complexBlock} />);
+      renderWithOverlay(<ToolResultView block={complexBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
-      const greenBox = container.querySelector('.border-green-300');
+      const greenBox = document.querySelector('.border-green-300');
       expect(greenBox).toBeInTheDocument();
       expect(screen.getByText('Task completed successfully')).toBeInTheDocument();
     });
@@ -241,10 +241,10 @@ describe('ToolResultView', () => {
         is_error: true,
         content: 'Minion failed',
       };
-      const { container } = renderWithOverlay(<ToolResultView block={errorBlock} />);
+      renderWithOverlay(<ToolResultView block={errorBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
-      const redBox = container.querySelector('.border-red-300');
+      const redBox = document.querySelector('.border-red-300');
       expect(redBox).toBeInTheDocument();
       expect(screen.getByText('Minion failed')).toBeInTheDocument();
     });
@@ -255,11 +255,11 @@ describe('ToolResultView', () => {
         status: 'running',
         content: '',
       };
-      const { container } = renderWithOverlay(<ToolResultView block={runningBlock} />);
+      renderWithOverlay(<ToolResultView block={runningBlock} />);
 
-      // Auto-expanded when running, should not have green/red box
-      const greenBox = container.querySelector('.border-green-300');
-      const redBox = container.querySelector('.border-red-300');
+      // Modal not open — no green/red box in document
+      const greenBox = document.querySelector('.border-green-300');
+      const redBox = document.querySelector('.border-red-300');
       expect(greenBox).not.toBeInTheDocument();
       expect(redBox).not.toBeInTheDocument();
     });
@@ -349,11 +349,11 @@ describe('ToolResultView', () => {
         ...complexBlock,
         renderingGroups: [backstageGroup, textGroup],
       };
-      const { container } = renderWithOverlay(<ToolResultView block={noInfoBlock} />);
+      renderWithOverlay(<ToolResultView block={noInfoBlock} />);
       fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
       // No blue box
-      const blueBox = container.querySelector('.border-blue-300');
+      const blueBox = document.querySelector('.border-blue-300');
       expect(blueBox).not.toBeInTheDocument();
 
       // Activity groups still render
@@ -532,13 +532,13 @@ describe('ToolResultView', () => {
       });
 
       it('clicking a file bar expands to show content', () => {
-        const { container } = renderWithOverlay(<ToolResultView block={blockWithFiles} />);
+        renderWithOverlay(<ToolResultView block={blockWithFiles} />);
         fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
         // Click the first file bar to expand it
         fireEvent.click(screen.getByText('/src/main.ts'));
-        // Content rendered in a <pre> inside the file bar
-        const pres = container.querySelectorAll('pre');
+        // Content rendered in a <pre> inside the portal
+        const pres = document.querySelectorAll('pre');
         const fileContentPre = Array.from(pres).find(p => p.textContent?.includes('const x = 1'));
         expect(fileContentPre).toBeTruthy();
       });
@@ -561,12 +561,12 @@ describe('ToolResultView', () => {
             },
           ],
         };
-        const { container } = renderWithOverlay(<ToolResultView block={errorBlock} />);
+        renderWithOverlay(<ToolResultView block={errorBlock} />);
         fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
 
         expect(screen.getByText('/missing.ts')).toBeInTheDocument();
-        // Error file bar has red border
-        const errorBar = container.querySelector('.border-red-200');
+        // Error file bar has red border (inside portal)
+        const errorBar = document.querySelector('.border-red-200');
         expect(errorBar).toBeInTheDocument();
       });
 

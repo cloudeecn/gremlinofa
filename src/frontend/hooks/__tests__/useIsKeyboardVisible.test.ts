@@ -48,10 +48,22 @@ describe('useIsKeyboardVisible', () => {
 
   beforeEach(() => {
     resizeListeners = [];
+    // The hook coalesces resize bursts onto an animation frame. Run rAF
+    // callbacks synchronously so existing `simulateResize` assertions still
+    // observe the state update after `act`.
+    // Run the callback synchronously, then return 0 — the hook's guard checks
+    // `rafIdRef.current !== 0`, and since the synchronous callback already
+    // cleared the ref, returning 0 keeps the guard unset for the next resize.
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   describe('Keyboard Detection', () => {

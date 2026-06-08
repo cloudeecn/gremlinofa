@@ -2,7 +2,7 @@
  * Memory Tool
  *
  * Client-side tool that provides Claude with a persistent virtual filesystem.
- * Implements Anthropic's memory tool commands: view, create, str_replace, insert, delete, rename, copy, mkdir, append.
+ * Implements Anthropic's memory tool commands: view, create, str_replace, insert, delete, rename, copy, mkdir, append, append_raw.
  *
  * Supports two modes:
  * - Native mode (Anthropic default): Uses memory_20250818 shorthand via getApiOverride()
@@ -87,6 +87,12 @@ interface AppendInput {
   file_text?: string;
 }
 
+interface AppendRawInput {
+  command: 'append_raw';
+  path: string;
+  file_text?: string;
+}
+
 interface ViewAllInput {
   command: 'view-all';
   paths: string[];
@@ -102,6 +108,7 @@ type MemoryInput =
   | CopyInput
   | MkdirInput
   | AppendInput
+  | AppendRawInput
   | ViewAllInput;
 
 /**
@@ -600,8 +607,32 @@ async function handleMkdir(adapter: VfsAdapter, path: string): Promise<ToolResul
   }
 }
 
-/** Handle append command */
+/** Ensure text ends with a newline (unless empty) */
+function ensureTrailingNewline(text: string): string {
+  if (text.length > 0 && !text.endsWith('\n')) return text + '\n';
+  return text;
+}
+
+/** Handle append command (auto-adds trailing newline) */
 async function handleAppend(
+  adapter: VfsAdapter,
+  path: string,
+  fileText: string
+): Promise<ToolResult> {
+  return handleAppendCore(adapter, path, ensureTrailingNewline(fileText));
+}
+
+/** Handle append_raw command (verbatim, no trailing newline) */
+async function handleAppendRaw(
+  adapter: VfsAdapter,
+  path: string,
+  fileText: string
+): Promise<ToolResult> {
+  return handleAppendCore(adapter, path, fileText);
+}
+
+/** Shared append logic */
+async function handleAppendCore(
   adapter: VfsAdapter,
   path: string,
   fileText: string
@@ -696,7 +727,16 @@ async function* executeMemoryCommand(
     return { content: 'Error: command is required', isError: true };
   }
 
-  const requirePath = ['view', 'create', 'str_replace', 'insert', 'delete', 'mkdir', 'append'];
+  const requirePath = [
+    'view',
+    'create',
+    'str_replace',
+    'insert',
+    'delete',
+    'mkdir',
+    'append',
+    'append_raw',
+  ];
   if (requirePath.includes(cmd) && (!input.path || typeof input.path !== 'string')) {
     return { content: `Error: path is required for ${cmd} command`, isError: true };
   }
@@ -769,6 +809,8 @@ async function* executeMemoryCommand(
       return handleMkdir(adapter, memoryInput.path);
     case 'append':
       return handleAppend(adapter, memoryInput.path, memoryInput.file_text ?? '');
+    case 'append_raw':
+      return handleAppendRaw(adapter, memoryInput.path, memoryInput.file_text ?? '');
     case 'view-all':
       return handleMultiView(adapter, memoryInput.paths, context.noLineNumbers);
     default:
@@ -925,7 +967,7 @@ const MEMORY_TOOL_DESCRIPTION = `Tool for reading, writing, and managing files i
 * The rename command renames a file or directory. Both old_path and new_path must be provided. Fails if destination exists unless overwrite is true.
 * The copy command copies a file from old_path to new_path. Source must be a file. Fails if destination exists unless overwrite is true. Errors if destination is a directory.
 * The mkdir command creates a new directory at the specified path.
-* The append command appends text to an existing file, or creates the file if it does not exist.
+* The append command appends text to an existing file (auto-adds trailing newline), or creates the file if it does not exist. Use append_raw for verbatim append without trailing newline.
 * The view-all command reads multiple files in one call. Takes a paths array, returns concatenated content with === path === headers. No view_range support.
 * All operations are restricted to files and directories within /memories.
 * You cannot delete or rename /memories itself, only its contents.
@@ -937,7 +979,7 @@ const MEMORY_INPUT_SCHEMA = {
   properties: {
     command: {
       description:
-        'The operation to perform. Choose from: view, create, str_replace, insert, delete, rename, copy, mkdir, append, view-all.',
+        'The operation to perform. Choose from: view, create, str_replace, insert, delete, rename, copy, mkdir, append, append_raw, view-all.',
       enum: [
         'view',
         'create',
@@ -948,13 +990,14 @@ const MEMORY_INPUT_SCHEMA = {
         'copy',
         'mkdir',
         'append',
+        'append_raw',
         'view-all',
       ],
       type: 'string',
     },
     file_text: {
       description:
-        'Required for create and append commands. For create: complete text content to write. For append: text to append to the file.',
+        'Required for create, append, and append_raw commands. For create: complete text content to write. For append/append_raw: text to append to the file.',
       type: 'string',
     },
     overwrite: {

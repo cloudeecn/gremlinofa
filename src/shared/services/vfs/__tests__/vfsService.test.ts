@@ -201,6 +201,12 @@ describe('VFS File Operations', () => {
         code: 'IS_DELETED',
       });
     });
+
+    it('round-trips high-unicode text (emoji, CJK, BOM, astral plane)', async () => {
+      const unicodeText = '你好 🎉 \uFEFFHello\n𐍈\u{1F600}';
+      await createFile(projectId, '/unicode.txt', unicodeText);
+      expect(await readFile(projectId, '/unicode.txt')).toBe(unicodeText);
+    });
   });
 
   describe('updateFile', () => {

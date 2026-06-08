@@ -692,7 +692,7 @@ export interface GremlinMethods {
    * so the result envelope is just an ack.
    */
   attachChat: {
-    params: { chatId: string };
+    params: { chatId: string; knownMessageIds?: string[] };
     result: { ok: true };
     streams: LoopEvent;
   };

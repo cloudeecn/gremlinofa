@@ -3,7 +3,7 @@ import type { RenderingBlockGroup } from '../../../shared/protocol/types/content
 import type { DummyHookStatus } from '../../hooks/useChat';
 export interface MessageBubbleProps {
   message: Message<unknown>;
-  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
+  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'rollback', messageId: string) => void;
   onDeleteMessage?: (messageId: string) => void;
   isVisible: boolean;
   onRegister: (messageId: string, element: HTMLElement | null) => void;
@@ -12,22 +12,26 @@ export interface MessageBubbleProps {
   focusMode?: boolean;
   expandMinions?: boolean;
   disableMath?: boolean;
+  isLastMessage?: boolean;
 }
 
 export interface UserMessageBubbleProps {
   message: Message<unknown>;
   attachments: MessageAttachment[];
-  onAction?: (action: 'copy' | 'fork' | 'edit' | 'resend', messageId: string) => void;
+  onAction?: (action: 'copy' | 'fork' | 'edit' | 'rollback', messageId: string) => void;
   onDeleteMessage?: (messageId: string) => void;
   focusMode?: boolean;
+  isLastMessage?: boolean;
 }
 
 export interface AssistantMessageBubbleProps {
   message: Message<unknown>;
+  onAction?: (action: 'copy' | 'rollback', messageId: string) => void;
   onDeleteMessage?: (messageId: string) => void;
   isVisible: boolean;
   focusMode?: boolean;
   disableMath?: boolean;
+  isLastMessage?: boolean;
 }
 
 export interface StreamingMessageProps {
@@ -39,7 +43,7 @@ export interface StreamingMessageProps {
 
 export interface MessageListProps {
   messages: Message<unknown>[];
-  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend', messageId: string) => void;
+  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'rollback', messageId: string) => void;
   onDeleteMessage?: (messageId: string) => void;
   isLoading: boolean;
   streamingGroups: RenderingBlockGroup[];
@@ -59,6 +63,8 @@ export interface MessageListProps {
   suspendedAfterTools?: boolean;
   /** Callback to continue after tool-stop suspension */
   onContinueAfterToolStop?: () => void;
+  /** True while snapshot replay is in progress — suppresses auto-scroll and banners */
+  snapshotLoading?: boolean;
   /** DUMMY System hook status during streaming */
   dummyHookStatus?: DummyHookStatus | null;
 }

@@ -5,7 +5,14 @@
  * bundle export, VFS compact.
  */
 
-import type { Chat, Message, Project, RenderingBlockGroup, TokenTotals } from './types';
+import type {
+  Chat,
+  Message,
+  Project,
+  RenderingBlockGroup,
+  TokenTotals,
+  ToolGroupsDelta,
+} from './types';
 import type { ToolResultRenderBlock } from './types/content';
 import type { CompactProgress, CompactResult } from '../services/vfs/vfsService';
 import type { LoopId } from './wire';
@@ -36,6 +43,22 @@ export type LoopEvent =
    * unmask any "loading initial state" UI.
    */
   | { type: 'snapshot_complete' }
+  /**
+   * Yielded by `attachChat` when `knownMessageIds` was provided and the
+   * server matched a prefix of the client's known messages. The server
+   * skips yielding `message_created` for everything up to and including
+   * `lastMatchedMessageId`, sending only messages after it. The frontend
+   * looks up this ID in its local `reconMapRef` to fast-forward the
+   * reconciliation pointer.
+   */
+  | { type: 'partial_reconsolidate'; lastMatchedMessageId: string }
+  /**
+   * Frontend-only synthetic event dispatched by `GremlinSession.onReconnect`
+   * before re-opening the `attachChat` stream. Signals `useChat` to enter
+   * reconciliation mode so the incoming snapshot can be diffed against the
+   * existing message array instead of blindly appending duplicates.
+   */
+  | { type: 'reconnect_start' }
   | { type: 'streaming_start' }
   | { type: 'streaming_chunk'; groups: RenderingBlockGroup[] }
   | { type: 'streaming_end' }
@@ -56,6 +79,28 @@ export type LoopEvent =
       type: 'tool_block_update';
       toolUseId: string;
       block: Partial<ToolResultRenderBlock>;
+    }
+  /**
+   * Delta encoding of a tool's `renderingGroups` mutation, emitted in lieu of
+   * shipping the full assembled snapshot on every upstream SSE chunk. The
+   * frontend applies these to a per-`toolUseId` accumulator and projects the
+   * assembled state into the placeholder message's `renderingContent`.
+   *
+   * See `ToolGroupsDelta` for the discriminated payload shape.
+   */
+  | { type: 'tool_groups_delta'; toolUseId: string; delta: ToolGroupsDelta }
+  /**
+   * Full assembled state for one active tool call, fired during `attachChat`
+   * replay so a reconnecting/joining subscriber rehydrates without waiting
+   * for the next live delta. Steady-state never emits this — it's the
+   * one-shot rehydration counterpart to `tool_groups_delta`.
+   */
+  | {
+      type: 'tool_groups_snapshot';
+      toolUseId: string;
+      infoGroup: RenderingBlockGroup;
+      accumulatedGroups: RenderingBlockGroup[];
+      streamingGroups: RenderingBlockGroup[];
     }
   | { type: 'tokens_consumed'; tokens: TokenTotals; isToolCost?: boolean }
   | { type: 'chat_updated'; chat: Chat }

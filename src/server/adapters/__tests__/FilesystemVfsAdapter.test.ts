@@ -1,8 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { FilesystemVfsAdapter } from '../FilesystemVfsAdapter';
+import { VfsError } from '../../../shared/services/vfs/vfsService';
+import type { VfsAccessConfig } from '../../vfsEngine/accessConfig';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+
+const DEFAULT_ACCESS_CONFIG: VfsAccessConfig = {
+  followSymlinks: false,
+  globalAllowedRoots: [],
+  projectAllowedRoots: new Map(),
+};
 
 describe('FilesystemVfsAdapter', () => {
   let adapter: FilesystemVfsAdapter;
@@ -11,7 +19,7 @@ describe('FilesystemVfsAdapter', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fsvfs-test-'));
-    adapter = new FilesystemVfsAdapter(tmpDir, projectId);
+    adapter = new FilesystemVfsAdapter(tmpDir, projectId, DEFAULT_ACCESS_CONFIG);
   });
 
   afterEach(() => {
@@ -82,6 +90,18 @@ describe('FilesystemVfsAdapter', () => {
       const entries = await adapter.readDir('/');
       const names = entries.map(e => e.name);
       expect(names).not.toContain('.file.txt.ver');
+    });
+
+    it('should populate size for files and leave dirs without size', async () => {
+      await adapter.writeFile('/sized.txt', 'hello world');
+      await adapter.mkdir('/subdir');
+
+      const entries = await adapter.readDir('/');
+      const file = entries.find(e => e.name === 'sized.txt');
+      const dir = entries.find(e => e.name === 'subdir');
+
+      expect(file?.size).toBe(Buffer.byteLength('hello world'));
+      expect(dir?.size).toBeUndefined();
     });
   });
 
@@ -372,6 +392,104 @@ describe('FilesystemVfsAdapter', () => {
   });
 
   // --------------------------------------------------------------------------
+  // Symlink policy
+  // --------------------------------------------------------------------------
+
+  describe('symlinks (follow=false, default)', () => {
+    let outside: string;
+    beforeEach(async () => {
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'fsvfs-outside-'));
+      const projectRoot = path.join(tmpDir, projectId);
+      // Write through the adapter to ensure project dir exists, then plant symlinks.
+      await adapter.writeFile('/real.txt', 'real');
+      fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+      fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(projectRoot, 'link.txt'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(outside, { recursive: true, force: true });
+    });
+
+    it('readFile rejects symlink', async () => {
+      await expect(adapter.readFile('/link.txt')).rejects.toMatchObject({
+        name: 'VfsError',
+        code: 'INVALID_PATH',
+      });
+    });
+
+    it('stat rejects symlink', async () => {
+      await expect(adapter.stat('/link.txt')).rejects.toMatchObject({ code: 'INVALID_PATH' });
+    });
+
+    it('readDir omits the symlink', async () => {
+      const entries = await adapter.readDir('/');
+      const names = entries.map(e => e.name);
+      expect(names).toContain('real.txt');
+      expect(names).not.toContain('link.txt');
+    });
+  });
+
+  describe('symlinks (follow=true with allow-list)', () => {
+    let extra: string;
+    let altAdapter: FilesystemVfsAdapter;
+
+    beforeEach(() => {
+      extra = fs.mkdtempSync(path.join(os.tmpdir(), 'fsvfs-extra-'));
+      fs.writeFileSync(path.join(extra, 'shared.txt'), 'shared');
+      const accessConfig: VfsAccessConfig = {
+        followSymlinks: true,
+        globalAllowedRoots: [fs.realpathSync(extra)],
+        projectAllowedRoots: new Map(),
+      };
+      altAdapter = new FilesystemVfsAdapter(tmpDir, projectId, accessConfig);
+      const projectRoot = path.join(tmpDir, projectId);
+      fs.symlinkSync(path.join(extra, 'shared.txt'), path.join(projectRoot, 'link.txt'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(extra, { recursive: true, force: true });
+    });
+
+    it('readFile follows the symlink', async () => {
+      expect(await altAdapter.readFile('/link.txt')).toBe('shared');
+    });
+
+    it('readDir lists the symlink entry', async () => {
+      const entries = await altAdapter.readDir('/');
+      expect(entries.map(e => e.name)).toContain('link.txt');
+    });
+  });
+
+  describe('symlinks (follow=true, target not in allow-list)', () => {
+    let outside: string;
+    let altAdapter: FilesystemVfsAdapter;
+
+    beforeEach(() => {
+      outside = fs.mkdtempSync(path.join(os.tmpdir(), 'fsvfs-outside2-'));
+      fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+      const accessConfig: VfsAccessConfig = {
+        followSymlinks: true,
+        globalAllowedRoots: [], // outside is NOT in the allow-list
+        projectAllowedRoots: new Map(),
+      };
+      altAdapter = new FilesystemVfsAdapter(tmpDir, projectId, accessConfig);
+      const projectRoot = path.join(tmpDir, projectId);
+      fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(projectRoot, 'link.txt'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(outside, { recursive: true, force: true });
+    });
+
+    it('readFile rejects with INVALID_PATH', async () => {
+      await expect(altAdapter.readFile('/link.txt')).rejects.toMatchObject({
+        code: 'INVALID_PATH',
+        message: expect.stringContaining('outside allowed roots'),
+      });
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // Orphan management (no-op for filesystem)
   // --------------------------------------------------------------------------
 
@@ -400,6 +518,76 @@ describe('FilesystemVfsAdapter', () => {
       expect(result.content).toBe('hello world');
       expect(result.isBinary).toBe(false);
       expect(result.mime).toBe('text/plain');
+    });
+
+    it('should round-trip high-unicode text (emoji, CJK, BOM, astral plane)', async () => {
+      const unicodeText = '你好 🎉 \uFEFFHello\n𐍈\u{1F600}';
+      await adapter.writeFile('/unicode.txt', unicodeText);
+
+      const result = await adapter.readFileWithMeta('/unicode.txt');
+      expect(result.content).toBe(unicodeText);
+      expect(result.isBinary).toBe(false);
+      expect(result.mime).toBe('text/plain');
+
+      // Verify on disk bytes are correct UTF-8.
+      const absPath = path.join(tmpDir, projectId, 'unicode.txt');
+      const onDisk = fs.readFileSync(absPath);
+      expect(onDisk.toString('utf-8')).toBe(unicodeText);
+    });
+
+    it('should detect binary file and return buffer + mime', async () => {
+      // Minimal PNG (magic header + IEND chunk). Not valid PNG but has a binary signature.
+      const pngBytes = new Uint8Array([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+      ]);
+      await adapter.writeFile('/pic.png', pngBytes);
+
+      const result = await adapter.readFileWithMeta('/pic.png');
+      expect(result.isBinary).toBe(true);
+      expect(result.mime).toBe('image/png');
+      expect(result.buffer).toBeDefined();
+      expect(new Uint8Array(result.buffer!)).toEqual(pngBytes);
+
+      // content is base64 of the original bytes
+      expect(result.content).toBe(Buffer.from(pngBytes).toString('base64'));
+    });
+  });
+
+  describe('readFile', () => {
+    it('should throw BINARY_FILE when reading a binary file as text', async () => {
+      const pngBytes = new Uint8Array([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+      ]);
+      await adapter.writeFile('/pic.png', pngBytes);
+
+      await expect(adapter.readFile('/pic.png')).rejects.toThrow(VfsError);
+      await expect(adapter.readFile('/pic.png')).rejects.toMatchObject({ code: 'BINARY_FILE' });
+    });
+
+    it('should round-trip high-unicode text through readFile', async () => {
+      const unicodeText = '你好 🎉 \uFEFFHello\n𐍈\u{1F600}';
+      await adapter.writeFile('/u.txt', unicodeText);
+      expect(await adapter.readFile('/u.txt')).toBe(unicodeText);
+    });
+  });
+
+  describe('writeFile binary', () => {
+    it('should preserve bytes when writing Uint8Array', async () => {
+      const bytes = new Uint8Array([0x00, 0x01, 0xfe, 0xff, 0x7f, 0x80]);
+      await adapter.writeFile('/raw.bin', bytes);
+
+      const onDisk = fs.readFileSync(path.join(tmpDir, projectId, 'raw.bin'));
+      expect(new Uint8Array(onDisk)).toEqual(bytes);
+    });
+
+    it('should preserve bytes when writing ArrayBuffer', async () => {
+      const bytes = new Uint8Array([0x00, 0x01, 0xfe, 0xff, 0x7f, 0x80]);
+      await adapter.writeFile('/raw.bin', bytes.buffer);
+
+      const onDisk = fs.readFileSync(path.join(tmpDir, projectId, 'raw.bin'));
+      expect(new Uint8Array(onDisk)).toEqual(bytes);
     });
   });
 
@@ -448,6 +636,32 @@ describe('FilesystemVfsAdapter', () => {
       await adapter.writeFileWithHistory('/deep/nested/file.txt', [], 'nested content', false);
 
       expect(await adapter.readFile('/deep/nested/file.txt')).toBe('nested content');
+    });
+
+    it('should decode base64 when writing binary version history', async () => {
+      const v1 = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
+      const v2 = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x02]);
+      const current = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x03]);
+
+      await adapter.writeFileWithHistory(
+        '/pic.png',
+        [
+          { content: Buffer.from(v1).toString('base64'), createdAt: 1000 },
+          { content: Buffer.from(v2).toString('base64'), createdAt: 2000 },
+        ],
+        current,
+        true
+      );
+
+      // Version files on disk should contain the original bytes, not base64 text.
+      const verPath = (n: number) => path.join(tmpDir, projectId, '.pic.png.ver', String(n));
+      expect(new Uint8Array(fs.readFileSync(verPath(1)))).toEqual(v1);
+      expect(new Uint8Array(fs.readFileSync(verPath(2)))).toEqual(v2);
+
+      // getVersion should return base64 to match the vfsService contract.
+      expect(await adapter.getVersion('/pic.png', 1)).toBe(Buffer.from(v1).toString('base64'));
+      expect(await adapter.getVersion('/pic.png', 2)).toBe(Buffer.from(v2).toString('base64'));
+      expect(await adapter.getVersion('/pic.png', 3)).toBe(Buffer.from(current).toString('base64'));
     });
   });
 });

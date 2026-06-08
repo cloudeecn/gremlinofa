@@ -390,4 +390,107 @@ describe('buildReasoningConfig', () => {
       ).toEqual({ reasoning_config: 'high' });
     });
   });
+
+  describe('Claude 4+ adaptive mode (output_config effort mapping)', () => {
+    const baseAdaptive = {
+      enableReasoning: true,
+      reasoningBudgetTokens: 0,
+      thinkingKeepTurns: -1,
+      supportsAdaptiveReasoning: true,
+    } as const;
+
+    it('on 4.6-class (supportsXhighEffort=false): xhigh collapses to max', () => {
+      const result = buildReasoningConfig('claude-4', {
+        ...baseAdaptive,
+        reasoningEffort: 'xhigh',
+      }) as { output_config?: { effort: string } };
+      expect(result.output_config).toEqual({ effort: 'max' });
+    });
+
+    it('on 4.6-class: max maps to max', () => {
+      const result = buildReasoningConfig('claude-4', {
+        ...baseAdaptive,
+        reasoningEffort: 'max',
+      }) as { output_config?: { effort: string } };
+      expect(result.output_config).toEqual({ effort: 'max' });
+    });
+
+    it('on 4.7-class (supportsXhighEffort=true): xhigh stays xhigh', () => {
+      const result = buildReasoningConfig('claude-4', {
+        ...baseAdaptive,
+        supportsXhighEffort: true,
+        reasoningEffort: 'xhigh',
+      }) as { output_config?: { effort: string } };
+      expect(result.output_config).toEqual({ effort: 'xhigh' });
+    });
+
+    it('on 4.7-class: max maps to max', () => {
+      const result = buildReasoningConfig('claude-4', {
+        ...baseAdaptive,
+        supportsXhighEffort: true,
+        reasoningEffort: 'max',
+      }) as { output_config?: { effort: string } };
+      expect(result.output_config).toEqual({ effort: 'max' });
+    });
+
+    it('onlyAdaptiveReasoning forces adaptive even with a non-zero budget', () => {
+      const result = buildReasoningConfig('claude-4', {
+        enableReasoning: true,
+        reasoningBudgetTokens: 4096,
+        thinkingKeepTurns: -1,
+        supportsAdaptiveReasoning: true,
+        onlyAdaptiveReasoning: true,
+        supportsXhighEffort: true,
+        reasoningEffort: 'xhigh',
+      }) as { reasoning_config?: { type: string }; output_config?: { effort: string } };
+      expect(result.reasoning_config).toEqual({ type: 'adaptive' });
+      expect(result.output_config).toEqual({ effort: 'xhigh' });
+    });
+  });
+
+  describe('thinking.display (reasoningSummary → summarized)', () => {
+    it('claude-4 adaptive with reasoningSummary set adds display:summarized', () => {
+      const result = buildReasoningConfig('claude-4', {
+        enableReasoning: true,
+        reasoningBudgetTokens: 0,
+        thinkingKeepTurns: -1,
+        supportsAdaptiveReasoning: true,
+        reasoningSummary: 'auto',
+      }) as { reasoning_config?: { type: string; display?: string } };
+      expect(result.reasoning_config).toEqual({ type: 'adaptive', display: 'summarized' });
+    });
+
+    it('claude-4 adaptive without reasoningSummary omits display', () => {
+      const result = buildReasoningConfig('claude-4', {
+        enableReasoning: true,
+        reasoningBudgetTokens: 0,
+        thinkingKeepTurns: -1,
+        supportsAdaptiveReasoning: true,
+      }) as { reasoning_config?: { type: string; display?: string } };
+      expect(result.reasoning_config).toEqual({ type: 'adaptive' });
+    });
+
+    it('claude-4 enabled with reasoningSummary set adds display:summarized', () => {
+      const result = buildReasoningConfig('claude-4', {
+        enableReasoning: true,
+        reasoningBudgetTokens: 4096,
+        thinkingKeepTurns: -1,
+        reasoningSummary: 'detailed',
+      }) as { reasoning_config?: { type: string; budget_tokens?: number; display?: string } };
+      expect(result.reasoning_config).toEqual({
+        type: 'enabled',
+        budget_tokens: 4096,
+        display: 'summarized',
+      });
+    });
+
+    it('claude-3 thinking inherits display', () => {
+      const result = buildReasoningConfig('claude-3', {
+        enableReasoning: true,
+        reasoningBudgetTokens: 2048,
+        reasoningSummary: 'auto',
+      }) as { thinking?: { type: string; display?: string } };
+      expect(result.thinking).toMatchObject({ type: 'enabled', display: 'summarized' });
+    });
+  });
 });

@@ -444,7 +444,7 @@ describe('fsTool append command', () => {
     mockAdapter = createMockAdapter();
   });
 
-  it('appends to existing file', async () => {
+  it('appends to existing file with trailing newline', async () => {
     (mockAdapter.appendFile as Mock).mockResolvedValue({ created: false });
 
     const result = await executeFs({
@@ -455,7 +455,19 @@ describe('fsTool append command', () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.content).toContain('Content appended to');
-    expect(mockAdapter.appendFile).toHaveBeenCalledWith('/data/test.txt', 'appended text');
+    expect(mockAdapter.appendFile).toHaveBeenCalledWith('/data/test.txt', 'appended text\n');
+  });
+
+  it('does not double-add newline when text already ends with one', async () => {
+    (mockAdapter.appendFile as Mock).mockResolvedValue({ created: false });
+
+    await executeFs({
+      command: 'append',
+      path: '/data/test.txt',
+      file_text: 'appended text\n',
+    });
+
+    expect(mockAdapter.appendFile).toHaveBeenCalledWith('/data/test.txt', 'appended text\n');
   });
 
   it('creates file when it does not exist', async () => {
@@ -497,6 +509,37 @@ describe('fsTool append command', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain('binary file');
+  });
+});
+
+describe('fsTool append_raw command', () => {
+  beforeEach(() => {
+    mockAdapter = createMockAdapter();
+  });
+
+  it('appends verbatim without trailing newline', async () => {
+    (mockAdapter.appendFile as Mock).mockResolvedValue({ created: false });
+
+    await executeFs({
+      command: 'append_raw',
+      path: '/data/test.txt',
+      file_text: 'raw text',
+    });
+
+    expect(mockAdapter.appendFile).toHaveBeenCalledWith('/data/test.txt', 'raw text');
+  });
+
+  it('creates file when it does not exist', async () => {
+    (mockAdapter.appendFile as Mock).mockResolvedValue({ created: true });
+
+    const result = await executeFs({
+      command: 'append_raw',
+      path: '/data/new.txt',
+      file_text: 'initial',
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain('File created successfully at');
   });
 });
 

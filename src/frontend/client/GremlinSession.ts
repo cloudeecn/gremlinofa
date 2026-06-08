@@ -89,6 +89,7 @@ export class GremlinSession {
   /** Whether `attach()` was ever called — survives stream termination so `onReconnect` can re-attach. */
   private wasAttached = false;
   private unsubReconnect: (() => void) | null = null;
+  private knownMessageIdsProvider: (() => string[]) | null = null;
 
   constructor(client: GremlinClient, chatId: string) {
     this.client = client;
@@ -101,6 +102,7 @@ export class GremlinSession {
     // socket opens, so we check `wasAttached` — not `attachPromise`.
     this.unsubReconnect = this.client.onReconnect(() => {
       if (this.wasAttached) {
+        this.eventHandler?.({ type: 'reconnect_start' });
         this.attachPromise = null;
         this.attachIterator = null;
         this.currentLoopId = null;
@@ -133,6 +135,11 @@ export class GremlinSession {
    */
   onError(handler: (error: Error) => void): void {
     this.errorHandler = handler;
+  }
+
+  /** Provider for the last N message IDs — used for partial reconsolidation on reconnect. */
+  setKnownMessageIdsProvider(provider: () => string[]): void {
+    this.knownMessageIdsProvider = provider;
   }
 
   /** True iff a loop is currently running on this chat (loop_started seen, loop_ended not yet). */
@@ -312,7 +319,12 @@ export class GremlinSession {
    */
   private async consumeAttach(): Promise<void> {
     try {
-      const iterable = this.client.stream('attachChat', { chatId: this.chatId });
+      const params: { chatId: string; knownMessageIds?: string[] } = { chatId: this.chatId };
+      if (this.knownMessageIdsProvider) {
+        const ids = this.knownMessageIdsProvider();
+        if (ids.length > 0) params.knownMessageIds = ids;
+      }
+      const iterable = this.client.stream('attachChat', params);
       const iterator = (
         iterable as AsyncIterable<StreamEventEnvelope<'attachChat'> | StreamEndEnvelope>
       )[Symbol.asyncIterator]() as AsyncIterator<

@@ -2,7 +2,7 @@
  * Modal for deleting attachments older than a specified number of days
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import Modal from './ui/Modal';
 import type { AttachmentSection } from '../../shared/protocol/types';
 
@@ -24,15 +24,18 @@ export default function DeleteOlderThanModal({
   const [deleteResult, setDeleteResult] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset state when modal opens
-  useEffect(() => {
+  // Reset state on each open transition. Tracking prev-isOpen during render
+  // is React's recommended alternative to a setState-in-effect.
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  if (prevIsOpen !== isOpen) {
+    setPrevIsOpen(isOpen);
     if (isOpen) {
       setDays(7);
       setIsDeleting(false);
       setDeleteResult(null);
       setError(null);
     }
-  }, [isOpen]);
+  }
 
   // Calculate preview count based on days
   const previewCount = useMemo(() => {

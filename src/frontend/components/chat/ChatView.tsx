@@ -18,9 +18,10 @@ import { MinionChatOverlayContext } from './MinionChatOverlayContext';
 
 interface ChatViewProps {
   chatId: string;
+  onMenuPress?: () => void;
 }
 
-export default function ChatView({ chatId }: ChatViewProps) {
+export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   const navigate = useNavigate();
   const [inputMessage, setInputMessage] = useState('');
   // Store processed attachments (MessageAttachment[]) instead of raw Files
@@ -167,6 +168,7 @@ export default function ChatView({ chatId }: ChatViewProps) {
     unresolvedToolCalls,
     softStopRequested,
     isLockedByIncompleteTail,
+    snapshotLoading,
     sendMessage,
     editMessage,
     copyMessage,
@@ -174,7 +176,7 @@ export default function ChatView({ chatId }: ChatViewProps) {
     overrideModel,
     updateChatName,
     resolvePendingToolCalls,
-    resendFromMessage,
+    rollbackToMessage,
     requestSoftStop,
     continueAfterToolStop,
     dummyHookStatus,
@@ -185,20 +187,19 @@ export default function ChatView({ chatId }: ChatViewProps) {
 
   // Handle message actions
   const handleMessageAction = async (
-    action: 'copy' | 'fork' | 'edit' | 'delete' | 'resend',
+    action: 'copy' | 'fork' | 'edit' | 'delete' | 'rollback',
     messageId: string
   ) => {
     if (action === 'copy') {
       await copyMessage(chatId, messageId);
-    } else if (action === 'resend') {
-      // Show confirmation dialog
+    } else if (action === 'rollback') {
       const confirmed = await showDestructiveConfirm(
-        'Resend Message',
-        'This will delete all messages after this one and resend. Continue?',
-        'Resend'
+        'Roll Back',
+        'This will delete all messages after this one.',
+        'Roll Back'
       );
       if (confirmed) {
-        await resendFromMessage(messageId);
+        await rollbackToMessage(chatId, messageId);
       }
     } else if (action === 'fork') {
       const forkedChat = await forkChat(chatId, messageId);
@@ -359,9 +360,19 @@ export default function ChatView({ chatId }: ChatViewProps) {
         <div className="border-b border-gray-200 bg-white">
           <div className="safe-area-inset-top" />
           <div className="flex h-14 items-center px-4">
+            {/* Mobile: burger menu to open sidebar */}
+            {onMenuPress && (
+              <button
+                onClick={onMenuPress}
+                className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100 md:hidden"
+              >
+                <span className="text-2xl text-gray-700">☰</span>
+              </button>
+            )}
+            {/* Desktop: back arrow to project */}
             <button
               onClick={handleClose}
-              className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
+              className={`-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100 ${onMenuPress ? 'hidden md:flex' : ''}`}
             >
               <span className="text-2xl text-gray-700">←</span>
             </button>
@@ -422,6 +433,17 @@ export default function ChatView({ chatId }: ChatViewProps) {
                   >
                     <span className="w-5 text-center">{alwaysAutoScroll ? '✓' : ''}</span>
                     <span>Always Auto Scroll</span>
+                  </button>
+                  <div className="my-1 border-t border-gray-200" />
+                  <button
+                    onClick={() => {
+                      setShowViewMenu(false);
+                      handleClose();
+                    }}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                  >
+                    <span className="w-5 text-center">↩</span>
+                    <span>Exit Chat</span>
                   </button>
                 </div>
               )}
@@ -510,8 +532,22 @@ export default function ChatView({ chatId }: ChatViewProps) {
           currentApiDefId={currentApiDefId}
           currentModelId={currentModelId}
           pendingToolCount={unresolvedToolCalls?.length}
-          onPendingToolReject={() => resolvePendingToolCalls('stop')}
-          onPendingToolAccept={() => resolvePendingToolCalls('continue')}
+          onPendingToolReject={() => {
+            const text = inputMessage.trim() || undefined;
+            const atts = attachments.length > 0 ? attachments : undefined;
+            setInputMessage('');
+            setAttachments([]);
+            clearDraft('chatview', chatId);
+            resolvePendingToolCalls('stop', text, atts);
+          }}
+          onPendingToolAccept={() => {
+            const text = inputMessage.trim() || undefined;
+            const atts = attachments.length > 0 ? attachments : undefined;
+            setInputMessage('');
+            setAttachments([]);
+            clearDraft('chatview', chatId);
+            resolvePendingToolCalls('continue', text, atts);
+          }}
           suspendedAfterTools={showContinueBanner}
           onContinueAfterToolStop={continueAfterToolStop}
           focusMode={focusMode}
@@ -519,6 +555,7 @@ export default function ChatView({ chatId }: ChatViewProps) {
           disableMath={disableMath}
           alwaysAutoScroll={alwaysAutoScroll}
           dummyHookStatus={dummyHookStatus}
+          snapshotLoading={snapshotLoading}
         />
 
         {/* Incomplete tail banner — chat is locked from continuation until
@@ -527,7 +564,7 @@ export default function ChatView({ chatId }: ChatViewProps) {
             context-menu / message-list flows: Delete removes the incomplete
             message; Roll Back to Last Checkpoint removes everything past the
             last checkpoint. */}
-        {isLockedByIncompleteTail && messages.length > 0 && (
+        {!snapshotLoading && isLockedByIncompleteTail && messages.length > 0 && (
           <div className="border-t border-yellow-300 bg-yellow-50 px-4 py-3 text-sm text-yellow-900">
             <div className="mb-2 font-medium">Last message was aborted.</div>
             <div className="mb-3 text-xs text-yellow-800">
@@ -585,7 +622,7 @@ export default function ChatView({ chatId }: ChatViewProps) {
           value={inputMessage}
           onChange={setInputMessage}
           onSend={handleSendMessage}
-          disabled={isLoading || isLockedByIncompleteTail}
+          disabled={isLoading || isLockedByIncompleteTail || snapshotLoading}
           attachments={attachments}
           onFilesAdded={handleFilesAdded}
           onRemoveAttachment={handleRemoveAttachment}
@@ -628,7 +665,6 @@ export default function ChatView({ chatId }: ChatViewProps) {
                 value={renameChatText}
                 onChange={e => setRenameChatText(e.target.value)}
                 placeholder="Enter chat name"
-                autoFocus
                 className="mb-4 w-full rounded-lg border border-gray-300 px-4 py-2 text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 onKeyDown={e => {
                   if (e.key === 'Enter') {

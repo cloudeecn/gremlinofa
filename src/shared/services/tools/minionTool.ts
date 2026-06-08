@@ -18,6 +18,7 @@ import type {
   Message,
   MinionChat,
   ModelReference,
+  ReasoningEffort,
   RenderingBlockGroup,
   SystemPromptContext,
   ToolContext,
@@ -44,8 +45,11 @@ import {
 } from '../agentic/agenticLoopGenerator';
 import { createTokenTotals, addTokens } from '../../engine/lib/tokenTotals';
 import { formatFileWithLineNumbers } from '../../engine/lib/formatFileContent';
+import type { InjectionMode } from '../api/fileInjectionHelper';
+import { NUDGE_THINKING_DEFAULT } from '../api/apiService';
 import { JsVMContext } from './jsvm/JsVMContext';
 import type { HookInputMessage } from '../agentic/dummyHookRuntime';
+import { makeEmitterState, nextStreamingDelta, finalizeMessageDelta } from './toolGroupsDelta';
 
 // Tool names that minions cannot use
 const MINION_EXCLUDED_TOOLS = ['minion'];
@@ -156,6 +160,26 @@ interface MinionInput {
   remote?: boolean;
   /** Hook file name (without .js) in /hooks/ to verify minion output before savepoint advances */
   verifyHook?: string;
+  /** Override reasoning on/off for this minion call */
+  enableReasoning?: boolean;
+  /** Override reasoning budget tokens. 0 = adaptive mode on supported models. */
+  reasoningBudgetTokens?: number;
+  /** Override reasoning effort level */
+  reasoningEffort?: string;
+  /** Override temperature for this minion call */
+  temperature?: number;
+  /** Override how injected files are sent to the minion */
+  fileInjectionMode?: string;
+  /** Additional system prompt text, appended after persona/configured prompt */
+  systemPrompt?: string;
+  /** VFS file path to a system prompt file. Content appended after systemPrompt. */
+  systemPromptFile?: string;
+  /** Override nudge text appended to the last user message for this minion call. Empty string disables. */
+  nudgeThinking?: string;
+  /** Override how many recent user turns of thinking blocks to keep. -1 = all, 0+ = exact count. */
+  thinkingKeepTurns?: number;
+  /** Override: when true (and thinkingKeepTurns is set to 0+), prune older thinking blocks client-side before the API call. */
+  pruneThinkingBeforeApiCall?: boolean;
 }
 
 /** Result of rolling back messages to a savepoint */
@@ -444,26 +468,37 @@ async function* executeRemoteMinion(
   };
   const infoGroup: RenderingBlockGroup = { category: 'backstage', blocks: [infoBlock] };
 
+  // Build the waiting-state group once — the touch-grass loop holds the
+  // same UI state across every poll iteration (delta encoding makes
+  // re-yielding identical snapshots wasteful, so we emit one `init`
+  // before the loop and stay silent until the human responds).
+  const waitingGroup: RenderingBlockGroup = {
+    category: 'backstage',
+    blocks: [
+      {
+        type: 'tool_result',
+        name: 'minion',
+        tool_use_id: '',
+        content: 'Waiting for human response...',
+        status: 'running',
+      } as ToolResultRenderBlock,
+    ],
+  };
+  yield {
+    type: 'groups_delta',
+    delta: {
+      kind: 'init',
+      infoGroup,
+      accumulatedGroups: [],
+      streamingGroups: [waitingGroup],
+    },
+  };
+
   // Long-poll loop
   const startTime = Date.now();
   let humanResponse: string | undefined;
 
   while (Date.now() - startTime < totalTimeoutMs) {
-    // Yield status update
-    const waitingGroup: RenderingBlockGroup = {
-      category: 'backstage',
-      blocks: [
-        {
-          type: 'tool_result',
-          name: 'minion',
-          tool_use_id: '',
-          content: 'Waiting for human response...',
-          status: 'running',
-        } as ToolResultRenderBlock,
-      ],
-    };
-    yield { type: 'groups_update' as const, groups: [infoGroup, waitingGroup] };
-
     try {
       const pollRes = await fetch(`${endpoint}/api/requests/${requestId}/poll`, {
         headers: { Authorization: authHeader },
@@ -628,6 +663,24 @@ async function* executeMinion(
     if (minionInput.persona !== undefined) minionChat.persona = minionInput.persona;
     if (minionInput.enabledTools !== undefined) minionChat.enabledTools = minionInput.enabledTools;
     if (minionInput.verifyHook !== undefined) minionChat.verifyHook = minionInput.verifyHook;
+    if (minionInput.enableReasoning !== undefined)
+      minionChat.enableReasoning = minionInput.enableReasoning;
+    if (minionInput.reasoningBudgetTokens !== undefined)
+      minionChat.reasoningBudgetTokens = minionInput.reasoningBudgetTokens;
+    if (minionInput.reasoningEffort !== undefined)
+      minionChat.reasoningEffort = minionInput.reasoningEffort as ReasoningEffort;
+    if (minionInput.temperature !== undefined) minionChat.temperature = minionInput.temperature;
+    if (minionInput.fileInjectionMode !== undefined)
+      minionChat.fileInjectionMode = minionInput.fileInjectionMode;
+    if (minionInput.systemPrompt !== undefined) minionChat.systemPrompt = minionInput.systemPrompt;
+    if (minionInput.systemPromptFile !== undefined)
+      minionChat.systemPromptFile = minionInput.systemPromptFile;
+    if (minionInput.nudgeThinking !== undefined)
+      minionChat.nudgeThinking = minionInput.nudgeThinking;
+    if (minionInput.thinkingKeepTurns !== undefined)
+      minionChat.thinkingKeepTurns = minionInput.thinkingKeepTurns;
+    if (minionInput.pruneThinkingBeforeApiCall !== undefined)
+      minionChat.pruneThinkingBeforeApiCall = minionInput.pruneThinkingBeforeApiCall;
 
     if (action === 'retry') {
       // Retry: roll back to savepoint before proceeding
@@ -699,6 +752,16 @@ async function* executeMinion(
       persona: minionInput.persona,
       enabledTools: minionInput.enabledTools,
       verifyHook: minionInput.verifyHook,
+      enableReasoning: minionInput.enableReasoning,
+      reasoningBudgetTokens: minionInput.reasoningBudgetTokens,
+      reasoningEffort: minionInput.reasoningEffort as ReasoningEffort,
+      temperature: minionInput.temperature,
+      fileInjectionMode: minionInput.fileInjectionMode,
+      systemPrompt: minionInput.systemPrompt,
+      systemPromptFile: minionInput.systemPromptFile,
+      nudgeThinking: minionInput.nudgeThinking,
+      thinkingKeepTurns: minionInput.thinkingKeepTurns,
+      pruneThinkingBeforeApiCall: minionInput.pruneThinkingBeforeApiCall,
       createdAt: new Date(),
       lastModifiedAt: new Date(),
     };
@@ -728,7 +791,10 @@ async function* executeMinion(
 
   const minionToolOptions = toolOptions ?? {};
   const fileInjectionMode =
-    (minionToolOptions.fileInjectionMode as 'inline' | 'separate-block' | 'as-file') ?? 'inline';
+    (minionInput.fileInjectionMode as InjectionMode) ??
+    (minionChat.fileInjectionMode as InjectionMode) ??
+    (minionToolOptions.fileInjectionMode as InjectionMode) ??
+    'inline';
 
   // Resolve effective model: input.model (from LLM) > minionChat stored model > toolOptions.model (default)
   let effectiveModelRef: ModelReference | undefined;
@@ -1087,16 +1153,20 @@ async function* executeMinion(
         : fileInjectionMode;
     const effectiveFiles =
       successFiles.length > 0 ? successFiles : (stashedRetryContent?.injectedFiles ?? []);
-    const useStructuredInjection = effectiveMode !== 'inline' && effectiveFiles.length > 0;
+    const isMockToolCall = effectiveMode === 'mock-tool-call';
+    const useStructuredInjection =
+      !isMockToolCall && effectiveMode !== 'inline' && effectiveFiles.length > 0;
 
+    // For mock-tool-call: keep content clean, files go into synthetic message pairs below.
     // For inline mode: prepend file text into content string (original behavior).
     // For separate-block / as-file: keep content clean, store files on the message
     // so the API client can build native blocks.
-    const llmContent = useStructuredInjection
-      ? minionInput.message
-      : injectedFilesPrefix
-        ? injectedFilesPrefix + '=== end of files ===\n\n' + minionInput.message
-        : minionInput.message;
+    const llmContent =
+      isMockToolCall || useStructuredInjection
+        ? minionInput.message
+        : injectedFilesPrefix
+          ? injectedFilesPrefix + '=== end of files ===\n\n' + minionInput.message
+          : minionInput.message;
 
     const userMessage: Message<string> = {
       id: generateUniqueId('msg_user'),
@@ -1118,6 +1188,69 @@ async function* executeMinion(
     await storage.saveMinionMessage(minionChat.id, userMessage);
 
     minionContext = [...existingMessages, userMessage];
+
+    // For mock-tool-call mode: insert synthetic assistant tool_use + user tool_result pairs
+    // after the user message, so the LLM sees the files as if it had read them via a tool.
+    if (isMockToolCall && effectiveFiles.length > 0) {
+      for (const file of effectiveFiles) {
+        const toolUseId = generateUniqueId('toolu');
+        const formattedContent = formatFileWithLineNumbers(file.content);
+
+        // Synthetic assistant message with tool_use (via toolCalls for cross-model reconstruction)
+        const assistantMsg: Message<string> = {
+          id: generateUniqueId('msg_assistant'),
+          role: 'assistant',
+          content: {
+            type: 'text',
+            content: '',
+            renderingContent: [
+              {
+                category: 'backstage',
+                blocks: [
+                  {
+                    type: 'injected_file' as const,
+                    path: file.path,
+                    content: file.content,
+                  },
+                ],
+              },
+            ],
+            toolCalls: [
+              {
+                type: 'tool_use',
+                id: toolUseId,
+                name: 'filesystem',
+                input: { action: 'readFile', path: file.path },
+              },
+            ],
+          },
+          timestamp: new Date(),
+        };
+
+        // Synthetic user message with tool_result
+        const resultMsg: Message<string> = {
+          id: generateUniqueId('msg_user'),
+          role: 'user',
+          content: {
+            type: 'text',
+            content: '',
+            renderingContent: [],
+            toolResults: [
+              {
+                type: 'tool_result',
+                tool_use_id: toolUseId,
+                content: formattedContent,
+              },
+            ],
+          },
+          timestamp: new Date(),
+        };
+
+        await storage.saveMinionMessage(minionChat.id, assistantMsg);
+        await storage.saveMinionMessage(minionChat.id, resultMsg);
+        minionContext.push(assistantMsg, resultMsg);
+      }
+    }
   }
 
   // Resolve persona and namespace based on namespacedMinion mode
@@ -1171,6 +1304,29 @@ async function* executeMinion(
       // 'persona' mode with default/no persona — behave like 'off'
       minionSystemPrompt =
         typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
+    }
+  }
+
+  // Append input-level systemPrompt (direct string), falling back to stored value
+  const effectiveSystemPrompt = minionInput.systemPrompt ?? minionChat.systemPrompt;
+  if (effectiveSystemPrompt) {
+    minionSystemPrompt = [minionSystemPrompt, effectiveSystemPrompt].filter(Boolean).join('\n\n');
+  }
+
+  // Append systemPromptFile content (read from VFS), falling back to stored value
+  const effectiveSystemPromptFile = minionInput.systemPromptFile ?? minionChat.systemPromptFile;
+  if (effectiveSystemPromptFile) {
+    const promptFileAdapter = context.createVfsAdapter();
+    try {
+      const fileContent = await promptFileAdapter.readFile(effectiveSystemPromptFile);
+      minionSystemPrompt = [minionSystemPrompt, fileContent].filter(Boolean).join('\n\n');
+    } catch (err) {
+      return {
+        content: truncateError(
+          `Error: Failed to read system prompt file: ${effectiveSystemPromptFile}. ${err instanceof Error ? err.message : String(err)}`
+        ),
+        isError: true,
+      };
     }
   }
 
@@ -1267,7 +1423,12 @@ async function* executeMinion(
     // child's own `loopId` is minted by the backend in PR 7+.
     loopId: childLoopId,
     parentLoopId: context.loopId,
-    temperature: project.temperature ?? undefined,
+    temperature:
+      minionInput.temperature !== undefined
+        ? minionInput.temperature
+        : minionChat.temperature !== undefined
+          ? minionChat.temperature
+          : (project.temperature ?? undefined),
     maxTokens: project.maxOutputTokens,
     systemPrompt: combinedSystemPrompt || undefined,
     preFillResponse: undefined, // Minions don't use prefill
@@ -1276,6 +1437,7 @@ async function* executeMinion(
     toolOptions: effectiveToolOptions,
     disableStream: project.disableStream ?? false,
     extendedContext: project.extendedContext ?? false,
+    useAnthropicOneHourCache: project.useAnthropicOneHourCache ?? false,
     namespace: minionNamespace,
     createVfsAdapter: context.createVfsAdapter,
     deferReturn: deferReturnMode && deferReturnMode !== 'no' ? deferReturnMode : undefined,
@@ -1301,12 +1463,64 @@ async function* executeMinion(
       typeof minionToolOptions.autoAckMessage === 'string' && minionToolOptions.autoAckMessage
         ? minionToolOptions.autoAckMessage
         : undefined,
-    // Reasoning settings from project
-    enableReasoning: disableReasoning ? false : project.enableReasoning,
-    reasoningBudgetTokens: project.reasoningBudgetTokens,
-    thinkingKeepTurns: project.thinkingKeepTurns,
-    reasoningEffort: project.reasoningEffort,
+    // Reasoning settings — input overrides take precedence over project defaults
+    enableReasoning:
+      minionInput.enableReasoning !== undefined
+        ? minionInput.enableReasoning
+        : minionChat.enableReasoning !== undefined
+          ? minionChat.enableReasoning
+          : disableReasoning
+            ? false
+            : project.enableReasoning,
+    reasoningBudgetTokens:
+      minionInput.reasoningBudgetTokens !== undefined
+        ? minionInput.reasoningBudgetTokens
+        : minionChat.reasoningBudgetTokens !== undefined
+          ? minionChat.reasoningBudgetTokens
+          : project.reasoningBudgetTokens,
+    thinkingKeepTurns: (() => {
+      const effective =
+        minionInput.thinkingKeepTurns !== undefined
+          ? minionInput.thinkingKeepTurns
+          : minionChat.thinkingKeepTurns !== undefined
+            ? minionChat.thinkingKeepTurns
+            : project.thinkingKeepTurns;
+      return effective;
+    })(),
+    pruneThinkingKeepTurns: (() => {
+      const prune =
+        minionInput.pruneThinkingBeforeApiCall !== undefined
+          ? minionInput.pruneThinkingBeforeApiCall
+          : minionChat.pruneThinkingBeforeApiCall !== undefined
+            ? minionChat.pruneThinkingBeforeApiCall
+            : project.pruneThinkingBeforeApiCall;
+      if (!prune) return undefined;
+      const keep =
+        minionInput.thinkingKeepTurns !== undefined
+          ? minionInput.thinkingKeepTurns
+          : minionChat.thinkingKeepTurns !== undefined
+            ? minionChat.thinkingKeepTurns
+            : project.thinkingKeepTurns;
+      return keep !== undefined && keep >= 0 ? keep : undefined;
+    })(),
+    reasoningEffort:
+      minionInput.reasoningEffort !== undefined
+        ? (minionInput.reasoningEffort as ReasoningEffort)
+        : minionChat.reasoningEffort !== undefined
+          ? minionChat.reasoningEffort
+          : project.reasoningEffort,
     reasoningSummary: project.reasoningSummary,
+    // Nudge thinking — input override wins (empty string explicitly disables),
+    // then the persisted minion-chat value, then the provider-level toggle with
+    // the default text.
+    nudgeThinking:
+      typeof minionInput.nudgeThinking === 'string'
+        ? minionInput.nudgeThinking
+        : typeof minionChat.nudgeThinking === 'string'
+          ? minionChat.nudgeThinking
+          : apiDef.advancedSettings?.nudgeThinking
+            ? NUDGE_THINKING_DEFAULT
+            : undefined,
     // The child loop runs against its OWN AbortController so the sidebar
     // can hard-abort one minion without aborting siblings. The parent's
     // signal still propagates via the one-shot listener wired above —
@@ -1325,6 +1539,14 @@ async function* executeMinion(
       loopRegistry: context.loopRegistry,
     },
   };
+
+  // Delta-encoding emitter state. The minion ships `tool_groups_delta`
+  // events instead of full per-chunk snapshots; this closure-state object
+  // tracks `streamingGroups` across yield sites so `nextStreamingDelta`
+  // can pick `append` vs `replace_streaming`. Init fires lazily on the
+  // first streaming yield (or on a `message_finalized` if the minion
+  // finishes before producing a streaming chunk).
+  const deltaState = makeEmitterState(infoGroup);
 
   // Run agentic loop with streaming
   const totals = createTokenTotals();
@@ -1367,13 +1589,19 @@ async function* executeMinion(
           const event = iterResult.value;
 
           switch (event.type) {
-            case 'streaming_chunk':
-              // Yield accumulated + current streaming groups for real-time display
-              yield {
-                type: 'groups_update',
-                groups: [infoGroup, ...accumulatedGroups, ...event.groups],
-              };
+            case 'streaming_chunk': {
+              // Diff the new streaming groups against the prior emitter
+              // state and yield a delta. The first chunk fires an `init`;
+              // subsequent chunks pick `append` whenever only the trailing
+              // text/thinking block grew (the ~95% case), otherwise
+              // `replace_streaming`. `null` means no observable change
+              // (identical to prior) — skip the yield.
+              const delta = nextStreamingDelta(deltaState, event.groups);
+              if (delta) {
+                yield { type: 'groups_delta', delta };
+              }
               break;
+            }
 
             case 'message_created':
               // Save message to minion chat
@@ -1393,10 +1621,13 @@ async function* executeMinion(
               if (event.message.role === 'assistant' && event.message.content.content) {
                 accumulatedText.push(event.message.content.content as string);
               }
-              // Yield updated finalized content
+              // Roll the in-flight streaming state into accumulated. The
+              // helper also promotes to `init` if no streaming chunk fired
+              // for this tool run (e.g., tool returns without producing a
+              // sub-message).
               yield {
-                type: 'groups_update',
-                groups: [infoGroup, ...accumulatedGroups],
+                type: 'groups_delta',
+                delta: finalizeMessageDelta(deltaState, accumulatedGroups.slice(), []),
               };
               break;
 
@@ -1409,6 +1640,7 @@ async function* executeMinion(
             case 'first_chunk':
             case 'pending_tool_result':
             case 'tool_block_update':
+            case 'tool_groups_delta':
             case 'checkpoint_set':
             case 'active_hook_changed':
             case 'chat_metadata_updated':
@@ -1498,8 +1730,8 @@ async function* executeMinion(
           isToolGenerated: true,
         });
         yield {
-          type: 'groups_update',
-          groups: [infoGroup, ...accumulatedGroups],
+          type: 'groups_delta',
+          delta: finalizeMessageDelta(deltaState, accumulatedGroups.slice(), []),
         };
         loopMessages = await storage.getMinionMessages(minionChat.id);
         continue;
@@ -1747,6 +1979,10 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push('Web: enabled');
   }
 
+  if (minionInput.persona) {
+    lines.push(`Persona: ${minionInput.persona}`);
+  }
+
   if (minionInput.model) {
     lines.push(`Model: ${minionInput.model}`);
   }
@@ -1765,6 +2001,45 @@ function renderMinionInput(input: Record<string, unknown>): string {
 
   if (minionInput.injectFiles?.length) {
     lines.push(`Files: ${minionInput.injectFiles.join(', ')}`);
+  }
+
+  if (minionInput.enableReasoning !== undefined) {
+    lines.push(`Reasoning: ${minionInput.enableReasoning ? 'on' : 'off'}`);
+  }
+
+  if (minionInput.reasoningBudgetTokens !== undefined) {
+    lines.push(`Budget: ${minionInput.reasoningBudgetTokens}`);
+  }
+
+  if (minionInput.reasoningEffort) {
+    lines.push(`Effort: ${minionInput.reasoningEffort}`);
+  }
+
+  if (minionInput.temperature !== undefined) {
+    lines.push(`Temp: ${minionInput.temperature}`);
+  }
+
+  if (minionInput.fileInjectionMode) {
+    lines.push(`Injection: ${minionInput.fileInjectionMode}`);
+  }
+
+  if (minionInput.systemPrompt) {
+    lines.push(
+      `Prompt: ${minionInput.systemPrompt.length > 80 ? minionInput.systemPrompt.slice(0, 77) + '...' : minionInput.systemPrompt}`
+    );
+  }
+
+  if (minionInput.systemPromptFile) {
+    lines.push(`PromptFile: ${minionInput.systemPromptFile}`);
+  }
+
+  if (minionInput.nudgeThinking !== undefined) {
+    const nudge = minionInput.nudgeThinking;
+    if (nudge === '') {
+      lines.push('Nudge: off');
+    } else {
+      lines.push(`Nudge: ${nudge.length > 80 ? nudge.slice(0, 77) + '...' : nudge}`);
+    }
   }
 
   if (minionInput.message) {
@@ -2030,6 +2305,53 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     };
   }
 
+  // Reasoning overrides
+  properties.enableReasoning = {
+    type: 'boolean',
+    description: 'Override reasoning on/off (default: use project setting)',
+  };
+  properties.reasoningBudgetTokens = {
+    type: 'number',
+    description: 'Override reasoning budget tokens. 0 = adaptive mode on supported models.',
+  };
+  properties.reasoningEffort = {
+    type: 'string',
+    enum: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    description: 'Override reasoning effort level',
+  };
+  properties.temperature = {
+    type: 'number',
+    description: 'Override temperature (default: use project setting)',
+  };
+  properties.fileInjectionMode = {
+    type: 'string',
+    enum: ['inline', 'separate-block', 'as-file', 'mock-tool-call'],
+    description: 'Override how injected files are sent to the minion',
+  };
+  properties.systemPrompt = {
+    type: 'string',
+    description: 'Additional system prompt text, appended after persona/configured prompt.',
+  };
+  properties.systemPromptFile = {
+    type: 'string',
+    description: 'VFS file path to a system prompt file. Content appended after systemPrompt.',
+  };
+  properties.nudgeThinking = {
+    type: 'string',
+    description:
+      'Optional text appended to the last user message to nudge chain-of-thought (e.g., "<<WITH THINKING STEPS>>"). Pass an empty string to disable. Use this to experiment with different phrasings when a model skips reasoning.',
+  };
+  properties.thinkingKeepTurns = {
+    type: 'number',
+    description:
+      'Override how many recent user turns of thinking blocks to keep. -1 = all, 0+ = keep exactly N turns from the end. Persisted on the minion chat for continuations.',
+  };
+  properties.pruneThinkingBeforeApiCall = {
+    type: 'boolean',
+    description:
+      "When true (and thinkingKeepTurns is set to 0 or higher), strip older thinking blocks client-side before the API call. Useful for continuing a minion chat without resending the prior agentic run's thinking. Persisted on the minion chat.",
+  };
+
   return {
     type: 'object',
     properties,
@@ -2212,6 +2534,7 @@ export const minionTool: ClientSideTool = {
         { value: 'inline', label: 'Inline' },
         { value: 'separate-block', label: 'Separate Blocks' },
         { value: 'as-file', label: 'Document Blocks' },
+        { value: 'mock-tool-call', label: 'Mock Tool Call' },
       ],
     },
     {

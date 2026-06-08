@@ -448,13 +448,16 @@ describe('Minion Integration', () => {
         events
       );
 
-      // Verify generator yielded groups_update events
+      // Verify generator yielded delta events; the first should be `init`
+      // carrying the ToolInfoRenderBlock as its `infoGroup`.
       expect(events.length).toBeGreaterThan(0);
-      expect(events[0].type).toBe('groups_update');
-      // First group should be the ToolInfoRenderBlock
-      const firstGroups = events[0].groups;
-      expect(firstGroups[0].category).toBe('backstage');
-      expect(firstGroups[0].blocks[0].type).toBe('tool_info');
+      const first = events[0];
+      expect(first.type).toBe('groups_delta');
+      if (first.type !== 'groups_delta') throw new Error('unreachable');
+      expect(first.delta.kind).toBe('init');
+      if (first.delta.kind !== 'init') throw new Error('unreachable');
+      expect(first.delta.infoGroup.category).toBe('backstage');
+      expect(first.delta.infoGroup.blocks[0].type).toBe('tool_info');
 
       // Result should have renderingGroups
       expect(result.renderingGroups).toBeDefined();
@@ -639,6 +642,173 @@ describe('Minion Integration', () => {
       const updatedChat = mockStorageData.minionChats.get('minion_model_test');
       expect(updatedChat?.apiDefinitionId).toBe('api_other');
       expect(updatedChat?.modelId).toBe('claude-3-opus');
+    });
+
+    it('persists override parameters on creation and uses them on continuation', async () => {
+      const mockResult = {
+        textContent: 'Done!',
+        fullContent: [{ type: 'text', text: 'Done!' }],
+        stopReason: 'end_turn',
+        inputTokens: 50,
+        outputTokens: 25,
+      };
+      const mockStream = createMockStream([{ type: 'content', content: 'Done!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+
+      // Step 1: Create a minion with override parameters
+      const result = await collectToolResult(
+        minionTool.execute(
+          {
+            message: 'Do something',
+            enableReasoning: true,
+            reasoningBudgetTokens: 8192,
+            reasoningEffort: 'high',
+            temperature: 0.3,
+            systemPrompt: 'Be concise.',
+          },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+
+      // Verify the overrides were used in the API call
+      const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const loopOpts = callArgs[3];
+      expect(loopOpts.temperature).toBe(0.3);
+      expect(loopOpts.enableReasoning).toBe(true);
+      expect(loopOpts.reasoningBudgetTokens).toBe(8192);
+      expect(loopOpts.reasoningEffort).toBe('high');
+      expect(loopOpts.systemPrompt).toContain('Be concise.');
+
+      // Verify the overrides were stored on the MinionChat
+      const savedChats = [...mockStorageData.minionChats.values()];
+      const created = savedChats.find(c => c.parentChatId === 'chat_test');
+      expect(created).toBeDefined();
+      expect(created!.enableReasoning).toBe(true);
+      expect(created!.reasoningBudgetTokens).toBe(8192);
+      expect(created!.reasoningEffort).toBe('high');
+      expect(created!.temperature).toBe(0.3);
+      expect(created!.systemPrompt).toBe('Be concise.');
+
+      // Step 2: Continue WITHOUT re-specifying overrides — they should carry forward
+      vi.clearAllMocks();
+      const mockStream2 = createMockStream([{ type: 'content', content: 'Continued!' }], {
+        ...mockResult,
+        textContent: 'Continued!',
+      });
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream2 as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const result2 = await collectToolResult(
+        minionTool.execute({ message: 'Continue', minionChatId: created!.id }, toolOptions, context)
+      );
+
+      expect(result2.isError).toBeUndefined();
+
+      // Verify stored overrides were used as fallback
+      const callArgs2 = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const loopOpts2 = callArgs2[3];
+      expect(loopOpts2.temperature).toBe(0.3);
+      expect(loopOpts2.enableReasoning).toBe(true);
+      expect(loopOpts2.reasoningBudgetTokens).toBe(8192);
+      expect(loopOpts2.reasoningEffort).toBe('high');
+      expect(loopOpts2.systemPrompt).toContain('Be concise.');
+    });
+
+    it('override parameters on continuation update stored values', async () => {
+      // Create existing minion chat with stored overrides
+      const existingChat: MinionChat = {
+        id: 'minion_override_test',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        enableReasoning: true,
+        reasoningBudgetTokens: 4096,
+        temperature: 0.5,
+      };
+      mockStorageData.minionChats.set('minion_override_test', existingChat);
+      mockStorageData.minionMessages.set('minion_override_test', [
+        {
+          id: 'msg_u1',
+          role: 'user',
+          content: { type: 'text', content: 'First message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_a1',
+          role: 'assistant',
+          content: { type: 'text', content: 'First response' },
+          timestamp: new Date(),
+        },
+      ]);
+
+      const mockResult = {
+        textContent: 'Updated!',
+        fullContent: [{ type: 'text', text: 'Updated!' }],
+        stopReason: 'end_turn',
+        inputTokens: 50,
+        outputTokens: 25,
+      };
+      const mockStream = createMockStream([{ type: 'content', content: 'Updated!' }], mockResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+
+      // Continue WITH new overrides — should update stored values
+      const result = await collectToolResult(
+        minionTool.execute(
+          {
+            message: 'Continue with changes',
+            minionChatId: 'minion_override_test',
+            temperature: 0.9,
+            enableReasoning: false,
+          },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+
+      // The new overrides should have been used
+      const callArgs = vi.mocked(apiService.sendMessageStream).mock.calls[0];
+      const loopOpts = callArgs[3];
+      expect(loopOpts.temperature).toBe(0.9);
+      expect(loopOpts.enableReasoning).toBe(false);
+
+      // The stored values should be updated
+      const updatedChat = mockStorageData.minionChats.get('minion_override_test');
+      expect(updatedChat?.temperature).toBe(0.9);
+      expect(updatedChat?.enableReasoning).toBe(false);
+      // Unchanged fields should still have original values
+      expect(updatedChat?.reasoningBudgetTokens).toBe(4096);
     });
 
     it('preserves stored enabledTools on continuation when not re-specified', async () => {

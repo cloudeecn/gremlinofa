@@ -14,10 +14,12 @@ import StopReasonBadge from './StopReasonBadge';
 
 export default function AssistantMessageBubble({
   message,
+  onAction,
   onDeleteMessage,
   isVisible,
   focusMode,
   disableMath,
+  isLastMessage,
 }: AssistantMessageBubbleProps) {
   const renderingContent = message.content.renderingContent as RenderingBlockGroup[];
 
@@ -108,6 +110,15 @@ export default function AssistantMessageBubble({
           >
             🔍
           </button>
+          {onAction && !isLastMessage && (
+            <button
+              onClick={() => onAction('rollback', message.id)}
+              className="transition-colors hover:text-orange-600"
+              title="Roll back to here"
+            >
+              ⏪
+            </button>
+          )}
           {onDeleteMessage && (
             <button
               onClick={() => onDeleteMessage(message.id)}

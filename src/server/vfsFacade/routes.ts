@@ -2,9 +2,12 @@
  * HTTP route handlers for VFS CRUD, compound operations, and versioning.
  */
 
+import fsSync from 'node:fs';
 import { Router } from 'express';
 import express from 'express';
 import * as fsOps from '../vfsEngine/fsEngine.js';
+import type { VfsContext } from '../vfsEngine/fsEngine.js';
+import { getAllowedRootsForProject, type VfsAccessConfig } from '../vfsEngine/accessConfig.js';
 
 const jsonBody = express.json();
 const rawBody = express.raw({ type: () => true, limit: '50mb' });
@@ -17,11 +20,12 @@ function getString(value: unknown): string | undefined {
   return undefined;
 }
 
-function getProjectRoot(
+function getProjectContext(
   req: { userId?: string; query: Record<string, unknown> },
   res: { status: (code: number) => { json: (body: unknown) => void } },
-  dataDir: string
-): string | null {
+  dataDir: string,
+  accessConfig: VfsAccessConfig
+): VfsContext | null {
   const projectId = getString(req.query.projectId);
   if (!projectId) {
     res.status(400).json({ error: 'projectId query parameter required' });
@@ -31,7 +35,16 @@ function getProjectRoot(
     res.status(401).json({ error: 'userId not available' });
     return null;
   }
-  return fsOps.projectRoot(dataDir, req.userId, projectId);
+  const root = fsOps.projectRoot(dataDir, req.userId, projectId);
+  // Materialize + canonicalize the project root. mkdirSync handles first-touch
+  // projects; realpathSync makes downstream allow-list comparisons canonical.
+  fsSync.mkdirSync(root, { recursive: true });
+  const canonicalRoot = fsSync.realpathSync(root);
+  return {
+    projectRoot: canonicalRoot,
+    allowedRoots: getAllowedRootsForProject(accessConfig, projectId, canonicalRoot),
+    followSymlinks: accessConfig.followSymlinks,
+  };
 }
 
 function getPath(
@@ -47,9 +60,9 @@ function getPath(
 }
 
 /**
- * Create a VFS router bound to a specific data directory.
+ * Create a VFS router bound to a specific data directory + access config.
  */
-export function createRouter(dataDir: string): Router {
+export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Router {
   const r = Router();
 
   // ============================================================================
@@ -57,12 +70,12 @@ export function createRouter(dataDir: string): Router {
   // ============================================================================
 
   r.get('/ls', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const dirPath = (req.query.path as string) || '/';
 
     try {
-      const entries = await fsOps.ls(root, dirPath);
+      const entries = await fsOps.ls(ctx, dirPath);
       res.json({ entries });
     } catch (e) {
       handleError(res, e, 'ls');
@@ -70,13 +83,13 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.get('/stat', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      const s = await fsOps.stat(root, filePath);
+      const s = await fsOps.stat(ctx, filePath);
       res.json(s);
     } catch (e) {
       handleError(res, e, 'stat');
@@ -84,13 +97,13 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.get('/exists', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      const result = await fsOps.exists(root, filePath);
+      const result = await fsOps.exists(ctx, filePath);
       res.json({ exists: result });
     } catch (e) {
       handleError(res, e, 'exists');
@@ -98,13 +111,13 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.get('/read', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      const content = await fsOps.read(root, filePath);
+      const content = await fsOps.read(ctx, filePath);
       res.setHeader('Content-Type', 'application/octet-stream');
       res.send(content);
     } catch (e) {
@@ -113,15 +126,15 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.put('/write', rawBody, async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
     const createOnly = req.query.createOnly === 'true';
 
     try {
       const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? '');
-      await fsOps.write(root, filePath, body, createOnly);
+      await fsOps.write(ctx, filePath, body, createOnly);
       res.status(204).end();
     } catch (e) {
       handleError(res, e, 'write');
@@ -129,13 +142,13 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.delete('/rm', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      await fsOps.rm(root, filePath);
+      await fsOps.rm(ctx, filePath);
       res.status(204).end();
     } catch (e) {
       handleError(res, e, 'rm');
@@ -143,13 +156,13 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.post('/mkdir', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      await fsOps.mkdir(root, filePath);
+      await fsOps.mkdir(ctx, filePath);
       res.status(204).end();
     } catch (e) {
       handleError(res, e, 'mkdir');
@@ -157,13 +170,13 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.delete('/rmdir', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      await fsOps.rmdir(root, filePath);
+      await fsOps.rmdir(ctx, filePath);
       res.status(204).end();
     } catch (e) {
       handleError(res, e, 'rmdir');
@@ -171,8 +184,8 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.post('/rename', jsonBody, async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
 
     // Read JSON body
     const body = req.body as { from?: string; to?: string } | undefined;
@@ -182,7 +195,7 @@ export function createRouter(dataDir: string): Router {
     }
 
     try {
-      await fsOps.rename(root, body.from, body.to);
+      await fsOps.rename(ctx, body.from, body.to);
       res.status(204).end();
     } catch (e) {
       handleError(res, e, 'rename');
@@ -194,8 +207,8 @@ export function createRouter(dataDir: string): Router {
   // ============================================================================
 
   r.post('/str-replace', jsonBody, async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
@@ -206,7 +219,7 @@ export function createRouter(dataDir: string): Router {
     }
 
     try {
-      const result = await fsOps.strReplace(root, filePath, body.oldStr, body.newStr);
+      const result = await fsOps.strReplace(ctx, filePath, body.oldStr, body.newStr);
       res.json(result);
     } catch (e) {
       handleError(res, e, 'str-replace');
@@ -214,8 +227,8 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.post('/insert', jsonBody, async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
@@ -226,7 +239,7 @@ export function createRouter(dataDir: string): Router {
     }
 
     try {
-      const result = await fsOps.insert(root, filePath, body.line, body.text);
+      const result = await fsOps.insert(ctx, filePath, body.line, body.text);
       res.json(result);
     } catch (e) {
       handleError(res, e, 'insert');
@@ -234,8 +247,8 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.post('/append', jsonBody, async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
@@ -246,7 +259,7 @@ export function createRouter(dataDir: string): Router {
     }
 
     try {
-      const result = await fsOps.append(root, filePath, body.text);
+      const result = await fsOps.append(ctx, filePath, body.text);
       res.json(result);
     } catch (e) {
       handleError(res, e, 'append');
@@ -258,13 +271,13 @@ export function createRouter(dataDir: string): Router {
   // ============================================================================
 
   r.get('/versions', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      const versions = await fsOps.fileVersions(root, filePath);
+      const versions = await fsOps.fileVersions(ctx, filePath);
       res.json({ versions });
     } catch (e) {
       handleError(res, e, 'versions');
@@ -272,13 +285,13 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.get('/versions/bulk', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      const versions = await fsOps.readAllFileVersions(root, filePath);
+      const versions = await fsOps.readAllFileVersions(ctx, filePath);
       res.json({ versions });
     } catch (e) {
       handleError(res, e, 'versions-bulk');
@@ -286,8 +299,8 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.get('/version', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
@@ -298,7 +311,7 @@ export function createRouter(dataDir: string): Router {
     }
 
     try {
-      const content = await fsOps.fileVersion(root, filePath, v);
+      const content = await fsOps.fileVersion(ctx, filePath, v);
       if (!content) {
         res.status(404).json({ error: 'Version not found' });
         return;
@@ -311,8 +324,8 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.delete('/versions', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
@@ -323,7 +336,7 @@ export function createRouter(dataDir: string): Router {
     }
 
     try {
-      const deleted = await fsOps.dropFileVersions(root, filePath, keep);
+      const deleted = await fsOps.dropFileVersions(ctx, filePath, keep);
       res.json({ deleted });
     } catch (e) {
       handleError(res, e, 'drop-versions');
@@ -331,13 +344,13 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.get('/file-meta', async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      const meta = await fsOps.fileMeta(root, filePath);
+      const meta = await fsOps.fileMeta(ctx, filePath);
       if (!meta) {
         res.status(404).json({ error: 'File not found' });
         return;
@@ -349,14 +362,14 @@ export function createRouter(dataDir: string): Router {
   });
 
   r.post('/compact', jsonBody, async (req, res) => {
-    const root = getProjectRoot(req, res, dataDir);
-    if (!root) return;
+    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    if (!ctx) return;
 
     const body = req.body as { keepCount?: number } | undefined;
     const keepCount = body?.keepCount ?? 10;
 
     try {
-      const result = await fsOps.compact(root, keepCount);
+      const result = await fsOps.compact(ctx, keepCount);
       res.json(result);
     } catch (e) {
       handleError(res, e, 'compact');

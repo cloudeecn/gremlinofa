@@ -11,6 +11,8 @@ describe('loadServerConfig', () => {
     delete process.env.STORAGE_PATH;
     delete process.env.VFS_MODE;
     delete process.env.VFS_BASE_PATH;
+    delete process.env.VFS_FOLLOW_SYMLINKS;
+    delete process.env.VFS_EXTRA_ROOTS;
   });
 
   afterEach(() => {
@@ -25,6 +27,11 @@ describe('loadServerConfig', () => {
       storagePath: './data/gremlin.db',
       vfsMode: 'filesystem',
       vfsBasePath: './data/vfs',
+      vfsAccessConfig: {
+        followSymlinks: false,
+        globalAllowedRoots: [],
+        projectAllowedRoots: new Map(),
+      },
     });
   });
 

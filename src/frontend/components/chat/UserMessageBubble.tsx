@@ -16,6 +16,7 @@ export default function UserMessageBubble({
   onAction,
   onDeleteMessage,
   focusMode,
+  isLastMessage,
 }: UserMessageBubbleProps) {
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
 
@@ -62,8 +63,8 @@ export default function UserMessageBubble({
     onAction?.('edit', message.id);
   };
 
-  const handleResend = () => {
-    onAction?.('resend', message.id);
+  const handleRollback = () => {
+    onAction?.('rollback', message.id);
   };
 
   return (
@@ -123,13 +124,15 @@ export default function UserMessageBubble({
               >
                 🔀 Fork
               </button>
-              <button
-                onClick={handleResend}
-                className="transition-colors hover:text-blue-600"
-                title="Resend from here"
-              >
-                🔄 Resend
-              </button>
+              {!isLastMessage && (
+                <button
+                  onClick={handleRollback}
+                  className="transition-colors hover:text-orange-600"
+                  title="Roll back to here"
+                >
+                  ⏪ Rollback
+                </button>
+              )}
               <button
                 onClick={handleCopy}
                 className="transition-colors hover:text-gray-700"

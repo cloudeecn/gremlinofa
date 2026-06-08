@@ -406,6 +406,18 @@ describe('modelMetadata', () => {
       const cost = calculateCost(model, 0, 0, 0, 0, 0);
       expect(cost).toBe(0);
     });
+
+    it("applies 1.6x multiplier to cache writes when cacheTtl is '1h'", () => {
+      const model = createModel({ inputPrice: 5, cacheWritePrice: 6.25, cacheReadPrice: 0.5 });
+      const cost5m = calculateCost(model, 0, 0, 0, 1_000_000, 0, undefined, '5m');
+      const cost1h = calculateCost(model, 0, 0, 0, 1_000_000, 0, undefined, '1h');
+      expect(cost5m).toBeCloseTo(6.25);
+      expect(cost1h).toBeCloseTo(6.25 * 1.6);
+      // Cache reads cost the same regardless of ttl
+      const read5m = calculateCost(model, 0, 0, 0, 0, 1_000_000, undefined, '5m');
+      const read1h = calculateCost(model, 0, 0, 0, 0, 1_000_000, undefined, '1h');
+      expect(read1h).toBeCloseTo(read5m);
+    });
   });
 
   describe('isCostUnreliable', () => {

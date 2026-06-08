@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice';
-import { useIsKeyboardVisible } from '../../hooks/useIsKeyboardVisible';
 import Spinner from '../ui/Spinner';
 import type { ChatInputProps } from './types';
 
@@ -22,7 +21,6 @@ export default function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isTouchDevice = useIsTouchDevice();
-  const keyboardVisible = useIsKeyboardVisible();
   const compositionJustEndedRef = useRef(false);
   const [validationError, setValidationError] = useState<string>('');
 
@@ -115,17 +113,6 @@ export default function ChatInput({
     }
   }, [validationError]);
 
-  // iOS keyboard fix: scroll textarea into view after focus
-  // Delays slightly to let iOS finish keyboard animation
-  const handleFocus = useCallback(() => {
-    if (!textareaRef.current) return;
-
-    // Small delay to let iOS keyboard appear and visualViewport update
-    setTimeout(() => {
-      textareaRef.current?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
-    }, 100);
-  }, []);
-
   return (
     <div className="flex w-full flex-col">
       <div className="border-t border-gray-200 bg-white p-4">
@@ -203,7 +190,6 @@ export default function ChatInput({
             value={value}
             onChange={e => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            onFocus={handleFocus}
             placeholder="Type your message..."
             disabled={disabled}
             rows={1}
@@ -259,8 +245,11 @@ export default function ChatInput({
           )}
         </div>
       </div>
-      {/* Safe Area Bottom Spacer - hidden when keyboard covers home indicator */}
-      {!keyboardVisible && <div className="safe-area-inset-bottom bg-white" />}
+      {/* Safe Area Bottom Spacer — always rendered. On iOS,
+        env(safe-area-inset-bottom) resolves to 0 while the keyboard is up,
+        so this is visually equivalent to the previous conditional render
+        without remounting a DOM node on every keyboard transition. */}
+      <div className="safe-area-inset-bottom bg-white" />
     </div>
   );
 }

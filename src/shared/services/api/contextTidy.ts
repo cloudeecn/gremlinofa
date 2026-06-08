@@ -24,8 +24,29 @@ export function findCheckpointIndex(
 
 /** Find the last user message that is plain text (not tool results). Returns -1 if none. */
 export function findThinkingBoundary(messages: Message<unknown>[]): number {
+  return findThinkingBoundaryN(messages, 1);
+}
+
+/**
+ * Generalized thinking boundary: returns the index of the N-th-from-last user
+ * text message (a user message with no tool results). Messages from that index
+ * onward are considered "the last N turns" and their thinking blocks are kept.
+ *
+ * - `n <= 0` → returns `messages.length` (boundary past the end, so every
+ *   message is treated as "before the boundary" and all thinking is pruned).
+ * - `n = 1` → index of the last user text message (matches legacy behavior).
+ * - `n = k` → index of the k-th-from-last user text message.
+ * - fewer than `n` user text messages exist → returns -1 (no boundary,
+ *   pruning becomes a no-op; we never strip thinking when we can't honor N).
+ */
+export function findThinkingBoundaryN(messages: Message<unknown>[], n: number): number {
+  if (n <= 0) return messages.length;
+  let count = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user' && !messages[i].content.toolResults?.length) return i;
+    if (messages[i].role === 'user' && !messages[i].content.toolResults?.length) {
+      count++;
+      if (count === n) return i;
+    }
   }
   return -1;
 }

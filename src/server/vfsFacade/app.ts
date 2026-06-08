@@ -26,7 +26,7 @@ export function createVfsApp() {
   app.use('/api', basicAuth);
 
   // Mount API routes
-  app.use('/api', createRouter(config.dataDir));
+  app.use('/api', createRouter(config.dataDir, config.accessConfig));
 
   return app;
 }

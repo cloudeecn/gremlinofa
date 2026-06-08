@@ -350,6 +350,7 @@ describe('minionTool', () => {
           'inline',
           'separate-block',
           'as-file',
+          'mock-tool-call',
         ]);
       }
     });

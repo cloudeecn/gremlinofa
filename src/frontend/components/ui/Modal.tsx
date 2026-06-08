@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 
 interface ModalProps {
   isOpen: boolean;
@@ -17,22 +17,12 @@ export default function Modal({
   position = 'center',
   className = '',
 }: ModalProps) {
-  const [vpRect, setVpRect] = useState<{ top: number; height: number } | null>(null);
-
+  // [iOS-diag] Trace modal lifecycle to confirm no stray overlay outlives close.
   useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-
-    const update = () => setVpRect({ top: vv.offsetTop, height: vv.height });
-    vv.addEventListener('resize', update);
-    vv.addEventListener('scroll', update);
-    update();
-
-    return () => {
-      vv.removeEventListener('resize', update);
-      vv.removeEventListener('scroll', update);
-    };
-  }, []);
+    if (!isOpen) return;
+    console.debug('[Modal] mount size=%s position=%s', size, position);
+    return () => console.debug('[Modal] unmount');
+  }, [isOpen, size, position]);
 
   if (!isOpen) return null;
 
@@ -54,21 +44,20 @@ export default function Modal({
     bottom: 'animate-slide-up md:animate-scale-in',
   };
 
+  // The outer div is NOT a click target. The dedicated backdrop below is the
+  // close-on-click surface — keeping that responsibility on a visible element
+  // avoids the iOS Safari failure mode where a `fixed inset-0` overlay drifts
+  // past the visual viewport after a keyboard transition but still captures
+  // pointer events at stale layout-viewport coordinates.
   return (
     <div
-      className={`animate-fade-in fixed inset-0 z-50 flex ${positionClasses[position]} p-4`}
-      style={vpRect ? { top: vpRect.top, height: vpRect.height, bottom: 'auto' } : undefined}
-      onClick={onClose}
+      className={`animate-fade-in fixed inset-0 z-50 flex ${positionClasses[position]} safe-area-inset-bottom p-4`}
     >
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50" />
-
-      {/* Modal content */}
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div
         className={`relative w-full ${sizeClasses[size]} ${
           position === 'bottom' ? 'md:max-w-2xl' : ''
         } ${contentAnimationClasses[position]} ${className}`}
-        onClick={e => e.stopPropagation()}
       >
         {children}
       </div>

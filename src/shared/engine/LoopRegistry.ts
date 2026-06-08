@@ -21,6 +21,7 @@
 import type { ToolResultRenderBlock } from '../protocol/types/content';
 import type { Message, ToolResultBlock } from '../protocol/types';
 import type { ActiveLoop, ActiveLoopsChange, LoopEvent, LoopId } from '../protocol/protocol';
+import { applyGroupsDelta, type ToolGroupsState } from '../services/tools/toolGroupsDelta';
 
 /** Internal record — adds the controller and a soft-stop flag. */
 interface RegistryEntry {
@@ -51,6 +52,14 @@ export interface PendingToolResultSnapshot {
    * frontend's `useChat` throttler — `{...existing, ...new}` per event.
    */
   mergedBlock: Partial<ToolResultRenderBlock>;
+  /**
+   * Per-`toolUseId` reconstructed `renderingGroups` state, fed by
+   * `tool_groups_delta` events. `attachChat` emits this as a single
+   * `tool_groups_snapshot` so a re-subscribing client doesn't have to wait
+   * for the next live delta to rehydrate the streaming UI. `undefined`
+   * until the first `init` delta lands for the tool call.
+   */
+  groupsState?: ToolGroupsState;
 }
 
 /** Subscriber callback. Receives one `snapshot` event immediately on subscribe. */
@@ -304,6 +313,13 @@ export class LoopRegistry {
       toolUseId: entry.toolUseId,
       message: entry.message,
       mergedBlock: { ...entry.mergedBlock },
+      groupsState: entry.groupsState
+        ? {
+            infoGroup: entry.groupsState.infoGroup,
+            accumulatedGroups: entry.groupsState.accumulatedGroups.slice(),
+            streamingGroups: entry.groupsState.streamingGroups.slice(),
+          }
+        : undefined,
     }));
   }
 
@@ -352,6 +368,20 @@ export class LoopRegistry {
       const existing = inner.get(event.toolUseId);
       if (!existing) return;
       existing.mergedBlock = { ...existing.mergedBlock, ...event.block };
+      return;
+    }
+
+    if (event.type === 'tool_groups_delta') {
+      const inner = this.pendingToolResults.get(chatId);
+      if (!inner) return;
+      const existing = inner.get(event.toolUseId);
+      if (!existing) return;
+      // `applyGroupsDelta` returns `undefined` only when an `append` /
+      // `replace_streaming` / `message_finalized` arrives without a prior
+      // `init`. That can't happen mid-run because the emitter always fires
+      // `init` first, but stay defensive — drop the delta on the floor and
+      // let the next `init` (or `tool_groups_snapshot` on attach) resync.
+      existing.groupsState = applyGroupsDelta(existing.groupsState, event.delta);
       return;
     }
 

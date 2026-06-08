@@ -3,12 +3,15 @@
  * defaults. Validates at startup so the server fails fast on misconfiguration.
  */
 
+import { loadVfsAccessConfig, type VfsAccessConfig } from './vfsEngine/accessConfig.js';
+
 export interface ServerConfig {
   port: number;
   host: string;
   storagePath: string;
   vfsMode: 'encrypted' | 'filesystem';
   vfsBasePath: string;
+  vfsAccessConfig: VfsAccessConfig;
 }
 
 export function loadServerConfig(): ServerConfig {
@@ -27,6 +30,7 @@ export function loadServerConfig(): ServerConfig {
   const vfsMode = vfsModeRaw;
 
   const vfsBasePath = process.env.VFS_BASE_PATH ?? './data/vfs';
+  const vfsAccessConfig = loadVfsAccessConfig();
 
-  return { port, host, storagePath, vfsMode, vfsBasePath };
+  return { port, host, storagePath, vfsMode, vfsBasePath, vfsAccessConfig };
 }

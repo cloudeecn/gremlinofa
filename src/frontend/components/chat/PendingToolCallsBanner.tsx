@@ -23,7 +23,7 @@ export default function PendingToolCallsBanner({
         <span className="font-medium">
           ⏸ Loop paused — {toolCount} pending tool call{toolCount > 1 ? 's' : ''}
         </span>
-        <span className="ml-1 text-amber-600">— send a message to reject with context</span>
+        <span className="ml-1 text-amber-600">— type a message to add context</span>
       </div>
       <div className="flex items-center gap-3">
         <button

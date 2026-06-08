@@ -344,6 +344,9 @@ export function isCostUnreliable(
  * @param cacheCreationTokens - Anthropic cache write tokens
  * @param cacheReadTokens - Cache hit tokens
  * @param webSearchCount - Number of web search requests
+ * @param cacheTtl - Anthropic cache TTL ('5m' default = the 1.25× input
+ *   multiplier already baked into `cacheWritePrice`; '1h' = 2× input, so we
+ *   scale the stored price by 2/1.25 = 1.6× for writes only. Reads cost the same.)
  * @returns Total cost in USD
  */
 export function calculateCost(
@@ -353,7 +356,8 @@ export function calculateCost(
   reasoningTokens?: number,
   cacheCreationTokens?: number,
   cacheReadTokens?: number,
-  webSearchCount?: number
+  webSearchCount?: number,
+  cacheTtl?: '5m' | '1h'
 ): number {
   let cost = 0;
 
@@ -372,8 +376,9 @@ export function calculateCost(
   }
   // Cache tokens use their specific price, falling back to inputPrice
   if (cacheCreationTokens) {
-    const price = model.cacheWritePrice ?? model.inputPrice;
-    if (price) {
+    const basePrice = model.cacheWritePrice ?? model.inputPrice;
+    if (basePrice) {
+      const price = cacheTtl === '1h' ? basePrice * 1.6 : basePrice;
       cost += (cacheCreationTokens / 1_000_000) * price;
     }
   }

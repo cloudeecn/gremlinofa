@@ -6,6 +6,28 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
       {
         apiType: ['anthropic'],
         modelIdFuzz: [
+          { modelIdPrefix: 'claude-opus-4-7' },
+          { modelIdPrefix: 'anthropic.claude-opus-4-7' },
+        ],
+      },
+    ],
+    inputPrice: 5,
+    outputPrice: 25,
+    cacheWritePrice: 6.25,
+    cacheReadPrice: 0.5,
+    webSearchPrice: 0.01,
+    contextWindow: 200000,
+    maxOutputTokens: 128000,
+    supportsExtendedContext: true,
+    supportsAdaptiveReasoning: true,
+    onlyAdaptiveReasoning: true,
+    supportsXhighEffort: true,
+  },
+  {
+    matches: [
+      {
+        apiType: ['anthropic'],
+        modelIdFuzz: [
           { modelIdPrefix: 'claude-opus', unreliable: true }, // fuzz match all future opus
           { modelIdPrefix: 'claude-opus-4-6' },
           { modelIdPrefix: 'anthropic.claude-opus-4-6' },
@@ -20,6 +42,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
     contextWindow: 200000,
     maxOutputTokens: 128000,
     supportsExtendedContext: true,
+    supportsAdaptiveReasoning: true,
   },
   {
     matches: [
@@ -76,6 +99,7 @@ export const ANTHROPIC_MODELS: ModelKnowledge[] = [
     contextWindow: 200000,
     maxOutputTokens: 64000,
     supportsExtendedContext: true,
+    supportsAdaptiveReasoning: true,
   },
   {
     matches: [

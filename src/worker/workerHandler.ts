@@ -6,7 +6,8 @@
  * or a lightweight test harness (see `workerHandler.integration.test.ts`).
  */
 
-import { GremlinServer, ProtocolError } from '../shared/engine/GremlinServer';
+import { GremlinServer } from '../shared/engine/GremlinServer';
+import { ProtocolError } from '../shared/protocol/protocolError';
 import { STREAM_METHODS } from '../shared/protocol/streamMethods';
 import type {
   ErrorEnvelope,

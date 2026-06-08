@@ -14,8 +14,8 @@ export default function SuspendedAfterToolsBanner({ onContinue }: SuspendedAfter
   return (
     <div className="mx-4 mb-3 rounded-lg border border-blue-300 bg-blue-50 p-3">
       <div className="mb-2 text-sm text-blue-800">
-        <span className="font-medium">⏸ Loop paused</span>
-        <span className="ml-1 text-blue-600">— tool results ready, or send a message</span>
+        <span className="font-medium">⏸ Ready to continue</span>
+        <span className="ml-1 text-blue-600">— click Continue or type a new message</span>
       </div>
       <button
         onClick={() => {

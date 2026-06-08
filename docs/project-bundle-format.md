@@ -36,33 +36,33 @@ When imported, a fresh `id`, `createdAt`, and `lastUsedAt` are generated automat
 
 ### Optional Fields
 
-| Field                          | Type                    | Default | Description                                                                               |
-| ------------------------------ | ----------------------- | ------- | ----------------------------------------------------------------------------------------- |
-| `icon`                         | string                  | (auto)  | Emoji icon for the project.                                                               |
-| `systemPrompt`                 | string                  | `""`    | System prompt prepended to every conversation.                                            |
-| `preFillResponse`              | string                  | `""`    | Pre-fill text for assistant responses.                                                    |
-| `apiDefinitionId`              | string \| null          | `null`  | API provider config ID. See [cross-instance note](#cross-instance-portability).           |
-| `modelId`                      | string \| null          | `null`  | Model ID (e.g. `"claude-sonnet-4-20250514"`).                                             |
-| `webSearchEnabled`             | boolean                 | `false` | Enable web search tool.                                                                   |
-| `temperature`                  | number \| null          | `null`  | Sampling temperature. `null` = provider default.                                          |
-| `maxOutputTokens`              | number                  | `16384` | Maximum output tokens per response.                                                       |
-| `enableReasoning`              | boolean                 | `false` | Enable extended thinking (Anthropic).                                                     |
-| `reasoningBudgetTokens`        | number                  | `10000` | Token budget for reasoning.                                                               |
-| `thinkingKeepTurns`            | number                  | (auto)  | How many turns of thinking to keep. `-1` = all.                                           |
-| `reasoningEffort`              | string                  | (auto)  | OpenAI reasoning effort: `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`. |
-| `reasoningSummary`             | string                  | (auto)  | OpenAI reasoning summary: `"auto"`, `"concise"`, `"detailed"`.                            |
-| `sendMessageMetadata`          | boolean \| `"template"` | (off)   | Send metadata with each message.                                                          |
-| `metadataTimestampMode`        | string                  | (off)   | Timestamp format: `"utc"`, `"local"`, `"relative"`, `"disabled"`.                         |
-| `metadataIncludeModelName`     | boolean                 | (off)   | Include model name in metadata.                                                           |
-| `metadataIncludeContextWindow` | boolean                 | (off)   | Include context window usage in metadata.                                                 |
-| `metadataIncludeCost`          | boolean                 | (off)   | Include cost in metadata.                                                                 |
-| `metadataTemplate`             | string                  | (none)  | Custom metadata template string.                                                          |
-| `metadataNewContext`           | boolean                 | (off)   | Start fresh context for metadata.                                                         |
-| `enabledTools`                 | string[]                | (none)  | Enabled tools: `"memory"`, `"javascript"`, `"filesystem"`, `"minion"`, etc.               |
-| `toolOptions`                  | object                  | (none)  | Per-tool config. See [tool options](#tool-options).                                       |
-| `disableStream`                | boolean                 | `false` | Disable streaming (use non-streaming API).                                                |
-| `extendedContext`              | boolean                 | `false` | Enable extended context window (Anthropic 1M beta).                                       |
-| `noLineNumbers`                | boolean                 | `false` | Strip line numbers from filesystem/memory tool output.                                    |
+| Field                          | Type                    | Default | Description                                                                                 |
+| ------------------------------ | ----------------------- | ------- | ------------------------------------------------------------------------------------------- |
+| `icon`                         | string                  | (auto)  | Emoji icon for the project.                                                                 |
+| `systemPrompt`                 | string                  | `""`    | System prompt prepended to every conversation.                                              |
+| `preFillResponse`              | string                  | `""`    | Pre-fill text for assistant responses.                                                      |
+| `apiDefinitionId`              | string \| null          | `null`  | API provider config ID. See [cross-instance note](#cross-instance-portability).             |
+| `modelId`                      | string \| null          | `null`  | Model ID (e.g. `"claude-sonnet-4-20250514"`).                                               |
+| `webSearchEnabled`             | boolean                 | `false` | Enable web search tool.                                                                     |
+| `temperature`                  | number \| null          | `null`  | Sampling temperature. `null` = provider default.                                            |
+| `maxOutputTokens`              | number                  | `16384` | Maximum output tokens per response.                                                         |
+| `enableReasoning`              | boolean                 | `false` | Enable extended thinking (Anthropic).                                                       |
+| `reasoningBudgetTokens`        | number                  | `10000` | Token budget for reasoning.                                                                 |
+| `thinkingKeepTurns`            | number                  | (auto)  | How many turns of thinking to keep. `-1` = all.                                             |
+| `reasoningEffort`              | string                  | (auto)  | Reasoning effort: `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. |
+| `reasoningSummary`             | string                  | (auto)  | OpenAI reasoning summary: `"auto"`, `"concise"`, `"detailed"`.                              |
+| `sendMessageMetadata`          | boolean \| `"template"` | (off)   | Send metadata with each message.                                                            |
+| `metadataTimestampMode`        | string                  | (off)   | Timestamp format: `"utc"`, `"local"`, `"relative"`, `"disabled"`.                           |
+| `metadataIncludeModelName`     | boolean                 | (off)   | Include model name in metadata.                                                             |
+| `metadataIncludeContextWindow` | boolean                 | (off)   | Include context window usage in metadata.                                                   |
+| `metadataIncludeCost`          | boolean                 | (off)   | Include cost in metadata.                                                                   |
+| `metadataTemplate`             | string                  | (none)  | Custom metadata template string.                                                            |
+| `metadataNewContext`           | boolean                 | (off)   | Start fresh context for metadata.                                                           |
+| `enabledTools`                 | string[]                | (none)  | Enabled tools: `"memory"`, `"javascript"`, `"filesystem"`, `"minion"`, etc.                 |
+| `toolOptions`                  | object                  | (none)  | Per-tool config. See [tool options](#tool-options).                                         |
+| `disableStream`                | boolean                 | `false` | Disable streaming (use non-streaming API).                                                  |
+| `extendedContext`              | boolean                 | `false` | Enable extended context window (Anthropic 1M beta).                                         |
+| `noLineNumbers`                | boolean                 | `false` | Strip line numbers from filesystem/memory tool output.                                      |
 
 ### Tool Options
 

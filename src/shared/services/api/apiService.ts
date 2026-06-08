@@ -92,10 +92,26 @@ async function fetchModelsFromEndpoint(apiDefinition: APIDefinition): Promise<Mo
 }
 
 /**
+ * Default nudge text used when the provider-level toggle
+ * `advancedSettings.nudgeThinking` is on and no higher-precedence caller
+ * (e.g. a minion input) supplies its own text. Exported so callers can
+ * reference it and experimenters can tweak it in one place.
+ */
+export const NUDGE_THINKING_DEFAULT =
+  '<<WITH THINKING STEPS, explore multiple parallel hypotheses before concluding>>';
+
+/**
  * Shallow-clone the last user message and append the thinking nudge
  * to its text content. Returns a new array; original messages are untouched.
+ * Empty `nudge` is a no-op — callers pass "" to explicitly disable the nudge
+ * at a lower precedence layer.
  */
-export function applyNudgeThinking(messages: Message<unknown>[]): Message<unknown>[] {
+export function applyNudgeThinking(
+  messages: Message<unknown>[],
+  nudge: string
+): Message<unknown>[] {
+  if (!nudge) return messages;
+
   let lastUserIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'user') {
@@ -111,7 +127,7 @@ export function applyNudgeThinking(messages: Message<unknown>[]): Message<unknow
     ...original,
     content: {
       ...original.content,
-      content: original.content.content + '\n\n<<WITH THINKING STEPS>>',
+      content: original.content.content + '\n\n' + nudge,
     },
   };
   return result;
@@ -203,8 +219,12 @@ export class APIService {
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
       thinkingKeepTurns?: number; // undefined = model default, -1 = all, 0+ = thinking_turns
+      // Client-side thinking-block pruning. When defined and >= 0, strip
+      // thinking blocks older than the N-th-from-last user text msg before
+      // sending. Driven by the project flag (and minion-tool overrides).
+      pruneThinkingKeepTurns?: number;
       // OpenAI/Responses-specific reasoning
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       // Common options
       systemPrompt?: string;
@@ -214,11 +234,17 @@ export class APIService {
       toolOptions?: Record<string, ToolOptions>;
       disableStream?: boolean;
       extendedContext?: boolean;
+      // Use 1h cache TTL on Anthropic cache_control blocks (default 5m).
+      // Only honored by the Anthropic client.
+      useAnthropicOneHourCache?: boolean;
       // Hard-abort signal (frontend/backend split — see plan)
       signal: AbortSignal;
       // Context tidy (checkpoint tool)
       checkpointMessageId?: string;
       tidyToolNames?: Set<string>;
+      // Thinking nudge: resolved upstream (buildLoopOptions / minion input).
+      // Undefined or "" means no nudge.
+      nudgeThinking?: string;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown> {
     const client = this.getClient(apiDefinition.apiType);
@@ -228,8 +254,8 @@ export class APIService {
     }
 
     // Nudge thinking: append prompt to last user message (send-time only)
-    if (apiDefinition.advancedSettings?.nudgeThinking) {
-      messages = applyNudgeThinking(messages);
+    if (options.nudgeThinking) {
+      messages = applyNudgeThinking(messages, options.nudgeThinking);
     }
 
     // Use the real client

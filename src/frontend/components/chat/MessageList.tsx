@@ -28,6 +28,7 @@ export default function MessageList({
   expandMinions,
   disableMath,
   alwaysAutoScroll,
+  snapshotLoading,
   dummyHookStatus,
 }: MessageListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -47,11 +48,25 @@ export default function MessageList({
   );
 
   // Auto-scroll to bottom when new messages arrive or streaming updates
+  // Suppressed during snapshot replay to avoid per-message scroll jitter.
   useEffect(() => {
-    if (shouldAutoScrollRef.current && scrollContainerRef.current) {
+    if (!snapshotLoading && shouldAutoScrollRef.current && scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
     }
-  }, [messages, streamingGroups]);
+  }, [messages, streamingGroups, snapshotLoading]);
+
+  // When snapshot finishes, scroll to bottom — but only if the user was
+  // already following the tail (auto-scroll active). Preserves scroll
+  // position for users reading history on a spotty connection.
+  useEffect(() => {
+    if (snapshotLoading === false && shouldAutoScrollRef.current && scrollContainerRef.current) {
+      requestAnimationFrame(() => {
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+        }
+      });
+    }
+  }, [snapshotLoading]);
 
   // Auto-scroll correction after streaming ends (handles overscroll from markdown rendering/backstage collapse)
   useEffect(() => {
@@ -175,7 +190,7 @@ export default function MessageList({
       >
         <div className="py-4">
           {/* Render all messages */}
-          {messages.map(message => (
+          {messages.map((message, index) => (
             <MessageBubble
               key={message.id}
               message={message}
@@ -188,6 +203,7 @@ export default function MessageList({
               focusMode={focusMode}
               expandMinions={expandMinions}
               disableMath={disableMath}
+              isLastMessage={index === messages.length - 1}
             />
           ))}
 
@@ -228,6 +244,7 @@ export default function MessageList({
 
           {/* Pending tool calls banner */}
           {!isLoading &&
+            !snapshotLoading &&
             pendingToolCount !== undefined &&
             pendingToolCount > 0 &&
             onPendingToolReject &&
@@ -240,7 +257,7 @@ export default function MessageList({
             )}
 
           {/* Suspended after tools banner */}
-          {!isLoading && suspendedAfterTools && onContinueAfterToolStop && (
+          {!isLoading && !snapshotLoading && suspendedAfterTools && onContinueAfterToolStop && (
             <SuspendedAfterToolsBanner onContinue={onContinueAfterToolStop} />
           )}
         </div>

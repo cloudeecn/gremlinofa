@@ -19,7 +19,7 @@ export default function MinionChatView({
 }: MinionChatViewProps) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const { minionChat, messages, isLoading, tokenUsage, deleteMessage } =
+  const { minionChat, messages, isLoading, tokenUsage, deleteMessage, rollbackToMessage } =
     useMinionChat(minionChatId);
 
   const handleBack = () => {
@@ -54,6 +54,22 @@ export default function MinionChatView({
       }
     },
     [deleteMessage]
+  );
+
+  const handleAction = useCallback(
+    async (action: string, messageId: string) => {
+      if (action === 'rollback') {
+        const confirmed = await showDestructiveConfirm(
+          'Roll Back',
+          'This will delete all messages after this one.',
+          'Roll Back'
+        );
+        if (confirmed) {
+          await rollbackToMessage(messageId);
+        }
+      }
+    },
+    [rollbackToMessage]
   );
 
   return (
@@ -111,6 +127,7 @@ export default function MinionChatView({
       {/* Message List */}
       <MessageList
         messages={messages}
+        onAction={handleAction}
         onDeleteMessage={handleDeleteMessage}
         isLoading={isLoading}
         streamingGroups={[]}

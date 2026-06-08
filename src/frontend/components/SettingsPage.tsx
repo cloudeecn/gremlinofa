@@ -59,6 +59,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormExtraModelIds('');
     setFormPruneThinking(false);
     setFormPruneEmptyText(false);
+    setFormIsSubscription(false);
+    setFormEnforceGenuineAnthropic(false);
     setFormDeFactoThinking(false);
     setFormNudgeThinking(false);
     setFormMandateCoT(false);
@@ -131,6 +133,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormExtraModelIds('');
     setFormPruneThinking(false);
     setFormPruneEmptyText(false);
+    setFormIsSubscription(false);
+    setFormEnforceGenuineAnthropic(false);
     setFormDeFactoThinking(false);
     setFormNudgeThinking(false);
     setFormMandateCoT(false);
@@ -175,6 +179,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
         advancedSettings:
           formPruneThinking ||
           formPruneEmptyText ||
+          formIsSubscription ||
+          formEnforceGenuineAnthropic ||
           formDeFactoThinking ||
           formNudgeThinking ||
           formMandateCoT ||
@@ -183,6 +189,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
             ? {
                 ...(formPruneThinking && { pruneThinking: true }),
                 ...(formPruneEmptyText && { pruneEmptyText: true }),
+                ...(formIsSubscription && { isSubscription: true }),
+                ...(formEnforceGenuineAnthropic && { enforceGenuineAnthropic: true }),
                 ...(formDeFactoThinking && { deFactoThinking: true }),
                 ...(formNudgeThinking && { nudgeThinking: true }),
                 ...(formMandateCoT && { mandateCoT: true }),
@@ -218,6 +226,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formExtraModelIds,
     formPruneThinking,
     formPruneEmptyText,
+    formIsSubscription,
+    formEnforceGenuineAnthropic,
     formDeFactoThinking,
     formNudgeThinking,
     formMandateCoT,

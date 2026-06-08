@@ -40,6 +40,30 @@ function AppContent() {
 
   const { isInitializing } = useApp();
 
+  // [iOS-diag] Log mobile sidebar overlay transitions so we can correlate
+  // "tap doesn't fire" with whether the overlay was mounted at the moment.
+  useEffect(() => {
+    console.debug('[sidebar] mobile open=%o', isMobileSidebarOpen);
+  }, [isMobileSidebarOpen]);
+
+  // [iOS-diag] Capture-phase pointerdown probe. If the iPhone event-lock
+  // repros and this still logs, we can read the target element to see which
+  // overlay (if any) is grabbing the tap. If it stops logging entirely, the
+  // freeze is upstream of the document.
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Element | null;
+      console.debug(
+        '[tap] tag=%s class=%s defaultPrevented=%o',
+        target?.tagName,
+        target instanceof Element ? target.className : '',
+        e.defaultPrevented
+      );
+    };
+    document.addEventListener('pointerdown', onPointerDown, { capture: true });
+    return () => document.removeEventListener('pointerdown', onPointerDown, { capture: true });
+  }, []);
+
   // Show loading screen while initializing storage
   if (isInitializing) {
     return (
@@ -78,13 +102,15 @@ function AppContent() {
         )}
       </div>
 
-      {/* Mobile Sidebar Overlay */}
-      <div
-        className={`fixed inset-0 z-40 bg-black transition-opacity duration-300 md:hidden ${
-          isMobileSidebarOpen ? 'opacity-50' : 'pointer-events-none opacity-0'
-        }`}
-        onClick={() => setIsMobileSidebarOpen(false)}
-      />
+      {/* Mobile Sidebar Overlay — unmounted when closed so it cannot capture
+        pointer events at stale layout-viewport coordinates after the iOS
+        on-screen keyboard hides. */}
+      {isMobileSidebarOpen && (
+        <div
+          className="animate-fade-in fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={() => setIsMobileSidebarOpen(false)}
+        />
+      )}
       {/* Sidebar */}
       <div
         className={`fixed inset-y-0 left-0 z-50 w-80 transition-transform duration-300 ease-out md:hidden ${
@@ -111,7 +137,10 @@ function AppContent() {
             element={<ProjectSettingsViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
           />
           <Route path="/project/:projectId/vfs/*" element={<VfsManagerViewRoute />} />
-          <Route path="/chat/:chatId" element={<ChatViewRoute />} />
+          <Route
+            path="/chat/:chatId"
+            element={<ChatViewRoute onMenuPress={() => setIsMobileSidebarOpen(true)} />}
+          />
           <Route
             path="/attachments"
             element={<AttachmentManagerView onMenuPress={() => setIsMobileSidebarOpen(true)} />}
@@ -223,14 +252,14 @@ function VfsManagerViewRoute() {
   );
 }
 
-function ChatViewRoute() {
+function ChatViewRoute({ onMenuPress }: { onMenuPress?: () => void }) {
   const { chatId } = useParams<{ chatId: string }>();
   if (!chatId) return null;
   // key={chatId} forces remount when switching chats, preventing stale state issues.
   // No `initialPending` flag — the project view starts the loop on the backend
   // before navigating, and the chat view's `attachChat` subscription picks up
   // the live event stream (which delivers `loop_started` to set the phase).
-  return <ChatView key={chatId} chatId={chatId} />;
+  return <ChatView key={chatId} chatId={chatId} onMenuPress={onMenuPress} />;
 }
 
 function App() {

@@ -112,6 +112,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [refreshProjects]
   );
 
+  const patchProjectHandler = useCallback(
+    async (
+      projectId: string,
+      fields: Partial<Project>,
+      opts?: { touch?: boolean; unset?: (keyof Project)[] }
+    ) => {
+      const merged = await gremlinClient.patchProject(projectId, fields, opts);
+      await refreshProjects();
+      return merged;
+    },
+    [refreshProjects]
+  );
+
   const deleteProjectHandler = useCallback(
     async (id: string) => {
       await gremlinClient.deleteProject(id);
@@ -426,6 +439,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       projects,
       refreshProjects,
       saveProject: saveProjectHandler,
+      patchProject: patchProjectHandler,
       deleteProject: deleteProjectHandler,
       models,
       refreshModels,
@@ -452,6 +466,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       projects,
       refreshProjects,
       saveProjectHandler,
+      patchProjectHandler,
       deleteProjectHandler,
       models,
       refreshModels,

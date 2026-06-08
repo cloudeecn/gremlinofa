@@ -203,6 +203,23 @@ describe('BackstageView', () => {
       expect(link).toHaveAttribute('target', '_blank');
       expect(link).toHaveAttribute('rel', 'noopener noreferrer');
     });
+
+    it('drops the href for a non-http(s) (e.g. javascript:) result URL', () => {
+      const malicious: WebSearchRenderBlock = {
+        type: 'web_search',
+        id: 'ws_evil',
+        query: 'x',
+        results: [{ title: 'Click me', url: 'javascript:alert(document.domain)' }],
+      };
+      render(<BackstageView blocks={[malicious]} defaultExpanded={true} />);
+
+      const searchHeader = screen.getByText(/Searched: "x"/).closest('button');
+      fireEvent.click(searchHeader!);
+
+      // Link still renders (title is shown) but carries no executable href.
+      const link = screen.getByText('Click me');
+      expect(link).not.toHaveAttribute('href');
+    });
   });
 
   describe('WebFetchSegment', () => {
@@ -246,6 +263,20 @@ describe('BackstageView', () => {
 
       const link = screen.getByText('https://example.com/page');
       expect(link).toHaveAttribute('href', 'https://example.com/page');
+    });
+
+    it('drops the href for a non-http(s) (e.g. javascript:) fetch URL', () => {
+      const blocks: RenderingContentBlock[] = [
+        {
+          type: 'web_fetch',
+          url: 'javascript:alert(1)',
+          title: 'Sketchy link',
+        } as WebFetchRenderBlock,
+      ];
+      render(<BackstageView blocks={blocks} defaultExpanded={true} />);
+
+      const link = screen.getByText('Sketchy link');
+      expect(link).not.toHaveAttribute('href');
     });
   });
 

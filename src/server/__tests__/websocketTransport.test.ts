@@ -38,6 +38,35 @@ function nextMessage(ws: WebSocket): Promise<ServerMessage> {
   });
 }
 
+/**
+ * Connect and complete a successful `init` so the per-connection auth gate
+ * lets subsequent data RPCs through. Under the mock server, `init` resolves
+ * (any value) so handleOneShot replies with a response envelope, which marks
+ * the session authenticated. Consumes the init response before returning.
+ */
+async function connectAndAuth(port: number): Promise<WebSocket> {
+  const ws = await connectClient(port);
+  const res = nextMessage(ws);
+  ws.send(
+    JSON.stringify({
+      kind: 'request',
+      requestId: 'init_auth',
+      method: 'init',
+      params: { cek: 'test-cek' },
+    })
+  );
+  const msg = await res;
+  if (msg.kind !== 'response') {
+    throw new Error(`init did not succeed in test setup: ${JSON.stringify(msg)}`);
+  }
+  return ws;
+}
+
+/** Resolve with the close code when the socket closes. */
+function nextClose(ws: WebSocket): Promise<number> {
+  return new Promise(resolve => ws.on('close', code => resolve(code)));
+}
+
 /** Collect messages until a stream_end is received. */
 async function collectStream(ws: WebSocket): Promise<ServerMessage[]> {
   const messages: ServerMessage[] = [];
@@ -112,7 +141,7 @@ describe('WebSocketTransportServer', () => {
         projects: [],
       });
 
-      const ws = await connectClient(port);
+      const ws = await connectAndAuth(port);
       const msgPromise = nextMessage(ws);
 
       ws.send(
@@ -133,11 +162,16 @@ describe('WebSocketTransportServer', () => {
     });
 
     it('should return error envelope on handler throw', async () => {
-      (mockServer.handleRequest as ReturnType<typeof vi.fn>).mockRejectedValue(
-        new Error('something broke')
+      // init must succeed (to pass the auth gate) while the target method
+      // throws — branch on the method in the mock.
+      (mockServer.handleRequest as ReturnType<typeof vi.fn>).mockImplementation(
+        (method: string) => {
+          if (method === 'init') return Promise.resolve({ ok: true });
+          return Promise.reject(new Error('something broke'));
+        }
       );
 
-      const ws = await connectClient(port);
+      const ws = await connectAndAuth(port);
       const msgPromise = nextMessage(ws);
 
       ws.send(
@@ -170,7 +204,7 @@ describe('WebSocketTransportServer', () => {
       }
       (mockServer.handleStream as ReturnType<typeof vi.fn>).mockReturnValue(fakeStream());
 
-      const ws = await connectClient(port);
+      const ws = await connectAndAuth(port);
       const messagesPromise = collectStream(ws);
 
       ws.send(
@@ -204,7 +238,7 @@ describe('WebSocketTransportServer', () => {
       }
       (mockServer.handleStream as ReturnType<typeof vi.fn>).mockReturnValue(failingStream());
 
-      const ws = await connectClient(port);
+      const ws = await connectAndAuth(port);
       const messagesPromise = collectStream(ws);
 
       ws.send(
@@ -248,7 +282,7 @@ describe('WebSocketTransportServer', () => {
         return slowStream();
       });
 
-      const ws = await connectClient(port);
+      const ws = await connectAndAuth(port);
       const messagesPromise = collectStream(ws);
 
       ws.send(
@@ -267,6 +301,76 @@ describe('WebSocketTransportServer', () => {
       const messages = await messagesPromise;
       const endMsg = messages.find(m => m.kind === 'stream_end') as StreamEndEnvelope;
       expect(endMsg.status).toBe('aborted');
+
+      ws.close();
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Per-connection auth gate
+  // --------------------------------------------------------------------------
+
+  describe('auth gate', () => {
+    it('rejects a one-shot RPC before init and closes the socket (4001)', async () => {
+      const ws = await connectClient(port);
+      const errPromise = nextMessage(ws);
+      const closePromise = nextClose(ws);
+
+      ws.send(
+        JSON.stringify({
+          kind: 'request',
+          requestId: 'req_pre_init',
+          method: 'listProjects',
+          params: {},
+        })
+      );
+
+      const err = await errPromise;
+      expect(err.kind).toBe('error');
+      expect((err as ErrorEnvelope).code).toBe('NOT_INITIALIZED');
+      expect(await closePromise).toBe(4001);
+      // The unauthenticated request never reached the engine.
+      expect(mockServer.handleRequest).not.toHaveBeenCalled();
+    });
+
+    it('rejects a stream RPC before init and closes the socket (4001)', async () => {
+      const ws = await connectClient(port);
+      const errPromise = nextMessage(ws);
+      const closePromise = nextClose(ws);
+
+      ws.send(
+        JSON.stringify({
+          kind: 'request',
+          requestId: 'req_pre_init_stream',
+          method: 'attachChat',
+          params: { chatId: 'c1' },
+        })
+      );
+
+      const err = await errPromise;
+      expect((err as ErrorEnvelope).code).toBe('NOT_INITIALIZED');
+      expect(await closePromise).toBe(4001);
+      expect(mockServer.handleStream).not.toHaveBeenCalled();
+    });
+
+    it('allows a data RPC after a successful init', async () => {
+      (mockServer.handleRequest as ReturnType<typeof vi.fn>).mockResolvedValue({ projects: [] });
+
+      const ws = await connectAndAuth(port);
+      const msgPromise = nextMessage(ws);
+
+      ws.send(
+        JSON.stringify({
+          kind: 'request',
+          requestId: 'req_post_init',
+          method: 'listProjects',
+          params: {},
+        })
+      );
+
+      const response = await msgPromise;
+      expect(response.kind).toBe('response');
+      expect((response as ResponseEnvelope).result).toEqual({ projects: [] });
 
       ws.close();
     });
@@ -292,7 +396,7 @@ describe('WebSocketTransportServer', () => {
         return longStream();
       });
 
-      const ws = await connectClient(port);
+      const ws = await connectAndAuth(port);
 
       ws.send(
         JSON.stringify({

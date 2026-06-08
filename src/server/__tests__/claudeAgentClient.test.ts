@@ -8,7 +8,11 @@
  * GremlinOFA-side knobs (reasoning, auth, resume).
  */
 import { describe, it, expect, vi } from 'vitest';
-import { ClaudeAgentClient } from '../claudeAgentClient';
+import {
+  ClaudeAgentClient,
+  classifyTurnError,
+  type TurnOutcomeSignals,
+} from '../claudeAgentClient';
 import type {
   APIDefinition,
   ClientSideTool,
@@ -1414,5 +1418,89 @@ describe('ClaudeAgentClient', () => {
     expect(r.error).toBeUndefined();
     expect(chunks.filter(c => c.type === 'content.start')).toHaveLength(1);
     debugSpy.mockRestore();
+  });
+});
+
+describe('classifyTurnError', () => {
+  // "Empty turn, no distinguishing signal" baseline; override one field per case.
+  const base: TurnOutcomeSignals = {
+    textLength: 0,
+    thinkingLength: 0,
+    sawThinkingBlock: false,
+    sawToolUse: false,
+    stopReason: undefined,
+    assistantStopReason: undefined,
+    assistantError: undefined,
+    rateLimitStatus: undefined,
+    refusalExplanation: undefined,
+    refusalCategory: undefined,
+    outputTokens: 0,
+  };
+
+  it('is undefined for a turn that produced text', () => {
+    expect(classifyTurnError({ ...base, textLength: 12 })).toBeUndefined();
+  });
+
+  it('is undefined for a turn that produced real thinking content', () => {
+    expect(
+      classifyTurnError({ ...base, thinkingLength: 50, sawThinkingBlock: true })
+    ).toBeUndefined();
+  });
+
+  it('surfaces a refusal even when partial text streamed first', () => {
+    const err = classifyTurnError({
+      ...base,
+      textLength: 30,
+      assistantStopReason: 'refusal',
+      refusalExplanation: 'no',
+      refusalCategory: 'cyber',
+    });
+    expect(err?.message).toBe('claude-agent: refused — no (category: cyber)');
+  });
+
+  it('surfaces a hard assistant error on an empty turn', () => {
+    expect(classifyTurnError({ ...base, assistantError: 'rate_limit' })?.message).toBe(
+      'claude-agent: rate_limit'
+    );
+  });
+
+  it('surfaces a bad stop_reason (pause_turn) on an empty turn', () => {
+    expect(classifyTurnError({ ...base, assistantStopReason: 'pause_turn' })?.message).toBe(
+      'claude-agent: turn ended with stop_reason=pause_turn and no output'
+    );
+  });
+
+  it('surfaces a rejected subscription quota on an empty turn', () => {
+    expect(classifyTurnError({ ...base, rateLimitStatus: 'rejected' })?.message).toBe(
+      'claude-agent: turn rejected (rate_limit_status=rejected)'
+    );
+  });
+
+  it('surfaces a thinking-only malfunction (omitted thinking, no text, no tool)', () => {
+    const err = classifyTurnError({ ...base, sawThinkingBlock: true, outputTokens: 256 });
+    expect(err?.message).toBe(
+      'claude-agent: turn produced only thinking and no output (256 output tokens spent)'
+    );
+  });
+
+  it('does not flag a thinking turn that called a tool (stopReason=tool_use)', () => {
+    expect(
+      classifyTurnError({
+        ...base,
+        sawThinkingBlock: true,
+        sawToolUse: true,
+        stopReason: 'tool_use',
+      })
+    ).toBeUndefined();
+  });
+
+  it('hard assistant error takes precedence over a bad stop_reason', () => {
+    expect(
+      classifyTurnError({
+        ...base,
+        assistantError: 'overloaded',
+        assistantStopReason: 'max_tokens',
+      })?.message
+    ).toBe('claude-agent: overloaded');
   });
 });

@@ -7,6 +7,7 @@ import type { Chat, Project } from '../../../shared/protocol/types';
 
 // Mock useApp functions
 const mockSaveProject = vi.fn();
+const mockPatchProject = vi.fn();
 const mockDeleteProject = vi.fn();
 
 // Mock dependencies
@@ -23,6 +24,7 @@ vi.mock('../../lib/alerts');
 vi.mock('../useApp', () => ({
   useApp: () => ({
     saveProject: mockSaveProject,
+    patchProject: mockPatchProject,
     deleteProject: mockDeleteProject,
   }),
 }));
@@ -358,11 +360,15 @@ describe('useProject', () => {
       });
 
       await waitFor(() => {
-        expect(mockSaveProject).toHaveBeenCalledWith(
+        // Surgical patch: only the changed fields are sent (+ touch), not the
+        // whole project object.
+        expect(mockPatchProject).toHaveBeenCalledWith(
+          'proj_123',
           expect.objectContaining({
             name: 'Updated Name',
             temperature: 0.7,
-          })
+          }),
+          { touch: true }
         );
         expect(result.current.project?.name).toBe('Updated Name');
       });

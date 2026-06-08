@@ -18,6 +18,7 @@ import type { GremlinServer } from '../shared/engine/GremlinServer';
 import { binaryReplacer, binaryReviver } from '../shared/protocol/binaryEncoding';
 import { ProtocolError } from '../shared/protocol/protocolError';
 import { STREAM_METHODS } from '../shared/protocol/streamMethods';
+import { INIT_EXEMPT_METHODS } from '../shared/protocol/protocol';
 import type {
   ErrorEnvelope,
   GremlinMethods,
@@ -42,6 +43,12 @@ type IncomingWsMessage = RequestEnvelope | StreamCancelMessage | PingMessage;
 interface ClientSession {
   ws: WebSocket;
   activeStreams: Map<string, AbortController>;
+  /**
+   * True once THIS connection has completed a successful `init` (i.e. proven
+   * it holds the CEK). Until then only `INIT_EXEMPT_METHODS` may be called —
+   * see the auth gate in `onMessage`.
+   */
+  authenticated: boolean;
 }
 
 export interface WebSocketTransportOptions {
@@ -111,6 +118,7 @@ export class WebSocketTransportServer {
     const session: ClientSession = {
       ws,
       activeStreams: new Map(),
+      authenticated: false,
     };
     this.sessions.add(session);
 
@@ -147,6 +155,27 @@ export class WebSocketTransportServer {
         this.sendRaw(session, JSON.stringify({ kind: 'pong' }));
         break;
       case 'request': {
+        // Per-connection auth gate. Until THIS socket has completed a
+        // successful `init` (proving it holds the CEK), only the
+        // init-exempt methods are allowed — `init` itself plus the
+        // stateless CEK/format helpers (generateNewCEK, normalizeCEK,
+        // deriveUserIdFromCEK, validateRemoteStorage) that touch no stored
+        // data. Without this gate a second connection could ride the
+        // server's *instance-global* initialized state and reach decrypted
+        // data without ever presenting the CEK (GremlinServer.ensureInitialized
+        // early-returns once any connection inits). Worker mode needs no
+        // equivalent: its transport is a 1:1 MessageChannel with a single
+        // trusted main-thread peer, so there is no second-connection threat.
+        if (!session.authenticated && !INIT_EXEMPT_METHODS.has(msg.method)) {
+          this.send(session, {
+            kind: 'error',
+            requestId: msg.requestId,
+            code: 'NOT_INITIALIZED',
+            message: 'init required before calling other methods',
+          });
+          session.ws.close(4001, 'authentication required');
+          break;
+        }
         const isStream = STREAM_METHODS.has(msg.method);
         if (isStream) {
           void this.runStream(session, msg);
@@ -175,6 +204,12 @@ export class WebSocketTransportServer {
         envelope.method as keyof GremlinMethods,
         envelope.params
       );
+      // A successful init proves this connection holds the CEK (the engine
+      // validates it against the active key / oracle). Mark the session
+      // authenticated so subsequent data RPCs on this socket pass the gate.
+      if (envelope.method === 'init') {
+        session.authenticated = true;
+      }
       this.send(session, {
         kind: 'response',
         requestId: envelope.requestId,

@@ -10,6 +10,21 @@ import type {
 import { usePreferences } from '../../hooks/usePreferences';
 import ToolResultView from './ToolResultView';
 
+/**
+ * Web-search / web-fetch URLs come from LLM tool output and are
+ * attacker-influenceable via prompt injection. React does not block a
+ * `javascript:` href, so gate it to http/https here. Returns `undefined`
+ * (→ a non-clickable link) for anything else; the URL text is still shown.
+ */
+function safeHref(url: string): string | undefined {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:' ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface BackstageViewProps {
   blocks: RenderingContentBlock[];
   defaultExpanded?: boolean;
@@ -237,7 +252,7 @@ function WebSearchSegment({ block }: WebSearchSegmentProps) {
           {block.results.map((result, index) => (
             <div key={index} className="mb-2 last:mb-0">
               <a
-                href={result.url}
+                href={safeHref(result.url)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-sm text-blue-600 hover:underline"
@@ -265,7 +280,7 @@ function WebFetchSegment({ block }: WebFetchSegmentProps) {
         <span>Fetched</span>
       </div>
       <a
-        href={block.url}
+        href={safeHref(block.url)}
         target="_blank"
         rel="noopener noreferrer"
         className="text-sm text-blue-600 hover:underline"

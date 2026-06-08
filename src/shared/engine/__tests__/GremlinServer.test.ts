@@ -6,7 +6,7 @@ import type { APIService } from '../../services/api/apiService';
 import type { EncryptionCore } from '../../services/encryption/encryptionCore';
 import type { UnifiedStorage } from '../../services/storage/unifiedStorage';
 import type { ClientSideToolRegistry } from '../../services/tools/clientSideTools';
-import type { APIDefinition, Chat, Project } from '../../protocol/types';
+import type { APIDefinition, Chat, Project, RenderingBlockGroup } from '../../protocol/types';
 
 const mkProject = (id: string): Project => ({
   id,
@@ -56,10 +56,14 @@ function makeStorageStub(): UnifiedStorage {
     getProjects: vi.fn(async () => []),
     getProject: vi.fn(async () => null),
     saveProject: vi.fn(async () => {}),
+    patchProject: vi.fn(
+      async (_projectId: string, fields: Partial<Project>) => ({ ...fields }) as Project
+    ),
     deleteProject: vi.fn(async () => {}),
     getChats: vi.fn(async () => []),
     getChat: vi.fn(async () => null),
     saveChat: vi.fn(async () => {}),
+    patchChat: vi.fn(async (_chatId: string, fields: Partial<Chat>) => ({ ...fields }) as Chat),
     deleteChat: vi.fn(async () => {}),
     cloneChat: vi.fn(async () => null),
     getMessageCount: vi.fn(async () => 0),
@@ -556,6 +560,48 @@ describe('GremlinServer', () => {
       expect(lockEvent.value).toMatchObject({ type: 'lock_state_changed', locked: false });
       const marker = await gen.next();
       expect(marker.value).toMatchObject({ type: 'snapshot_complete' });
+
+      await gen.return(undefined);
+    });
+
+    it('attachChat replays cached in-flight streaming groups as a streaming_snapshot', async () => {
+      // Parallel to the pending-tool-result replay: a turn mid-stream caches its
+      // latest streaming_chunk groups in the registry. On reattach the snapshot
+      // must replay them as a `streaming_snapshot` so the in-flight assistant
+      // bubble rehydrates immediately instead of going blank until the next
+      // token — worst on claude-agent, whose turns have long no-token gaps.
+      const chat = mkChat('c_stream', 'p1');
+      vi.mocked(storage.getChat).mockResolvedValue(chat);
+      vi.mocked(storage.getMessages).mockResolvedValue([]);
+
+      const groups: RenderingBlockGroup[] = [
+        { category: 'text', blocks: [{ type: 'text', text: 'partial answer' }] },
+      ];
+      server.registry.broadcastChatEvent('c_stream', { type: 'streaming_chunk', groups });
+
+      const gen = server.handleStream('attachChat', { chatId: 'c_stream' });
+      const first = await gen.next();
+      expect(first.value).toMatchObject({ type: 'chat_updated', chat: { id: 'c_stream' } });
+      const snapshot = await gen.next();
+      expect(snapshot.value).toMatchObject({ type: 'streaming_snapshot', groups });
+      const lockEvent = await gen.next();
+      expect(lockEvent.value).toMatchObject({ type: 'lock_state_changed', locked: false });
+      const marker = await gen.next();
+      expect(marker.value).toMatchObject({ type: 'snapshot_complete' });
+
+      await gen.return(undefined);
+    });
+
+    it('attachChat omits streaming_snapshot when no turn is mid-stream', async () => {
+      const chat = mkChat('c_nostream', 'p1');
+      vi.mocked(storage.getChat).mockResolvedValue(chat);
+      vi.mocked(storage.getMessages).mockResolvedValue([]);
+
+      const gen = server.handleStream('attachChat', { chatId: 'c_nostream' });
+      await gen.next(); // chat_updated
+      // No cached streaming groups → snapshot goes straight to lock_state_changed.
+      const next = await gen.next();
+      expect(next.value).toMatchObject({ type: 'lock_state_changed' });
 
       await gen.return(undefined);
     });

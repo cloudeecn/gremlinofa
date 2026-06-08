@@ -5,13 +5,39 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import type { Request, Response } from 'express';
 import { config } from './config.js';
 import { parseTarget } from './target.js';
 import { filterRequestHeaders, filterResponseHeaders } from './headers.js';
 
+/**
+ * Constant-time secret check. Hashes both sides to fixed-length SHA-256
+ * digests before comparing so `timingSafeEqual` never throws on a length
+ * mismatch (and the length itself isn't leaked).
+ */
+function tokenMatches(provided: string | undefined, expected: string): boolean {
+  if (!provided) return false;
+  const a = createHash('sha256').update(provided).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
+}
+
 export function proxyHandler(req: Request, res: Response): void {
+  // Caller auth first — an unauthenticated request learns nothing about
+  // target validation. CORS preflights are exempt: a browser preflight never
+  // carries custom headers like X-Proxy-Auth, and in same-domain mode (no
+  // CORS_ORIGIN) the OPTIONS falls through to here instead of being answered
+  // by the CORS middleware. Real proxying (GET/POST/…) still requires the token.
+  if (config.proxyAuthToken && req.method !== 'OPTIONS') {
+    const provided = req.headers['x-proxy-auth'] as string | undefined;
+    if (!tokenMatches(provided, config.proxyAuthToken)) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+  }
+
   const target = parseTarget(req.headers['x-proxy-target'] as string | undefined);
 
   if (typeof target === 'string') {

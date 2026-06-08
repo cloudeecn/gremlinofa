@@ -36,8 +36,8 @@ const distPackageJson = {
     start: 'node index.js',
   },
   dependencies: {
-    dotenv: '^16.4.7',
-    express: '^4.21.2',
+    dotenv: '^17.2.3',
+    express: '^5.2.1',
   },
   engines: {
     node: '>=18',

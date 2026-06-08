@@ -25,4 +25,8 @@ export const config = {
   allowedTargets: parseAllowedTargets(),
   proxyTimeout: parseInt(process.env.PROXY_TIMEOUT || '120000', 10),
   proxyBufferSize: parseInt(process.env.PROXY_BUFFER_SIZE || '16777216', 10),
+  // Optional shared secret. When set, every proxied request must carry a
+  // matching X-Proxy-Auth header. Unset = open proxy (relies on the operator
+  // putting it behind an authenticating reverse proxy / private network).
+  proxyAuthToken: process.env.PROXY_AUTH_TOKEN || undefined,
 } as const;

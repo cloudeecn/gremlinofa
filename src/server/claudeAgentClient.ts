@@ -95,6 +95,105 @@ function mapSdkUsage(usage: SdkUsageShape | undefined): {
   };
 }
 
+/**
+ * Verbose per-message / per-block stream tracing, off by default. The
+ * once-per-turn lifecycle lines below use `console.debug` directly (always on);
+ * the chatty per-SDK-message and per-partial-event traces route through `dbg`
+ * so they only fire under `CLAUDE_AGENT_DEBUG=1` when diagnosing resume/rollback
+ * or partial-stream issues. Keeps normal runs legible without losing the
+ * diagnostics when you actually need them.
+ */
+const CLAUDE_AGENT_DEBUG = process.env.CLAUDE_AGENT_DEBUG === '1';
+function dbg(...args: unknown[]): void {
+  if (CLAUDE_AGENT_DEBUG) console.debug(...args);
+}
+
+/**
+ * Hard assistant-level errors the SDK can attach to an `assistant` message but
+ * never echo on the `result` — each means the turn failed even if it closed
+ * "successfully".
+ */
+const HARD_ASSISTANT_ERRORS = [
+  'rate_limit',
+  'max_output_tokens',
+  'server_error',
+  'billing_error',
+  'overloaded',
+];
+/**
+ * Stop reasons that mean "no usable answer" — including `pause_turn`, which
+ * signals the turn needs continuation the SDK didn't perform here.
+ */
+const BAD_STOP_REASONS = ['max_tokens', 'refusal', 'pause_turn', 'model_context_window_exceeded'];
+
+/** Signals accumulated while draining a claude-agent turn, fed to `classifyTurnError`. */
+export interface TurnOutcomeSignals {
+  textLength: number;
+  thinkingLength: number;
+  sawThinkingBlock: boolean;
+  sawToolUse: boolean;
+  stopReason: string | undefined;
+  assistantStopReason: string | undefined;
+  assistantError: string | undefined;
+  rateLimitStatus: string | undefined;
+  refusalExplanation: string | undefined;
+  refusalCategory: string | undefined;
+  outputTokens: number;
+}
+
+/**
+ * Decide whether a claude-agent turn the SDK closed "successfully" should
+ * actually surface as a loop error. The SDK can report subtype=success /
+ * stop=end_turn while the turn produced nothing usable — the real signal lives
+ * on the assistant message's stop_reason / error, a rejected subscription quota,
+ * or a thinking-only malfunction. Without this the agentic loop logs "Complete
+ * with empty response" and the minion silently stalls.
+ *
+ * Pure, so the empty-turn cases can be unit-tested without driving a fake SDK
+ * stream. Precedence matches the original inline logic: refusal first
+ * (unconditional — even when partial text streamed), then, only when the turn
+ * produced nothing, hardAssistantError > badStop > rejected-quota > thinking-only.
+ * Returns `undefined` when the turn is fine. The caller applies this only when
+ * no `resultError` is already set, so a non-success `result` subtype still wins.
+ */
+export function classifyTurnError(s: TurnOutcomeSignals): { message: string } | undefined {
+  // A refusal always errors, even when the model streamed partial text first —
+  // surface the human-readable reason rather than leaving a half-answer that
+  // looks complete.
+  if (s.assistantStopReason === 'refusal') {
+    return {
+      message: `claude-agent: refused${s.refusalExplanation ? ` — ${s.refusalExplanation}` : ''}${
+        s.refusalCategory ? ` (category: ${s.refusalCategory})` : ''
+      }`,
+    };
+  }
+
+  // Everything below concerns a turn that rendered nothing at all.
+  if (s.textLength > 0 || s.thinkingLength > 0) return undefined;
+
+  if (s.assistantError && HARD_ASSISTANT_ERRORS.includes(s.assistantError)) {
+    return { message: `claude-agent: ${s.assistantError}` };
+  }
+  if (s.assistantStopReason && BAD_STOP_REASONS.includes(s.assistantStopReason)) {
+    return {
+      message: `claude-agent: turn ended with stop_reason=${s.assistantStopReason} and no output`,
+    };
+  }
+  if (s.rateLimitStatus === 'rejected') {
+    return { message: 'claude-agent: turn rejected (rate_limit_status=rejected)' };
+  }
+  // Thinking-only: spent the output budget on omitted/empty thinking, emitted no
+  // text and called no tool, and closed with no distinguishing signal. A
+  // malfunction worth surfacing. (A turn with no thinking is left to the loop's
+  // `treatEmptyOutputAsError` to honor the project preference.)
+  if (s.sawThinkingBlock && !s.sawToolUse && s.stopReason !== 'tool_use') {
+    return {
+      message: `claude-agent: turn produced only thinking and no output (${s.outputTokens} output tokens spent)`,
+    };
+  }
+  return undefined;
+}
+
 export interface ClaudeAgentClientOptions {
   /** Override the SDK `query` entry point (tests inject a fake). */
   query?: typeof query;
@@ -303,8 +402,10 @@ export class ClaudeAgentClient implements APIClient {
     // `prompt` is logged separately so the redacted env doesn't make
     // debugging the actual content harder.
     const { env: _envForLog, abortController: _ac, ...sdkOptionsForLog } = sdkOptions;
-    console.debug('[claudeAgent] query() prompt=', lastUser);
-    console.debug('[claudeAgent] query() options=', sdkOptionsForLog);
+    // Gated: prompt is user content; options dumps the full system prompt + tool
+    // config. Both are diagnostic-only and shouldn't print on every normal turn.
+    dbg('[claudeAgent] query() prompt=', lastUser);
+    dbg('[claudeAgent] query() options=', sdkOptionsForLog);
     console.debug(
       '[claudeAgent] turn lifecycle: isFirstTurn=%s sessionId=%s resumeAt=%s',
       isFirstTurn,
@@ -370,10 +471,6 @@ export class ClaudeAgentClient implements APIClient {
     // Gates the result-string fallback so a turn with real text never collapses.
     let sawTextBlock = false;
     let loggedTtft = false;
-    // Debug-only counters for reconstructing the partial stream shape in logs
-    // without per-token spam (trim these logs before a PR — see development.md).
-    let dbgDeltaCount = 0;
-    let dbgDeltaType = '';
     // Built-in WebSearch requests the SDK reports on its result usage. Surfaced
     // for the "N searches" display only — claude-agent cost is subscription-zeroed.
     let webSearchCount = 0;
@@ -387,7 +484,7 @@ export class ClaudeAgentClient implements APIClient {
       // so logging each would bury the lifecycle one-liners (the branch below
       // logs the few partial events worth seeing).
       if (msg.type !== 'stream_event') {
-        console.debug(
+        dbg(
           '[claudeAgent] sdk msg type=%s%s%s',
           msg.type,
           'subtype' in msg ? ` subtype=${msg.subtype}` : '',
@@ -403,27 +500,7 @@ export class ClaudeAgentClient implements APIClient {
         const event = msg.event;
         if (event.type === 'message_start') {
           mapperState = createMapperState();
-          console.debug('[claudeAgent] partial message_start uuid=%s', msg.uuid);
-        }
-        // Debug: reconstruct the per-block partial shape without per-token spam.
-        if (event.type === 'content_block_start') {
-          dbgDeltaCount = 0;
-          dbgDeltaType = '';
-          console.debug(
-            '[claudeAgent] partial block.start index=%s type=%s',
-            event.index,
-            event.content_block.type
-          );
-        } else if (event.type === 'content_block_delta') {
-          dbgDeltaCount += 1;
-          dbgDeltaType = event.delta.type;
-        } else if (event.type === 'content_block_stop') {
-          console.debug(
-            '[claudeAgent] partial block.stop index=%s deltas=%d deltaType=%s',
-            event.index,
-            dbgDeltaCount,
-            dbgDeltaType
-          );
+          dbg('[claudeAgent] partial message_start uuid=%s', msg.uuid);
         }
         if (event.type === 'message_delta') {
           const d = event.delta;
@@ -433,7 +510,7 @@ export class ClaudeAgentClient implements APIClient {
             if (sd.explanation) lastRefusalExplanation = sd.explanation;
             if (sd.category) lastRefusalCategory = sd.category;
           }
-          console.debug(
+          dbg(
             '[claudeAgent] partial message_delta stop_reason=%s refusalCategory=%s',
             d.stop_reason ?? '(none)',
             sd?.type === 'refusal' ? (sd.category ?? '(uncategorized)') : '(n/a)'
@@ -481,7 +558,7 @@ export class ClaudeAgentClient implements APIClient {
           yield chunk;
         }
         if (event.type === 'message_stop') {
-          console.debug('[claudeAgent] partial message_stop');
+          dbg('[claudeAgent] partial message_stop');
         }
       } else if (msg.type === 'assistant') {
         assistantUuid = msg.uuid;
@@ -489,12 +566,12 @@ export class ClaudeAgentClient implements APIClient {
         // streaming this turn it's metadata + fullContent only (the partial stream
         // already rendered the block live); otherwise it's the live emitter.
         const blocks = msg.message?.content ?? [];
-        console.debug(
+        dbg(
           '[claudeAgent] coalesced assistant uuid=%s partialsActive=%s',
           msg.uuid,
           partialsActive
         );
-        console.debug(
+        dbg(
           '[claudeAgent] assistant blocks=',
           blocks.map(b => ({
             type: b.type,
@@ -518,6 +595,7 @@ export class ClaudeAgentClient implements APIClient {
         const msgStopReason = msg.message?.stop_reason ?? undefined;
         if (msgStopReason) {
           lastAssistantStopReason = msgStopReason;
+          // Ungated: once per turn and load-bearing for "why did this turn fail".
           console.debug('[claudeAgent] assistant stop_reason=%s uuid=%s', msgStopReason, msg.uuid);
         }
         // Structured refusal info (category + human-readable explanation). The
@@ -532,7 +610,7 @@ export class ClaudeAgentClient implements APIClient {
             // Record that the model produced text (gates the result-string
             // fallback below) — independent of who renders it.
             sawTextBlock = true;
-            console.debug(
+            dbg(
               '[claudeAgent] coalesced text block emit=%s len=%d',
               !partialsActive,
               block.text.length
@@ -633,6 +711,7 @@ export class ClaudeAgentClient implements APIClient {
         // the turn was likely cut; `allowed`/`allowed_warning` is informational.
         const info = msg.rate_limit_info;
         lastRateLimitStatus = info.status;
+        // Ungated: ~once per turn and explains rejected-quota turn failures.
         console.debug(
           '[claudeAgent] rate_limit status=%s type=%s utilization=%s resetsAt=%s overageStatus=%s isUsingOverage=%s surpassedThreshold=%s',
           info.status,
@@ -658,7 +737,7 @@ export class ClaudeAgentClient implements APIClient {
         // Untyped system telemetry beyond `init` (e.g. thinking_tokens) — keep it
         // to a one-liner, surfacing the thinking-token estimate when present.
         const sys = msg as { estimated_tokens?: number; estimated_tokens_delta?: number };
-        console.debug(
+        dbg(
           '[claudeAgent] system %s estimated_tokens=%s delta=%s',
           msg.subtype,
           sys.estimated_tokens ?? '(n/a)',
@@ -716,7 +795,7 @@ export class ClaudeAgentClient implements APIClient {
     // empty textBuf) so a turn that DID produce text blocks never collapses into
     // the flat result string — which for an interleaved turn would concatenate
     // every text segment into one block after the thinking.
-    console.debug(
+    dbg(
       '[claudeAgent] text adoption check sawTextBlock=%s textBufLen=%d resultLen=%d willAdopt=%s',
       sawTextBlock,
       textBuf.length,
@@ -734,70 +813,23 @@ export class ClaudeAgentClient implements APIClient {
       textBuf += resultText;
     }
 
-    // Surface a turn that closed "successfully" but rendered nothing. The SDK
-    // can report subtype=success / stop=end_turn while emitting only omitted
-    // thinking and no text — e.g. a paused/refused turn whose real signal lives
-    // on the assistant message's stop_reason (the result's session-level reason
-    // is a generic end_turn), the CLI cutting generation on a rejected quota, or
-    // an assistant-level hard error the result never echoes. Without this the
-    // agentic loop just logs "Complete with empty response" and the minion
-    // silently stalls.
-    const HARD_ASSISTANT_ERRORS = [
-      'rate_limit',
-      'max_output_tokens',
-      'server_error',
-      'billing_error',
-      'overloaded',
-    ];
-    // Terminal reasons that mean "no usable answer" — including pause_turn, which
-    // signals the turn needs continuation the SDK didn't perform here.
-    const BAD_STOP_REASONS = [
-      'max_tokens',
-      'refusal',
-      'pause_turn',
-      'model_context_window_exceeded',
-    ];
-    const producedNothing = textBuf.length === 0 && thinkingBuf.length === 0;
-    const hardAssistantError =
-      !!lastAssistantError && HARD_ASSISTANT_ERRORS.includes(lastAssistantError);
-    const badStop = !!lastAssistantStopReason && BAD_STOP_REASONS.includes(lastAssistantStopReason);
-    // A refusal always errors — even when the model streamed partial text first —
-    // so the loop surfaces it (status: 'error') with the human-readable reason
-    // rather than leaving a half-answer that looks complete. Built from the
-    // refusal `stop_details` captured off the coalesced message or the partial
-    // message_delta. This runs unconditionally (not gated on producedNothing);
-    // setting `resultError` here means the producedNothing block below skips it.
-    const refusalMessage =
-      lastAssistantStopReason === 'refusal'
-        ? `claude-agent: refused${lastRefusalExplanation ? ` — ${lastRefusalExplanation}` : ''}${
-            lastRefusalCategory ? ` (category: ${lastRefusalCategory})` : ''
-          }`
-        : undefined;
-    if (!resultError && refusalMessage) {
-      resultError = { message: refusalMessage };
-    }
-    // The observed failure: the model spent its output budget on omitted/empty
-    // thinking, emitted no text and called no tool, and the turn closed with no
-    // distinguishing signal (allowed quota, no error, null stop_reason). Burning
-    // thinking tokens with zero output is a malfunction, not a deliberate empty
-    // reply — surface it. A turn with no thinking either is left for the loop's
-    // `treatEmptyOutputAsError` to honor the project's preference.
-    const thinkingOnly =
-      producedNothing && sawThinkingBlock && !sawToolUse && stopReason !== 'tool_use';
-    if (
-      !resultError &&
-      producedNothing &&
-      (hardAssistantError || badStop || lastRateLimitStatus === 'rejected' || thinkingOnly)
-    ) {
-      resultError = {
-        message: hardAssistantError
-          ? `claude-agent: ${lastAssistantError}`
-          : badStop
-            ? `claude-agent: turn ended with stop_reason=${lastAssistantStopReason} and no output`
-            : lastRateLimitStatus === 'rejected'
-              ? 'claude-agent: turn rejected (rate_limit_status=rejected)'
-              : `claude-agent: turn produced only thinking and no output (${usage.outputTokens} output tokens spent)`,
-      };
+    // Surface a turn that closed "successfully" but rendered nothing usable
+    // (see `classifyTurnError`). Gated on `!resultError` so a non-success
+    // `result` subtype captured above still wins.
+    if (!resultError) {
+      resultError = classifyTurnError({
+        textLength: textBuf.length,
+        thinkingLength: thinkingBuf.length,
+        sawThinkingBlock,
+        sawToolUse,
+        stopReason,
+        assistantStopReason: lastAssistantStopReason,
+        assistantError: lastAssistantError,
+        rateLimitStatus: lastRateLimitStatus,
+        refusalExplanation: lastRefusalExplanation,
+        refusalCategory: lastRefusalCategory,
+        outputTokens: usage.outputTokens,
+      });
     }
 
     console.debug(

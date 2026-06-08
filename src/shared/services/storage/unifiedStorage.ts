@@ -15,7 +15,9 @@ import type {
   Project,
 } from '../../protocol/types';
 import { generateUniqueId } from '../../protocol/idGenerator';
+import { ProtocolError } from '../../protocol/protocolError';
 import type { EncryptionCore } from '../encryption/encryptionCore';
+import { withKeyedLock } from './recordLock';
 import { type StorageAdapter, Tables } from './StorageAdapter';
 
 export class CekOracleMismatchError extends Error {
@@ -310,7 +312,47 @@ export class UnifiedStorage {
     }
   }
 
+  /** Create or fully overwrite a project. Use `patchProject` for updates. */
   async saveProject(project: Project): Promise<void> {
+    await withKeyedLock(`${Tables.PROJECTS}:${project.id}`, () => this.writeProjectRecord(project));
+  }
+
+  /**
+   * Surgically update a project: read the latest stored record, overlay
+   * `fields`, clear any `unset` keys, optionally bump `lastUsedAt` (`touch`),
+   * write back, and return the merged project. Serialized per project id so a
+   * finishing loop's `lastUsedAt` bump can't clobber a concurrent settings
+   * edit (and vice versa). Throws `PROJECT_NOT_FOUND` rather than creating.
+   *
+   * `unset` (not `fields: { x: undefined }`) is how clears cross the wire:
+   * `JSON.stringify` drops undefined-valued keys, so an undefined field would
+   * arrive as "absent" → preserved instead of cleared.
+   */
+  async patchProject(
+    projectId: string,
+    fields: Partial<Project>,
+    opts?: { touch?: boolean; unset?: (keyof Project)[] }
+  ): Promise<Project> {
+    return withKeyedLock(`${Tables.PROJECTS}:${projectId}`, async () => {
+      const stored = await this.getProject(projectId);
+      if (!stored) {
+        throw new ProtocolError('PROJECT_NOT_FOUND', `project ${projectId} not found`);
+      }
+      const merged: Project = { ...stored, ...fields };
+      const mutable = merged as unknown as Record<string, unknown>;
+      for (const key of opts?.unset ?? []) {
+        delete mutable[key as string];
+      }
+      if (opts?.touch) {
+        merged.lastUsedAt = new Date();
+      }
+      await this.writeProjectRecord(merged);
+      return merged;
+    });
+  }
+
+  /** Unlocked project write — caller must already hold the project's lock. */
+  private async writeProjectRecord(project: Project): Promise<void> {
     const data = {
       ...project,
       createdAt: project.createdAt.toISOString(),
@@ -324,17 +366,20 @@ export class UnifiedStorage {
   }
 
   async deleteProject(id: string): Promise<void> {
-    // Delete all chats in project (which will cascade to messages)
-    const chats = await this.getChats(id);
-    for (const chat of chats) {
-      await this.deleteChat(chat.id);
-    }
+    await withKeyedLock(`${Tables.PROJECTS}:${id}`, async () => {
+      // Delete all chats in project (which will cascade to messages). Each
+      // deleteChat takes its own `chats:<id>` lock — distinct keys, no cycle.
+      const chats = await this.getChats(id);
+      for (const chat of chats) {
+        await this.deleteChat(chat.id);
+      }
 
-    // Delete VFS data for this project
-    await this.deleteVfsData(id);
+      // Delete VFS data for this project
+      await this.deleteVfsData(id);
 
-    // Delete project
-    await this.adapter.delete(Tables.PROJECTS, id);
+      // Delete project
+      await this.adapter.delete(Tables.PROJECTS, id);
+    });
   }
 
   /**
@@ -414,7 +459,50 @@ export class UnifiedStorage {
     }
   }
 
+  /** Create or fully overwrite a chat. Use `patchChat` for updates. */
   async saveChat(chat: Chat): Promise<void> {
+    await withKeyedLock(`${Tables.CHATS}:${chat.id}`, () => this.writeChatRecord(chat));
+  }
+
+  /**
+   * Surgically update a chat: read the latest stored record, overlay `fields`,
+   * clear any `unset` keys, optionally bump `lastModifiedAt` (`touch`), write
+   * back, and return the merged chat. Serialized per chat id so a running
+   * loop's token-total patches and a concurrent user rename touch disjoint
+   * fields without losing each other. Throws `CHAT_NOT_FOUND` rather than
+   * creating a row (guards a cached-`null` read from resurrecting a deleted
+   * chat).
+   *
+   * Clears MUST go through `unset`, never `fields: { x: undefined }` — the JSON
+   * wire drops undefined-valued keys, so the spread overlay does NOT carry a
+   * clear across a transport. Do not "optimize" by filtering undefined out of
+   * `fields`; the no-filter spread is intentional.
+   */
+  async patchChat(
+    chatId: string,
+    fields: Partial<Chat>,
+    opts?: { touch?: boolean; unset?: (keyof Chat)[] }
+  ): Promise<Chat> {
+    return withKeyedLock(`${Tables.CHATS}:${chatId}`, async () => {
+      const stored = await this.getChat(chatId);
+      if (!stored) {
+        throw new ProtocolError('CHAT_NOT_FOUND', `chat ${chatId} not found`);
+      }
+      const merged: Chat = { ...stored, ...fields };
+      const mutable = merged as unknown as Record<string, unknown>;
+      for (const key of opts?.unset ?? []) {
+        delete mutable[key as string];
+      }
+      if (opts?.touch) {
+        merged.lastModifiedAt = new Date();
+      }
+      await this.writeChatRecord(merged);
+      return merged;
+    });
+  }
+
+  /** Unlocked chat write — caller must already hold the chat's lock. */
+  private async writeChatRecord(chat: Chat): Promise<void> {
     const data = {
       ...chat,
       createdAt: chat.createdAt.toISOString(),
@@ -429,32 +517,37 @@ export class UnifiedStorage {
   }
 
   async deleteChat(id: string): Promise<void> {
-    // Delete all minion chats associated with this chat
-    const minionChats = await this.getMinionChats(id);
-    for (const minionChat of minionChats) {
-      await this.deleteMinionChat(minionChat.id);
-    }
+    await withKeyedLock(`${Tables.CHATS}:${id}`, async () => {
+      // Delete all minion chats associated with this chat
+      const minionChats = await this.getMinionChats(id);
+      for (const minionChat of minionChats) {
+        await this.deleteMinionChat(minionChat.id);
+      }
 
-    // Get all messages first to delete their attachments
-    const messages = await this.getMessages(id);
-    for (const msg of messages) {
-      await this.deleteAttachments(msg.id);
-    }
+      // Get all messages first to delete their attachments
+      const messages = await this.getMessages(id);
+      for (const msg of messages) {
+        await this.deleteAttachments(msg.id);
+      }
 
-    // Delete all messages in chat
-    await this.adapter.deleteMany(Tables.MESSAGES, { parentId: id });
+      // Delete all messages in chat
+      await this.adapter.deleteMany(Tables.MESSAGES, { parentId: id });
 
-    // Delete chat
-    await this.adapter.delete(Tables.CHATS, id);
+      // Delete chat
+      await this.adapter.delete(Tables.CHATS, id);
+    });
   }
 
   async moveChat(chatId: string, targetProjectId: string): Promise<void> {
-    const chat = await this.getChat(chatId);
-    if (!chat) return;
+    await withKeyedLock(`${Tables.CHATS}:${chatId}`, async () => {
+      const chat = await this.getChat(chatId);
+      if (!chat) return;
 
-    chat.projectId = targetProjectId;
-    chat.lastModifiedAt = new Date();
-    await this.saveChat(chat);
+      chat.projectId = targetProjectId;
+      chat.lastModifiedAt = new Date();
+      // Unlocked write — we already hold this chat's lock.
+      await this.writeChatRecord(chat);
+    });
   }
 
   async cloneChat(
@@ -603,11 +696,14 @@ export class UnifiedStorage {
       parentId: chatId,
     });
 
-    // Update chat's lastModifiedAt
-    const chat = await this.getChat(chatId);
-    if (chat) {
-      chat.lastModifiedAt = new Date();
-      await this.saveChat(chat);
+    // Bump the chat's lastModifiedAt surgically so a concurrent rename or an
+    // in-flight loop's token totals survive — a whole-object save would
+    // clobber them. Best-effort: a chat removed mid-flight (e.g. delete) is
+    // ignored, matching the old `if (chat)` leniency.
+    try {
+      await this.patchChat(chatId, {}, { touch: true });
+    } catch (err) {
+      if (!(err instanceof ProtocolError && err.code === 'CHAT_NOT_FOUND')) throw err;
     }
   }
 
@@ -698,9 +794,42 @@ export class UnifiedStorage {
   }
 
   /**
-   * Save a minion chat
+   * Save (create or fully overwrite) a minion chat. The minion tool accumulates
+   * its run state on this record across a sub-loop; the per-id lock it shares
+   * with `patchMinionChat` serializes parallel `minion` calls reusing one
+   * `minionChatId` so they don't clobber each other's session/savepoint state.
    */
   async saveMinionChat(minionChat: MinionChat): Promise<void> {
+    await withKeyedLock(`${Tables.MINION_CHATS}:${minionChat.id}`, () =>
+      this.writeMinionChatRecord(minionChat)
+    );
+  }
+
+  /**
+   * Surgically update a minion chat (read-merge-write, serialized per id).
+   * Throws `MINION_CHAT_NOT_FOUND` rather than creating.
+   */
+  async patchMinionChat(
+    minionChatId: string,
+    fields: Partial<MinionChat>,
+    opts?: { touch?: boolean }
+  ): Promise<MinionChat> {
+    return withKeyedLock(`${Tables.MINION_CHATS}:${minionChatId}`, async () => {
+      const stored = await this.getMinionChat(minionChatId);
+      if (!stored) {
+        throw new ProtocolError('MINION_CHAT_NOT_FOUND', `minion chat ${minionChatId} not found`);
+      }
+      const merged: MinionChat = { ...stored, ...fields };
+      if (opts?.touch) {
+        merged.lastModifiedAt = new Date();
+      }
+      await this.writeMinionChatRecord(merged);
+      return merged;
+    });
+  }
+
+  /** Unlocked minion-chat write — caller must already hold the record's lock. */
+  private async writeMinionChatRecord(minionChat: MinionChat): Promise<void> {
     const data = {
       ...minionChat,
       createdAt: minionChat.createdAt.toISOString(),
@@ -750,11 +879,13 @@ export class UnifiedStorage {
       parentId: minionChatId,
     });
 
-    // Update minion chat's lastModifiedAt
-    const minionChat = await this.getMinionChat(minionChatId);
-    if (minionChat) {
-      minionChat.lastModifiedAt = new Date();
-      await this.saveMinionChat(minionChat);
+    // Bump the minion chat's lastModifiedAt surgically (a whole-object save
+    // would clobber a concurrent minion-call's run state on the same record).
+    // Best-effort: a minion chat removed mid-flight is ignored.
+    try {
+      await this.patchMinionChat(minionChatId, {}, { touch: true });
+    } catch (err) {
+      if (!(err instanceof ProtocolError && err.code === 'MINION_CHAT_NOT_FOUND')) throw err;
     }
   }
 

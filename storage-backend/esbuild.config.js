@@ -38,9 +38,9 @@ const distPackageJson = {
     start: 'node index.js',
   },
   dependencies: {
-    'better-sqlite3': '^11.7.0',
-    dotenv: '^16.4.7',
-    express: '^4.21.2',
+    'better-sqlite3': '^12.5.0',
+    dotenv: '^17.2.3',
+    express: '^5.2.1',
   },
   engines: {
     node: '>=18',

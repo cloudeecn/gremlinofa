@@ -220,12 +220,34 @@ export interface GremlinMethods {
   listProjects: { params: Record<string, never>; result: Project[]; streams: never };
   getProject: { params: { projectId: string }; result: Project | null; streams: never };
   saveProject: { params: { project: Project }; result: { ok: true }; streams: never };
+  /**
+   * Surgical project update: merge `fields` onto the latest stored project,
+   * clear any `unset` keys, optionally bump `lastUsedAt` (`touch`). Returns the
+   * merged project. Use instead of `saveProject` for edits so a finishing
+   * loop's `lastUsedAt` bump and a concurrent settings change don't clobber.
+   */
+  patchProject: {
+    params: { projectId: string; fields: Partial<Project>; touch?: boolean; unset?: string[] };
+    result: Project;
+    streams: never;
+  };
   deleteProject: { params: { projectId: string }; result: { ok: true }; streams: never };
 
   // ---- chats ----
   listChats: { params: { projectId: string }; result: Chat[]; streams: never };
   getChat: { params: { chatId: string }; result: Chat | null; streams: never };
   saveChat: { params: { chat: Chat }; result: { ok: true }; streams: never };
+  /**
+   * Surgical chat update: merge `fields` onto the latest stored chat, clear any
+   * `unset` keys, optionally bump `lastModifiedAt` (`touch`). Returns the merged
+   * chat. Clears go through `unset` (the JSON wire drops undefined-valued
+   * fields, so `fields: { x: undefined }` would not carry a clear across).
+   */
+  patchChat: {
+    params: { chatId: string; fields: Partial<Chat>; touch?: boolean; unset?: string[] };
+    result: Chat;
+    streams: never;
+  };
   deleteChat: { params: { chatId: string }; result: { ok: true }; streams: never };
   cloneChat: {
     params: {

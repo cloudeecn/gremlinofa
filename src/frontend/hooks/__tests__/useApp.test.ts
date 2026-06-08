@@ -27,6 +27,7 @@ describe('useApp', () => {
       projects: [],
       refreshProjects: vi.fn().mockResolvedValue(undefined),
       saveProject: vi.fn().mockResolvedValue(undefined),
+      patchProject: vi.fn().mockResolvedValue(undefined),
       deleteProject: vi.fn().mockResolvedValue(undefined),
       models: new Map(),
       refreshModels: vi.fn().mockResolvedValue(undefined),

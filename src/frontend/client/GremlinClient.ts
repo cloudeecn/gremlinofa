@@ -162,6 +162,25 @@ export class GremlinClient {
     await this.request('saveProject', { project });
   }
 
+  /**
+   * Surgically update a project — merges `fields` onto the latest stored
+   * project so concurrent edits (or a finishing loop's `lastUsedAt` bump) don't
+   * clobber. Pass clears via `unset` (the wire drops undefined fields). Returns
+   * the merged project.
+   */
+  patchProject(
+    projectId: string,
+    fields: Partial<Project>,
+    opts?: { touch?: boolean; unset?: (keyof Project)[] }
+  ): Promise<Project> {
+    return this.request('patchProject', {
+      projectId,
+      fields,
+      touch: opts?.touch,
+      unset: opts?.unset as string[] | undefined,
+    });
+  }
+
   async deleteProject(projectId: string): Promise<void> {
     await this.request('deleteProject', { projectId });
   }
@@ -180,6 +199,25 @@ export class GremlinClient {
 
   async saveChat(chat: Chat): Promise<void> {
     await this.request('saveChat', { chat });
+  }
+
+  /**
+   * Surgically update a chat — merges `fields` onto the latest stored chat so a
+   * running loop's token totals and a concurrent rename / model override don't
+   * clobber each other. Pass clears via `unset` (the wire drops undefined
+   * fields). Returns the merged chat.
+   */
+  patchChat(
+    chatId: string,
+    fields: Partial<Chat>,
+    opts?: { touch?: boolean; unset?: (keyof Chat)[] }
+  ): Promise<Chat> {
+    return this.request('patchChat', {
+      chatId,
+      fields,
+      touch: opts?.touch,
+      unset: opts?.unset as string[] | undefined,
+    });
   }
 
   async deleteChat(chatId: string): Promise<void> {

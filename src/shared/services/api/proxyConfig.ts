@@ -26,8 +26,13 @@ export function getProxyConfig(apiDefinition: APIDefinition): ProxyOverrides | n
   const targetUrl = apiDefinition.baseUrl || DEFAULT_BASE_URLS[apiDefinition.apiType];
   if (!targetUrl) return null;
 
+  const headers: Record<string, string> = { 'X-Proxy-Target': targetUrl };
+  if (apiDefinition.proxyAuthToken) {
+    headers['X-Proxy-Auth'] = apiDefinition.proxyAuthToken;
+  }
+
   return {
     baseURL: apiDefinition.proxyUrl,
-    headers: { 'X-Proxy-Target': targetUrl },
+    headers,
   };
 }

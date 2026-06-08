@@ -172,6 +172,25 @@ function computeClaudeAgentRewindKeeping(
   return computeClaudeAgentRewindBefore(chat, messages, targetIndex + 1);
 }
 
+/**
+ * Split a claude-agent rewind patch into surgical `fields` (keys to set) and
+ * `unset` (keys to clear). Clears MUST go through `unset` — the JSON wire drops
+ * undefined-valued fields, so a `{ x: undefined }` overlay would silently be a
+ * no-op patch instead of clearing the SDK session.
+ */
+function splitRewindPatch(rewind: Partial<Chat>): {
+  fields: Partial<Chat>;
+  unset: (keyof Chat)[];
+} {
+  const fields: Partial<Chat> = {};
+  const unset: (keyof Chat)[] = [];
+  for (const key of Object.keys(rewind) as (keyof Chat)[]) {
+    if (rewind[key] === undefined) unset.push(key);
+    else (fields as Record<string, unknown>)[key as string] = rewind[key];
+  }
+  return { fields, unset };
+}
+
 function getUnresolvedToolCalls(messages: Message<unknown>[]): ToolUseBlock[] | null {
   if (messages.length === 0) return null;
 
@@ -615,6 +634,16 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           // (this is the per-iteration end, not the loop end).
           break;
 
+        case 'streaming_snapshot':
+          // attachChat replay of the in-flight assistant bubble (text +
+          // thinking + provider-side tool results). Apply directly, bypassing
+          // the streaming throttle, so the bubble repaints instantly on
+          // reattach instead of waiting for the next live `streaming_chunk`.
+          // Any live chunk arriving after lands on top via the normal path.
+          pendingStreamingRef.current = null;
+          setStreamingGroups(event.groups);
+          break;
+
         case 'message_created': {
           const msg = event.message;
           const reconMap = reconMapRef.current;
@@ -1040,7 +1069,14 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     callbacksRef.current.onChatMetadataChanged?.(updatedChat.id, updatedChat);
     callbacksRef.current.onMessagesRemovedOnAndAfter(updatedChat.id, messageId);
 
-    await gremlinClient.saveChat(updatedChat);
+    // Patch only the fields we touch (+ SDK rewind clears via `unset`) so we
+    // don't clobber unrelated chat state with a whole-object write.
+    const { fields: sdkFields, unset: sdkUnset } = splitRewindPatch(sdkRewind);
+    await gremlinClient.patchChat(
+      incomingChatId,
+      { contextWindowUsage, ...sdkFields },
+      { touch: true, unset: sdkUnset }
+    );
     await gremlinClient.deleteMessageAndAfter(incomingChatId, messageId);
   };
 
@@ -1083,7 +1119,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     callbacksRef.current.onChatMetadataChanged?.(updatedChat.id, updatedChat);
     callbacksRef.current.onMessagesRemovedOnAndAfter(updatedChat.id, nextMessageId);
 
-    await gremlinClient.saveChat(updatedChat);
+    const { fields: sdkFields, unset: sdkUnset } = splitRewindPatch(sdkRewind);
+    await gremlinClient.patchChat(
+      incomingChatId,
+      { contextWindowUsage, ...sdkFields },
+      { touch: true, unset: sdkUnset }
+    );
     await gremlinClient.deleteMessageAndAfter(incomingChatId, nextMessageId);
   };
 
@@ -1129,7 +1170,14 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     };
     setChat(updatedChat);
     callbacksRef.current.onChatMetadataChanged?.(incomingChatId, updatedChat);
-    await gremlinClient.saveChat(updatedChat);
+    // Patch only the override fields (+ touch) so an in-flight loop's token
+    // totals survive. `null` clears the override; it crosses the wire fine
+    // (only `undefined` is dropped).
+    await gremlinClient.patchChat(
+      incomingChatId,
+      { apiDefinitionId: apiDefId, modelId },
+      { touch: true }
+    );
   };
 
   const updateChatName = async (incomingChatId: string, name: string) => {
@@ -1143,7 +1191,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     };
     setChat(updatedChat);
     callbacksRef.current.onChatMetadataChanged?.(chat.id, updatedChat);
-    await gremlinClient.saveChat(updatedChat);
+    // Patch only the name (+ touch) so a rename mid-loop doesn't clobber the
+    // loop's token totals (and vice versa).
+    await gremlinClient.patchChat(chat.id, { name: name.trim() }, { touch: true });
   };
 
   const resolvePendingToolCalls = async (

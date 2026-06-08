@@ -31,6 +31,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formModelsEndpoint, setFormModelsEndpoint] = useState('');
   const [formModelsEndpointDisabled, setFormModelsEndpointDisabled] = useState(false);
   const [formProxyUrl, setFormProxyUrl] = useState('');
+  const [formProxyAuthToken, setFormProxyAuthToken] = useState('');
   const [formExtraModelIds, setFormExtraModelIds] = useState('');
   const [formPruneThinking, setFormPruneThinking] = useState(false);
   const [formPruneEmptyText, setFormPruneEmptyText] = useState(false);
@@ -57,6 +58,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormModelsEndpoint('');
     setFormModelsEndpointDisabled(false);
     setFormProxyUrl('');
+    setFormProxyAuthToken('');
     setFormExtraModelIds('');
     setFormPruneThinking(false);
     setFormPruneEmptyText(false);
@@ -97,6 +99,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormModelsEndpoint(def.modelsEndpoint || '');
     setFormModelsEndpointDisabled(def.modelsEndpointDisabled || false);
     setFormProxyUrl(def.proxyUrl || '');
+    setFormProxyAuthToken(def.proxyAuthToken || '');
     setFormExtraModelIds((def.extraModelIds || []).join('\n'));
     setFormPruneThinking(def.advancedSettings?.pruneThinking || false);
     setFormPruneEmptyText(def.advancedSettings?.pruneEmptyText || false);
@@ -140,6 +143,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormModelsEndpoint('');
     setFormModelsEndpointDisabled(false);
     setFormProxyUrl('');
+    setFormProxyAuthToken('');
     setFormExtraModelIds('');
     setFormPruneThinking(false);
     setFormPruneEmptyText(false);
@@ -183,6 +187,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
         modelsEndpoint: formModelsEndpoint.trim() || undefined,
         modelsEndpointDisabled: formModelsEndpointDisabled || undefined,
         proxyUrl: formProxyUrl.trim() || undefined,
+        proxyAuthToken: formProxyAuthToken.trim() || undefined,
         extraModelIds: formExtraModelIds.trim()
           ? formExtraModelIds
               .split('\n')
@@ -238,6 +243,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formModelsEndpoint,
     formModelsEndpointDisabled,
     formProxyUrl,
+    formProxyAuthToken,
     formExtraModelIds,
     formPruneThinking,
     formPruneEmptyText,
@@ -739,6 +745,19 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                             <p className="mb-4 text-xs text-gray-500">
                               Routes API traffic through a CORS proxy server
                             </p>
+                            <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                              CORS Proxy Auth Token (Optional)
+                            </label>
+                            <input
+                              type="password"
+                              className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                              placeholder="shared secret"
+                              value={formProxyAuthToken}
+                              onChange={e => setFormProxyAuthToken(e.target.value)}
+                            />
+                            <p className="mb-4 text-xs text-gray-500">
+                              Sent as the X-Proxy-Auth header to authenticate with the proxy
+                            </p>
                           </>
                         )}
 
@@ -1080,6 +1099,19 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           />
                           <p className="mb-4 text-xs text-gray-500">
                             Routes API traffic through a CORS proxy server
+                          </p>
+                          <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                            CORS Proxy Auth Token (Optional)
+                          </label>
+                          <input
+                            type="password"
+                            className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                            placeholder="shared secret"
+                            value={formProxyAuthToken}
+                            onChange={e => setFormProxyAuthToken(e.target.value)}
+                          />
+                          <p className="mb-4 text-xs text-gray-500">
+                            Sent as the X-Proxy-Auth header to authenticate with the proxy
                           </p>
                         </>
                       )}

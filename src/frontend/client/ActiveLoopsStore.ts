@@ -39,9 +39,25 @@ export class ActiveLoopsStore {
   private listeners: Set<ActiveLoopsListener> = new Set();
   private streamStarted = false;
   private abortStream: (() => void) | null = null;
+  private unsubReconnect: (() => void) | null = null;
+  /** Live chat titles pushed by `chat_title_changed` events. */
+  private chatTitles: Map<string, string> = new Map();
+  private chatTitlesSnapshot: ReadonlyMap<string, string> = new Map();
 
   constructor(client: GremlinClient) {
     this.client = client;
+    this.unsubReconnect = this.client.onReconnect(() => {
+      // After a WebSocket disconnect+reconnect the old stream is dead
+      // (transport pushed stream_end, the for-await loop has unwound and
+      // set streamStarted = false). Re-open if React components are still
+      // subscribed so the sidebar picks up running loops again.
+      if (this.listeners.size > 0) {
+        this.abortStream?.();
+        this.abortStream = null;
+        this.streamStarted = true;
+        void this.startStream();
+      }
+    });
   }
 
   /**
@@ -67,6 +83,13 @@ export class ActiveLoopsStore {
   getSnapshot = (): ActiveLoop[] => this.snapshot;
 
   /**
+   * `useSyncExternalStore` snapshot for live chat titles pushed by the
+   * backend's `chat_title_changed` events. Returns the same Map reference
+   * until the next title update.
+   */
+  getTitlesSnapshot = (): ReadonlyMap<string, string> => this.chatTitlesSnapshot;
+
+  /**
    * Hard-abort a loop. Wraps `gremlinClient.abortLoop` so the sidebar UI
    * doesn't have to import the client directly. Errors are swallowed and
    * logged — the registry's `ended` broadcast removes the row regardless.
@@ -81,11 +104,15 @@ export class ActiveLoopsStore {
 
   /** Tear down the upstream subscription. Used by tests. */
   dispose(): void {
+    this.unsubReconnect?.();
+    this.unsubReconnect = null;
     this.abortStream?.();
     this.abortStream = null;
     this.streamStarted = false;
     this.loops.clear();
     this.snapshot = [];
+    this.chatTitles.clear();
+    this.chatTitlesSnapshot = new Map();
     this.listeners.clear();
   }
 
@@ -139,6 +166,10 @@ export class ActiveLoopsStore {
       }
       case 'ended':
         this.loops.delete(change.loopId);
+        break;
+      case 'chat_title_changed':
+        this.chatTitles.set(change.chatId, change.title);
+        this.chatTitlesSnapshot = new Map(this.chatTitles);
         break;
     }
     this.publish();

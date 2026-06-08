@@ -13,16 +13,17 @@ import ProjectSettingsView from './components/project/ProjectSettingsView';
 import VfsManagerView from './components/project/VfsManagerView';
 import ChatView from './components/chat/ChatView';
 import { AttachmentManagerView } from './components/AttachmentManagerView';
+import { ConnectionStatusBanner } from './components/ConnectionStatusBanner';
 import { OOBEScreen } from './components/OOBEScreen';
 import { OOBEComplete } from './components/OOBEComplete';
-import { getCachedCEKString } from './lib/localStorageBoot';
+import { getCachedCEKString, getStorageConfig } from './lib/localStorageBoot';
 import { formatStorageDisplay, shouldShowStorageWarning } from './lib/formatBytes';
 
 // OOBE result type
 interface OOBEResult {
   mode: 'fresh' | 'import' | 'existing';
   cek: string;
-  storageType: 'indexeddb' | 'remote';
+  storageType: 'indexeddb' | 'remote' | 'server';
   importStats?: {
     imported: number;
     skipped: number;
@@ -95,6 +96,7 @@ function AppContent() {
 
       {/* Main Content */}
       <div className="flex flex-1 flex-col overflow-hidden">
+        <ConnectionStatusBanner />
         <Routes>
           <Route
             path="/"
@@ -136,13 +138,16 @@ function WelcomeScreen({ onMenuPress }: { onMenuPress?: () => void }) {
     refreshStorageQuota();
   }, [refreshStorageQuota]);
 
-  // Calculate storage display info
-  const storageInfo = storageQuota
-    ? formatStorageDisplay(storageQuota.usage, storageQuota.quota)
-    : null;
-  const showWarning = storageQuota
-    ? shouldShowStorageWarning(storageQuota.usage, storageQuota.quota)
-    : false;
+  // Calculate storage display info (irrelevant in server mode — already using remote storage)
+  const isServerMode = getStorageConfig().type === 'server';
+  const storageInfo =
+    !isServerMode && storageQuota
+      ? formatStorageDisplay(storageQuota.usage, storageQuota.quota)
+      : null;
+  const showWarning =
+    !isServerMode && storageQuota
+      ? shouldShowStorageWarning(storageQuota.usage, storageQuota.quota)
+      : false;
 
   return (
     <div className="flex flex-1 items-center justify-center bg-white">

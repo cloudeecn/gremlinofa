@@ -28,6 +28,7 @@ export default defineConfig(({ command }) => {
       },
     },
     build: {
+      outDir: 'dist/frontend',
       sourcemap: true,
     },
     worker: {

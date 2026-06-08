@@ -44,21 +44,21 @@ import type {
 import type { LoopId, SubscriberId } from './wire';
 
 // ============================================================================
-// Dispatch gating
+// Init-exempt methods
 // ============================================================================
 
 /**
- * RPC methods that may run while the backend is still dormant. OOBE and
- * bootstrap call these before `init` to mint / normalize a CEK. Both the
- * `GremlinServer` dispatcher and the `WorkerTransport` request gate must
- * agree on this set — otherwise the transport hangs the call on
- * `initPromise` even though the server would happily answer it.
+ * Methods that can run before `init` completes. Both `GremlinServer`
+ * (skips `ensureInitialized`) and client-side transports (skips the
+ * `initPromise` gate) use this set so dormant-callable RPCs like
+ * `generateNewCEK` aren't deadlocked during OOBE.
  */
 export const INIT_EXEMPT_METHODS = new Set<string>([
   'init',
   'generateNewCEK',
   'normalizeCEK',
   'deriveUserIdFromCEK',
+  'validateRemoteStorage',
 ]);
 
 // ============================================================================
@@ -173,8 +173,17 @@ export interface RunLoopParams {
 // ============================================================================
 
 export interface ImportDataParams {
-  /** Raw CSV export bundle bytes — the frontend reads `File` to `Uint8Array`. */
-  data: Uint8Array;
+  /**
+   * Raw CSV export bundle bytes — the frontend reads `File` to `Uint8Array`.
+   * For small files this is sent directly. For large files the client sends
+   * chunks via `importUploadChunk` first and passes `uploadId` instead.
+   */
+  data?: Uint8Array;
+  /**
+   * Reference to a chunked upload previously sent via `importUploadChunk`.
+   * Mutually exclusive with `data`.
+   */
+  uploadId?: string;
   /** CEK the bundle was originally encrypted with (base32 or base64). */
   sourceCEK: string;
   /**
@@ -183,6 +192,11 @@ export interface ImportDataParams {
    * becomes the active CEK).
    */
   mode: 'merge' | 'replace';
+  /**
+   * Skip the post-import VFS migration phase (remote VFS fetch and
+   * table→filesystem materialization). Defaults to `false`.
+   */
+  skipVfsMigration?: boolean;
 }
 
 // ============================================================================
@@ -304,6 +318,16 @@ export interface GremlinMethods {
   };
 
   // ---- storage / data ----
+  /**
+   * Upload a chunk of import data. The client splits large CSV bundles into
+   * manageable pieces, sends each via this one-shot RPC, and then calls
+   * `importData` with the `uploadId` to process the accumulated chunks.
+   */
+  importUploadChunk: {
+    params: { uploadId: string; data: Uint8Array; final: boolean };
+    result: { ok: true; received: number };
+    streams: never;
+  };
   getStorageQuota: {
     params: Record<string, never>;
     result: { usage: number; quota: number };

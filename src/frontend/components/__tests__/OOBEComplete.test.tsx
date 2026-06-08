@@ -74,6 +74,13 @@ describe('OOBEComplete', () => {
       expect(screen.getByText('Data synced via remote storage backend')).toBeInTheDocument();
     });
 
+    it('should display server backend info for server', () => {
+      render(<OOBEComplete mode="fresh" cek={mockCEK} storageType="server" />);
+
+      expect(screen.getByText('Storage: Remote Backend')).toBeInTheDocument();
+      expect(screen.getByText('Server owns storage and runs the backend')).toBeInTheDocument();
+    });
+
     it('should display Launch App button', () => {
       render(<OOBEComplete mode="fresh" cek={mockCEK} storageType="indexeddb" />);
 

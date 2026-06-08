@@ -67,18 +67,42 @@ function makeAttachController() {
   };
 }
 
-function makeMockClient(attach: ReturnType<typeof makeAttachController>) {
+function makeReconnectController() {
+  let cb: (() => void) | null = null;
+  const onReconnect = vi.fn((handler: () => void) => {
+    cb = handler;
+    return () => {
+      cb = null;
+    };
+  });
   return {
-    stream: vi.fn((method: string) => {
-      if (method !== 'attachChat') {
-        throw new Error(`unexpected stream method in test: ${method}`);
-      }
-      return attach.iterable;
-    }),
-    startLoop: vi.fn(async () => ({ loopId: 'loop_test' })),
-    abortLoop: vi.fn(async () => {}),
-    softStopLoop: vi.fn(async () => {}),
-  } as unknown as GremlinClient;
+    onReconnect,
+    /** Simulate a transport reconnect. No-op if the callback was unsubscribed. */
+    fireReconnect() {
+      cb?.();
+    },
+  };
+}
+
+function makeMockClient(
+  attach: ReturnType<typeof makeAttachController>,
+  reconnect = makeReconnectController()
+) {
+  return {
+    client: {
+      stream: vi.fn((method: string) => {
+        if (method !== 'attachChat') {
+          throw new Error(`unexpected stream method in test: ${method}`);
+        }
+        return attach.iterable;
+      }),
+      startLoop: vi.fn(async () => ({ loopId: 'loop_test' })),
+      abortLoop: vi.fn(async () => {}),
+      softStopLoop: vi.fn(async () => {}),
+      onReconnect: reconnect.onReconnect,
+    } as unknown as GremlinClient,
+    reconnect,
+  };
 }
 
 describe('GremlinSession', () => {
@@ -92,7 +116,7 @@ describe('GremlinSession', () => {
 
   it('attach() pumps events from the attachChat stream into the handler', async () => {
     const attach = makeAttachController();
-    const client = makeMockClient(attach);
+    const { client } = makeMockClient(attach);
     const session = new GremlinSession(client, 'chat_1');
     session.onEvent(ev => received.push(ev));
     session.onEnd((status, detail) => endStatuses.push({ status, detail }));
@@ -118,7 +142,7 @@ describe('GremlinSession', () => {
 
   it('send() delegates to client.startLoop and records the loopId from loop_started', async () => {
     const attach = makeAttachController();
-    const client = makeMockClient(attach);
+    const { client } = makeMockClient(attach);
     (client.startLoop as ReturnType<typeof vi.fn>).mockResolvedValue({ loopId: 'loop_send' });
     const session = new GremlinSession(client, 'chat_1');
     session.onEvent(ev => received.push(ev));
@@ -146,7 +170,7 @@ describe('GremlinSession', () => {
 
   it('softStop and abort fire while a loop is in flight', async () => {
     const attach = makeAttachController();
-    const client = makeMockClient(attach);
+    const { client } = makeMockClient(attach);
     (client.startLoop as ReturnType<typeof vi.fn>).mockResolvedValue({ loopId: 'loop_inflight' });
     const session = new GremlinSession(client, 'chat_1');
     session.onEvent(ev => received.push(ev));
@@ -171,7 +195,7 @@ describe('GremlinSession', () => {
 
   it('startLoop errors are forwarded via onError + synthetic onEnd', async () => {
     const attach = makeAttachController();
-    const client = makeMockClient(attach);
+    const { client } = makeMockClient(attach);
     (client.startLoop as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('chat is busy'));
     const session = new GremlinSession(client, 'chat_1');
     const errors: Error[] = [];
@@ -191,7 +215,7 @@ describe('GremlinSession', () => {
 
   it('dispose() drops handlers so post-unmount events do nothing', async () => {
     const attach = makeAttachController();
-    const client = makeMockClient(attach);
+    const { client } = makeMockClient(attach);
     const session = new GremlinSession(client, 'chat_1');
     const calls: string[] = [];
     session.onEvent(ev => calls.push(ev.type));
@@ -203,5 +227,78 @@ describe('GremlinSession', () => {
     attach.pushEvent({ type: 'loop_started', loopId: 'loop_x' });
     await new Promise(resolve => setTimeout(resolve, 10));
     expect(calls).toHaveLength(0);
+  });
+
+  it('onReconnect re-attaches after the stream dies from a disconnect', async () => {
+    const attach1 = makeAttachController();
+    const reconnect = makeReconnectController();
+    const { client } = makeMockClient(attach1, reconnect);
+
+    const session = new GremlinSession(client, 'chat_1');
+    session.onEvent(ev => received.push(ev));
+    void session.attach();
+    await Promise.resolve();
+
+    // Deliver an event on the first stream so we know it's alive.
+    attach1.pushEvent({ type: 'snapshot_complete' });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(received).toHaveLength(1);
+    expect(client.stream).toHaveBeenCalledTimes(1);
+
+    // Simulate disconnect: cancel the stream (like rejectInflight pushing
+    // stream_end), then wait for consumeAttach to unwind.
+    attach1.cancel();
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    // Swap in a fresh attach controller for the second subscription.
+    const attach2 = makeAttachController();
+    (client.stream as ReturnType<typeof vi.fn>).mockImplementation((method: string) => {
+      if (method !== 'attachChat') throw new Error(`unexpected: ${method}`);
+      return attach2.iterable;
+    });
+
+    // Fire reconnect — the session should re-attach.
+    reconnect.fireReconnect();
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(client.stream).toHaveBeenCalledTimes(2);
+
+    // The new stream delivers events normally.
+    attach2.pushEvent({ type: 'loop_started', loopId: 'loop_reattach' });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(received.map(e => e.type)).toContain('loop_started');
+    expect(session.loopId).toBe('loop_reattach');
+
+    session.dispose();
+  });
+
+  it('onReconnect is a no-op after dispose()', async () => {
+    const attach = makeAttachController();
+    const reconnect = makeReconnectController();
+    const { client } = makeMockClient(attach, reconnect);
+
+    const session = new GremlinSession(client, 'chat_1');
+    void session.attach();
+    await Promise.resolve();
+
+    session.dispose();
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    // Reconnect after dispose should not re-subscribe.
+    reconnect.fireReconnect();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(client.stream).toHaveBeenCalledTimes(1);
+  });
+
+  it('onReconnect is a no-op if attach() was never called', async () => {
+    const attach = makeAttachController();
+    const reconnect = makeReconnectController();
+    const { client } = makeMockClient(attach, reconnect);
+
+    new GremlinSession(client, 'chat_1');
+
+    reconnect.fireReconnect();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(client.stream).not.toHaveBeenCalled();
   });
 });

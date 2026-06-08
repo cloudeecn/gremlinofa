@@ -110,7 +110,6 @@ export default defineConfig([
     'chatbot/**',
     'storage-backend/**',
     'cors-proxy/**',
-    'vfs-backend/**',
     'touch-grass-backend/**',
     '**/__tests__/**',
     '**/*.test.ts',

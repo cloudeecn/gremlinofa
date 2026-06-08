@@ -155,16 +155,20 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
   };
 
   const handleDetachRemoteStorage = async () => {
+    const isServer = storageConfig?.type === 'server';
     const confirmed = await showDestructiveConfirm(
-      'Detach Remote Storage',
+      isServer ? 'Disconnect Backend' : 'Detach Remote Storage',
       'Make sure you have backed up your encryption key! You can reconnect later using "Use Existing Data" with your encryption key.\n\nThis will remove your encryption key and storage configuration from this device. Your data will remain on the server.',
-      'Detach'
+      isServer ? 'Disconnect' : 'Detach'
     );
     if (confirmed) {
       clearAllDrafts();
-      // Tear down the in-memory CEK on the worker, then clear local
-      // persistence so the next reload routes to OOBE.
-      await gremlinClient.clearCek();
+      // Server mode: only clear localStorage. The server keeps running —
+      // the client is just walking away.
+      // Worker/remote mode: also tear down the in-memory CEK on the worker.
+      if (!isServer) {
+        await gremlinClient.clearCek();
+      }
       clearCachedCEK();
       clearStorageConfig();
       window.location.reload();
@@ -247,11 +251,19 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
             )}
             {/* Storage mode indicator */}
             <div className="mt-3 flex items-center gap-2 text-xs text-gray-600">
-              <span>{storageConfig?.type === 'remote' ? '☁️' : '📦'}</span>
               <span>
-                {storageConfig?.type === 'remote'
-                  ? `Remote Storage (${storageConfig.baseUrl || 'same origin'})`
-                  : 'IndexedDB (Local)'}
+                {storageConfig?.type === 'server'
+                  ? '🖥️'
+                  : storageConfig?.type === 'remote'
+                    ? '☁️'
+                    : '📦'}
+              </span>
+              <span>
+                {storageConfig?.type === 'server'
+                  ? `Remote Backend (${storageConfig.wsUrl})`
+                  : storageConfig?.type === 'remote'
+                    ? `Remote Storage (${storageConfig.baseUrl || 'same origin'})`
+                    : 'IndexedDB (Local)'}
               </span>
             </div>
 
@@ -396,25 +408,35 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
             </button>
           </section>
 
-          {/* Detach Remote Storage - only show when using remote storage */}
-          {storageConfig?.type === 'remote' && (
+          {/* Detach / Disconnect — shown for remote storage and server mode */}
+          {(storageConfig?.type === 'remote' || storageConfig?.type === 'server') && (
             <section className="rounded-lg border border-gray-200 bg-white p-4">
-              <h3 className="mb-2 text-sm font-semibold text-gray-900">Detach Remote Storage</h3>
+              <h3 className="mb-2 text-sm font-semibold text-gray-900">
+                {storageConfig.type === 'server' ? 'Disconnect Backend' : 'Detach Remote Storage'}
+              </h3>
               <p className="mb-3 text-xs text-gray-600">
-                Disconnect from remote storage on this device. Your data remains on the server. You
-                can reconnect later using your encryption key.
+                {storageConfig.type === 'server'
+                  ? 'Disconnect from the remote backend on this device. Your data remains on the server. You can reconnect later using your encryption key.'
+                  : 'Disconnect from remote storage on this device. Your data remains on the server. You can reconnect later using your encryption key.'}
               </p>
               <button
                 onClick={handleDetachRemoteStorage}
-                disabled={hasRunningLoops}
-                title={hasRunningLoops ? 'Stop all running loops first' : undefined}
+                disabled={hasRunningLoops && storageConfig.type !== 'server'}
+                title={
+                  hasRunningLoops && storageConfig.type !== 'server'
+                    ? 'Stop all running loops first'
+                    : undefined
+                }
                 className="w-full rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white hover:bg-orange-600 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
-                🔗 Detach Remote Storage
+                {storageConfig.type === 'server'
+                  ? '🔗 Disconnect Backend'
+                  : '🔗 Detach Remote Storage'}
               </button>
-              {hasRunningLoops && (
+              {hasRunningLoops && storageConfig.type !== 'server' && (
                 <p className="mt-2 text-xs text-amber-700">
-                  Stop all running loops before detaching — the backend refuses with LOOPS_RUNNING.
+                  Stop all running loops before disconnecting — the backend refuses with
+                  LOOPS_RUNNING.
                 </p>
               )}
             </section>
@@ -434,30 +456,40 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
                 {/* Delete All Data */}
                 <div>
                   <h4 className="mb-1 text-sm font-semibold text-red-900">Delete All Data</h4>
-                  <p className="mb-3 text-xs text-red-700">
-                    Permanently delete all projects, chats, messages, API keys, and encryption key.
-                    The app will reload and show the setup wizard. This action cannot be undone!
-                  </p>
-                  <button
-                    onClick={handlePurge}
-                    disabled={isPurging || hasRunningLoops}
-                    title={hasRunningLoops ? 'Stop all running loops first' : undefined}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-gray-300"
-                  >
-                    {isPurging ? (
-                      <>
-                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                        Deleting...
-                      </>
-                    ) : (
-                      '🗑️ Delete All Data'
-                    )}
-                  </button>
-                  {hasRunningLoops && (
-                    <p className="mt-2 text-xs text-amber-700">
-                      Stop all running loops before purging — the backend refuses with
-                      LOOPS_RUNNING.
+                  {storageConfig?.type === 'server' ? (
+                    <p className="text-xs text-red-700">
+                      Data deletion is not available in server mode. To reset: disconnect from this
+                      device first, then stop the server, delete the database file, and restart.
                     </p>
+                  ) : (
+                    <>
+                      <p className="mb-3 text-xs text-red-700">
+                        Permanently delete all projects, chats, messages, API keys, and encryption
+                        key. The app will reload and show the setup wizard. This action cannot be
+                        undone!
+                      </p>
+                      <button
+                        onClick={handlePurge}
+                        disabled={isPurging || hasRunningLoops}
+                        title={hasRunningLoops ? 'Stop all running loops first' : undefined}
+                        className="flex w-full items-center justify-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+                      >
+                        {isPurging ? (
+                          <>
+                            <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                            Deleting...
+                          </>
+                        ) : (
+                          '🗑️ Delete All Data'
+                        )}
+                      </button>
+                      {hasRunningLoops && (
+                        <p className="mt-2 text-xs text-amber-700">
+                          Stop all running loops before purging — the backend refuses with
+                          LOOPS_RUNNING.
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
               </div>

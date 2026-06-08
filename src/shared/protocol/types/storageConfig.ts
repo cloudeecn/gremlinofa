@@ -13,4 +13,5 @@
  */
 export type StorageConfig =
   | { type: 'local' }
-  | { type: 'remote'; baseUrl: string; password: string; userId: string };
+  | { type: 'remote'; baseUrl: string; password: string; userId: string }
+  | { type: 'server'; wsUrl: string };

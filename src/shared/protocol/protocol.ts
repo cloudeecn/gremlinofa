@@ -82,4 +82,4 @@ export type {
   ToolInventoryEntry,
 } from './methods';
 
-export type { Transport } from './transport';
+export type { ConnectionState, Transport } from './transport';

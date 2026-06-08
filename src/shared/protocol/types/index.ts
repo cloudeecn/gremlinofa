@@ -231,7 +231,8 @@ export interface Project {
   // Remote VFS configuration
   remoteVfsUrl?: string; // URL of remote VFS backend
   remoteVfsPassword?: string; // Server-wide password
-  remoteVfsEncrypt?: boolean; // E2E encrypt file content (default: false)
+  /** @deprecated E2E encryption removed — kept for migration reads */
+  remoteVfsEncrypt?: boolean;
 }
 
 // Chat pending state types

@@ -492,6 +492,92 @@ describe('OOBEScreen', () => {
     });
   });
 
+  describe('server (WebSocket) storage selection', () => {
+    it('should show Remote Backend option', () => {
+      render(<OOBEScreen onComplete={mockOnComplete} />);
+
+      expect(screen.getByText('Remote Backend')).toBeInTheDocument();
+      expect(screen.getByText('Full backend on a remote server (WebSocket)')).toBeInTheDocument();
+    });
+
+    it('should show WebSocket URL input when server is selected', () => {
+      render(<OOBEScreen onComplete={mockOnComplete} />);
+
+      const serverRadio = screen.getByRole('radio', { name: /Remote Backend/i });
+      fireEvent.click(serverRadio);
+
+      expect(screen.getByText('WebSocket URL')).toBeInTheDocument();
+      expect(
+        screen.getByPlaceholderText('ws://localhost:3100 or wss://gremlin.example.com')
+      ).toBeInTheDocument();
+    });
+
+    it('should show Use Existing Data option for server mode', () => {
+      render(<OOBEScreen onComplete={mockOnComplete} />);
+
+      const serverRadio = screen.getByRole('radio', { name: /Remote Backend/i });
+      fireEvent.click(serverRadio);
+
+      expect(screen.getByText('Use Existing Data')).toBeInTheDocument();
+    });
+
+    it('should disable Get Started until wsUrl is provided', () => {
+      render(<OOBEScreen onComplete={mockOnComplete} />);
+
+      const serverRadio = screen.getByRole('radio', { name: /Remote Backend/i });
+      fireEvent.click(serverRadio);
+
+      expect(screen.getByRole('button', { name: /Get Started/i })).toBeDisabled();
+
+      const urlInput = screen.getByPlaceholderText(
+        'ws://localhost:3100 or wss://gremlin.example.com'
+      );
+      fireEvent.change(urlInput, { target: { value: 'ws://localhost:3100' } });
+
+      expect(screen.getByRole('button', { name: /Get Started/i })).not.toBeDisabled();
+    });
+
+    it('should change footer note for server mode', () => {
+      render(<OOBEScreen onComplete={mockOnComplete} />);
+
+      const serverRadio = screen.getByRole('radio', { name: /Remote Backend/i });
+      fireEvent.click(serverRadio);
+
+      const matches = screen.getAllByText(
+        'The server owns storage and runs the backend — your browser handles the UI'
+      );
+      expect(matches.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('persists server config and skips configureWorker in fresh mode', async () => {
+      render(<OOBEScreen onComplete={mockOnComplete} />);
+
+      const serverRadio = screen.getByRole('radio', { name: /Remote Backend/i });
+      fireEvent.click(serverRadio);
+
+      const urlInput = screen.getByPlaceholderText(
+        'ws://localhost:3100 or wss://gremlin.example.com'
+      );
+      fireEvent.change(urlInput, { target: { value: 'ws://localhost:3100' } });
+
+      fireEvent.click(screen.getByRole('button', { name: /Get Started/i }));
+
+      await waitFor(() => {
+        expect(mockSetStorageConfig).toHaveBeenCalledWith({
+          type: 'server',
+          wsUrl: 'ws://localhost:3100',
+        });
+        expect(mockConfigureWorker).not.toHaveBeenCalled();
+        expect(mockInit).toHaveBeenCalledWith({ cek: 'generated_test_cek_base32' });
+        expect(mockOnComplete).toHaveBeenCalledWith({
+          mode: 'fresh',
+          cek: 'generated_test_cek_base32',
+          storageType: 'server',
+        });
+      });
+    });
+  });
+
   describe('storage config persistence', () => {
     it('persists local storage config in fresh mode', async () => {
       render(<OOBEScreen onComplete={mockOnComplete} />);

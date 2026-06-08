@@ -36,6 +36,7 @@ function createMockAdapter(): VfsAdapter {
     deletePath: vi.fn(),
     createFileGuarded: vi.fn(),
     ensureDirAndWrite: vi.fn(),
+    writeFileWithHistory: vi.fn(),
     compactProject: vi.fn(),
   } as VfsAdapter;
 }

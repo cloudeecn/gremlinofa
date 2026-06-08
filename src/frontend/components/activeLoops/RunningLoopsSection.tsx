@@ -25,8 +25,14 @@ export default function RunningLoopsSection({ onAfterNavigate }: RunningLoopsSec
     activeLoopsStore.getSnapshot
   );
 
-  // Look up chat names lazily for the labels. We only fetch each chatId
-  // once per session — the names rarely change while a loop is in flight.
+  // Live titles pushed by the backend when a chat is renamed mid-loop.
+  const liveTitles = useSyncExternalStore(
+    activeLoopsStore.subscribe,
+    activeLoopsStore.getTitlesSnapshot,
+    activeLoopsStore.getTitlesSnapshot
+  );
+
+  // Lazy initial fetch — live titles take precedence once they arrive.
   const chatNames = useChatNamesForLoops(loops);
 
   if (loops.length === 0) return null;
@@ -60,7 +66,7 @@ export default function RunningLoopsSection({ onAfterNavigate }: RunningLoopsSec
             <div key={root.loopId}>
               <ActiveLoopRow
                 loop={root}
-                chatLabel={chatNames.get(root.chatId) ?? 'Loading…'}
+                chatLabel={liveTitles.get(root.chatId) ?? chatNames.get(root.chatId) ?? 'Loading…'}
                 onAfterNavigate={onAfterNavigate}
               />
               {children.map(child => (
@@ -68,7 +74,9 @@ export default function RunningLoopsSection({ onAfterNavigate }: RunningLoopsSec
                   key={child.loopId}
                   loop={child}
                   isChild
-                  chatLabel={chatNames.get(child.chatId) ?? 'Loading…'}
+                  chatLabel={
+                    liveTitles.get(child.chatId) ?? chatNames.get(child.chatId) ?? 'Loading…'
+                  }
                   onAfterNavigate={onAfterNavigate}
                 />
               ))}
@@ -81,9 +89,9 @@ export default function RunningLoopsSection({ onAfterNavigate }: RunningLoopsSec
 }
 
 /**
- * Lazy chat-name lookup for the loops list. We avoid putting chat metadata
- * in `ActiveLoop` itself because it would go stale on rename and would
- * couple the registry record to a particular client's view of the world.
+ * Lazy initial chat-name lookup for the loops list. Live title updates
+ * from `chat_title_changed` events are handled separately via
+ * `activeLoopsStore.getTitlesSnapshot` and take precedence at render time.
  */
 function useChatNamesForLoops(loops: ActiveLoop[]): Map<string, string> {
   const [names, setNames] = useState<Map<string, string>>(() => new Map());

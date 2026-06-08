@@ -84,6 +84,7 @@ function makeStorageStub(): UnifiedStorage {
       skipped: 0,
       errors: 0,
     })),
+    getMetadata: vi.fn(async () => null),
   } as unknown as UnifiedStorage;
 }
 

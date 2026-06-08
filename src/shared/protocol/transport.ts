@@ -30,6 +30,13 @@ import type { StorageConfig } from './types/storageConfig';
 import type { GremlinMethods } from './methods';
 import type { MethodParams, MethodResult, StreamEndEnvelope, StreamEventEnvelope } from './wire';
 
+export type ConnectionState =
+  | 'connecting'
+  | 'connected'
+  | 'stale'
+  | 'disconnected'
+  | 'reconnecting';
+
 export interface Transport {
   request<M extends keyof GremlinMethods>(
     method: M,
@@ -40,4 +47,14 @@ export interface Transport {
     params: MethodParams<M>
   ): AsyncIterable<StreamEventEnvelope<M> | StreamEndEnvelope>;
   configureWorker?(config: StorageConfig): Promise<void>;
+  /**
+   * Register a callback invoked after the transport reconnects (WebSocket
+   * only). `GremlinSession` uses this to re-issue `init` and re-attach
+   * active chats after a connection drop.
+   */
+  onReconnect?(callback: () => void): () => void;
+  /** Current connection state. Only meaningful for WebSocket transport. */
+  connectionState?: ConnectionState;
+  /** Subscribe to connection state changes. Returns unsubscribe function. */
+  onConnectionStateChange?(callback: (state: ConnectionState) => void): () => void;
 }

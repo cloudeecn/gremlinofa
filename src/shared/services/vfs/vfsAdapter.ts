@@ -57,10 +57,21 @@ export interface VfsAdapter {
   getVersion(fileId: string, version: number): Promise<string | null>;
   dropOldVersions(fileId: string, keepCount: number): Promise<number>;
 
+  // Bulk migration read — fetch all version contents in one call (optional, remote VFS only).
+  readAllVersions?(fileId: string): Promise<Array<{ version: number; content: string }>>;
+
   // Orphan management (local VFS only — remote returns empty/no-op)
   listOrphans(): Promise<OrphanInfo[]>;
   restoreOrphan(fileId: string, targetPath: string): Promise<void>;
   purgeOrphan(fileId: string): Promise<void>;
+
+  // Bulk migration write — writes a file with its full version history in one call.
+  writeFileWithHistory(
+    filePath: string,
+    versions: Array<{ content: string; createdAt: number }>,
+    currentContent: FileContent,
+    isBinary: boolean
+  ): Promise<void>;
 
   // Compound operations
   copyFile(src: string, dst: string, overwrite?: boolean): Promise<void>;

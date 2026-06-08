@@ -20,14 +20,16 @@
  * engine in-process construct an `InProcessTransport` directly (see
  * `GremlinClient.contract.test.ts`).
  *
- * Phase 2 will introduce a third transport (`WebSocketTransport`) that
- * talks to a Node-side `GremlinServer`. The contract is the same — only
- * the wire format changes.
+ * Phase 2 added `WebSocketTransport` — when the storage config is
+ * `{ type: 'server', wsUrl }`, the singleton connects to a Node-side
+ * `GremlinServer` over WebSocket instead of spawning a worker.
  */
 
 import type { Transport } from '../../shared/protocol/protocol';
+import { getStorageConfig } from '../lib/localStorageBoot';
 import { ActiveLoopsStore } from './ActiveLoopsStore';
 import { GremlinClient } from './GremlinClient';
+import { WebSocketTransport } from './transports/websocket';
 import { WorkerTransport } from './transports/worker';
 
 export { GremlinClient } from './GremlinClient';
@@ -36,11 +38,20 @@ export type { SessionEventHandler, SessionEndHandler } from './GremlinSession';
 export { ActiveLoopsStore } from './ActiveLoopsStore';
 
 /**
- * Spawn the Web Worker and wrap it in a `WorkerTransport`. Throws if the
- * runtime doesn't have `Worker` (jsdom without explicit setup, SSR, very
- * old browsers) — there is no longer a main-thread fallback.
+ * Create the right transport for the current storage config.
+ *
+ * - `server` → `WebSocketTransport` pointing at the Node backend.
+ * - `local` / `remote` → `WorkerTransport` hosting the engine in-browser.
+ *
+ * Throws if `Worker` is unavailable and the config isn't `server`.
  */
 function createDefaultTransport(): Transport {
+  const config = getStorageConfig();
+
+  if (config.type === 'server') {
+    return new WebSocketTransport(config.wsUrl);
+  }
+
   if (typeof Worker === 'undefined' || typeof window === 'undefined') {
     throw new Error(
       'gremlinClient requires a browser environment with Web Workers. ' +
@@ -48,9 +59,6 @@ function createDefaultTransport(): Transport {
     );
   }
   try {
-    // Vite statically rewrites `new URL(..., import.meta.url)` + `new Worker`
-    // into a worker bundle entry. The `?worker` import suffix is the
-    // alternative form, but the URL form is more portable across bundlers.
     const worker = new Worker(new URL('../../worker/gremlinWorker.ts', import.meta.url), {
       type: 'module',
       name: 'gremlin-backend',

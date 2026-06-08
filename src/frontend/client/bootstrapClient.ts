@@ -47,10 +47,12 @@ export async function bootstrap(): Promise<BootstrapResult> {
   const storageConfig = await fillStorageConfigUserId(getStorageConfig(), cekString);
 
   try {
-    // Phase 1.5: storage config flows through the worker's out-of-band
-    // bootstrap channel, not through the typed `init` envelope. The
-    // worker stashes it and reads it inside its `init` handler.
-    await gremlinClient.configureWorker(storageConfig);
+    // Server mode: the Node backend reads its own config from env vars,
+    // so configureWorker is a no-op. Worker/local modes still need the
+    // out-of-band bootstrap channel.
+    if (storageConfig.type !== 'server') {
+      await gremlinClient.configureWorker(storageConfig);
+    }
     await gremlinClient.init({ cek: cekString });
     return { ready: true, needsOOBE: false };
   } catch (err) {

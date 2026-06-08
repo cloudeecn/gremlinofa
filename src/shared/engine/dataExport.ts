@@ -11,6 +11,7 @@
 import type { EncryptionCore } from '../services/encryption/encryptionCore';
 import type { StorageAdapter } from '../services/storage/StorageAdapter';
 import { Tables } from '../services/storage/StorageAdapter';
+import { CEK_ORACLE_KEY } from '../services/storage/unifiedStorage';
 import { buildCSVLine } from './lib/csvHelper';
 import type { ExportProgressCallback } from '../protocol/types/data';
 
@@ -25,6 +26,9 @@ const EXPORT_TABLES = [
   Tables.MINION_CHATS,
   Tables.MESSAGES,
   Tables.ATTACHMENTS,
+  Tables.VFS_META,
+  Tables.VFS_FILES,
+  Tables.VFS_VERSIONS,
 ];
 
 /**
@@ -85,6 +89,9 @@ export async function* streamExportCSVLines(
       const page = await adapter.exportPaginated(table, afterId);
 
       for (const record of page.rows) {
+        // Oracle is machine-local state, not exportable user data
+        if (table === Tables.METADATA && record.id === CEK_ORACLE_KEY) continue;
+
         // For default API definitions, only include if they have credentials
         if (table === Tables.API_DEFINITIONS && record.id.startsWith('api_default')) {
           // Skip if no encryption service provided (legacy behavior)

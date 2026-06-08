@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { streamExportCSVLines } from '../dataExport';
+import { CEK_ORACLE_KEY } from '../../services/storage/unifiedStorage';
 
 async function collectCSV(adapter: StorageAdapter): Promise<string> {
   const lines: string[] = [];
@@ -82,6 +83,28 @@ describe('dataExport', () => {
       expect(lines[3]).toContain(Tables.PROJECTS);
       expect(lines[4]).toContain(Tables.CHATS);
       expect(lines[5]).toContain(Tables.MESSAGES);
+    });
+
+    it('should exclude CEK oracle from metadata export', async () => {
+      setupMockDatabase({
+        [Tables.METADATA]: [
+          {
+            id: CEK_ORACLE_KEY,
+            encryptedData: '__METADATA__',
+            unencryptedData: JSON.stringify({ value: 'encrypted-oracle' }),
+          },
+          {
+            id: 'other_meta',
+            encryptedData: '__METADATA__',
+            unencryptedData: JSON.stringify({ value: 'keep-this' }),
+          },
+        ],
+      });
+
+      const csv = await collectCSV(mockAdapter);
+
+      expect(csv).not.toContain(CEK_ORACLE_KEY);
+      expect(csv).toContain('other_meta');
     });
 
     it('should filter out default API definitions', async () => {

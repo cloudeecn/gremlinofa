@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { gremlinClient } from '../client';
 import type { APIDefinition, Model, Project } from '../../shared/protocol/types';
-import { AppContext, type AppContextType } from './createAppContext';
+import { AppContext, type AppContextType, type ImportOptions } from './createAppContext';
 import type {
   ExportProgressCallback,
   ImportProgressCallback,
@@ -204,20 +204,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (
       file: File,
       sourceCEK: string,
-      onProgress?: ImportProgressCallback
+      onProgress?: ImportProgressCallback,
+      options?: ImportOptions
     ): Promise<{ imported: number; skipped: number; errors: string[] }> => {
       console.debug('[AppContext] Starting streaming data import...');
       try {
         const data = await fileToBytes(file);
-        const result = await gremlinClient.importFromBytes(data, sourceCEK, 'merge', progress => {
-          onProgress?.({
-            processed: progress.processed,
-            imported: progress.imported,
-            skipped: progress.skipped,
-            errors: progress.errors,
-            estimatedTotal: progress.estimatedTotal,
-          });
-        });
+        const result = await gremlinClient.importFromBytes(
+          data,
+          sourceCEK,
+          'merge',
+          progress => {
+            onProgress?.({
+              processed: progress.processed,
+              imported: progress.imported,
+              skipped: progress.skipped,
+              errors: progress.errors,
+              estimatedTotal: progress.estimatedTotal,
+            });
+          },
+          {
+            skipVfsMigration: options?.skipVfsMigration,
+            onVfsMigrationProgress: options?.onVfsMigrationProgress,
+          }
+        );
 
         console.debug(
           `[AppContext] Import complete: ${result.imported} imported, ${result.skipped} skipped, ${result.errors.length} errors`
@@ -251,20 +261,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (
       file: File,
       sourceCEK: string,
-      onProgress?: ImportProgressCallback
+      onProgress?: ImportProgressCallback,
+      options?: ImportOptions
     ): Promise<{ imported: number; skipped: number; errors: string[] }> => {
       console.debug('[AppContext] Starting streaming data migration...');
       try {
         const data = await fileToBytes(file);
-        const result = await gremlinClient.importFromBytes(data, sourceCEK, 'replace', progress => {
-          onProgress?.({
-            processed: progress.processed,
-            imported: progress.imported,
-            skipped: progress.skipped,
-            errors: progress.errors,
-            estimatedTotal: progress.estimatedTotal,
-          });
-        });
+        const result = await gremlinClient.importFromBytes(
+          data,
+          sourceCEK,
+          'replace',
+          progress => {
+            onProgress?.({
+              processed: progress.processed,
+              imported: progress.imported,
+              skipped: progress.skipped,
+              errors: progress.errors,
+              estimatedTotal: progress.estimatedTotal,
+            });
+          },
+          {
+            skipVfsMigration: options?.skipVfsMigration,
+            onVfsMigrationProgress: options?.onVfsMigrationProgress,
+          }
+        );
 
         console.debug(
           `[AppContext] Migration complete: ${result.imported} imported, ${result.skipped} skipped, ${result.errors.length} errors`
@@ -368,7 +388,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Clean up expired drafts early in initialization
       cleanupExpiredDrafts();
 
-      await gremlinClient.init();
+      const cachedCek = getCachedCEKString();
+      await gremlinClient.init(cachedCek ? { cek: cachedCek } : {});
       console.debug('[AppContext] Backend initialized, refreshing API definitions...');
       await refreshAPIDefinitions();
       console.debug('[AppContext] API definitions refreshed, refreshing projects...');

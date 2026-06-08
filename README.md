@@ -88,12 +88,72 @@ npm run dev
 
 Then open `http://localhost:5199` and add your API key in Settings.
 
-### Production Build
+### Production Build (Browser-Only)
 
 ```bash
 npm run build
-# Output lands in dist/, serve it however you like
+# Output lands in dist/frontend/, serve it however you like
 ```
+
+### Server Build (Node WebSocket Backend)
+
+```bash
+npm run build:server
+# Output: dist/server/ — self-contained, rsync-able directory
+
+# Run it
+npm run start:server
+# Or directly: node dist/server/server.js
+```
+
+The server listens on `ws://127.0.0.1:3100` by default. Configure via environment variables:
+
+| Variable        | Default             | Description                                      |
+| --------------- | ------------------- | ------------------------------------------------ |
+| `PORT`          | `3100`              | WebSocket listen port                            |
+| `HOST`          | `127.0.0.1`         | Bind address                                     |
+| `STORAGE_PATH`  | `./data/gremlin.db` | SQLite database file                             |
+| `VFS_MODE`      | `filesystem`        | `filesystem` (real files) or `encrypted` (blobs) |
+| `VFS_BASE_PATH` | `./data/vfs`        | Base directory for filesystem VFS                |
+
+Then open the frontend (either `npm run dev` or a production build), pick "Remote Backend" in the setup wizard, and point it at `ws://your-server:3100` (or `wss://` behind a reverse proxy).
+
+Note: `better-sqlite3` has native bindings — `npm install` on the target machine before running.
+
+**Reverse proxy for the WebSocket server:**
+
+The server speaks plain `ws://` — put it behind a reverse proxy for TLS termination, same as the other backends.
+
+**nginx**
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:3100;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+}
+```
+
+**Apache**
+
+```apache
+<Location /ws>
+    ProxyPass ws://127.0.0.1:3100
+    ProxyPassReverse ws://127.0.0.1:3100
+</Location>
+```
+
+**Caddy**
+
+```caddyfile
+handle /ws {
+    reverse_proxy 127.0.0.1:3100
+}
+```
+
+Point the frontend at `wss://gremlin.example.com/ws` and you're set.
 
 ### Reverse Proxy Examples
 
@@ -256,6 +316,16 @@ npm run test:silent
 
 ## Bragging zone / Optional features
 
+### Message Metadata 📊
+
+Want to make your favorite model feel guilty about how much it's costing you? Or maybe just give it a sense of time and space? Message metadata lets the AI know what's happening on your end.
+
+- **Timestamp** — Tell the AI what time it is. Now Opus can nag you to go to sleep at 3 AM instead of just guessing.
+- **Context window usage** — Let the AI see how much memory it's using. Sharp models might notice the numbers don't add up and figure out you've been deleting messages.
+- **Current cost** — Share the running bill with your AI. Watch it suddenly become very concise.
+
+All optional, configured per-project. Pick your guilt trips wisely.
+
 ### Agentic Tools 🔧
 
 Turn your AI into a semi-autonomous agent with client-side tool execution. No server required — everything runs in your browser.
@@ -298,20 +368,6 @@ Your AI can spawn other AIs. The minion system lets your primary model delegate 
 
 **Use cases:** Have Opus dispatch a swarm of Haiku minions to research different angles simultaneously. Set up named personas — a "researcher" for web lookups, an "analyst" for data crunching — each with tailored instructions and their own workspace. Or just enjoy watching LLMs talk to each other — we don't judge.
 
-### Touch Grass (Remote Human Minion) 🌿
-
-Sometimes the best model for the job runs on coffee, not electricity. Touch Grass flips the minion system inside out — instead of delegating to another LLM, your AI delegates to _you_ (or any human with a browser and a password).
-
-- **Same interface, different species** — The LLM calls the minion tool with `remote: true` and the message lands in a web UI. It doesn't know (or care) that the "sub-agent" is a person.
-- **Long-poll, not long wait** — The backend holds the connection for 30 seconds at a time, retrying up to 10 minutes total. Plenty of time to read, think, and type like a civilized person.
-- **Session continuity** — Each remote minion gets a persistent session. The AI can send follow-ups to the same human conversation, just like continuing a regular minion chat.
-- **File context** — Injected files from the VFS are sent along with the message and displayed as collapsible code blocks. The human sees what the AI sees.
-- **Self-hosted** — Same deployment story as the other backends: SQLite, Express, systemd service file, done. No cloud dependency, no third-party accounts.
-
-**Setup:** Deploy `touch-grass-backend/`, set `API_PASSWORD` and `WEB_PASSWORD` in `.env`, then configure the minion tool's "Remote Minion Endpoint" in your project settings. The human opens `http://your-server:3004/web/`, logs in, and waits for the AI to need help.
-
-**Use cases:** Human-in-the-loop approval for risky actions. Expert consultation mid-task ("hey, should I normalize this column?"). Or just a very elaborate way to text yourself from your AI.
-
 ### DUMMY System ✨
 
 Named after a [certain plug system](https://evangelion.fandom.com/wiki/Dummy_System) that bypasses the pilot when they won't cooperate — except here, the AI _volunteers_ to be overridden.
@@ -327,6 +383,20 @@ The DUMMY system (Dynamic Un-inferencing Mock-Message Yielding System) lets LLMs
 - **Hot-swappable** — Register and unregister hooks mid-conversation. The AI picks its own automation strategy as the task evolves.
 
 **The pitch:** An agentic loop that calls the API 15 times to do 3 interesting things and 12 obvious ones is wasting your money. DUMMY lets the model front-load the boring decisions into a JS function and only phone home when it actually needs to think.
+
+### Touch Grass (Remote Human Minion) 🌿
+
+Sometimes the best model for the job runs on coffee, not electricity. Touch Grass flips the minion system inside out — instead of delegating to another LLM, your AI delegates to _you_ (or any human with a browser and a password).
+
+- **Same interface, different species** — The LLM calls the minion tool with `remote: true` and the message lands in a web UI. It doesn't know (or care) that the "sub-agent" is a person.
+- **Long-poll, not long wait** — The backend holds the connection for 30 seconds at a time, retrying up to 10 minutes total. Plenty of time to read, think, and type like a civilized person.
+- **Session continuity** — Each remote minion gets a persistent session. The AI can send follow-ups to the same human conversation, just like continuing a regular minion chat.
+- **File context** — Injected files from the VFS are sent along with the message and displayed as collapsible code blocks. The human sees what the AI sees.
+- **Self-hosted** — Same deployment story as the other backends: SQLite, Express, systemd service file, done. No cloud dependency, no third-party accounts.
+
+**Setup:** Deploy `touch-grass-backend/`, set `API_PASSWORD` and `WEB_PASSWORD` in `.env`, then configure the minion tool's "Remote Minion Endpoint" in your project settings. The human opens `http://your-server:3004/web/`, logs in, and waits for the AI to need help.
+
+**Use cases:** Human-in-the-loop approval for risky actions. Expert consultation mid-task ("hey, should I normalize this column?"). Or just a very elaborate way to text yourself from your AI.
 
 ### Remote Storage 🔄
 
@@ -353,15 +423,19 @@ Want your AI's memory files on a real filesystem instead of encrypted blobs? The
 
 Configure per-project in Project Settings > Remote VFS. The backend runs standalone — same deployment story as the storage backend.
 
-### Message Metadata 📊
+### Chapter 2: The Frontend/Backend Split — Remote Everything
 
-Want to make your favorite model feel guilty about how much it's costing you? Or maybe just give it a sense of time and space? Message metadata lets the AI know what's happening on your end.
+What started as a single React app got a full-blown architectural glow-up. The entire backend — agentic loop, storage, encryption, API clients, tools, VFS — now lives behind a transport layer with two deployment shapes.
 
-- **Timestamp** — Tell the AI what time it is. Now Opus can nag you to go to sleep at 3 AM instead of just guessing.
-- **Context window usage** — Let the AI see how much memory it's using. Sharp models might notice the numbers don't add up and figure out you've been deleting messages.
-- **Current cost** — Share the running bill with your AI. Watch it suddenly become very concise.
+**Web Worker (browser-only)** — The default. The backend runs in a Web Worker while React owns the main thread. You won't even feel a difference despite the full upgrade — except now you can step out to talk to your financial assistant without stopping your role-play character's output. Multiple chats, multiple agentic loops, all running in parallel without freezing your UI.
 
-All optional, configured per-project. Pick your guilt trips wisely.
+**Node WebSocket Server (self-hosted)** — The same engine, but running as a standalone Node.js process with SQLite storage and real filesystem VFS. Your browser becomes a thin client over WebSocket. Files on disk are actual files — `ls` them, `grep` them, edit them in vim. And you can finally re-enable your screen lock on your phone — the server keeps working whether your screen is on or not.
+
+**Auto-reconnect** — WebSocket drops? The transport reconnects with exponential backoff, re-authenticates, and re-attaches all active chat subscriptions. Your session picks up where it left off.
+
+The setup wizard lets you pick your deployment: IndexedDB (local), Remote Storage (sync server), or Remote Backend (full WebSocket server). Pick one, enter a URL if needed, done.
+
+The vibe-coded thing grew a spine, and it's load-bearing.
 
 ## License
 

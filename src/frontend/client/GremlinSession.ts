@@ -86,10 +86,27 @@ export class GremlinSession {
     StreamEventEnvelope<'attachChat'> | StreamEndEnvelope
   > | null = null;
   private attachPromise: Promise<void> | null = null;
+  /** Whether `attach()` was ever called — survives stream termination so `onReconnect` can re-attach. */
+  private wasAttached = false;
+  private unsubReconnect: (() => void) | null = null;
 
   constructor(client: GremlinClient, chatId: string) {
     this.client = client;
     this.chatId = chatId;
+
+    // On WebSocket reconnect, re-attach to the chat so the snapshot
+    // replays and live events resume. The old stream will have already
+    // terminated (rejectInflight pushes stream_end → consumeAttach
+    // exits → .finally() clears attachPromise) by the time the new
+    // socket opens, so we check `wasAttached` — not `attachPromise`.
+    this.unsubReconnect = this.client.onReconnect(() => {
+      if (this.wasAttached) {
+        this.attachPromise = null;
+        this.attachIterator = null;
+        this.currentLoopId = null;
+        void this.attach();
+      }
+    });
   }
 
   // ==========================================================================
@@ -227,6 +244,7 @@ export class GremlinSession {
    * `dispose()` or transport error.
    */
   attach(): Promise<void> {
+    this.wasAttached = true;
     if (this.attachPromise) return this.attachPromise;
     this.attachPromise = this.consumeAttach().finally(() => {
       this.attachPromise = null;
@@ -243,6 +261,9 @@ export class GremlinSession {
    * resumes the live stream.
    */
   dispose(): void {
+    this.wasAttached = false;
+    this.unsubReconnect?.();
+    this.unsubReconnect = null;
     this.eventHandler = null;
     this.endHandler = null;
     this.errorHandler = null;

@@ -131,6 +131,19 @@ export class LocalVfsAdapter implements VfsAdapter {
     });
   }
 
+  async writeFileWithHistory(
+    filePath: string,
+    versions: Array<{ content: string; createdAt: number }>,
+    currentContent: FileContent,
+    _isBinary: boolean
+  ): Promise<void> {
+    // TODO: optimize with bulk vfsService write
+    for (const ver of versions) {
+      await this.writeFile(filePath, ver.content);
+    }
+    await this.writeFile(filePath, currentContent);
+  }
+
   async getFileMeta(path: string) {
     return this.lock(() => this.svc.getFileMeta(this.projectId, path));
   }

@@ -42,6 +42,18 @@ export function buildStubVfsDeps() {
           if (record.parentId === filters.parentId) tableMap.delete(id);
         }
       }),
+      exportPaginated: vi.fn(async (table: string, afterId?: string) => {
+        const tableMap = mockStorage.get(table);
+        if (!tableMap) return { rows: [], hasMore: false };
+        const rows = [...tableMap.entries()]
+          .filter(([id]) => !afterId || id > afterId)
+          .map(([id, record]) => ({
+            id,
+            encryptedData: record.encryptedData,
+            parentId: record.parentId,
+          }));
+        return { rows, hasMore: false };
+      }),
     }),
   };
 

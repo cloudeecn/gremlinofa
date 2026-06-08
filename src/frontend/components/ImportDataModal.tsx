@@ -8,7 +8,9 @@ import { useState, useRef, useEffect } from 'react';
 import Modal from './ui/Modal';
 import { gremlinClient } from '../client';
 import { showAlert, showDestructiveConfirm } from '../lib/alerts';
-import type { ImportProgress } from '../../shared/protocol/types/data';
+import { getStorageConfig } from '../lib/localStorageBoot';
+import type { ImportProgressCallback } from '../../shared/protocol/types/data';
+import type { ImportOptions } from '../contexts/createAppContext';
 
 interface ImportDataModalProps {
   isOpen: boolean;
@@ -16,12 +18,14 @@ interface ImportDataModalProps {
   onImport: (
     file: File,
     cek: string,
-    onProgress?: (progress: ImportProgress) => void
+    onProgress?: ImportProgressCallback,
+    options?: ImportOptions
   ) => Promise<{ imported: number; skipped: number; errors: string[] }>;
   onMigrate: (
     file: File,
     cek: string,
-    onProgress?: (progress: ImportProgress) => void
+    onProgress?: ImportProgressCallback,
+    options?: ImportOptions
   ) => Promise<{ imported: number; skipped: number; errors: string[] }>;
 }
 
@@ -30,6 +34,7 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
   const [file, setFile] = useState<File | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
+  const [vfsMigrationStatus, setVfsMigrationStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{
     imported: number;
@@ -37,7 +42,10 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
     errors: string[];
   } | null>(null);
   const [isMigrationMode, setIsMigrationMode] = useState(false);
+  const [skipVfsMigration, setSkipVfsMigration] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const isServerMode = getStorageConfig().type === 'server';
 
   // Check if storage is empty on mount
   useEffect(() => {
@@ -49,8 +57,8 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
   const checkStorageEmpty = async () => {
     try {
       const isEmpty = await gremlinClient.isStorageEmpty();
-      // Auto-check migration mode if storage is empty
-      setIsMigrationMode(isEmpty);
+      // Auto-check migration mode if storage is empty (and not server mode)
+      setIsMigrationMode(isEmpty && !isServerMode);
     } catch (error) {
       console.error('[ImportDataModal] Failed to check storage empty status:', error);
       setIsMigrationMode(false);
@@ -115,16 +123,26 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
     try {
       setIsImporting(true);
       setImportProgress(0);
+      setVfsMigrationStatus('');
       setError(null);
       setResult(null);
 
-      const progressCallback = (progress: ImportProgress) => {
+      const progressCallback: ImportProgressCallback = progress => {
         setImportProgress(progress.processed);
       };
 
+      const importOptions: ImportOptions = {
+        skipVfsMigration,
+        onVfsMigrationProgress: progress => {
+          setVfsMigrationStatus(
+            `Migrating VFS files for "${progress.projectName}"... ${progress.filesProcessed}/${progress.totalFiles} files`
+          );
+        },
+      };
+
       const importResult = isMigrationMode
-        ? await onMigrate(file, cek.trim(), progressCallback)
-        : await onImport(file, cek.trim(), progressCallback);
+        ? await onMigrate(file, cek.trim(), progressCallback, importOptions)
+        : await onImport(file, cek.trim(), progressCallback, importOptions);
 
       setResult(importResult);
 
@@ -155,6 +173,7 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
       setError(err instanceof Error ? err.message : 'Import failed');
     } finally {
       setIsImporting(false);
+      setVfsMigrationStatus('');
     }
   };
 
@@ -165,6 +184,8 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
       setError(null);
       setResult(null);
       setIsMigrationMode(false);
+      setSkipVfsMigration(false);
+      setVfsMigrationStatus('');
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -246,25 +267,52 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
               </p>
             </div>
           )}
-          {/* Migration Mode Checkbox */}
-          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
-            <label className="flex cursor-pointer items-start gap-2">
-              <input
-                type="checkbox"
-                checked={isMigrationMode}
-                onChange={e => setIsMigrationMode(e.target.checked)}
-                disabled={isImporting}
-                className="mt-0.5 cursor-pointer"
-              />
-              <div>
-                <p className="text-sm font-semibold text-blue-900">Migration Mode (Full Restore)</p>
-                <p className="mt-1 text-xs text-blue-700">
-                  Restore complete backup with original encryption key. Recommended when setting up
-                  a new device from backup.
-                </p>
-              </div>
-            </label>
-          </div>
+          {/* Migration Mode Checkbox — hidden on server backend */}
+          {!isServerMode && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={isMigrationMode}
+                  onChange={e => setIsMigrationMode(e.target.checked)}
+                  disabled={isImporting}
+                  className="mt-0.5 cursor-pointer"
+                />
+                <div>
+                  <p className="text-sm font-semibold text-blue-900">
+                    Migration Mode (Full Restore)
+                  </p>
+                  <p className="mt-1 text-xs text-blue-700">
+                    Restore complete backup with original encryption key. Recommended when setting
+                    up a new device from backup.
+                  </p>
+                </div>
+              </label>
+            </div>
+          )}
+          {/* Skip Remote VFS Migration — only shown in non-migration mode */}
+          {!isMigrationMode && (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={skipVfsMigration}
+                  onChange={e => setSkipVfsMigration(e.target.checked)}
+                  disabled={isImporting}
+                  className="mt-0.5 cursor-pointer"
+                />
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">
+                    Skip remote VFS file migration
+                  </p>
+                  <p className="mt-1 text-xs text-gray-600">
+                    Skip importing files from remote VFS servers. Check this if the remote server is
+                    unreachable or you want to reconnect later.
+                  </p>
+                </div>
+              </label>
+            </div>
+          )}
           {/* Warning */}
           {isMigrationMode ? (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3">
@@ -302,8 +350,11 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
             {isImporting ? (
               <>
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                {isMigrationMode ? 'Migrating...' : 'Importing...'}{' '}
-                {importProgress > 0 && `${importProgress} entries`}
+                <span className="truncate">
+                  {vfsMigrationStatus
+                    ? vfsMigrationStatus
+                    : `${isMigrationMode ? 'Migrating...' : 'Importing...'} ${importProgress > 0 ? `${importProgress} entries` : ''}`}
+                </span>
               </>
             ) : isMigrationMode ? (
               '🔴 Migrate (Erase & Restore)'

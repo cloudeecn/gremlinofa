@@ -79,7 +79,15 @@ export type ModelReasoningMode =
   | 'optional' // gpt-5, grok-3-mini: user can toggle via params
   | 'none'; // Most models, gpt-5-chat, grok-4-non-reasoning
 
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined;
+export type ReasoningEffort =
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | undefined;
 export type ReasoningSummary = 'auto' | 'concise' | 'detailed' | undefined;
 
 /**
@@ -153,6 +161,15 @@ export interface ModelMetadata {
   /** Accepts temperature parameter (some reasoning models ignore it) */
   supportsTemperature?: boolean;
 
+  /** Supports adaptive reasoning (thinking: { type: 'adaptive' }) — Anthropic Opus 4.6, Sonnet 4.6+ */
+  supportsAdaptiveReasoning?: boolean;
+
+  /** When true, adaptive mode is forced regardless of `reasoningBudgetTokens` — Anthropic Opus 4.7+. */
+  onlyAdaptiveReasoning?: boolean;
+
+  /** Accepts `xhigh` as a distinct output_config.effort value (between `high` and `max`) — Anthropic Opus 4.7+. */
+  supportsXhighEffort?: boolean;
+
   /** Supports function/tool calling */
   supportsTools?: boolean;
 }
@@ -206,8 +223,13 @@ export interface Project {
   enableReasoning: boolean;
   reasoningBudgetTokens: number;
   thinkingKeepTurns?: number; // undefined = model default, -1 = "all", 0+ = keep N turns
+  // Client-side counterpart to `thinkingKeepTurns`. When true AND
+  // `thinkingKeepTurns` is set to a number >= 0, strip thinking blocks older
+  // than the N-th-from-last user text msg locally before calling the API.
+  // No effect if `thinkingKeepTurns` is undefined or -1.
+  pruneThinkingBeforeApiCall?: boolean;
   // OpenAI/Responses API reasoning
-  reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; // undefined = auto
+  reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'; // undefined = auto
   reasoningSummary?: 'auto' | 'concise' | 'detailed'; // undefined = auto
   // Message metadata settings
   sendMessageMetadata?: boolean | 'template';
@@ -226,6 +248,9 @@ export interface Project {
   disableStream?: boolean;
   // Extended context window (1M tokens, Anthropic beta)
   extendedContext?: boolean;
+  // Use 1h cache TTL on Anthropic cache_control breakpoints (default 5m).
+  // Only honored when apiType === 'anthropic'.
+  useAnthropicOneHourCache?: boolean;
   // Strip line numbers from filesystem/memory tool output
   noLineNumbers?: boolean;
   // Remote VFS configuration
@@ -429,8 +454,54 @@ export interface ToolResult {
   tokenTotals?: import('./content').TokenTotals;
 }
 
-/** Event yielded by tool generators during execution */
-export type ToolStreamEvent = { type: 'groups_update'; groups: RenderingBlockGroup[] };
+/**
+ * Discriminated delta payload describing how a tool's `renderingGroups` change
+ * frame-over-frame. The minion tool emits these instead of full per-chunk
+ * snapshots; `agenticLoopGenerator` forwards them onto the wire as
+ * `tool_groups_delta` events and `LoopRegistry` applies them server-side so
+ * `attachChat` rehydration can emit a single `tool_groups_snapshot`.
+ *
+ *   - `init` carries the static `infoGroup` plus any seed state. Emitted once
+ *     per tool call. The other delta kinds assume the receiver has applied an
+ *     `init` first (or a `snapshot` from attach replay).
+ *   - `append` is the bandwidth fast-path — only the trailing text/thinking
+ *     block of `streamingGroups` grew, so we ship the suffix and nothing else.
+ *   - `replace_streaming` covers structural changes (block count/type
+ *     mismatch, block list shrunk) by re-shipping just the streaming portion.
+ *     `accumulatedGroups` and `infoGroup` stay stable.
+ *   - `message_finalized` rolls the in-flight `streamingGroups` into
+ *     `accumulatedGroups` when a sub-message finalizes. Carries the
+ *     authoritative `accumulatedGroups` and the next `streamingGroups`
+ *     (usually empty — the next chunk will repopulate via `append`).
+ */
+export type ToolGroupsDelta =
+  | {
+      kind: 'init';
+      infoGroup: RenderingBlockGroup;
+      accumulatedGroups: RenderingBlockGroup[];
+      streamingGroups: RenderingBlockGroup[];
+    }
+  | { kind: 'append'; target: 'last_text' | 'last_thinking'; text: string }
+  | { kind: 'replace_streaming'; streamingGroups: RenderingBlockGroup[] }
+  | {
+      kind: 'message_finalized';
+      accumulatedGroups: RenderingBlockGroup[];
+      streamingGroups: RenderingBlockGroup[];
+    };
+
+/**
+ * Event yielded by tool generators during execution.
+ *
+ *   - `groups_update` is the legacy full-snapshot path, kept for tools that
+ *     don't justify the delta surface.
+ *   - `groups_delta` is the bandwidth-conscious path used by the minion tool.
+ *     `agenticLoopGenerator` translates these into wire-level
+ *     `tool_groups_delta` events and `LoopRegistry` replays the assembled
+ *     state on attach via `tool_groups_snapshot`.
+ */
+export type ToolStreamEvent =
+  | { type: 'groups_update'; groups: RenderingBlockGroup[] }
+  | { type: 'groups_delta'; delta: ToolGroupsDelta };
 
 /**
  * Return type for ClientSideTool.execute.
@@ -821,6 +892,26 @@ export interface MinionChat {
   enabledTools?: string[];
   /** Hook name in /hooks/ for verifying minion output before savepoint advances */
   verifyHook?: string;
+  /** Override: enable/disable reasoning for this minion */
+  enableReasoning?: boolean;
+  /** Override: reasoning budget tokens */
+  reasoningBudgetTokens?: number;
+  /** Override: reasoning effort level */
+  reasoningEffort?: ReasoningEffort;
+  /** Override: temperature */
+  temperature?: number;
+  /** Override: file injection mode (inline, separate-block, as-file) */
+  fileInjectionMode?: string;
+  /** Override: inline system prompt appended to minion prompt */
+  systemPrompt?: string;
+  /** Override: VFS path to system prompt file */
+  systemPromptFile?: string;
+  /** Override: thinking-nudge text appended to last user message. Empty string = explicitly off. */
+  nudgeThinking?: string;
+  /** Override: thinkingKeepTurns (forwarded to API as server-side context edit). */
+  thinkingKeepTurns?: number;
+  /** Override: prune thinking blocks client-side before the API call. */
+  pruneThinkingBeforeApiCall?: boolean;
   /** Remote session ID for touch-grass backend (human delegation) */
   remoteSessionId?: string;
 }

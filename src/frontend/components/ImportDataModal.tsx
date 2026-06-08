@@ -47,23 +47,26 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
 
   const isServerMode = getStorageConfig().type === 'server';
 
-  // Check if storage is empty on mount
+  // Check if storage is empty on open — auto-check migration mode when empty
+  // (and not server mode).
   useEffect(() => {
-    if (isOpen) {
-      checkStorageEmpty();
-    }
-  }, [isOpen]);
-
-  const checkStorageEmpty = async () => {
-    try {
-      const isEmpty = await gremlinClient.isStorageEmpty();
-      // Auto-check migration mode if storage is empty (and not server mode)
-      setIsMigrationMode(isEmpty && !isServerMode);
-    } catch (error) {
-      console.error('[ImportDataModal] Failed to check storage empty status:', error);
-      setIsMigrationMode(false);
-    }
-  };
+    if (!isOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const isEmpty = await gremlinClient.isStorageEmpty();
+        if (cancelled) return;
+        setIsMigrationMode(isEmpty && !isServerMode);
+      } catch (error) {
+        console.error('[ImportDataModal] Failed to check storage empty status:', error);
+        if (cancelled) return;
+        setIsMigrationMode(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, isServerMode]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];

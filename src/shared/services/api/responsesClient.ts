@@ -23,7 +23,7 @@ import {
   ResponsesStreamAccumulator,
   buildStreamResultFromAccumulator,
 } from './responsesStreamAccumulator';
-import { findCheckpointIndex, findThinkingBoundary, tidyAgnosticMessage } from './contextTidy';
+import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
 import {
   populateFromOpenRouterModel,
@@ -39,10 +39,14 @@ function tidyMessages(
   checkpointMessageId: string | undefined,
   tidyToolNames: Set<string> | undefined,
   pruneThinking: boolean,
-  pruneEmptyText: boolean
+  pruneEmptyText: boolean,
+  pruneThinkingKeepTurns: number | undefined
 ): Message<unknown>[] {
   const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
-  const thinkingBoundary = pruneThinking || pruneEmptyText ? findThinkingBoundary(messages) : -1;
+  const projectPruneActive = pruneThinkingKeepTurns !== undefined && pruneThinkingKeepTurns >= 0;
+  const effectiveKeep = projectPruneActive ? (pruneThinkingKeepTurns as number) : 1;
+  const anyPrune = pruneThinking || pruneEmptyText || projectPruneActive;
+  const thinkingBoundary = anyPrune ? findThinkingBoundaryN(messages, effectiveKeep) : -1;
 
   if (checkpointIdx === -1 && thinkingBoundary <= 0) return messages;
 
@@ -105,7 +109,7 @@ function tidyMessages(
       items = filtered;
     }
 
-    if (inThinking && !inCheckpoint && pruneThinking) {
+    if (inThinking && !inCheckpoint && (pruneThinking || projectPruneActive)) {
       items = items.filter(it => it.type !== 'reasoning');
     }
 
@@ -219,7 +223,9 @@ export class ResponsesClient implements APIClient {
       maxTokens: number;
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      thinkingKeepTurns?: number;
+      pruneThinkingKeepTurns?: number;
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       systemPrompt?: string;
       preFillResponse?: string;
@@ -248,7 +254,8 @@ export class ResponsesClient implements APIClient {
         options.checkpointMessageId,
         options.tidyToolNames,
         apiDefinition.advancedSettings?.pruneThinking ?? false,
-        apiDefinition.advancedSettings?.pruneEmptyText ?? false
+        apiDefinition.advancedSettings?.pruneEmptyText ?? false,
+        options.pruneThinkingKeepTurns
       );
 
       // Build input array using ResponseInputItem format
@@ -695,8 +702,12 @@ export class ResponsesClient implements APIClient {
       return;
     }
 
-    // Model with configurable reasoning effort
-    const mappedEffort = mapReasoningEffort(effort, supportedEfforts as ReasoningEffort[]);
+    // Model with configurable reasoning effort. `supportedReasoningEfforts` never includes
+    // 'max' for any OpenAI/xAI model (the SDK's reasoning_effort type doesn't accept it).
+    const mappedEffort = mapReasoningEffort(
+      effort,
+      supportedEfforts as Exclude<ReasoningEffort, 'max'>[]
+    );
     requestParams.reasoning = { effort: mappedEffort, summary };
     requestParams.include = ['reasoning.encrypted_content'];
   }

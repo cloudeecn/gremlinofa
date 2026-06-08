@@ -50,8 +50,8 @@ export default function RunningLoopsSection({ onAfterNavigate }: RunningLoopsSec
   }
 
   return (
-    <div className="border-b border-gray-700 bg-gray-950/50 px-2 py-2">
-      <div className="mb-1 flex items-center justify-between px-2">
+    <div className="ios-scroll max-h-[50vh] overflow-y-auto overscroll-y-contain border-b border-gray-700 bg-gray-950/50">
+      <div className="sticky top-0 z-10 flex items-center justify-between bg-gray-950 px-4 pt-2 pb-1">
         <span className="text-[10px] font-semibold tracking-wider text-gray-400">
           RUNNING LOOPS
         </span>
@@ -59,7 +59,7 @@ export default function RunningLoopsSection({ onAfterNavigate }: RunningLoopsSec
           {loops.length}
         </span>
       </div>
-      <div className="space-y-0.5">
+      <div className="space-y-0.5 px-2 pb-2">
         {roots.map(root => {
           const children = childrenByParent.get(root.loopId) ?? [];
           return (

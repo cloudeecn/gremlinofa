@@ -3,7 +3,7 @@ import { mapReasoningEffort, REASONING_EFFORTS } from '../reasoningEffort';
 
 describe('REASONING_EFFORTS', () => {
   it('contains all effort levels in order', () => {
-    expect(REASONING_EFFORTS).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    expect(REASONING_EFFORTS).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
   });
 });
 
@@ -100,6 +100,18 @@ describe('mapReasoningEffort', () => {
       const supported = ['high', 'low'] as const;
       expect(mapReasoningEffort('medium', supported)).toBe('low');
       expect(mapReasoningEffort('xhigh', supported)).toBe('high');
+    });
+  });
+
+  describe('max level', () => {
+    it('maps max to max when supported', () => {
+      const supported = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+      expect(mapReasoningEffort('max', supported)).toBe('max');
+    });
+
+    it('maps max to highest supported when max not present', () => {
+      expect(mapReasoningEffort('max', ['low', 'high'] as const)).toBe('high');
+      expect(mapReasoningEffort('max', ['low', 'medium', 'xhigh'] as const)).toBe('xhigh');
     });
   });
 });

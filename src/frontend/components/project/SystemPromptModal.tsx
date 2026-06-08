@@ -91,7 +91,6 @@ export default function SystemPromptModal({
             onChange={e => setSystemPrompt(e.target.value)}
             placeholder="Enter system prompt to define the assistant's behavior..."
             className="ios-scroll h-full min-h-[300px] w-full resize-none overflow-y-auto overscroll-y-contain rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none md:min-h-[400px]"
-            autoFocus
           />
         </div>
 

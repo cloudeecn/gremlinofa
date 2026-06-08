@@ -200,6 +200,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return new Uint8Array(buf);
   }, []);
 
+  // CEK is read from localStorage on the main thread — the worker holds
+  // the bytes in memory but doesn't expose the string. The only main-
+  // thread localStorage read in the frontend codepath, alongside
+  // bootstrapClient. Declared up here (above handleMigrate / handleImport)
+  // so those callbacks can call setCek / setIsCEKBase32 without tripping
+  // the access-before-declaration check.
+  const [cek, setCek] = useState<string | null>(() => getCachedCEKString());
+  const [isCEKBase32, setIsCEKBase32] = useState<boolean | null>(() => {
+    const cached = getCachedCEKString();
+    return cached ? looksLikeBase32CEK(cached) : null;
+  });
+
+  const convertCEKToBase32 = useCallback(async (): Promise<string | null> => {
+    const current = getCachedCEKString();
+    if (!current) return null;
+    if (looksLikeBase32CEK(current)) return current;
+
+    const newCEK = await gremlinClient.normalizeCEK(current);
+    setCachedCEKString(newCEK);
+    setCek(newCEK);
+    setIsCEKBase32(true);
+    return newCEK;
+  }, [setCek, setIsCEKBase32]);
+
   const handleImport = useCallback(
     async (
       file: File,
@@ -317,31 +341,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [fileToBytes, refreshAPIDefinitions, refreshProjects, refreshModels]
   );
-
-  // CEK is read from localStorage on the main thread — the worker holds
-  // the bytes in memory but doesn't expose the string. The only main-
-  // thread localStorage read in the frontend codepath, alongside
-  // bootstrapClient.
-  const [cek, setCek] = useState<string | null>(null);
-  const [isCEKBase32, setIsCEKBase32] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    const cached = getCachedCEKString();
-    setCek(cached);
-    setIsCEKBase32(cached ? looksLikeBase32CEK(cached) : null);
-  }, []);
-
-  const convertCEKToBase32 = useCallback(async (): Promise<string | null> => {
-    const current = getCachedCEKString();
-    if (!current) return null;
-    if (looksLikeBase32CEK(current)) return current;
-
-    const newCEK = await gremlinClient.normalizeCEK(current);
-    setCachedCEKString(newCEK);
-    setCek(newCEK);
-    setIsCEKBase32(true);
-    return newCEK;
-  }, []);
 
   const clearAllModelsCache = useCallback(async () => {
     for (const def of apiDefinitions) {

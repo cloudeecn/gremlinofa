@@ -3,6 +3,7 @@
  */
 
 import 'dotenv/config';
+import { loadVfsAccessConfig, type VfsAccessConfig } from '../vfsEngine/accessConfig.js';
 
 function parseCorsOrigin(): string[] | '*' | null {
   const corsOrigin = process.env.CORS_ORIGIN || '';
@@ -16,7 +17,15 @@ function parseCorsOrigin(): string[] | '*' | null {
     .filter(Boolean);
 }
 
-export const config = {
+export interface VfsFacadeConfig {
+  port: number;
+  corsOrigins: string[] | '*' | null;
+  dataDir: string;
+  authPassword: string;
+  accessConfig: VfsAccessConfig;
+}
+
+export const config: VfsFacadeConfig = {
   /** Server port */
   port: parseInt(process.env.PORT || '3003', 10),
 
@@ -28,4 +37,7 @@ export const config = {
 
   /** Server-wide password for Basic Auth (empty/undefined = dev mode) */
   authPassword: process.env.AUTH_PASSWORD || '',
-} as const;
+
+  /** Symlink-follow toggle + extra-root allow-list parsed at startup. */
+  accessConfig: loadVfsAccessConfig(),
+};

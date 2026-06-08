@@ -3,6 +3,8 @@ interface AnthropicReasoningConfigProps {
   setReasoningBudgetTokens: (value: string) => void;
   thinkingKeepTurns: string;
   setThinkingKeepTurns: (value: string) => void;
+  pruneThinkingBeforeApiCall: boolean;
+  setPruneThinkingBeforeApiCall: (value: boolean) => void;
   maxOutputTokens: string;
 }
 
@@ -15,8 +17,13 @@ export default function AnthropicReasoningConfig({
   setReasoningBudgetTokens,
   thinkingKeepTurns,
   setThinkingKeepTurns,
+  pruneThinkingBeforeApiCall,
+  setPruneThinkingBeforeApiCall,
   maxOutputTokens,
 }: AnthropicReasoningConfigProps) {
+  const keepTurnsParsed = parseInt(thinkingKeepTurns);
+  const keepTurnsValid =
+    thinkingKeepTurns !== '' && !isNaN(keepTurnsParsed) && keepTurnsParsed >= 0;
   return (
     <div className="space-y-4">
       <BudgetTokensField
@@ -25,6 +32,11 @@ export default function AnthropicReasoningConfig({
         maxOutputTokens={maxOutputTokens}
       />
       <KeepThinkingTurnsField value={thinkingKeepTurns} onChange={setThinkingKeepTurns} />
+      <PruneThinkingField
+        value={pruneThinkingBeforeApiCall}
+        onChange={setPruneThinkingBeforeApiCall}
+        enabled={keepTurnsValid}
+      />
     </div>
   );
 }
@@ -53,11 +65,15 @@ function BudgetTokensField({
       )}
       <input
         type="number"
+        min="0"
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder="1024"
         className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
       />
+      <p className="mt-1 text-xs text-gray-500">
+        Set to 0 for adaptive reasoning on supported models (Opus 4.6, Sonnet 4.6).
+      </p>
     </div>
   );
 }
@@ -82,6 +98,38 @@ function KeepThinkingTurnsField({
         placeholder="Model default"
         className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
       />
+    </div>
+  );
+}
+
+function PruneThinkingField({
+  value,
+  onChange,
+  enabled,
+}: {
+  value: boolean;
+  onChange: (value: boolean) => void;
+  enabled: boolean;
+}) {
+  return (
+    <div>
+      <label className="flex items-start gap-2 text-sm font-medium text-gray-900">
+        <input
+          type="checkbox"
+          checked={enabled && value}
+          disabled={!enabled}
+          onChange={e => onChange(e.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+        />
+        <span className={enabled ? '' : 'text-gray-400'}>
+          Prune thinking blocks before API call
+        </span>
+      </label>
+      <p className="mt-1 ml-6 text-xs text-gray-500">
+        {enabled
+          ? 'Strip thinking blocks beyond Keep Thinking Turns locally so they aren’t sent. Useful for providers that bill input tokens before any server-side context edits.'
+          : 'Set Keep Thinking Turns to a number (0 or higher) to enable client-side pruning.'}
+      </p>
     </div>
   );
 }

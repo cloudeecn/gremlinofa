@@ -49,10 +49,13 @@ function base64ToUint8Array(base64: string): Uint8Array {
 // JSON replacer / reviver
 // --------------------------------------------------------------------------
 
-/** JSON.stringify replacer — converts Uint8Array to {__b64: "..."}. */
+/** JSON.stringify replacer — converts Uint8Array / ArrayBuffer to {__b64: "..."}. */
 export function binaryReplacer(_key: string, value: unknown): unknown {
   if (value instanceof Uint8Array) {
     return { [B64_MARKER]: uint8ArrayToBase64(value) };
+  }
+  if (value instanceof ArrayBuffer) {
+    return { [B64_MARKER]: uint8ArrayToBase64(new Uint8Array(value)) };
   }
   return value;
 }

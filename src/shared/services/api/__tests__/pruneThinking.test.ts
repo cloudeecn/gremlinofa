@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { APIType, Message, ToolResultBlock } from '../../../protocol/types';
-import { findCheckpointIndex, findThinkingBoundary, tidyAgnosticMessage } from '../contextTidy';
+import {
+  findCheckpointIndex,
+  findThinkingBoundary,
+  findThinkingBoundaryN,
+  tidyAgnosticMessage,
+} from '../contextTidy';
 
 function msg(
   id: string,
@@ -687,3 +692,281 @@ describe('tidyMessages (Google thoughtSignature)', () => {
     expect(cpParts[0].thoughtSignature).toBeUndefined();
   });
 });
+
+describe('findThinkingBoundaryN', () => {
+  const u = (id: string) => msg(id, 'user');
+  const uTool = (id: string): Message<unknown> => ({
+    ...msg(id, 'user'),
+    content: {
+      ...msg(id, 'user').content,
+      toolResults: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }],
+    },
+  });
+  const a = (id: string) => msg(id, 'assistant');
+
+  it('n=1 returns the last user text index (parity with findThinkingBoundary)', () => {
+    const messages = [u('u1'), a('a1'), u('u2'), a('a2')];
+    expect(findThinkingBoundaryN(messages, 1)).toBe(2);
+    expect(findThinkingBoundary(messages)).toBe(2);
+  });
+
+  it('n=2 returns the second-to-last user text index', () => {
+    const messages = [u('u1'), a('a1'), u('u2'), a('a2'), u('u3')];
+    expect(findThinkingBoundaryN(messages, 2)).toBe(2);
+  });
+
+  it('n=3 returns the third-to-last user text index', () => {
+    const messages = [u('u1'), a('a1'), u('u2'), a('a2'), u('u3')];
+    expect(findThinkingBoundaryN(messages, 3)).toBe(0);
+  });
+
+  it('user messages carrying tool_results are skipped (only plain user text counts)', () => {
+    // U a U-tool a U  → user-text msgs are at indices 0 and 4.
+    const messages = [u('u1'), a('a1'), uTool('ut'), a('a2'), u('u3')];
+    expect(findThinkingBoundaryN(messages, 1)).toBe(4);
+    expect(findThinkingBoundaryN(messages, 2)).toBe(0);
+  });
+
+  it('returns -1 when fewer than n user text messages exist', () => {
+    const messages = [u('u1'), a('a1')];
+    expect(findThinkingBoundaryN(messages, 2)).toBe(-1);
+  });
+
+  it('n<=0 returns messages.length so every message is "before the boundary"', () => {
+    const messages = [u('u1'), a('a1'), u('u2')];
+    expect(findThinkingBoundaryN(messages, 0)).toBe(messages.length);
+    expect(findThinkingBoundaryN(messages, -5)).toBe(messages.length);
+  });
+});
+
+describe('tidyMessages with pruneThinkingKeepTurns (N-turn pruning)', () => {
+  it('N=1 → only thinking before the last user text is stripped (matches legacy)', () => {
+    const messages = [
+      msg('u1', 'user'),
+      msg('a1', 'assistant', {
+        modelFamily: 'anthropic',
+        fullContent: [
+          { type: 'thinking', thinking: 'old' },
+          { type: 'text', text: 'first' },
+        ],
+      }),
+      msg('u2', 'user'),
+      msg('a2', 'assistant', {
+        modelFamily: 'anthropic',
+        fullContent: [
+          { type: 'thinking', thinking: 'fresh' },
+          { type: 'text', text: 'second' },
+        ],
+      }),
+    ];
+
+    const result = tidyAnthropicMessagesN(messages, undefined, new Set(), 1);
+    const a1Blocks = result.find(m => m.id === 'a1')!.content.fullContent as {
+      type?: string;
+    }[];
+    expect(a1Blocks.find(b => b.type === 'thinking')).toBeUndefined();
+    const a2Blocks = result.find(m => m.id === 'a2')!.content.fullContent as {
+      type?: string;
+    }[];
+    expect(a2Blocks.find(b => b.type === 'thinking')).toBeDefined();
+  });
+
+  it('N=2 → keeps thinking from the prior user-text turn onward', () => {
+    const messages = [
+      msg('u1', 'user'),
+      msg('a1', 'assistant', {
+        modelFamily: 'anthropic',
+        fullContent: [
+          { type: 'thinking', thinking: 'old' },
+          { type: 'text', text: 'oldtxt' },
+        ],
+      }),
+      msg('u2', 'user'),
+      msg('a2', 'assistant', {
+        modelFamily: 'anthropic',
+        fullContent: [
+          { type: 'thinking', thinking: 'midthink' },
+          { type: 'text', text: 'midtxt' },
+        ],
+      }),
+      msg('u3', 'user'),
+      msg('a3', 'assistant', {
+        modelFamily: 'anthropic',
+        fullContent: [
+          { type: 'thinking', thinking: 'freshthink' },
+          { type: 'text', text: 'freshtxt' },
+        ],
+      }),
+    ];
+
+    const result = tidyAnthropicMessagesN(messages, undefined, new Set(), 2);
+    const a1Blocks = result.find(m => m.id === 'a1')!.content.fullContent as {
+      type?: string;
+    }[];
+    const a2Blocks = result.find(m => m.id === 'a2')!.content.fullContent as {
+      type?: string;
+    }[];
+    const a3Blocks = result.find(m => m.id === 'a3')!.content.fullContent as {
+      type?: string;
+    }[];
+    expect(a1Blocks.find(b => b.type === 'thinking')).toBeUndefined();
+    // a2 is at index 3, boundary is at index 2 (u2). a2 is NOT before boundary.
+    expect(a2Blocks.find(b => b.type === 'thinking')).toBeDefined();
+    expect(a3Blocks.find(b => b.type === 'thinking')).toBeDefined();
+  });
+
+  it('after a fresh user msg with N=1, no thinking is kept', () => {
+    // UTRTRTRU pattern, here approximated as: u a u → with thinking on a → result strips a's thinking.
+    const messages = [
+      msg('u1', 'user'),
+      msg('a1', 'assistant', {
+        modelFamily: 'anthropic',
+        fullContent: [
+          { type: 'thinking', thinking: 'recent' },
+          { type: 'text', text: 'recent_txt' },
+        ],
+      }),
+      msg('u2', 'user'), // fresh user msg
+    ];
+    const result = tidyAnthropicMessagesN(messages, undefined, new Set(), 1);
+    const a1Blocks = result.find(m => m.id === 'a1')!.content.fullContent as {
+      type?: string;
+    }[];
+    expect(a1Blocks.find(b => b.type === 'thinking')).toBeUndefined();
+  });
+
+  it('after a fresh user msg with N=2, the prior agentic-run thinking is preserved', () => {
+    const messages = [
+      msg('u1', 'user'),
+      msg('a1', 'assistant', {
+        modelFamily: 'anthropic',
+        fullContent: [
+          { type: 'thinking', thinking: 'recent' },
+          { type: 'text', text: 'recent_txt' },
+        ],
+      }),
+      msg('u2', 'user'),
+    ];
+    const result = tidyAnthropicMessagesN(messages, undefined, new Set(), 2);
+    const a1Blocks = result.find(m => m.id === 'a1')!.content.fullContent as {
+      type?: string;
+    }[];
+    expect(a1Blocks.find(b => b.type === 'thinking')).toBeDefined();
+  });
+
+  it('undefined → no client-side pruning (legacy provider flag still respected separately)', () => {
+    const messages = [
+      msg('u1', 'user'),
+      msg('a1', 'assistant', {
+        modelFamily: 'anthropic',
+        fullContent: [
+          { type: 'thinking', thinking: 'kept' },
+          { type: 'text', text: 'txt' },
+        ],
+      }),
+      msg('u2', 'user'),
+    ];
+    const result = tidyAnthropicMessagesN(messages, undefined, new Set(), undefined);
+    const a1Blocks = result.find(m => m.id === 'a1')!.content.fullContent as {
+      type?: string;
+    }[];
+    expect(a1Blocks.find(b => b.type === 'thinking')).toBeDefined();
+  });
+});
+
+/**
+ * Mirrors the Anthropic tidyMessages logic with the new `pruneThinkingKeepTurns`
+ * parameter — keeps the test self-contained from production code.
+ */
+function tidyAnthropicMessagesN(
+  messages: Message<unknown>[],
+  checkpointMessageId: string | undefined,
+  tidyToolNames: Set<string> | undefined,
+  pruneThinkingKeepTurns: number | undefined
+): Message<unknown>[] {
+  const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
+  const projectPruneActive = pruneThinkingKeepTurns !== undefined && pruneThinkingKeepTurns >= 0;
+  const effectiveKeep = projectPruneActive ? (pruneThinkingKeepTurns as number) : 1;
+  const anyPrune = projectPruneActive;
+  const thinkingBoundary = anyPrune ? findThinkingBoundaryN(messages, effectiveKeep) : -1;
+
+  if (checkpointIdx === -1 && thinkingBoundary <= 0) return messages;
+
+  const toolNames = tidyToolNames ?? new Set<string>();
+  const removedToolUseIds = new Set<string>();
+  const processUntil = Math.max(checkpointIdx, thinkingBoundary - 1);
+  const result: Message<unknown>[] = [];
+
+  for (let i = 0; i <= processUntil; i++) {
+    const m = messages[i];
+    const inCheckpoint = checkpointIdx >= 0 && i <= checkpointIdx;
+    const isCheckpoint = inCheckpoint && i === checkpointIdx;
+    const inThinking = thinkingBoundary > 0 && i < thinkingBoundary;
+
+    if (m.content.modelFamily !== 'anthropic' || m.content.fullContent == null) {
+      if (inCheckpoint && !isCheckpoint) {
+        const { message, newRemovedIds } = tidyAgnosticMessage(
+          m,
+          toolNames,
+          removedToolUseIds,
+          false
+        );
+        for (const id of newRemovedIds) removedToolUseIds.add(id);
+        if (message) result.push(message);
+      } else if (inThinking) {
+        const hasText = m.content.content.trim().length > 0;
+        const hasTools =
+          (m.content.toolCalls?.length ?? 0) + (m.content.toolResults?.length ?? 0) > 0;
+        if (hasText || hasTools) result.push(m);
+      } else {
+        result.push(m);
+      }
+      continue;
+    }
+
+    let blocks = m.content.fullContent as {
+      type?: string;
+      id?: string;
+      name?: string;
+      tool_use_id?: string;
+      text?: string;
+    }[];
+
+    if (inCheckpoint) {
+      const filtered: typeof blocks = [];
+      for (const b of blocks) {
+        if (b.type === 'thinking' || b.type === 'redacted_thinking') continue;
+        if (isCheckpoint) {
+          filtered.push(b);
+          continue;
+        }
+        if (b.type === 'tool_use' && b.name && toolNames.has(b.name)) {
+          if (b.id) removedToolUseIds.add(b.id);
+          continue;
+        }
+        if (b.type === 'tool_result' && b.tool_use_id && removedToolUseIds.has(b.tool_use_id)) {
+          continue;
+        }
+        filtered.push(b);
+      }
+      blocks = filtered;
+    }
+
+    if (inThinking && !inCheckpoint && projectPruneActive) {
+      blocks = blocks.filter(b => b.type !== 'thinking' && b.type !== 'redacted_thinking');
+    }
+
+    if (blocks.length === 0) continue;
+    if (blocks !== (m.content.fullContent as typeof blocks)) {
+      result.push({ ...m, content: { ...m.content, fullContent: blocks } });
+    } else {
+      result.push(m);
+    }
+  }
+
+  for (let i = processUntil + 1; i < messages.length; i++) {
+    result.push(messages[i]);
+  }
+
+  return result;
+}

@@ -49,6 +49,11 @@ import type {
 import type { ToolResultRenderBlock } from '../../shared/protocol/types/content';
 import type { LoopEvent } from '../../shared/protocol/protocol';
 import { showAlert } from '../lib/alerts';
+import {
+  applyGroupsDelta,
+  assembleGroups,
+  type ToolGroupsState,
+} from '../../shared/services/tools/toolGroupsDelta';
 
 /**
  * Throttle interval for streaming/tool-block UI updates (ms). Batches rapid
@@ -136,15 +141,6 @@ function getUnresolvedToolCalls(messages: Message<unknown>[]): ToolUseBlock[] | 
   return toolUseBlocks.filter(t => toolUseIds.has(t.id));
 }
 
-/** True iff a message has a backstage tool_result block (last-tool-call detection). */
-function isToolResultMessage(message: Message<unknown>): boolean {
-  const renderingContent = message.content.renderingContent;
-  if (!renderingContent) return false;
-  return renderingContent.some(
-    group => group.category === 'backstage' && group.blocks.some(b => b.type === 'tool_result')
-  );
-}
-
 // ============================================================================
 // Hook surface
 // ============================================================================
@@ -191,6 +187,8 @@ export interface UseChatReturn {
   dummyHookStatus: DummyHookStatus | null;
   /** True iff the chat's tail message is `incomplete: true` (hard-aborted). */
   isLockedByIncompleteTail: boolean;
+  /** True while the initial or reconnect snapshot is being replayed. */
+  snapshotLoading: boolean;
   sendMessage: (
     chatId: string,
     content: string,
@@ -209,6 +207,8 @@ export interface UseChatReturn {
   ) => Promise<void>;
   /** Resend from a message - delete messages after and re-run agentic loop */
   resendFromMessage: (messageId: string) => Promise<void>;
+  /** Roll back to a message — delete everything after it, keep the target */
+  rollbackToMessage: (chatId: string, messageId: string) => Promise<void>;
   /** Request the agentic loop to stop at the next tool boundary */
   requestSoftStop: () => void;
   /** Continue the loop after it was soft-stopped at the after_tools point */
@@ -229,6 +229,31 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   // computation off the frontend; we just store the latest value from the
   // `lock_state_changed` LoopEvent.
   const [isLockedByIncompleteTail, setIsLockedByIncompleteTail] = useState(false);
+  // True while the initial (or reconnect) snapshot is being replayed — the
+  // UI suppresses auto-scroll, locks input, and gates flickery derived state.
+  const [snapshotLoading, setSnapshotLoading] = useState(true);
+
+  // Reset the lock/snapshot flags whenever chatId changes — the snapshot
+  // phase of the new attachChat will deliver the authoritative values within
+  // one round trip, but defaulting here avoids a one-frame flicker showing
+  // the old chat's banner. Adjusted during render (rather than in the
+  // session-lifecycle effect) to keep react-hooks/set-state-in-effect happy.
+  const [prevChatId, setPrevChatId] = useState(chatId);
+  if (prevChatId !== chatId) {
+    setPrevChatId(chatId);
+    setIsLockedByIncompleteTail(false);
+    setSnapshotLoading(true);
+  }
+
+  // Mirror messages state in a ref so `handleLoopEvent` (which doesn't
+  // have `messages` in its dependency array) can read the latest committed
+  // value — needed by `reconnect_start` to build the recon map. The effect
+  // runs after every commit; `handleLoopEvent` only fires from async network
+  // events that arrive post-commit, so the one-tick lag is irrelevant.
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  });
 
   // Throttle state for streaming UI updates. Refs (not state) so the
   // throttled callbacks can read the latest pending value without
@@ -237,6 +262,30 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingToolUpdatesRef = useRef<Map<string, Partial<ToolResultRenderBlock>>>(new Map());
   const toolUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Per-`toolUseId` reconstructed `renderingGroups` state, accumulated from
+  // `tool_groups_delta` events emitted by delta-encoded tools (minion). A
+  // throttled flush projects the assembled `[info, ...accum, ...streaming]`
+  // groups into the matching placeholder message's `renderingContent` via
+  // the existing `applyToolBlockBatch` projection. Cleared on `loop_ended`.
+  // Notably NOT cleared on `reconnect_start`: the live state survives the
+  // disconnect, and a `tool_groups_snapshot` from the attach replay will
+  // overwrite each entry — if no snapshot lands, the entry is harmless and
+  // `loop_ended` will clean it up.
+  const toolGroupsRef = useRef<Map<string, ToolGroupsState>>(new Map());
+  const toolGroupsDirtyRef = useRef<Set<string>>(new Set());
+  const toolGroupsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Reconnect reconciliation state. Built on `reconnect_start`, consumed
+  // during the snapshot replay, discarded on `snapshot_complete`.
+  const reconMapRef = useRef<Map<string, number> | null>(null);
+  const reconPosRef = useRef(0);
+  const reconTruncatedRef = useRef(false);
+
+  // IDs of in-flight pending tool result messages not yet finalized by
+  // a `message_created` event. Stripped from state on reconnect so the
+  // snapshot's finalized version lands through the normal mismatch path.
+  const unstableMessageIdsRef = useRef<Set<string>>(new Set());
 
   // The session is recreated whenever chatId changes. We hold it in a ref
   // so the imperative methods (sendMessage, etc.) can reach it without
@@ -303,6 +352,36 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     });
   }, []);
 
+  /**
+   * Project the dirty entries from `toolGroupsRef` into placeholder
+   * messages by assembling each entry's `[info, ...accum, ...streaming]`
+   * and reusing the existing `tool_block_update` projection — same target
+   * search, same backward-scan logic, no duplicated state path.
+   */
+  const flushToolGroupsBatch = useCallback(() => {
+    if (toolGroupsDirtyRef.current.size === 0) return;
+    const batch = new Map<string, Partial<ToolResultRenderBlock>>();
+    for (const toolUseId of toolGroupsDirtyRef.current) {
+      const state = toolGroupsRef.current.get(toolUseId);
+      if (!state) continue;
+      batch.set(toolUseId, {
+        renderingGroups: assembleGroups(state),
+        status: 'running',
+      });
+    }
+    toolGroupsDirtyRef.current.clear();
+    if (batch.size > 0) applyToolBlockBatch(batch);
+  }, [applyToolBlockBatch]);
+
+  /** Schedule a throttled projection of accumulated tool-group deltas. */
+  const scheduleToolGroupsFlush = useCallback(() => {
+    if (toolGroupsTimerRef.current) return;
+    toolGroupsTimerRef.current = setTimeout(() => {
+      toolGroupsTimerRef.current = null;
+      flushToolGroupsBatch();
+    }, STREAMING_THROTTLE_MS);
+  }, [flushToolGroupsBatch]);
+
   /** Flush throttled streaming + tool-block buffers (called on stream end). */
   const flushThrottledBuffers = useCallback(() => {
     if (streamingTimerRef.current) {
@@ -322,7 +401,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       pendingToolUpdatesRef.current.clear();
       applyToolBlockBatch(batch);
     }
-  }, [applyToolBlockBatch]);
+    if (toolGroupsTimerRef.current) {
+      clearTimeout(toolGroupsTimerRef.current);
+      toolGroupsTimerRef.current = null;
+    }
+    flushToolGroupsBatch();
+  }, [applyToolBlockBatch, flushToolGroupsBatch]);
 
   /**
    * Translate a single LoopEvent into React state updates. The session
@@ -349,13 +433,93 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           setDummyHookStatus(null);
           setSoftStopRequested(false);
           setLoopPhase('idle');
+          toolGroupsRef.current.clear();
+          toolGroupsDirtyRef.current.clear();
           callbacksRef.current.onStreamingEnd(chatId);
           if (event.status !== 'complete') {
             console.debug('[useChat] loop_ended:', event.status);
           }
           break;
 
+        case 'reconnect_start': {
+          setSnapshotLoading(true);
+
+          // Discard transient streaming state — the snapshot will
+          // re-establish it via synthetic loop_started / tool events
+          // if a loop is still running.
+          if (streamingTimerRef.current) {
+            clearTimeout(streamingTimerRef.current);
+            streamingTimerRef.current = null;
+          }
+          pendingStreamingRef.current = null;
+          setStreamingGroups([]);
+          if (toolUpdateTimerRef.current) {
+            clearTimeout(toolUpdateTimerRef.current);
+            toolUpdateTimerRef.current = null;
+          }
+          pendingToolUpdatesRef.current.clear();
+          // Tool-groups projection timer: cancel the pending flush and
+          // wipe the dirty set. The `tool_groups_snapshot` from the
+          // attach replay will repopulate `toolGroupsRef` and re-dirty
+          // each tool's entry, so the next throttle window projects the
+          // post-reconnect state, not stale pre-reconnect leftovers. The
+          // `toolGroupsRef` map itself is intentionally preserved — if
+          // the loop completed during disconnect, `loop_ended` clears it.
+          if (toolGroupsTimerRef.current) {
+            clearTimeout(toolGroupsTimerRef.current);
+            toolGroupsTimerRef.current = null;
+          }
+          toolGroupsDirtyRef.current.clear();
+          setLoopPhase('idle');
+          setDummyHookStatus(null);
+          setSoftStopRequested(false);
+
+          // Strip unstable (pending tool result) messages — the snapshot
+          // will deliver the finalized versions as new messages.
+          let base = messagesRef.current;
+          if (unstableMessageIdsRef.current.size > 0) {
+            base = base.filter(m => !unstableMessageIdsRef.current.has(m.id));
+            setMessages(base);
+            messagesRef.current = base;
+            unstableMessageIdsRef.current = new Set();
+          }
+
+          // Build reconciliation map so the incoming snapshot can diff
+          // positionally instead of duplicating. Must be synchronous (not
+          // inside a setMessages updater) because React defers updaters
+          // and the next event would read the ref before the updater runs.
+          const map = new Map<string, number>();
+          base.forEach((msg, idx) => map.set(msg.id, idx));
+          reconMapRef.current = map;
+          reconPosRef.current = 0;
+          reconTruncatedRef.current = false;
+          break;
+        }
+
+        case 'partial_reconsolidate': {
+          // Server matched a prefix — fast-forward reconPosRef past the
+          // matched messages so reconciliation only covers the tail.
+          const reconMap = reconMapRef.current;
+          if (reconMap) {
+            const localIdx = reconMap.get(event.lastMatchedMessageId);
+            if (localIdx !== undefined) {
+              reconPosRef.current = localIdx + 1;
+            }
+          }
+          break;
+        }
+
         case 'snapshot_complete':
+          // Finalize reconciliation: trim trailing messages the server
+          // no longer has (e.g. deleted during disconnect).
+          if (reconMapRef.current) {
+            if (!reconTruncatedRef.current) {
+              const trimAt = reconPosRef.current;
+              setMessages(prev => (prev.length > trimAt ? prev.slice(0, trimAt) : prev));
+            }
+            reconMapRef.current = null;
+          }
+          setSnapshotLoading(false);
           // The `useEffect` mount handler dispatches the legacy
           // `onMessagesLoaded` callback from the same event — handled there
           // because it needs the latest `messages` state.
@@ -392,18 +556,44 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
         case 'message_created': {
           const msg = event.message;
-          setMessages(prev => {
-            // Replace if id matches a recent message; otherwise append.
-            const searchStart = Math.max(0, prev.length - 10);
-            for (let i = prev.length - 1; i >= searchStart; i--) {
-              if (prev[i].id === msg.id) {
-                const updated = [...prev];
-                updated[i] = msg;
-                return updated;
-              }
+          const reconMap = reconMapRef.current;
+
+          if (reconMap && !reconTruncatedRef.current) {
+            // Reconciliation mode — positional matching against pre-reconnect state.
+            const expectedPos = reconPosRef.current;
+            const oldIdx = reconMap.get(msg.id);
+
+            if (oldIdx !== undefined && oldIdx === expectedPos) {
+              // Position match — persisted messages are immutable, skip entirely.
+              reconPosRef.current = expectedPos + 1;
+              break;
             }
-            return [...prev, msg];
-          });
+            // First mismatch — truncate at expected position, append.
+            reconTruncatedRef.current = true;
+            reconPosRef.current = expectedPos + 1;
+            setMessages(prev => [...prev.slice(0, expectedPos), msg]);
+          } else if (reconMap) {
+            // Already truncated — append remaining snapshot messages.
+            reconPosRef.current += 1;
+            setMessages(prev => [...prev, msg]);
+          } else {
+            // Normal mode — dedup against recent messages for retransmissions.
+            setMessages(prev => {
+              const searchStart = Math.max(0, prev.length - 10);
+              for (let i = prev.length - 1; i >= searchStart; i--) {
+                if (prev[i].id === msg.id) {
+                  const updated = [...prev];
+                  updated[i] = msg;
+                  return updated;
+                }
+              }
+              return [...prev, msg];
+            });
+          }
+
+          // Finalized message supersedes any pending placeholder.
+          unstableMessageIdsRef.current.delete(msg.id);
+
           // Clear streaming groups when a fresh assistant message lands so
           // the StreamingMessage doesn't double up with the MessageBubble.
           if (msg.role === 'assistant') {
@@ -429,13 +619,29 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
         case 'pending_tool_result': {
           const msg = event.message;
-          setMessages(prev => {
-            const searchStart = Math.max(0, prev.length - 10);
-            for (let i = prev.length - 1; i >= searchStart; i--) {
-              if (prev[i].id === msg.id) return prev;
-            }
-            return [...prev, msg];
-          });
+          unstableMessageIdsRef.current.add(msg.id);
+          // In reconciliation mode (reconnect snapshot replay), pending_tool_result
+          // always arrives AFTER persisted message_created events — the placeholder
+          // belongs at the matched-prefix tail. Take the same truncate+append path
+          // message_created uses on first mismatch, so snapshot_complete's trim
+          // becomes a no-op and the placeholder survives. Without this, an
+          // in-flight minion's progress vanishes on reconnect because the
+          // placeholder carrying its tool_result block is sliced off before the
+          // follow-up tool_block_update can populate renderingGroups.
+          if (reconMapRef.current && !reconTruncatedRef.current) {
+            const expectedPos = reconPosRef.current;
+            reconTruncatedRef.current = true;
+            reconPosRef.current = expectedPos + 1;
+            setMessages(prev => [...prev.slice(0, expectedPos), msg]);
+          } else {
+            setMessages(prev => {
+              const searchStart = Math.max(0, prev.length - 10);
+              for (let i = prev.length - 1; i >= searchStart; i--) {
+                if (prev[i].id === msg.id) return prev;
+              }
+              return [...prev, msg];
+            });
+          }
           break;
         }
 
@@ -453,6 +659,41 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
               applyToolBlockBatch(batch);
             }, STREAMING_THROTTLE_MS);
           }
+          break;
+        }
+
+        case 'tool_groups_delta': {
+          const next = applyGroupsDelta(toolGroupsRef.current.get(event.toolUseId), event.delta);
+          if (!next) break;
+          toolGroupsRef.current.set(event.toolUseId, next);
+          toolGroupsDirtyRef.current.add(event.toolUseId);
+          // First sign of streamed content from a delta-encoded tool
+          // means the loop has crossed into the streaming phase. The
+          // `first_chunk` event covers the assistant's own streaming,
+          // but minion tool runs ride this code path instead — flip the
+          // phase here so the chat view shows the streaming UI rather
+          // than the pending spinner.
+          if (next.streamingGroups.length > 0) {
+            setLoopPhase(prev => (prev === 'streaming' ? prev : 'streaming'));
+          }
+          scheduleToolGroupsFlush();
+          break;
+        }
+
+        case 'tool_groups_snapshot': {
+          toolGroupsRef.current.set(event.toolUseId, {
+            infoGroup: event.infoGroup,
+            accumulatedGroups: event.accumulatedGroups.slice(),
+            streamingGroups: event.streamingGroups.slice(),
+          });
+          toolGroupsDirtyRef.current.add(event.toolUseId);
+          // Rehydration after reconnect: if the snapshot carries in-flight
+          // streaming content we want the streaming UI back immediately,
+          // not stuck in `pending` until the next live delta arrives.
+          if (event.streamingGroups.length > 0) {
+            setLoopPhase(prev => (prev === 'streaming' ? prev : 'streaming'));
+          }
+          scheduleToolGroupsFlush();
           break;
         }
 
@@ -497,7 +738,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           break;
       }
     },
-    [chatId, applyToolBlockBatch]
+    [chatId, applyToolBlockBatch, flushThrottledBuffers, scheduleToolGroupsFlush]
   );
 
   // ============================================================================
@@ -507,13 +748,15 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   useEffect(() => {
     let cancelled = false;
     let messagesLoadedFired = false;
-    // Reset lock state on chat switch — the snapshot phase of the new
-    // attachChat will deliver the authoritative value within one round trip,
-    // but defaulting to `false` here avoids a one-frame flicker showing the
-    // old chat's banner.
-    setIsLockedByIncompleteTail(false);
+    // Note: the lock / snapshot-loading flags are reset during render (see the
+    // prevChatId tracker above) — keep them out of this effect.
     const session = new GremlinSession(gremlinClient, chatId);
     sessionRef.current = session;
+
+    session.setKnownMessageIdsProvider(() => {
+      const msgs = messagesRef.current;
+      return msgs.slice(-20).map(m => m.id);
+    });
 
     session.onEvent(event => {
       if (cancelled) return;
@@ -588,6 +831,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       sessionRef.current = null;
       if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current);
       if (toolUpdateTimerRef.current) clearTimeout(toolUpdateTimerRef.current);
+      if (toolGroupsTimerRef.current) clearTimeout(toolGroupsTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
@@ -646,16 +890,18 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
   const showContinueBanner = useMemo(
     () =>
+      !snapshotLoading &&
       loopPhase === 'idle' &&
       messages.length > 0 &&
-      isToolResultMessage(messages[messages.length - 1]),
-    [loopPhase, messages]
+      messages[messages.length - 1].role === 'user' &&
+      !getUnresolvedToolCalls(messages),
+    [snapshotLoading, loopPhase, messages]
   );
 
   const unresolvedToolCalls = useMemo(() => {
-    if (loopPhase !== 'idle') return null;
+    if (snapshotLoading || loopPhase !== 'idle') return null;
     return getUnresolvedToolCalls(messages);
-  }, [messages, loopPhase]);
+  }, [snapshotLoading, messages, loopPhase]);
 
   // ============================================================================
   // Imperative commands — these all delegate into GremlinSession or gremlinClient
@@ -728,6 +974,42 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
     await gremlinClient.saveChat(updatedChat);
     await gremlinClient.deleteMessageAndAfter(incomingChatId, messageId);
+  };
+
+  const rollbackToMessage = async (incomingChatId: string, messageId: string) => {
+    if (!verifyChatId(incomingChatId, 'rollbackToMessage')) return;
+    if (!chat) return;
+
+    const messageIndex = messages.findIndex(m => m.id === messageId);
+    if (messageIndex === -1) return;
+    if (messageIndex === messages.length - 1) return; // nothing after — no-op
+
+    const nextMessageId = messages[messageIndex + 1].id;
+
+    // Recalculate context window from remaining messages (including target).
+    const remainingMessages = messages.slice(0, messageIndex + 1);
+    let contextWindowUsage = 0;
+    for (let i = remainingMessages.length - 1; i >= 0; i--) {
+      const msg = remainingMessages[i];
+      if (msg.role === 'assistant' && msg.metadata?.contextWindowUsage !== undefined) {
+        contextWindowUsage = msg.metadata.contextWindowUsage;
+        break;
+      }
+    }
+
+    const updatedChat = {
+      ...chat,
+      contextWindowUsage,
+      lastModifiedAt: new Date(),
+    };
+
+    setChat(updatedChat);
+    setMessages(prev => prev.slice(0, messageIndex + 1));
+    callbacksRef.current.onChatMetadataChanged?.(updatedChat.id, updatedChat);
+    callbacksRef.current.onMessagesRemovedOnAndAfter(updatedChat.id, nextMessageId);
+
+    await gremlinClient.saveChat(updatedChat);
+    await gremlinClient.deleteMessageAndAfter(incomingChatId, nextMessageId);
   };
 
   const copyMessage = async (_incomingChatId: string, messageId: string) => {
@@ -930,6 +1212,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     softStopRequested,
     dummyHookStatus,
     isLockedByIncompleteTail,
+    snapshotLoading,
     sendMessage,
     editMessage,
     copyMessage,
@@ -938,6 +1221,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     updateChatName,
     resolvePendingToolCalls,
     resendFromMessage,
+    rollbackToMessage,
     requestSoftStop,
     continueAfterToolStop,
   };

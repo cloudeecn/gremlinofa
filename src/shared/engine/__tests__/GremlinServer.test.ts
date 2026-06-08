@@ -656,6 +656,156 @@ describe('GremlinServer', () => {
       await expect(gen.next()).rejects.toMatchObject({ code: 'CHAT_NOT_FOUND' });
     });
 
+    it('attachChat with knownMessageIds skips matched prefix and yields partial_reconsolidate', async () => {
+      const chat = mkChat('c_partial', 'p1');
+      const msgs = Array.from({ length: 5 }, (_, i) => ({
+        id: `m${i}`,
+        role: 'user' as const,
+        content: { type: 'text' as const, content: `msg ${i}` },
+        timestamp: new Date(),
+      }));
+      vi.mocked(storage.getChat).mockResolvedValue(chat);
+      vi.mocked(storage.getMessages).mockResolvedValue(msgs);
+
+      // Client knows the last 3 messages (m2, m3, m4)
+      const gen = server.handleStream('attachChat', {
+        chatId: 'c_partial',
+        knownMessageIds: ['m2', 'm3', 'm4'],
+      });
+
+      const events: unknown[] = [];
+      // chat_updated + partial_reconsolidate + 0 remaining messages + lock_state + snapshot_complete = 4 events
+      for (let i = 0; i < 4; i++) {
+        const r = await gen.next();
+        events.push(r.value);
+      }
+
+      expect(events[0]).toMatchObject({ type: 'chat_updated' });
+      expect(events[1]).toMatchObject({
+        type: 'partial_reconsolidate',
+        lastMatchedMessageId: 'm4',
+      });
+      // No message_created events — all 3 known IDs matched, and there are no messages after m4
+      expect(events[2]).toMatchObject({ type: 'lock_state_changed' });
+      expect(events[3]).toMatchObject({ type: 'snapshot_complete' });
+      await gen.return(undefined);
+    });
+
+    it('attachChat partial reconsolidation yields messages after the matched prefix', async () => {
+      const chat = mkChat('c_partial2', 'p1');
+      const msgs = Array.from({ length: 6 }, (_, i) => ({
+        id: `m${i}`,
+        role: 'user' as const,
+        content: { type: 'text' as const, content: `msg ${i}` },
+        timestamp: new Date(),
+      }));
+      vi.mocked(storage.getChat).mockResolvedValue(chat);
+      vi.mocked(storage.getMessages).mockResolvedValue(msgs);
+
+      // Client knows m1 and m2, but not m3-m5 (added during disconnect)
+      const gen = server.handleStream('attachChat', {
+        chatId: 'c_partial2',
+        knownMessageIds: ['m1', 'm2'],
+      });
+
+      const events: unknown[] = [];
+      // chat_updated + partial_reconsolidate + 3 new messages (m3,m4,m5) + lock_state + snapshot_complete = 7
+      for (let i = 0; i < 7; i++) {
+        const r = await gen.next();
+        events.push(r.value);
+      }
+
+      expect(events[0]).toMatchObject({ type: 'chat_updated' });
+      expect(events[1]).toMatchObject({
+        type: 'partial_reconsolidate',
+        lastMatchedMessageId: 'm2',
+      });
+      expect(events[2]).toMatchObject({ type: 'message_created', message: { id: 'm3' } });
+      expect(events[3]).toMatchObject({ type: 'message_created', message: { id: 'm4' } });
+      expect(events[4]).toMatchObject({ type: 'message_created', message: { id: 'm5' } });
+      expect(events[5]).toMatchObject({ type: 'lock_state_changed' });
+      expect(events[6]).toMatchObject({ type: 'snapshot_complete' });
+      await gen.return(undefined);
+    });
+
+    it('attachChat falls back to full snapshot when knownMessageIds[0] not found', async () => {
+      const chat = mkChat('c_fallback', 'p1');
+      const msgs = [
+        {
+          id: 'm0',
+          role: 'user' as const,
+          content: { type: 'text' as const, content: 'hi' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'm1',
+          role: 'user' as const,
+          content: { type: 'text' as const, content: 'there' },
+          timestamp: new Date(),
+        },
+      ];
+      vi.mocked(storage.getChat).mockResolvedValue(chat);
+      vi.mocked(storage.getMessages).mockResolvedValue(msgs);
+
+      const gen = server.handleStream('attachChat', {
+        chatId: 'c_fallback',
+        knownMessageIds: ['unknown_id', 'm1'],
+      });
+
+      const events: unknown[] = [];
+      // chat_updated + 2 messages (full) + lock_state + snapshot_complete = 5
+      for (let i = 0; i < 5; i++) {
+        const r = await gen.next();
+        events.push(r.value);
+      }
+
+      expect(events[0]).toMatchObject({ type: 'chat_updated' });
+      // No partial_reconsolidate — full snapshot
+      expect(events[1]).toMatchObject({ type: 'message_created', message: { id: 'm0' } });
+      expect(events[2]).toMatchObject({ type: 'message_created', message: { id: 'm1' } });
+      expect(events[3]).toMatchObject({ type: 'lock_state_changed' });
+      expect(events[4]).toMatchObject({ type: 'snapshot_complete' });
+      await gen.return(undefined);
+    });
+
+    it('attachChat partial walk stops at first ID mismatch', async () => {
+      const chat = mkChat('c_mismatch', 'p1');
+      const msgs = Array.from({ length: 5 }, (_, i) => ({
+        id: `m${i}`,
+        role: 'user' as const,
+        content: { type: 'text' as const, content: `msg ${i}` },
+        timestamp: new Date(),
+      }));
+      vi.mocked(storage.getChat).mockResolvedValue(chat);
+      vi.mocked(storage.getMessages).mockResolvedValue(msgs);
+
+      // Client knows m1, then has a divergent ID (e.g., message was replaced)
+      const gen = server.handleStream('attachChat', {
+        chatId: 'c_mismatch',
+        knownMessageIds: ['m1', 'replaced_m2', 'm3'],
+      });
+
+      const events: unknown[] = [];
+      // chat_updated + partial_reconsolidate(m1) + m2,m3,m4 + lock_state + snapshot_complete = 7
+      for (let i = 0; i < 7; i++) {
+        const r = await gen.next();
+        events.push(r.value);
+      }
+
+      expect(events[0]).toMatchObject({ type: 'chat_updated' });
+      // Walk stops at m1 (first mismatch at m2)
+      expect(events[1]).toMatchObject({
+        type: 'partial_reconsolidate',
+        lastMatchedMessageId: 'm1',
+      });
+      expect(events[2]).toMatchObject({ type: 'message_created', message: { id: 'm2' } });
+      expect(events[3]).toMatchObject({ type: 'message_created', message: { id: 'm3' } });
+      expect(events[4]).toMatchObject({ type: 'message_created', message: { id: 'm4' } });
+      expect(events[5]).toMatchObject({ type: 'lock_state_changed' });
+      expect(events[6]).toMatchObject({ type: 'snapshot_complete' });
+      await gen.return(undefined);
+    });
+
     it('exportData dispatch reaches the runner and yields a done event', async () => {
       // Stub a tiny adapter that yields one empty page per table so the
       // export runner emits just the CSV header + done.

@@ -140,6 +140,20 @@ export default defineConfig([
         },
       ],
       '@typescript-eslint/switch-exhaustiveness-check': 'error',
+      // iOS Safari fires the virtual keyboard the moment a textarea or input
+      // with autoFocus mounts, before the parent modal's open animation
+      // finishes — feeding the layout-vs-visual viewport drift bug class
+      // (see 9c3bddf). The user can tap once to focus instead. Buttons are
+      // not matched (AlertProvider's confirm autoFocus is intentional a11y).
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'JSXOpeningElement[name.name=/^(textarea|input)$/] > JSXAttribute[name.name="autoFocus"]',
+          message:
+            'Do not autoFocus a textarea or input on mount. iOS Safari pops the virtual keyboard before the parent modal finishes animating, which can leave the page in a layout-vs-visual viewport drift state (the bug class fixed in 9c3bddf). Let the user tap to focus.',
+        },
+      ],
     },
   },
 

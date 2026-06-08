@@ -16,6 +16,7 @@
  */
 
 import type { AgenticLoopOptions } from '../services/agentic/agenticLoopGenerator';
+import { NUDGE_THINKING_DEFAULT } from '../services/api/apiService';
 import type { UnifiedStorage } from '../services/storage/unifiedStorage';
 import type { APIDefinition, Chat, Model, Project } from '../protocol/types';
 import type { BackendDeps } from './backendDeps';
@@ -153,11 +154,18 @@ export async function buildAgenticLoopOptionsForContext(
     toolOptions,
     disableStream: project.disableStream ?? false,
     extendedContext: project.extendedContext ?? false,
+    useAnthropicOneHourCache: project.useAnthropicOneHourCache ?? false,
     noLineNumbers: project.noLineNumbers,
     createVfsAdapter,
     enableReasoning: project.enableReasoning,
     reasoningBudgetTokens: project.reasoningBudgetTokens,
     thinkingKeepTurns: project.thinkingKeepTurns,
+    pruneThinkingKeepTurns:
+      project.pruneThinkingBeforeApiCall &&
+      project.thinkingKeepTurns !== undefined &&
+      project.thinkingKeepTurns >= 0
+        ? project.thinkingKeepTurns
+        : undefined,
     reasoningEffort: project.reasoningEffort,
     reasoningSummary: project.reasoningSummary,
     checkpointMessageIds: enabledTools.includes('checkpoint')
@@ -165,6 +173,7 @@ export async function buildAgenticLoopOptionsForContext(
         (chat.checkpointMessageId ? [chat.checkpointMessageId] : undefined))
       : undefined,
     activeHook: chat.activeHook,
+    nudgeThinking: apiDef.advancedSettings?.nudgeThinking ? NUDGE_THINKING_DEFAULT : undefined,
     signal,
     loopId,
     parentLoopId,

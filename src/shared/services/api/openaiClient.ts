@@ -228,7 +228,7 @@ export class OpenAIClient implements APIClient {
       maxTokens: number;
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       systemPrompt?: string;
       preFillResponse?: string;
@@ -700,8 +700,12 @@ export class OpenAIClient implements APIClient {
       return;
     }
 
-    // Model with configurable reasoning effort
-    const mappedEffort = mapReasoningEffort(effort, supportedEfforts as ReasoningEffort[]);
+    // Model with configurable reasoning effort. `supportedReasoningEfforts` never includes
+    // 'max' for any OpenAI/xAI model (the SDK's reasoning_effort type doesn't accept it).
+    const mappedEffort = mapReasoningEffort(
+      effort,
+      supportedEfforts as Exclude<ReasoningEffort, 'max'>[]
+    );
     if (mappedEffort !== undefined) {
       requestParams.reasoning_effort = mappedEffort;
     }

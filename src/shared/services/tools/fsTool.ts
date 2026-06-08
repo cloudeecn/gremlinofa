@@ -5,7 +5,7 @@
  * Similar to memory tool but operates from VFS root (/) with /memories as readonly.
  *
  * This is a stateless tool - all state is passed via toolOptions and context.
- * Commands: view, create, str_replace, insert, delete, rename, copy, mkdir, append
+ * Commands: view, create, str_replace, insert, delete, rename, copy, mkdir, append, append_raw
  */
 
 import type {
@@ -90,6 +90,12 @@ interface AppendInput {
   file_text?: string;
 }
 
+interface AppendRawInput {
+  command: 'append_raw';
+  path: string;
+  file_text?: string;
+}
+
 interface ViewAllInput {
   command: 'view-all';
   paths: string[];
@@ -105,6 +111,7 @@ type FsInput =
   | CopyInput
   | MkdirInput
   | AppendInput
+  | AppendRawInput
   | ViewAllInput;
 
 /**
@@ -655,8 +662,32 @@ async function handleMkdir(adapter: VfsAdapter, path: string): Promise<ToolResul
   }
 }
 
-/** Handle append command */
+/** Ensure text ends with a newline (unless empty) */
+function ensureTrailingNewline(text: string): string {
+  if (text.length > 0 && !text.endsWith('\n')) return text + '\n';
+  return text;
+}
+
+/** Handle append command (auto-adds trailing newline) */
 async function handleAppend(
+  adapter: VfsAdapter,
+  path: string,
+  fileText: string
+): Promise<ToolResult> {
+  return handleAppendCore(adapter, path, ensureTrailingNewline(fileText));
+}
+
+/** Handle append_raw command (verbatim, no trailing newline) */
+async function handleAppendRaw(
+  adapter: VfsAdapter,
+  path: string,
+  fileText: string
+): Promise<ToolResult> {
+  return handleAppendCore(adapter, path, fileText);
+}
+
+/** Shared append logic */
+async function handleAppendCore(
   adapter: VfsAdapter,
   path: string,
   fileText: string
@@ -769,7 +800,16 @@ async function* executeFsCommand(
     return { content: 'Error: command is required', isError: true };
   }
 
-  const requirePath = ['view', 'create', 'str_replace', 'insert', 'delete', 'mkdir', 'append'];
+  const requirePath = [
+    'view',
+    'create',
+    'str_replace',
+    'insert',
+    'delete',
+    'mkdir',
+    'append',
+    'append_raw',
+  ];
   if (requirePath.includes(cmd) && (!input.path || typeof input.path !== 'string')) {
     return { content: `Error: path is required for ${cmd} command`, isError: true };
   }
@@ -822,6 +862,8 @@ async function* executeFsCommand(
       return handleMkdir(adapter, fsInput.path);
     case 'append':
       return handleAppend(adapter, fsInput.path, fsInput.file_text ?? '');
+    case 'append_raw':
+      return handleAppendRaw(adapter, fsInput.path, fsInput.file_text ?? '');
     case 'view-all':
       return handleMultiView(adapter, fsInput.paths, noLineNumbers);
     default:
@@ -864,7 +906,7 @@ export const fsTool: ClientSideTool = {
 Binary file support: view returns dataUrl format for binary files, create accepts dataUrl format (data:<mime>;base64,<data>) to write binary files. str_replace, insert, and append are blocked on binary files.
 The create command fails if the file already exists. Set overwrite to true to replace existing files.
 The str_replace command replaces text in a file. Requires an exact, unique match of old_str. Omitting new_str deletes the matched text.
-The mkdir command creates a new directory. The append command appends text to an existing file, or creates the file if it does not exist.
+The mkdir command creates a new directory. The append command appends text to an existing file (auto-adds trailing newline), or creates the file if it does not exist. Use append_raw for verbatim append without trailing newline.
 The rename command renames a file or directory. Fails if destination exists unless overwrite is true.
 The copy command copies a file from old_path to new_path. Source must be a file. Fails if destination exists unless overwrite is true. Errors if destination is a directory.
 The view-all command reads multiple files in one call. Takes a paths array, returns concatenated content with === path === headers. No view_range support.`,
@@ -885,6 +927,7 @@ The view-all command reads multiple files in one call. Takes a paths array, retu
           'copy',
           'mkdir',
           'append',
+          'append_raw',
           'view-all',
         ],
         description: 'The command to execute',
@@ -900,7 +943,7 @@ The view-all command reads multiple files in one call. Takes a paths array, retu
       },
       file_text: {
         type: 'string',
-        description: 'Content for create and append commands',
+        description: 'Content for create, append, and append_raw commands',
       },
       overwrite: {
         type: 'boolean',

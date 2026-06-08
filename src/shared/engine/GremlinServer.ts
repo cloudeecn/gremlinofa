@@ -656,7 +656,7 @@ export class GremlinServer {
         yield* this.runLoop(params as RunLoopParams);
         return;
       case 'attachChat':
-        yield* this.attachChat(params.chatId);
+        yield* this.attachChat(params.chatId, params.knownMessageIds);
         return;
       case 'subscribeActiveLoops':
         yield* this.subscribeActiveLoops();
@@ -811,7 +811,10 @@ export class GremlinServer {
    * their own `lock_state_changed` updates through the chat pubsub via
    * `broadcastChatLockState`.
    */
-  private async *attachChat(chatId: string): AsyncGenerator<LoopEvent, void, void> {
+  private async *attachChat(
+    chatId: string,
+    knownMessageIds?: string[]
+  ): AsyncGenerator<LoopEvent, void, void> {
     const queue: LoopEvent[] = [];
     let resolveNext: (() => void) | null = null;
 
@@ -831,8 +834,28 @@ export class GremlinServer {
       }
       const messages = await this.storage.getMessages(chatId);
       yield { type: 'chat_updated', chat };
-      for (const message of messages) {
-        yield { type: 'message_created', message: prepareMessageForWire(message) };
+
+      // Partial reconsolidation: if the client sent known message IDs,
+      // walk both lists in parallel to find the longest matched prefix.
+      // Skip yielding messages the client already has.
+      let startIdx = 0;
+      if (knownMessageIds && knownMessageIds.length > 0) {
+        const firstMatchIdx = messages.findIndex(m => m.id === knownMessageIds[0]);
+        if (firstMatchIdx !== -1) {
+          let lastMatchIdx = firstMatchIdx;
+          for (let k = 1; k < knownMessageIds.length; k++) {
+            const serverIdx = firstMatchIdx + k;
+            if (serverIdx >= messages.length) break;
+            if (messages[serverIdx].id !== knownMessageIds[k]) break;
+            lastMatchIdx = serverIdx;
+          }
+          startIdx = lastMatchIdx + 1;
+          yield { type: 'partial_reconsolidate', lastMatchedMessageId: messages[lastMatchIdx].id };
+        }
+      }
+
+      for (let i = startIdx; i < messages.length; i++) {
+        yield { type: 'message_created', message: prepareMessageForWire(messages[i]) };
       }
 
       // Replay running-loop state. The chat-pubsub subscription set up
@@ -876,6 +899,20 @@ export class GremlinServer {
             type: 'tool_block_update',
             toolUseId: entry.toolUseId,
             block: entry.mergedBlock,
+          };
+        }
+        // Rehydrate the in-flight `renderingGroups` state for delta-encoded
+        // tools (minion) so a reconnecting subscriber doesn't have to wait
+        // for the next live delta to repopulate the streaming UI. Snapshot
+        // mirrors the `LoopRegistry` cache assembled from every
+        // `tool_groups_delta` since the placeholder was emitted.
+        if (entry.groupsState) {
+          yield {
+            type: 'tool_groups_snapshot',
+            toolUseId: entry.toolUseId,
+            infoGroup: entry.groupsState.infoGroup,
+            accumulatedGroups: entry.groupsState.accumulatedGroups,
+            streamingGroups: entry.groupsState.streamingGroups,
           };
         }
       }

@@ -18,6 +18,7 @@ export default function MessageBubble({
   focusMode,
   expandMinions,
   disableMath,
+  isLastMessage,
 }: MessageBubbleProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
@@ -131,6 +132,7 @@ export default function MessageBubble({
           onAction={focusMode ? undefined : onAction}
           onDeleteMessage={onDeleteMessage}
           focusMode={focusMode}
+          isLastMessage={isLastMessage}
         />
       )}
 
@@ -141,16 +143,19 @@ export default function MessageBubble({
           onDeleteMessage={onDeleteMessage}
           focusMode={focusMode}
           expandMinions={expandMinions}
+          isLastMessage={isLastMessage}
         />
       )}
 
       {!isUser && (
         <AssistantMessageBubble
           message={message}
+          onAction={focusMode ? undefined : onAction}
           onDeleteMessage={onDeleteMessage}
           isVisible={isVisible}
           focusMode={focusMode}
           disableMath={disableMath}
+          isLastMessage={isLastMessage}
         />
       )}
     </div>

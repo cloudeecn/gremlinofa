@@ -5,6 +5,34 @@ export const DEEPSEEK_MODELS: ModelKnowledge[] = [
     matches: [
       {
         apiType: ['anthropic', 'chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'deepseek-v4-flash' }],
+      },
+    ],
+    inputPrice: 0.14,
+    cacheReadPrice: 0.028,
+    outputPrice: 0.28,
+    reasoningMode: 'optional',
+    supportedReasoningEfforts: [],
+    deFactoThinking: true,
+  },
+  {
+    matches: [
+      {
+        apiType: ['anthropic', 'chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'deepseek-v4-pro' }],
+      },
+    ],
+    inputPrice: 1.74,
+    cacheReadPrice: 0.145,
+    outputPrice: 3.48,
+    reasoningMode: 'optional',
+    supportedReasoningEfforts: [],
+    deFactoThinking: true,
+  },
+  {
+    matches: [
+      {
+        apiType: ['anthropic', 'chatgpt', 'responses_api'],
         modelIdFuzz: [{ modelIdPrefix: 'deepseek-chat' }],
       },
     ],

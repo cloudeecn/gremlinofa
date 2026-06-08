@@ -7,6 +7,7 @@ export const REASONING_EFFORTS: readonly ReasoningEffort[] = [
   'medium',
   'high',
   'xhigh',
+  'max',
 ] as const;
 
 /**

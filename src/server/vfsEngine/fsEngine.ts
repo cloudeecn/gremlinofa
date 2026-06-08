@@ -1,11 +1,17 @@
 /**
- * Filesystem operations with path-traversal protection and versioning integration.
+ * Filesystem operations with path-traversal protection, symlink policy, and
+ * versioning integration.
  *
- * Every operation resolves the requested path against a project root and
- * verifies the result stays within bounds before touching the filesystem.
+ * Every op resolves the requested path against a {@link VfsContext} that
+ * describes:
+ *   - the project root,
+ *   - the canonical allow-list (project root + extra mounts the deployer wired
+ *     via VFS_EXTRA_ROOTS),
+ *   - whether symlinks may be followed.
  *
- * Unlike the original vfs-backend/fsOperations, this module takes `dataDir`
- * as a parameter rather than importing a config singleton.
+ * The canonical (realpath) path is computed before any FS call, then checked
+ * against the allow-list. Symlinks that escape (or any symlink at all when
+ * follow is off) are rejected with HTTP 403.
  */
 
 import fs from 'node:fs/promises';
@@ -15,7 +21,7 @@ import * as versioning from './versioning.js';
 
 export { type VersionInfo } from './versioning.js';
 
-const SAFE_SEGMENT = /^[A-Za-z0-9_]+$/;
+export const SAFE_SEGMENT = /^[A-Za-z0-9_]+$/;
 
 function assertSegment(segment: string): void {
   if (!SAFE_SEGMENT.test(segment)) {
@@ -38,10 +44,89 @@ export function projectRoot(dataDir: string, userId: string, projectId: string):
   return resolved;
 }
 
+export class FsError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'FsError';
+    this.status = status;
+  }
+}
+
+// ============================================================================
+// Path resolution
+// ============================================================================
+
+export interface VfsContext {
+  /** Canonical absolute path to the project root. */
+  projectRoot: string;
+  /** Canonical absolute paths the project may touch. Always includes projectRoot. */
+  allowedRoots: string[];
+  /** When false, any symlink in the chain triggers FsError(403). */
+  followSymlinks: boolean;
+}
+
+export interface ResolveOptions {
+  /**
+   * When true, the target path is allowed to not exist yet. We realpath the
+   * deepest existing ancestor and append the missing tail. This still detects
+   * symlinks anywhere up the chain.
+   */
+  forWrite?: boolean;
+}
+
+function containedIn(canonical: string, root: string): boolean {
+  if (canonical === root) return true;
+  if (!canonical.startsWith(root)) return false;
+  return canonical[root.length] === path.sep;
+}
+
+function inAllowedRoots(canonical: string, roots: string[]): boolean {
+  for (const r of roots) {
+    if (containedIn(canonical, r)) return true;
+  }
+  return false;
+}
+
+async function realpathSafe(p: string): Promise<string | null> {
+  try {
+    return await fs.realpath(p);
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw e;
+  }
+}
+
+async function canonicalForWrite(lexical: string): Promise<string> {
+  // Walk up until we find an existing ancestor.
+  const segments: string[] = [];
+  let current = lexical;
+  while (true) {
+    const real = await realpathSafe(current);
+    if (real !== null) {
+      return segments.length === 0 ? real : path.join(real, ...segments.reverse());
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      // Reached filesystem root without finding anything — unreachable in
+      // practice since '/' always exists. Fall back to lexical.
+      return lexical;
+    }
+    segments.push(path.basename(current));
+    current = parent;
+  }
+}
+
 /**
- * Resolve a user-supplied path within a project root, rejecting traversal.
+ * Resolve a user-supplied path to a canonical absolute path, enforcing
+ * containment + symlink policy.
  */
-export function safePath(root: string, requestedPath: string): string {
+export async function resolveCanonicalPath(
+  requestedPath: string,
+  ctx: VfsContext,
+  opts: ResolveOptions = {}
+): Promise<string> {
   if (typeof requestedPath !== 'string') {
     throw new FsError('Path must be a string', 400);
   }
@@ -50,28 +135,31 @@ export function safePath(root: string, requestedPath: string): string {
   }
 
   const cleaned = requestedPath.replace(/^\/+/, '');
-  const resolved = path.resolve(root, cleaned);
+  const lexical = path.resolve(ctx.projectRoot, cleaned);
 
-  // Containment check — path.resolve normalizes away any ".." segments,
-  // so startsWith is sufficient to guarantee the resolved path is under root.
-  if (!resolved.startsWith(root)) {
-    throw new FsError('Path traversal rejected', 403);
-  }
-  // Prevent sibling-directory match (e.g. root="/a/proj" matching "/a/project2")
-  if (resolved !== root && resolved[root.length] !== path.sep) {
+  // Lexical containment against project root (preserves existing safePath
+  // semantics — '..' escapes are caught here before we even touch FS).
+  if (!containedIn(lexical, ctx.projectRoot)) {
     throw new FsError('Path traversal rejected', 403);
   }
 
-  return resolved;
-}
-
-export class FsError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = 'FsError';
-    this.status = status;
+  let canonical: string;
+  if (opts.forWrite) {
+    canonical = await canonicalForWrite(lexical);
+  } else {
+    const real = await realpathSafe(lexical);
+    canonical = real ?? lexical;
   }
+
+  if (!ctx.followSymlinks && canonical !== lexical) {
+    throw new FsError('Symlink encountered; VFS_FOLLOW_SYMLINKS disabled', 403);
+  }
+
+  if (!inAllowedRoots(canonical, ctx.allowedRoots)) {
+    throw new FsError('Path outside allowed roots', 403);
+  }
+
+  return canonical;
 }
 
 // ============================================================================
@@ -110,13 +198,22 @@ export function detectMimeByExtension(filePath: string): string {
 // ============================================================================
 
 export async function ls(
-  root: string,
+  ctx: VfsContext,
   dirPath: string
 ): Promise<Array<{ name: string; type: 'file' | 'dir'; size: number; mtime: number }>> {
-  const resolved = safePath(root, dirPath);
+  const resolved = await resolveCanonicalPath(dirPath, ctx);
   const entries = await fs.readdir(resolved, { withFileTypes: true });
 
-  const visible = entries.filter(entry => !entry.name.startsWith('.'));
+  // Filter: hide dotfiles always. In follow=off mode, also hide symlinks (we
+  // refuse to traverse them anywhere else, so listing them would be a lie).
+  // In follow=on mode, leave them visible — access-time resolution enforces
+  // the allow-list per entry, so a link pointing to a forbidden target shows
+  // up but errors on read.
+  const visible = entries.filter(entry => {
+    if (entry.name.startsWith('.')) return false;
+    if (!ctx.followSymlinks && entry.isSymbolicLink()) return false;
+    return true;
+  });
 
   const results = await Promise.all(
     visible.map(async entry => {
@@ -124,7 +221,9 @@ export async function ls(
       const stat = await fs.stat(fullPath);
       return {
         name: entry.name,
-        type: (entry.isDirectory() ? 'dir' : 'file') as 'file' | 'dir',
+        type: (entry.isDirectory() || (entry.isSymbolicLink() && stat.isDirectory())
+          ? 'dir'
+          : 'file') as 'file' | 'dir',
         size: stat.size,
         mtime: stat.mtimeMs,
       };
@@ -141,10 +240,10 @@ export async function ls(
 }
 
 export async function stat(
-  root: string,
+  ctx: VfsContext,
   filePath: string
 ): Promise<{ size: number; mtime: number; type: 'file' | 'dir' }> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   const s = await fs.stat(resolved);
   return {
     size: s.size,
@@ -153,8 +252,10 @@ export async function stat(
   };
 }
 
-export async function exists(root: string, filePath: string): Promise<boolean> {
-  const resolved = safePath(root, filePath);
+export async function exists(ctx: VfsContext, filePath: string): Promise<boolean> {
+  // resolveCanonicalPath without forWrite falls back to lexical on ENOENT so a
+  // missing file still gets the symlink + allow-list check on its parent chain.
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   try {
     await fs.access(resolved);
     return true;
@@ -163,8 +264,8 @@ export async function exists(root: string, filePath: string): Promise<boolean> {
   }
 }
 
-export async function read(root: string, filePath: string): Promise<Buffer> {
-  const resolved = safePath(root, filePath);
+export async function read(ctx: VfsContext, filePath: string): Promise<Buffer> {
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   return fs.readFile(resolved);
 }
 
@@ -173,12 +274,12 @@ export async function read(root: string, filePath: string): Promise<Buffer> {
 // ============================================================================
 
 export async function write(
-  root: string,
+  ctx: VfsContext,
   filePath: string,
   content: Buffer,
   createOnly: boolean
 ): Promise<void> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx, { forWrite: true });
   await withFileLock(resolved, async () => {
     if (createOnly) {
       try {
@@ -198,21 +299,21 @@ export async function write(
   });
 }
 
-export async function rm(root: string, filePath: string): Promise<void> {
-  const resolved = safePath(root, filePath);
+export async function rm(ctx: VfsContext, filePath: string): Promise<void> {
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   await withFileLock(resolved, async () => {
     await fs.unlink(resolved);
     await versioning.removeVersionDir(resolved);
   });
 }
 
-export async function mkdir(root: string, dirPath: string): Promise<void> {
-  const resolved = safePath(root, dirPath);
+export async function mkdir(ctx: VfsContext, dirPath: string): Promise<void> {
+  const resolved = await resolveCanonicalPath(dirPath, ctx, { forWrite: true });
   await fs.mkdir(resolved, { recursive: true });
 }
 
-export async function rmdir(root: string, dirPath: string): Promise<void> {
-  const resolved = safePath(root, dirPath);
+export async function rmdir(ctx: VfsContext, dirPath: string): Promise<void> {
+  const resolved = await resolveCanonicalPath(dirPath, ctx);
   // Recursively clean up version dirs inside
   await removeVersionDirsRecursive(resolved);
   await fs.rm(resolved, { recursive: true, force: true });
@@ -222,6 +323,10 @@ async function removeVersionDirsRecursive(dirPath: string): Promise<void> {
   try {
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
     for (const entry of entries) {
+      // Don't recurse through symlinks — risk of loops / accidental traversal
+      // into external mounts. We're cleaning up *this* project's versioning,
+      // not somewhere a symlink points.
+      if (entry.isSymbolicLink()) continue;
       const fullPath = path.join(dirPath, entry.name);
       if (entry.isDirectory()) {
         if (versioning.isVersionDir(entry.name)) {
@@ -239,9 +344,9 @@ async function removeVersionDirsRecursive(dirPath: string): Promise<void> {
   }
 }
 
-export async function rename(root: string, fromPath: string, toPath: string): Promise<void> {
-  const resolvedFrom = safePath(root, fromPath);
-  const resolvedTo = safePath(root, toPath);
+export async function rename(ctx: VfsContext, fromPath: string, toPath: string): Promise<void> {
+  const resolvedFrom = await resolveCanonicalPath(fromPath, ctx);
+  const resolvedTo = await resolveCanonicalPath(toPath, ctx, { forWrite: true });
   await withFileLock(resolvedFrom, async () => {
     await fs.mkdir(path.dirname(resolvedTo), { recursive: true });
     await fs.rename(resolvedFrom, resolvedTo);
@@ -259,12 +364,12 @@ export interface StrReplaceResult {
 }
 
 export async function strReplace(
-  root: string,
+  ctx: VfsContext,
   filePath: string,
   oldStr: string,
   newStr: string
 ): Promise<StrReplaceResult> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   return withFileLock(resolved, async () => {
     const content = await fs.readFile(resolved, 'utf-8');
 
@@ -309,12 +414,12 @@ export interface InsertResult {
 }
 
 export async function insert(
-  root: string,
+  ctx: VfsContext,
   filePath: string,
   line: number,
   text: string
 ): Promise<InsertResult> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   return withFileLock(resolved, async () => {
     const content = await fs.readFile(resolved, 'utf-8');
     const lines = content.split('\n');
@@ -333,11 +438,11 @@ export async function insert(
 }
 
 export async function append(
-  root: string,
+  ctx: VfsContext,
   filePath: string,
   text: string
 ): Promise<{ created: boolean }> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx, { forWrite: true });
   return withFileLock(resolved, async () => {
     let created = false;
     try {
@@ -358,41 +463,41 @@ export async function append(
 // ============================================================================
 
 export async function fileVersions(
-  root: string,
+  ctx: VfsContext,
   filePath: string
 ): Promise<versioning.VersionInfo[]> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   return versioning.listVersions(resolved);
 }
 
 export async function fileVersion(
-  root: string,
+  ctx: VfsContext,
   filePath: string,
   version: number
 ): Promise<Buffer | null> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   return versioning.getVersion(resolved, version);
 }
 
 export async function readAllFileVersions(
-  root: string,
+  ctx: VfsContext,
   filePath: string
 ): Promise<Array<{ version: number; content: string }>> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   return versioning.readAllVersions(resolved);
 }
 
 export async function dropFileVersions(
-  root: string,
+  ctx: VfsContext,
   filePath: string,
   keepCount: number
 ): Promise<number> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   return versioning.dropOldVersions(resolved, keepCount);
 }
 
 export async function fileMeta(
-  root: string,
+  ctx: VfsContext,
   filePath: string
 ): Promise<{
   version: number;
@@ -400,7 +505,7 @@ export async function fileMeta(
   size: number;
   mime: string;
 } | null> {
-  const resolved = safePath(root, filePath);
+  const resolved = await resolveCanonicalPath(filePath, ctx);
   const meta = await versioning.getFileMeta(resolved);
   if (!meta) return null;
 
@@ -412,9 +517,11 @@ export async function fileMeta(
 
 /**
  * Compact all files in a project: walk the tree and prune old versions.
+ * Skips symlinks regardless of follow setting — we're operating on *this*
+ * project's storage, not external mounts the user happens to link in.
  */
 export async function compact(
-  root: string,
+  ctx: VfsContext,
   keepCount: number
 ): Promise<{ filesProcessed: number; versionsDropped: number }> {
   let filesProcessed = 0;
@@ -424,6 +531,7 @@ export async function compact(
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue;
+      if (entry.isSymbolicLink()) continue;
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await walk(fullPath);
@@ -435,6 +543,6 @@ export async function compact(
     }
   }
 
-  await walk(root);
+  await walk(ctx.projectRoot);
   return { filesProcessed, versionsDropped };
 }

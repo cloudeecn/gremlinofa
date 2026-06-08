@@ -3,6 +3,8 @@ import type Anthropic from '@anthropic-ai/sdk';
 import {
   applyCacheBreakpoints,
   buildAnthropicBetas,
+  findLastAssistantMessageIdx,
+  findPreviousUserMessageIdx,
   placeCacheControlOnMessage,
   validateAnthropicResponse,
 } from '../anthropicClient';
@@ -140,6 +142,42 @@ describe('placeCacheControlOnMessage', () => {
     };
     expect(placeCacheControlOnMessage(msg)).toBe(false);
   });
+
+  it('omits ttl when called with default (5m)', () => {
+    const msg: Anthropic.Beta.BetaMessageParam = {
+      role: 'user',
+      content: [{ type: 'text', text: 'Hello' }],
+    };
+    placeCacheControlOnMessage(msg);
+    const block = (msg.content as Anthropic.Beta.BetaContentBlockParam[])[0] as {
+      cache_control: { type: string; ttl?: string };
+    };
+    expect(block.cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  it("emits ttl: '1h' when called with '1h'", () => {
+    const msg: Anthropic.Beta.BetaMessageParam = {
+      role: 'user',
+      content: [{ type: 'text', text: 'Hello' }],
+    };
+    placeCacheControlOnMessage(msg, '1h');
+    const block = (msg.content as Anthropic.Beta.BetaContentBlockParam[])[0] as {
+      cache_control: { type: string; ttl?: string };
+    };
+    expect(block.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+  });
+
+  it("omits ttl when called with '5m' (default behavior, smaller payload)", () => {
+    const msg: Anthropic.Beta.BetaMessageParam = {
+      role: 'user',
+      content: [{ type: 'text', text: 'Hello' }],
+    };
+    placeCacheControlOnMessage(msg, '5m');
+    const block = (msg.content as Anthropic.Beta.BetaContentBlockParam[])[0] as {
+      cache_control: { type: string; ttl?: string };
+    };
+    expect(block.cache_control).toEqual({ type: 'ephemeral' });
+  });
 });
 
 describe('applyCacheBreakpoints with startIdx', () => {
@@ -193,6 +231,19 @@ describe('applyCacheBreakpoints with startIdx', () => {
     // Anchor's pre-existing cache_control remains
     const msg1 = messages[1].content as Anthropic.Beta.BetaContentBlockParam[];
     expect(msg1[0]).toHaveProperty('cache_control');
+  });
+
+  it("propagates ttl: '1h' to the breakpoint it places", () => {
+    const messages: Anthropic.Beta.BetaMessageParam[] = [
+      { role: 'user', content: [{ type: 'text', text: 'msg-0' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'msg-1' }] },
+    ];
+    applyCacheBreakpoints(messages, 0, '1h');
+    const last = messages[1].content as Anthropic.Beta.BetaContentBlockParam[];
+    expect((last[0] as { cache_control: { ttl?: string } }).cache_control).toEqual({
+      type: 'ephemeral',
+      ttl: '1h',
+    });
   });
 });
 
@@ -341,5 +392,89 @@ describe('validateAnthropicResponse', () => {
         [{ type: 'thinking', signature: 'valid' }, { type: 'redacted_thinking' }]
       )
     ).not.toThrow();
+  });
+});
+
+describe('findPreviousUserMessageIdx', () => {
+  const userMsg = (text: string): Anthropic.Beta.BetaMessageParam => ({
+    role: 'user',
+    content: [{ type: 'text', text }],
+  });
+  const asstMsg = (text: string): Anthropic.Beta.BetaMessageParam => ({
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+  });
+  const toolUseMsg = (id: string): Anthropic.Beta.BetaMessageParam => ({
+    role: 'assistant',
+    content: [{ type: 'tool_use', id, name: 't', input: {} }],
+  });
+  const toolResultMsg = (id: string): Anthropic.Beta.BetaMessageParam => ({
+    role: 'user',
+    content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }],
+  });
+
+  it('returns the user message before the latest in a user/assistant/user flow', () => {
+    const messages = [userMsg('first'), asstMsg('reply'), userMsg('second')];
+    expect(findPreviousUserMessageIdx(messages)).toBe(0);
+  });
+
+  it('skips tool_result user-role messages when finding the previous real user message', () => {
+    // Typical agentic loop: user, assistant(tool_use), user(tool_result),
+    // assistant(final), user(new turn). Previous real user = index 0.
+    const messages = [
+      userMsg('first real'),
+      toolUseMsg('tu_1'),
+      toolResultMsg('tu_1'),
+      asstMsg('final reply'),
+      userMsg('latest real'),
+    ];
+    expect(findPreviousUserMessageIdx(messages)).toBe(0);
+  });
+
+  it('returns -1 when only one real user message exists', () => {
+    const messages = [userMsg('only')];
+    expect(findPreviousUserMessageIdx(messages)).toBe(-1);
+  });
+
+  it('returns -1 when only one real user exists alongside tool_result messages', () => {
+    const messages = [userMsg('only real'), toolUseMsg('tu_1'), toolResultMsg('tu_1')];
+    expect(findPreviousUserMessageIdx(messages)).toBe(-1);
+  });
+
+  it('returns -1 when no user messages exist', () => {
+    const messages = [asstMsg('a'), asstMsg('b')];
+    expect(findPreviousUserMessageIdx(messages)).toBe(-1);
+  });
+
+  it('respects startIdx — never returns indices before the anchor', () => {
+    // user@0 would be the previous, but startIdx excludes it. Only user@2 is left ⇒ -1.
+    const messages = [userMsg('pre-anchor'), asstMsg('anchored'), userMsg('latest')];
+    expect(findPreviousUserMessageIdx(messages, 1)).toBe(-1);
+  });
+});
+
+describe('findLastAssistantMessageIdx', () => {
+  const userMsg = (text: string): Anthropic.Beta.BetaMessageParam => ({
+    role: 'user',
+    content: [{ type: 'text', text }],
+  });
+  const asstMsg = (text: string): Anthropic.Beta.BetaMessageParam => ({
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+  });
+
+  it('returns the last assistant message index in mixed arrays', () => {
+    const messages = [userMsg('u1'), asstMsg('a1'), userMsg('u2'), asstMsg('a2'), userMsg('u3')];
+    expect(findLastAssistantMessageIdx(messages)).toBe(3);
+  });
+
+  it('returns -1 when no assistant messages exist', () => {
+    const messages = [userMsg('only')];
+    expect(findLastAssistantMessageIdx(messages)).toBe(-1);
+  });
+
+  it('respects startIdx — never returns indices before the anchor', () => {
+    const messages = [asstMsg('pre-anchor'), userMsg('u'), userMsg('latest')];
+    expect(findLastAssistantMessageIdx(messages, 1)).toBe(-1);
   });
 });

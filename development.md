@@ -26,7 +26,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 - [x] Project & chat management with cascading deletion
 - [x] Project settings (system prompt, pre-fill, model, temperature, reasoning, web search, message format)
-- [x] Chat with streaming responses, message editing, forking, resend, and cost tracking (separate minion token/cost tracking in info bar)
+- [x] Chat with streaming responses, message editing, forking, rollback, and cost tracking (separate minion token/cost tracking in info bar)
 - [x] Message rendering (Markdown, syntax highlighting, LaTeX math with disable-math toggle, thinking blocks, citations, code block copy, word-break on non-code containers)
 - [x] Image attachments (resize, compress, multi-select, preview, lightbox)
 - [x] Virtual scrolling for long message histories with scroll-to-bottom button and hysteresis bounce protection
@@ -60,6 +60,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 - [x] Lightweight deployable remote storage (`storage-backend/` - SQLite + Express)
 - [x] VFS server (integrated build target in `src/server/vfsFacade/` + shared engine in `src/server/vfsEngine/`)
+- [x] Symlink policy on server / filesystem VFS — every op realpath-resolves and checks against an allow-list (project root + `VFS_EXTRA_ROOTS`). Off by default: any symlink under a project root is rejected and hidden from listings. `VFS_FOLLOW_SYMLINKS=true` opts in; the canonical target must still land in an allowed root. `VFS_EXTRA_ROOTS` is PATH-style (`/global:projectId|/scoped`). Misconfig aborts boot.
 - [x] Remote VFS adapter (frontend `RemoteVfsAdapter` talks to VFS server, E2E encryption deprecated — read-only for migration)
 - [x] VFS adapter routing — all callers (UI via `useVfsAdapter` hook, tools/JSVM/hooks via `ToolContext.vfsAdapter`, `createVfsAdapter` factory for cross-namespace access, system prompt generation via `SystemPromptContext.createVfsAdapter`)
 - [x] VFS Manager clickable root node (create files/dirs at `/`, download entire VFS as ZIP, upload ZIP)
@@ -92,9 +93,9 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 
 **Chat Features**
 
-- [ ] Background API support (responses continue after navigation)
+- [x] Background API support (loop runs in worker / server; UI re-attaches via long-lived `attachChat` subscription, navigation does not kill the loop)
 - [x] Soft stop for agentic loop (stop button halts at next tool boundary)
-- [ ] Abort ongoing API calls
+- [x] Abort ongoing API calls (hard abort via `gremlinClient.abortLoop` → `LoopRegistry.abort` → `AbortController` → API client `signal:` option)
 - [x] Focus mode (⋯ menu: hides backstage, tool results, metadata; shows only user text/images + assistant text)
 - [x] Expand minions (⋯ menu: inline minion name/model/input/output without collapsed bar)
 - [x] Disable Math toggle (⋯ menu: renders `$...$` as literal text instead of KaTeX)
@@ -110,7 +111,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
   - [x] Prune empty text blocks (removes empty text blocks from historical messages)
   - [x] Enforce genuine Anthropic (rejects responses with zero cache activity or unsigned thinking blocks)
   - [x] De facto thinking mode (sends `{thinking: {type: enabled/disabled}}` for DeepSeek, Kimi, MiMo, etc. — settable per model metadata or per provider)
-  - [x] Nudge model to think (appends `<<WITH THINKING STEPS>>` to last user message at send time — for models that skip chain-of-thought without a nudge)
+  - [x] Nudge model to think (appends a nudge phrase like `<<WITH THINKING STEPS>>` to last user message at send time — for models that skip chain-of-thought without a nudge; resolved as a loop option via `buildAgenticLoopOptionsForContext`, overridable per minion call via `minionTool` `nudgeThinking` input)
   - [x] Mandate chain-of-thought (requires at least one response with reasoning tokens/thinking blocks per agentic run — triggers minion savepoint rollback on retry)
 - [x] Pricing display in Model Selector
 - [x] Cache pricing fallback (cache tokens priced at inputPrice when no cache-specific price)
@@ -180,8 +181,9 @@ Projects organize chats with shared settings:
 - **Name** and **Icon** (default: 📁)
 - **System prompt** (via `SystemPromptModal`) and **Pre-fill response** (in Advanced section)
 - **Default API definition/model** (required)
-- **Anthropic reasoning**: enable toggle + budget tokens (default: 1024) + keep thinking turns
-- **OpenAI/Responses reasoning**: effort (`undefined` = auto), summary (`undefined` = auto)
+- **Anthropic reasoning**: enable toggle + budget tokens (default: 1024) + keep thinking turns + adaptive mode (budget = 0 on Opus 4.6/Sonnet 4.6)
+- **Reasoning effort**: shared control across providers — maps to OpenAI/Nova effort directly, Anthropic adaptive `output_config` when budget = 0
+- **OpenAI/Responses reasoning**: summary (`undefined` = auto)
 - **Web search** toggle
 - **Message format**: three modes (user message / with metadata / use template)
 - **Tools**: Memory (Anthropic only), JavaScript Execution, Filesystem, Sketchbook, Checkpoint, Metadata, DUMMY
@@ -321,7 +323,8 @@ connecting → connected ⇄ stale → disconnected → reconnecting → connect
 - **Init replay on reconnect:** transport saves `lastInitParams` on first successful `init`, replays it as the first message after reconnect. Without this, the `initPromise` gate blocks all non-init RPCs forever → blank page. Server-side `init` is idempotent with the same CEK.
 - One-shot requests survive disconnect: `inflightEnvelopes` → `retryQueue`, replayed on reconnect (after init) with same `requestId` so the caller's promise eventually resolves
 - Streams don't survive: terminated with `status: 'error', detail: 'transport disconnected'`
-- `GremlinSession.onReconnect` re-attaches `attachChat` stream, replaying the chat snapshot
+- `GremlinSession.onReconnect` re-attaches `attachChat` stream, replaying the chat snapshot. **Partial reconsolidation:** session sends the last 20 message IDs via `knownMessageIds`; server walks them against persisted messages, yields `partial_reconsolidate` with the last matched ID, then only the tail. Falls back to full snapshot when the first ID isn't found.
+- **Snapshot loading phase (`snapshotLoading`):** `useChat` tracks a `snapshotLoading` boolean that is `true` during initial snapshot replay and reconnect snapshot replay (from `reconnect_start` until `snapshot_complete`). During this phase: auto-scroll is suppressed in `MessageList`, the input bar is disabled, and derived states (`showContinueBanner`, `unresolvedToolCalls`, incomplete-tail banner) are gated to prevent flicker. On completion, `MessageList` scrolls to bottom once via `requestAnimationFrame`.
 
 **UI (banner):**
 
@@ -469,15 +472,16 @@ connecting → connected ⇄ stale → disconnected → reconnecting → connect
 - `temperature?: number` - Model temperature
 - `maxTokens: number` - Max output tokens
 - `enableReasoning: boolean` - Anthropic: enable thinking blocks
-- `reasoningBudgetTokens: number` - Anthropic: budget for thinking
+- `reasoningBudgetTokens: number` - Anthropic: budget for thinking. 0 + `supportsAdaptiveReasoning` = adaptive mode. Models with `onlyAdaptiveReasoning` (Opus 4.7+) force adaptive regardless of this value.
 - `thinkingKeepTurns?: number` - Anthropic: thinking block preservation (`undefined` = model default, `-1` = keep all, `0+` = keep N turns). Opus 4.5 keeps all by default; others keep 1 turn.
-- `reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'` - OpenAI/Responses: reasoning effort level (`undefined` = auto)
-- `reasoningSummary?: 'auto' | 'concise' | 'detailed'` - OpenAI/Responses: summary mode (`undefined` = auto)
+- `reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'` - OpenAI/Responses: reasoning effort level (`undefined` = auto). For Anthropic adaptive mode, `xhigh` maps to API `xhigh` on Opus 4.7 (distinct level) and to API `max` elsewhere; `max` always maps to API `max`.
+- `reasoningSummary?: 'auto' | 'concise' | 'detailed'` - OpenAI/Responses: summary mode (`undefined` = auto). On Anthropic/Bedrock Claude, any non-`undefined` value opts into `thinking.display: 'summarized'` (needed on Opus 4.7, which defaults to `'omitted'`).
 - `systemPrompt?: string` - System prompt
 - `preFillResponse?: string` - Pre-fill assistant response (Anthropic only)
 - `webSearchEnabled?: boolean` - Enable web search
 - `enabledTools?: string[]` - Enabled client-side tools
 - `extendedContext?: boolean` - Anthropic: opt into 1M context window beta (`context-1m-2025-08-07` header). Models with `supportsExtendedContext` in metadata: Opus 4.6, Sonnet 4.5, Sonnet 4. Above 200K input tokens, all tokens charged at premium rates (2x input, 1.5x output). Toggle is always visible in project settings; the beta header is only sent at runtime when the effective model supports it (gated in `agenticLoopGenerator`).
+- `useAnthropicOneHourCache?: boolean` - Anthropic: emit `cache_control: { type: 'ephemeral', ttl: '1h' }` on all breakpoints (system prompt, sliding tail, stable anchor). Default off → omits `ttl` and Anthropic uses its 5m default. Honored only when `apiDef.apiType === 'anthropic'`. Cost accounting multiplies `cacheWritePrice` by 1.6× (2/1.25) when on, since stored prices assume the 5m write multiplier; cache-read prices are unchanged.
 - `checkpointMessageId?: string` - Context tidy: computed tidy boundary ID (triggers pre-checkpoint trimming)
 - `tidyToolNames?: Set<string>` - Context tidy: tool names whose blocks should be removed from pre-checkpoint messages
 
@@ -542,8 +546,8 @@ AWS Bedrock Converse API support via `@aws-sdk/client-bedrock` and `@aws-sdk/cli
   - Claude 4+ → `reasoning_config` (budget_tokens)
   - Nova 2 → `reasoningConfig` with `maxReasoningEffort` (low/medium/high). Nova 1 models don't support reasoning.
   - DeepSeek → `showThinking` boolean
-- Config built via `buildReasoningConfig(modelType, options)`
-- Budget controlled via `reasoningBudgetTokens` (Claude), effort via `reasoningEffort` (Nova 2)
+- Config built via `buildReasoningConfig(modelType, options)` — adaptive mode when `supportsAdaptiveReasoning && (onlyAdaptiveReasoning || !reasoningBudgetTokens)`
+- Budget controlled via `reasoningBudgetTokens` (Claude), effort via `reasoningEffort` (Nova 2), adaptive via budget=0 on Claude 4.6+, always-adaptive on Claude 4.7+ (`onlyAdaptiveReasoning`)
 
 **Stream Mapper Pattern:**
 
@@ -931,8 +935,9 @@ Features:
 
 The Reasoning section in Project Settings uses a unified design with a global "Enable Reasoning" toggle in the header. When enabled, all provider-specific reasoning options are shown in organized subsections:
 
-- **Anthropic / Bedrock Claude**: Budget Tokens + Keep Thinking Turns
-- **OpenAI / Bedrock Nova / DeepSeek**: Reasoning Effort + Reasoning Summary
+- **Reasoning Effort** (shared): Applies to OpenAI/Nova directly; maps to Anthropic adaptive `output_config` when budget = 0
+- **Anthropic / Bedrock Claude**: Budget Tokens (0 = adaptive on Opus 4.6/Sonnet 4.6) + Keep Thinking Turns + Prune thinking blocks before API call (client-side strip, gated by an explicit Keep Thinking Turns)
+- **OpenAI / Bedrock Nova / DeepSeek**: Reasoning Summary
 
 This design eliminates the need for separate reasoning UI per provider, simplifying configuration when switching between models. The correct options are automatically applied based on the active model's provider.
 
@@ -979,7 +984,8 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 | `delete`      | `path`                               | Delete file or directory (soft delete)                                              |
 | `rename`      | `old_path`, `new_path`, `overwrite?` | Rename/move file. Errors if destination exists unless `overwrite: true`             |
 | `mkdir`       | `path`                               | Create a new directory                                                              |
-| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists                          |
+| `append`      | `path`, `file_text`                  | Append text (auto-adds trailing newline), or create file if not exists              |
+| `append_raw`  | `path`, `file_text`                  | Append text verbatim (no trailing newline), or create file if not exists            |
 | `view-all`    | `paths`                              | Batch read multiple files, returns concatenated content with `=== path ===` headers |
 
 **VFS Architecture:**
@@ -1054,7 +1060,8 @@ Client-side tool that provides LLM access to the project's virtual filesystem. S
 | `delete`      | `path`                               | Delete file or directory (soft delete)                                              |
 | `rename`      | `old_path`, `new_path`, `overwrite?` | Rename/move file. Errors if destination exists unless `overwrite: true`             |
 | `mkdir`       | `path`                               | Create a new directory                                                              |
-| `append`      | `path`, `file_text`                  | Append text to existing file, or create file if not exists                          |
+| `append`      | `path`, `file_text`                  | Append text (auto-adds trailing newline), or create file if not exists              |
+| `append_raw`  | `path`, `file_text`                  | Append text verbatim (no trailing newline), or create file if not exists            |
 | `view-all`    | `paths`                              | Batch read multiple files, returns concatenated content with `=== path ===` headers |
 
 **Binary File Support:**
@@ -1261,18 +1268,44 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 
 **Input Parameters:**
 
-| Parameter      | Type     | Required             | Description                                                                                         |
-| -------------- | -------- | -------------------- | --------------------------------------------------------------------------------------------------- |
-| `action`       | string   | No                   | `'message'` (default) or `'retry'`. Retry rolls back to savepoint and re-executes.                  |
-| `message`      | string   | For `message` action | Task to send to minion. For `retry`: omit to re-send original, or provide replacement.              |
-| `minionChatId` | string   | For `retry` action   | Existing minion chat ID to continue or retry                                                        |
-| `enableWeb`    | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)                    |
-| `enabledTools` | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                                |
-| `persona`      | string   | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is not `off`.             |
-| `model`        | string   | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` is not `off` + `models` configured. |
-| `displayName`  | string   | No                   | Display name shown in the UI for this minion call. If omitted, persona name is used.                |
-| `injectFiles`  | string[] | No                   | VFS file paths to inject as context. Injection method controlled by `fileInjectionMode` option.     |
-| `verifyHook`   | string   | No                   | Hook file name (without `.js`) in `/hooks/` to verify minion output before savepoint advances.      |
+| Parameter               | Type     | Required             | Description                                                                                                              |
+| ----------------------- | -------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `action`                | string   | No                   | `'message'` (default) or `'retry'`. Retry rolls back to savepoint and re-executes.                                       |
+| `message`               | string   | For `message` action | Task to send to minion. For `retry`: omit to re-send original, or provide replacement.                                   |
+| `minionChatId`          | string   | For `retry` action   | Existing minion chat ID to continue or retry                                                                             |
+| `enableWeb`             | boolean  | No                   | Enable web search for minion (only exposed when `allowWebSearch` option is true)                                         |
+| `enabledTools`          | string[] | No                   | Tools for minion (validated against project tools, defaults to none)                                                     |
+| `persona`               | string   | No                   | Persona name (matches `/minions/<name>.md`). Only when `namespacedMinion` is not `off`.                                  |
+| `model`                 | string   | No                   | Model to use (`apiDefId:modelId`). Only when `namespacedMinion` is not `off` + `models` configured.                      |
+| `displayName`           | string   | No                   | Display name shown in the UI for this minion call. If omitted, persona name is used.                                     |
+| `injectFiles`           | string[] | No                   | VFS file paths to inject as context. Injection method controlled by `fileInjectionMode` option.                          |
+| `verifyHook`            | string   | No                   | Hook file name (without `.js`) in `/hooks/` to verify minion output before savepoint advances.                           |
+| `enableReasoning`       | boolean  | No                   | Override reasoning on/off for this call                                                                                  |
+| `reasoningBudgetTokens` | number   | No                   | Override reasoning budget. 0 = adaptive on supported models.                                                             |
+| `reasoningEffort`       | string   | No                   | Override reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`)                                               |
+| `temperature`           | number   | No                   | Override temperature for this call                                                                                       |
+| `fileInjectionMode`     | string   | No                   | Override file injection mode (`inline`/`separate-block`/`as-file`/`mock-tool-call`)                                      |
+| `systemPrompt`          | string   | No                   | Additional system prompt text, appended after persona/configured prompt                                                  |
+| `systemPromptFile`      | string   | No                   | VFS file path to system prompt file. Content appended after `systemPrompt`.                                              |
+| `nudgeThinking`         | string   | No                   | Text appended to last user message to nudge CoT. Empty string disables. Persists on the minion chat for follow-up calls. |
+
+**Adding a new minion override parameter — checklist:**
+
+Use this when adding another per-call override that the LLM can set on a minion (the `nudgeThinking` PR followed this exact path). Parameters on `MinionInput` should persist across calls (so the LLM can set once and continue without re-passing) and follow a 3-layer precedence: **current-call input → persisted `MinionChat` value → provider/project default**.
+
+1. **`src/shared/services/agentic/agenticLoopGenerator.ts`** — add the field to `AgenticLoopOptions` (the flat loop config), and forward it into the `streamOptions` object at the `sendMessageStream` call site.
+2. **`src/shared/services/api/apiService.ts`** — add the field to the `sendMessageStream` options parameter type and consume it where needed.
+3. **`src/shared/engine/buildLoopOptions.ts`** — resolve the provider/project default into the returned `AgenticLoopOptions` inside `buildAgenticLoopOptionsForContext`.
+4. **`src/shared/protocol/types/index.ts`** — add the field to `MinionChat` (optional) so the value persists across calls for continuation.
+5. **`src/shared/services/tools/minionTool.ts`** — five touchpoints in this file:
+   - `MinionInput` interface — add the typed field with a short JSDoc.
+   - `getMinionInputSchema()` — add the JSON Schema property and description surfaced to the LLM.
+   - Continuation merge block (`if (minionInput.minionChatId) { ... }`) — persist `minionInput.X` onto the existing `minionChat.X` when the caller supplies it.
+   - New-chat creation block (`minionChat = { ... }`) — seed `minionChat.X` from `minionInput.X`.
+   - Loop-options builder — use 3-layer precedence (`input ?? minionChat ?? providerDefault`). For `string`-typed fields, use `typeof x === 'string'` so `""` explicitly disables instead of cascading down.
+   - `renderMinionInput()` — emit a line so the tool call display shows the override (users need to see what the LLM asked for).
+6. **Tests** — add unit test coverage for the loop-options resolution and, if the field has non-trivial semantics (e.g., empty-string-as-off), add a case for that. Update any `MinionChat` fixtures if needed (the field is optional so most should be unaffected).
+7. **`development.md`** — add a row to the Input Parameters table above.
 
 **Tool Options:**
 
@@ -1294,7 +1327,7 @@ Client-side tool that delegates tasks to a sub-agent LLM. Each minion runs its o
 - `returnAckMessage` (text, visibleWhen deferReturn) - Message sent when deferred return stores a result
 - `returnDuplicateMessage` (text, visibleWhen deferReturn) - Error sent when return is called again after a result is stored
 - `returnEnforceMessage` (text, visibleWhen returnMode=auto-enforced) - Message sent when auto-enforced mode retries because return was not called
-- `fileInjectionMode` (select: `inline`/`separate-block`/`as-file`, default: `inline`) - How injected files are sent to the minion LLM. `inline` prepends file text into the message string. `separate-block` sends each file as a separate text content block. `as-file` uses native document/file blocks (Anthropic `BetaRequestDocumentBlock`, OpenAI `file` part, Bedrock `DocumentBlock`). Google falls back to `separate-block`.
+- `fileInjectionMode` (select: `inline`/`separate-block`/`as-file`/`mock-tool-call`, default: `inline`) - How injected files are sent to the minion LLM. `inline` prepends file text into the message string. `separate-block` sends each file as a separate text content block. `as-file` uses native document/file blocks. `mock-tool-call` inserts synthetic assistant tool_use + user tool_result message pairs (filesystem readFile) — works with all API types.
 - `namespacedMinion` (select: `off`/`persona`/`all`, default: `off`) - Controls persona and VFS namespace behavior. Migrates from legacy boolean (`true` → `all`).
   - `off` — No persona parameter, no namespace. Minions use configured system prompt.
   - `persona` — Persona parameter available. Only minions called with an explicit non-default persona get VFS namespace (`/minions/<persona>/`) and persona prompts. Default/no-persona minions behave like `off` (root VFS, configured system prompt, no `_global.md`).
@@ -1377,7 +1410,7 @@ All error `content` is passed through `truncateError()` (200 char limit + `...`)
 - Blue box for task input (from `ToolInfoRenderBlock`), green/red box for final result
 - Injected files shown as collapsible bars below user message bubble in minion chat (via `InjectedFileRenderBlock` blocks) and between blue input box and activity groups in tool result view (via `ToolInfoRenderBlock.injectedFiles`)
 - Activity groups (backstage/text) rendered with `isToolGenerated` styling
-- "View Chat" button opens overlay over ChatView (when `chatId` present and `MinionChatOverlayContext` provided), "Copy JSON" for debugging
+- "View Chat" button opens overlay over ChatView and closes the tool result modal (when `chatId` present and `MinionChatOverlayContext` provided), "Copy JSON" for debugging
 - `ToolResultBubble` hides timestamp/cost/actions line while any tool result is still pending/running
 - Integrated into `ToolResultBubble` (complex results) and `BackstageView.ToolResultSegment`
 - Real-time streaming via pending-message pattern (see Minion Streaming UI below)
@@ -1456,10 +1489,13 @@ AI calls checkpoint(note) → tool returns with checkpoint: true → flag propag
 Each API client owns a `tidyMessages()` function that combines three concerns in a single forward pass:
 
 1. **Checkpoint filtering**: when `checkpointMessageId` is set, messages older than the checkpoint get thinking blocks removed and tool blocks (`tool_use` + matching `tool_result`) stripped per tidy option toggles. The checkpoint message itself: only thinking removed, tool blocks preserved.
-2. **Thinking pruning** (per-definition `advancedSettings.pruneThinking`): strips thinking/reasoning blocks from messages before the last text user message. Messages in the current agentic loop keep their thinking. Google: also strips `thoughtSignature` from remaining parts.
+2. **Thinking pruning** (two paths, OR-combined):
+   - Per-definition `advancedSettings.pruneThinking`: strips thinking/reasoning blocks from messages before the last text user message (effectively keep 1 turn).
+   - Per-project `pruneThinkingBeforeApiCall` (requires an explicit `thinkingKeepTurns` ≥ 0): strips thinking blocks before the N-th-from-last user text message, where N = `thinkingKeepTurns`. Generalizes the legacy single-turn behavior. Overridable per minion call via `thinkingKeepTurns` + `pruneThinkingBeforeApiCall` input args, with three-level fallback (minion input → minion chat → project) and persisted on `MinionChat`. The boundary helper lives in `contextTidy.findThinkingBoundaryN`.
+   - Messages in the current agentic loop (after the boundary) keep their thinking. Google: also strips `thoughtSignature` from remaining parts.
 3. **Empty text pruning** (per-definition `advancedSettings.pruneEmptyText`): removes empty/whitespace text blocks from messages before the last text user message.
 4. **Genuine Anthropic enforcement** (per-definition `advancedSettings.enforceGenuineAnthropic`): post-response validation in `anthropicClient.ts` via `validateAnthropicResponse()`. Checks: (a) if input_tokens > 4096 and both cache_creation/read are zero → not genuine Anthropic; (b) if thinking blocks exist but lack cryptographic `signature` field → not genuine Anthropic. Both checks throw, caught by existing error handler.
-5. **Nudge thinking** (per-definition `advancedSettings.nudgeThinking`): applied in `apiService.sendMessageStream()` before client dispatch via `applyNudgeThinking()`. Shallow-clones the last user message and appends `\n\n<<WITH THINKING STEPS>>` to its text content. Send-time only — stored messages are untouched.
+5. **Nudge thinking**: the provider-level toggle `advancedSettings.nudgeThinking` (boolean) is resolved into an `AgenticLoopOptions.nudgeThinking: string` at loop-build time (`buildLoopOptions.ts`) — on → `NUDGE_THINKING_DEFAULT`, off → `undefined`. The loop forwards it into `sendMessageStream()` which calls `applyNudgeThinking()` to shallow-clone the last user message and append `\n\n<nudge>` to its text content. Send-time only — stored messages are untouched. `minionTool` exposes a `nudgeThinking` input parameter that overrides the resolved text (empty string = explicitly off), so the parent LLM can experiment with different nudge phrasings without a UI.
 6. **Mandate CoT** (per-definition `advancedSettings.mandateCoT`): per-run check in `agenticLoopGenerator.ts`. Tracks `loopHasCoT` across all iterations (unified: `hasCoT` or `reasoningTokens > 0`). At run completion, rejects if no iteration produced chain-of-thought. Allows runs where CoT appears in one response but not others. Returns an error status that triggers minion savepoint rollback on retry.
 7. **Treat empty output as error** (per-definition `advancedSettings.treatEmptyOutputAsError`): rejects turns producing whitespace-only text and no tool calls — catches degenerate responses from unreliable providers.
 8. **Stream accumulator** (per-definition `advancedSettings.useStreamAccumulator`, Responses API only): in `responsesClient.ts` streaming path, builds the `StreamResult` from `ResponsesStreamAccumulator` (`responsesStreamAccumulator.ts`) instead of `stream.finalResponse()`. Some third-party Responses API providers stream events but return an empty `Response.output` from the SDK's final response — text and tool blocks render to the user but `result.textContent` and `result.fullContent` are empty, breaking minion text capture and tool extraction. The accumulator consumes the same events the mapper does, keying items by `output_index` and replacing with the complete item on `response.output_item.done`. Tolerant to out-of-order events: deltas referencing unknown indices are silently dropped. Default off — enable per-provider in Settings → Advanced.
@@ -1467,7 +1503,7 @@ Each API client owns a `tidyMessages()` function that combines three concerns in
 Messages with mismatched `modelFamily` or missing `fullContent` are handled via shared helpers in `contextTidy.ts` (`findCheckpointIndex`, `findThinkingBoundary`, `tidyAgnosticMessage`).
 
 - Tool name derivation: `deriveTidyToolNames()` maps checkpoint option IDs to tool names, defaulting to true (tidy enabled). Also checks legacy `swipe*` keys for backward compatibility with persisted data
-- **Cache anchor**: Anthropic client places a stable `cache_control` breakpoint on the message after the checkpoint boundary (the tool_result), and restricts `applyCacheBreakpoints` sliding breakpoints to messages AFTER the anchor (`startIdx` parameter). This keeps the stable prefix free of shifting `cache_control` markers — since Anthropic's cache hash is cumulative and includes `cache_control`, markers moving between calls would cause hash mismatches. Uses `placeCacheControlOnMessage()` helper (extracted from `applyCacheBreakpoints`).
+- **Cache breakpoint layout (4-slot budget)**: Anthropic allows 4 `cache_control` breakpoints per request. The client places them as follows: (1) system prompt; (2) **anchor** — message before the checkpoint boundary, only when `checkpointMessageId` is set; (3) **previous real user message** — via `findPreviousUserMessageIdx`, skips `tool_result`-bearing user messages so the marker lands on the user-turn before the latest one; (4) **conditional tail** — when `options.nudgeThinking` is truthy, the last assistant message (via `findLastAssistantMessageIdx`) because `applyNudgeThinking` mutates the latest user message; otherwise the standard sliding tail via `applyCacheBreakpoints`. All tail placements use `startIdx = anchorEndIdx` so the stable prefix stays free of shifting markers — Anthropic's cache hash is cumulative over `cache_control`, so markers moving between calls would cause hash mismatches.
 - **thinkingKeepTurns interaction**: API-level `context_management` with `clear_thinking` / `thinking_turns` strips thinking server-side. Between consecutive calls, new assistant turns cause the server to strip more old thinking, changing the effective cached prefix. When using checkpoint, configure `thinkingKeepTurns = -1` (keep all) so thinking is fully managed client-side by `tidyMessages()`.
 
 ### Metadata Tool
@@ -1810,6 +1846,20 @@ Worker-side code held module-level singletons (`storage`, `encryptionService`, `
 - [x] Phase 4 follow-up — Hoist pure helpers + tighten utils lint scope. New `src/lib/` directory holds the boundary-clean shared helpers: `incompleteTail.ts`, `vfsPaths.ts`, `apiHelpers.ts`, `api/modelMetadata.ts` + `api/model_metadatas/*` + `api/mergeExtraModels.ts`. `vfsService` re-exports the path helpers from `lib/vfsPaths.ts` so internal callers and the vfs barrel keep working. `dataExport.ts` / `dataImport.ts` runtime moved to `src/backend/`; the type-only progress callbacks live in `src/types/data.ts` and frontend imports re-point. The old `src/utils/{incompleteTail,vfsPaths,mergeExtraModels,toolUseExtractor}.ts` re-export shims are deleted; consumers (hooks, components, contexts) import from `src/lib/` directly. The boundary lint rule in `eslint.config.js` now covers `src/utils/**`, `src/App.tsx`, and `src/main.tsx` in addition to the previous `components/**`/`hooks/**`/`contexts/**` scope.
 - [x] Phase 4 follow-up — Delete the four module-level singleton exports (`storage`, `encryptionService`, `apiService`, `toolRegistry`), the `defaultVfsService`, and the module-level wrappers in `vfsService` (`createFile`, `readFile`, etc.). The vfsFacade's locked passthrough/compound wrappers (which were dead code in production — only LocalVfsAdapter / RemoteVfsAdapter consume them via their own per-instance lock paths) are gone too; only `getAdapter` is still exported. `createGremlinServer` now mints its own fresh `EncryptionService` / `UnifiedStorage` / `APIService` / `ClientSideToolRegistry` per call instead of bundling singletons. `registerAllTools` lost its default-singleton param and now requires a target registry. `SystemPromptContext.createVfsAdapter` and `AgenticLoopOptions.createVfsAdapter` are now required (not optional); the agentic loop's fallback construction of a `VfsService` is gone, and `getMemorySystemPrompt` / `getMinionSystemPromptInjection` throw a clear error if the factory is missing. `createStorage(config, encryption)` now requires the encryption parameter (the singleton default is gone). Hook tests (`useChat`, `useProject`, `useAttachmentManager`, `useMinionChat`) mock `../client` (gremlinClient + GremlinSession) at the boundary instead of mocking `services/storage` and relying on the in-process backend to dispatch through the singleton. Tool tests (`checkpointTool`, `returnTool`, `metadataTool`, `minionTool`, `clientSideTools`, `minionIntegration`) construct local `ClientSideToolRegistry` instances or use `vi.hoisted` mock holders. VFS tests share an in-memory storage + encryption stub via `_vfsTestHelpers.ts` and construct `createVfsService(stubStorage, stubEncryption)` directly. `executeClientSideTool` reads from `context.toolRegistry.get(toolName)` instead of the (deleted) module-level singleton. **VFS access lives only in the worker** — `buildLoopOptions` is the single production constructor of `SystemPromptContext` and `AgenticLoopOptions`, and it always supplies `createVfsAdapter` from `BackendDeps`. Direct service-layer calls from outside the worker will throw a clear "VFS access is only available inside the worker" error rather than silently constructing a fallback adapter.
 
+### iPhone Safari textarea event-lock (fix shipped, unverified on device)
+
+Symptom: typing/pasting into a `<textarea>` on iPhone Safari can leave the entire page event-locked (no clicks, taps, or scroll fire). Belongs to the family of iOS quirks where the **layout viewport** and **visual viewport** drift apart after the on-screen keyboard pops up/down. This app was particularly prone because of three amplifiers stacked on the drift:
+
+- `index.html` viewport meta included `height=device-height`, which is non-standard and decouples the layout-viewport from the visual-viewport during keyboard transitions.
+- `Modal.tsx` repositioned its `fixed inset-0` overlay via inline `top`/`height` derived from `visualViewport.offsetTop`/`height` on every resize/scroll event — a transient interim viewport could leave a z-50 overlay covering the page with the outer `onClick={onClose}` still grabbing every tap.
+- `App.tsx` mobile sidebar backdrop was always-mounted and toggled by opacity + `pointer-events-none`, leaving a `fixed inset-0` rectangle at stale layout-viewport coordinates after a keyboard close.
+
+Smaller amplifiers fed the loop: `ChatInput.tsx`'s `setTimeout(100ms) + scrollIntoView` on focus fought iOS's own keyboard scroll, the safe-area spacer remounted on every `keyboardVisible` toggle, and `useIsKeyboardVisible` had no debounce on `visualViewport.resize`.
+
+Fix: drop `height=device-height`; stop positioning `Modal.tsx` from `visualViewport` and move its close-on-click onto the dedicated backdrop element (not the outer `inset-0`); unmount the mobile sidebar overlay when closed; remove `ChatInput.tsx`'s `scrollIntoView` after focus; always render the safe-area spacer; coalesce `visualViewport.resize` onto an animation frame in `useIsKeyboardVisible`.
+
+Diagnostic instrumentation (currently in place, removable as one commit): `[Modal]` mount/unmount, `[kbd]` per-frame viewport state, `[sidebar]` toggle, `[tap]` capture-phase `pointerdown` probe. Verification recipe: connect iPhone via macOS Safari → Develop → iPhone, reproduce on chat input + `SystemPromptModal`, watch the `[tap]` log when a tap "doesn't work" — its target tells you which overlay is still hostile. Remove diagnostic commit once stable.
+
 ### Anthropic Citation Document Index
 
 When using web search + memory tool together, citations in assistant messages may contain `document_index` references that become invalid after client-side tool execution breaks the turn. Workaround: citations are stripped from text blocks when the previous message contains a `tool_result` (in `anthropicClient.ts`). This may cause some citation data loss in multi-tool-use conversations, but prevents API 400 errors.
@@ -1823,6 +1873,38 @@ When using web search + memory tool together, citations in assistant messages ma
 ### TypeScript Warnings
 
 - useEffect missing dependency: Case-by-case investigation needed
+
+### Minion streaming wire amplification (fixed — delta encoded)
+
+Symptom: minion tool yielded `{ type: 'groups_update', groups: [...] }` on every upstream SSE event, carrying the full assembled snapshot `[infoGroup, ...accumulatedGroups, ...streamingGroups]`. For a ~2 KB minion message with ~10 chars per SSE delta, that was ~200 frames × ~1 KB average → ~200 KB on the wire to deliver 2 KB. Multi-turn minion loops were worse because `accumulatedGroups` re-shipped on every frame.
+
+Two-wave fix:
+
+- **Wave 1** (shipped earlier): enabled `perMessageDeflate: { threshold: 256 }` on the WebSocket server (`src/server/websocketTransport.ts`). ~5–10x gzip savings on the repetitive JSON. Doesn't reduce JSON.stringify CPU cost server-side, doesn't help worker mode.
+- **Wave 2** (this change): replaced the snapshot-per-frame protocol with delta encoding. New types:
+  - `ToolGroupsDelta` (`src/shared/protocol/types/index.ts`) — discriminated union of `init` / `append` / `replace_streaming` / `message_finalized`.
+  - `tool_groups_delta` and `tool_groups_snapshot` LoopEvent variants (`src/shared/protocol/events.ts`).
+  - Helper module `src/shared/services/tools/toolGroupsDelta.ts` — `diffStreamingGroups` picks `append` whenever only the trailing text/thinking block grew, falls back to `replace_streaming` on structural changes; `applyGroupsDelta` is the inverse used by both server (`LoopRegistry`) and client (`useChat`) so wire state stays in sync.
+
+Emission path: `minionTool` runs the diff at each yield site (lines ~488 touch-grass, ~1583 streaming_chunk, ~1599 message_created, ~1731 auto-enforce). `agenticLoopGenerator` forwards `groups_delta` as wire-level `tool_groups_delta`. `LoopRegistry.recordPendingToolResultEvent` applies the same delta to a per-`toolUseId` `groupsState`. `GremlinServer.attachChat` emits `tool_groups_snapshot` during replay so a reconnecting subscriber rehydrates without waiting for the next live delta.
+
+Consumption path: `useChat.ts` maintains a `toolGroupsRef: Map<toolUseId, ToolGroupsState>`, applies deltas, projects assembled `[info, ...accum, ...streaming]` into the placeholder message's `renderingContent` via the existing `applyToolBlockBatch` machinery (200 ms throttle, same channel as `tool_block_update`). `reconnect_start` cancels the projection timer but preserves the ref — `tool_groups_snapshot` from attach replay overwrites entries, `loop_ended` cleans up.
+
+Regression tests:
+
+- `src/shared/services/tools/__tests__/toolGroupsDelta.test.ts` — 17 tests covering diff/apply round-trip, defensive paths, and a bandwidth assertion that the delta stream is ≥10x smaller than equivalent snapshots.
+- `src/frontend/hooks/__tests__/useChat.test.ts` — `'rehydrates minion streaming UI from tool_groups_snapshot on reconnect'`, `'applies tool_groups_delta append events to placeholder rendering'`.
+- Wave 1's `'preserves in-flight pending_tool_result placeholder past snapshot_complete trim'` is unaffected and still passes.
+
+Plan reference: `/workspaces/.claude/plans/when-the-minion-run-giggly-corbato.md`.
+
+### Streaming-vanishes-on-reconnect (fixed)
+
+Symptom: while a minion was mid-stream, a WebSocket reconnect (e.g. mobile network switch) made the minion's progress vanish from the UI until the message completed — but switching chats away and back recovered it.
+
+Root cause in `useChat.ts`: the snapshot replay's `pending_tool_result` event re-added the placeholder message at the end of `messages`, but the `reconnect_start` reconciliation flow tracks `reconPosRef` against the matched-prefix tail of _persisted_ messages. Snapshot_complete then sliced messages to `reconPosRef`, dropping the placeholder. The follow-up `tool_block_update` carrying the cached `renderingGroups` had no target to land on, so the minion's progress stayed invisible until a fresh `message_created` arrived (loop completion) or a new `GremlinSession` was constructed (chat-switch-and-back).
+
+Fix: when `pending_tool_result` fires inside the reconciliation window, take the same truncate+append path that `message_created` uses on first mismatch — slice locals at `reconPosRef`, append the placeholder, set `reconTruncatedRef = true`. `snapshot_complete`'s trim becomes a no-op and the placeholder survives. Regression test: `useChat.test.ts` `'preserves in-flight pending_tool_result placeholder past snapshot_complete trim'`.
 
 ## Design: VFS Migration During Cross-Backend Import
 

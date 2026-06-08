@@ -13,6 +13,7 @@ vi.mock('../../client', () => ({
     getMinionChat: vi.fn(),
     getMinionMessages: vi.fn(),
     deleteSingleMessage: vi.fn(),
+    deleteMessageAndAfter: vi.fn(),
   },
 }));
 
@@ -146,5 +147,38 @@ describe('useMinionChat', () => {
 
     // filter keeps all messages when none match
     expect(result.current.messages).toHaveLength(2);
+  });
+
+  it('rollbackToMessage keeps target and deletes everything after', async () => {
+    vi.mocked(gremlinClient.getMinionChat).mockResolvedValue(mockMinionChat);
+    vi.mocked(gremlinClient.getMinionMessages).mockResolvedValue(mockMessages);
+    vi.mocked(gremlinClient.deleteMessageAndAfter).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useMinionChat('mc_1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.messages).toHaveLength(2);
+
+    await act(async () => {
+      await result.current.rollbackToMessage('msg_1');
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0].id).toBe('msg_1');
+    expect(gremlinClient.deleteMessageAndAfter).toHaveBeenCalledWith('mc_1', 'msg_2');
+  });
+
+  it('rollbackToMessage is a no-op on the last message', async () => {
+    vi.mocked(gremlinClient.getMinionChat).mockResolvedValue(mockMinionChat);
+    vi.mocked(gremlinClient.getMinionMessages).mockResolvedValue(mockMessages);
+
+    const { result } = renderHook(() => useMinionChat('mc_1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await result.current.rollbackToMessage('msg_2');
+    });
+
+    expect(result.current.messages).toHaveLength(2);
+    expect(gremlinClient.deleteMessageAndAfter).not.toHaveBeenCalled();
   });
 });

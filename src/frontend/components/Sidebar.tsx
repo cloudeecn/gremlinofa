@@ -159,7 +159,6 @@ export default function Sidebar({ onClose, onCollapse }: SidebarProps) {
                 setNewProjectName('');
               }
             }}
-            autoFocus
           />
           <div className="flex gap-2">
             <button

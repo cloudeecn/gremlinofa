@@ -23,7 +23,7 @@ import type {
 } from '../../protocol/types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import { effectiveInjectionMode, buildInlinePrefix } from './fileInjectionHelper';
-import { findCheckpointIndex, findThinkingBoundary, tidyAgnosticMessage } from './contextTidy';
+import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
 import type { APIServiceDeps } from './apiService';
 import {
@@ -48,10 +48,14 @@ function tidyMessages(
   checkpointMessageId: string | undefined,
   tidyToolNames: Set<string> | undefined,
   pruneThinking: boolean,
-  pruneEmptyText: boolean
+  pruneEmptyText: boolean,
+  pruneThinkingKeepTurns: number | undefined
 ): Message<unknown>[] {
   const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
-  const thinkingBoundary = pruneThinking || pruneEmptyText ? findThinkingBoundary(messages) : -1;
+  const projectPruneActive = pruneThinkingKeepTurns !== undefined && pruneThinkingKeepTurns >= 0;
+  const effectiveKeep = projectPruneActive ? (pruneThinkingKeepTurns as number) : 1;
+  const anyPrune = pruneThinking || pruneEmptyText || projectPruneActive;
+  const thinkingBoundary = anyPrune ? findThinkingBoundaryN(messages, effectiveKeep) : -1;
 
   if (checkpointIdx === -1 && thinkingBoundary <= 0) return messages;
 
@@ -125,12 +129,10 @@ function tidyMessages(
     }
 
     if (inThinking && !inCheckpoint) {
-      // Thinking pruning (not already handled by checkpoint)
-      if (pruneThinking) {
+      const stripThinking = pruneThinking || projectPruneActive;
+      if (stripThinking) {
         parts = parts.filter(p => !p.thought);
-      }
-      // Strip thoughtSignature from remaining parts, drop if empty
-      if (pruneThinking) {
+        // Strip thoughtSignature from remaining parts, drop if empty
         parts = parts.reduce<Part[]>((acc, p) => {
           if (!p.thoughtSignature) {
             acc.push(p);
@@ -228,7 +230,8 @@ export class GoogleClient implements APIClient {
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
       thinkingKeepTurns?: number;
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      pruneThinkingKeepTurns?: number;
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       systemPrompt?: string;
       preFillResponse?: string;
@@ -258,7 +261,8 @@ export class GoogleClient implements APIClient {
         options.checkpointMessageId,
         options.tidyToolNames,
         apiDefinition.advancedSettings?.pruneThinking ?? false,
-        apiDefinition.advancedSettings?.pruneEmptyText ?? false
+        apiDefinition.advancedSettings?.pruneEmptyText ?? false,
+        options.pruneThinkingKeepTurns
       ) as typeof messages;
 
       // Convert messages to Google Content[] format

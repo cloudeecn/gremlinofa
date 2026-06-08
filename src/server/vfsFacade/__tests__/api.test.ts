@@ -209,6 +209,40 @@ describe('Path traversal', () => {
   });
 });
 
+describe('Symlinks (default follow=off)', () => {
+  let outside: string;
+
+  beforeEach(async () => {
+    outside = await fs.mkdtemp(path.join(os.tmpdir(), 'vfs-outside-'));
+    await fs.writeFile(path.join(outside, 'secret.txt'), 'secret');
+    // Plant a symlink in the project root pointing outside.
+    const projectDir = path.join(tmpDir, 'testuser', PROJECT);
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(path.join(projectDir, 'real.txt'), 'plain');
+    await fs.symlink(path.join(outside, 'secret.txt'), path.join(projectDir, 'link.txt'));
+  });
+
+  // Drop the outside dir; the per-test cleanup already wipes the project dir.
+  // (afterEach not defined here — uses outer beforeEach to reset projectDir.)
+  it('omits the symlink from ls output', async () => {
+    const res = await api('GET', `/ls?projectId=${PROJECT}&path=/`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const names = body.entries.map((e: { name: string }) => e.name);
+    expect(names).toContain('real.txt');
+    expect(names).not.toContain('link.txt');
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  it('rejects read through the symlink', async () => {
+    const res = await api('GET', `/read?projectId=${PROJECT}&path=/link.txt`);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/Symlink encountered/);
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+});
+
 describe('Nested directory operations', () => {
   it('auto-creates parent directories on write', async () => {
     const res = await api('PUT', `/write?projectId=${PROJECT}&path=/a/b/c/deep.txt`, {

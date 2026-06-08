@@ -22,15 +22,55 @@ import {
   type SSEEvent,
 } from './anthropicStreamMapper';
 import type { APIServiceDeps } from './apiService';
-import { findCheckpointIndex, findThinkingBoundary, tidyAgnosticMessage } from './contextTidy';
+import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
+import type { ReasoningEffort } from '../../protocol/types';
+
+/** Map ReasoningEffort to Anthropic output_config for adaptive reasoning.
+ * When `supportsXhighEffort` is true, UI `xhigh` maps to API `xhigh` (a distinct
+ * level available on Opus 4.7+); otherwise it collapses up to `max` as before. */
+function mapReasoningEffortToOutputConfig(
+  effort: ReasoningEffort,
+  supportsXhighEffort: boolean
+): { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' } | undefined {
+  switch (effort) {
+    case 'none':
+    case 'minimal':
+    case 'low':
+      return { effort: 'low' };
+    case 'medium':
+      return { effort: 'medium' };
+    case 'high':
+      return { effort: 'high' };
+    case 'xhigh':
+      return { effort: supportsXhighEffort ? 'xhigh' : 'max' };
+    case 'max':
+      return { effort: 'max' };
+    case undefined:
+      return undefined;
+  }
+}
+
+/**
+ * Build a `cache_control` value. `ttl` defaults to Anthropic's '5m' when omitted,
+ * so the field is left off the wire for the common case and the API treats it as
+ * the historical default. Pass '1h' to opt into the long-cache pricing/lifetime.
+ */
+function buildCacheControl(ttl?: '5m' | '1h'): Anthropic.Beta.BetaCacheControlEphemeral {
+  return ttl === '1h'
+    ? { type: 'ephemeral' as const, ttl: '1h' as const }
+    : { type: 'ephemeral' as const };
+}
 
 /**
  * Place cache_control on the last eligible block of a single message.
  * Skips thinking/redacted_thinking and empty text blocks.
  * Returns false (no-op) if the message already has cache_control or has no eligible block.
  */
-export function placeCacheControlOnMessage(message: Anthropic.Beta.BetaMessageParam): boolean {
+export function placeCacheControlOnMessage(
+  message: Anthropic.Beta.BetaMessageParam,
+  ttl?: '5m' | '1h'
+): boolean {
   const content = message.content;
   if (typeof content === 'string' || !Array.isArray(content)) return false;
 
@@ -43,7 +83,7 @@ export function placeCacheControlOnMessage(message: Anthropic.Beta.BetaMessagePa
     if (block.type === 'text' && !block.text?.trim()) continue;
     content[j] = {
       ...(content[j] as unknown as Record<string, unknown>),
-      cache_control: { type: 'ephemeral' as const },
+      cache_control: buildCacheControl(ttl),
     } as (typeof content)[number];
     return true;
   }
@@ -55,14 +95,60 @@ export function placeCacheControlOnMessage(message: Anthropic.Beta.BetaMessagePa
  * Skips messages that already have cache_control (e.g. from a checkpoint anchor).
  * One breakpoint is enough — Anthropic looks back ~30 messages from any breakpoint.
  * @param startIdx - Don't place breakpoints before this index (keeps stable prefix clean)
+ * @param ttl - Cache TTL ('5m' default, '1h' for the long-cache tier)
  */
 export function applyCacheBreakpoints(
   messages: Anthropic.Beta.BetaMessageParam[],
-  startIdx = 0
+  startIdx = 0,
+  ttl?: '5m' | '1h'
 ): void {
   for (let i = messages.length - 1; i >= startIdx; i--) {
-    if (placeCacheControlOnMessage(messages[i])) return;
+    if (placeCacheControlOnMessage(messages[i], ttl)) return;
   }
+}
+
+/**
+ * Find the previous "real" user message — the user-role message before the most
+ * recent one, skipping `tool_result` responses (user-role but not real user turns).
+ * Returns -1 if no such message exists at or after `startIdx`.
+ */
+export function findPreviousUserMessageIdx(
+  messages: Anthropic.Beta.BetaMessageParam[],
+  startIdx = 0
+): number {
+  const isRealUser = (m: Anthropic.Beta.BetaMessageParam): boolean => {
+    if (m.role !== 'user') return false;
+    if (typeof m.content === 'string') return true;
+    return !m.content.some(b => typeof b === 'object' && b.type === 'tool_result');
+  };
+
+  let latestIdx = -1;
+  for (let i = messages.length - 1; i >= startIdx; i--) {
+    if (isRealUser(messages[i])) {
+      latestIdx = i;
+      break;
+    }
+  }
+  if (latestIdx <= startIdx) return -1;
+
+  for (let i = latestIdx - 1; i >= startIdx; i--) {
+    if (isRealUser(messages[i])) return i;
+  }
+  return -1;
+}
+
+/**
+ * Find the last assistant message, walking back from the end.
+ * Returns -1 if none found at or after `startIdx`.
+ */
+export function findLastAssistantMessageIdx(
+  messages: Anthropic.Beta.BetaMessageParam[],
+  startIdx = 0
+): number {
+  for (let i = messages.length - 1; i >= startIdx; i--) {
+    if (messages[i].role === 'assistant') return i;
+  }
+  return -1;
 }
 
 /**
@@ -173,10 +259,15 @@ function tidyMessages(
   checkpointMessageId: string | undefined,
   tidyToolNames: Set<string> | undefined,
   pruneThinking: boolean,
-  pruneEmptyText: boolean
+  pruneEmptyText: boolean,
+  pruneThinkingKeepTurns: number | undefined
 ): Message<unknown>[] {
   const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
-  const thinkingBoundary = pruneThinking || pruneEmptyText ? findThinkingBoundary(messages) : -1;
+  const projectPruneActive = pruneThinkingKeepTurns !== undefined && pruneThinkingKeepTurns >= 0;
+  // Project flag wins on N when active; provider flag falls back to N=1.
+  const effectiveKeep = projectPruneActive ? (pruneThinkingKeepTurns as number) : 1;
+  const anyPrune = pruneThinking || pruneEmptyText || projectPruneActive;
+  const thinkingBoundary = anyPrune ? findThinkingBoundaryN(messages, effectiveKeep) : -1;
 
   if (checkpointIdx === -1 && thinkingBoundary <= 0) return messages;
 
@@ -242,7 +333,7 @@ function tidyMessages(
       blocks = filtered;
     }
 
-    if (inThinking && !inCheckpoint && pruneThinking) {
+    if (inThinking && !inCheckpoint && (pruneThinking || projectPruneActive)) {
       blocks = blocks.filter(b => b.type !== 'thinking' && b.type !== 'redacted_thinking');
     }
 
@@ -399,7 +490,10 @@ export class AnthropicClient implements APIClient {
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
       thinkingKeepTurns?: number; // undefined = model default, -1 = all, 0+ = thinking_turns
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      // Client-side counterpart: when defined and >= 0, prune thinking blocks
+      // older than the N-th-from-last user text message before sending.
+      pruneThinkingKeepTurns?: number;
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       systemPrompt?: string;
       preFillResponse?: string;
@@ -407,9 +501,13 @@ export class AnthropicClient implements APIClient {
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
       extendedContext?: boolean;
+      useAnthropicOneHourCache?: boolean;
       signal: AbortSignal;
       checkpointMessageId?: string;
       tidyToolNames?: Set<string>;
+      // Resolved upstream (loop option or minion input). Truthy ⇒ shift the tail
+      // breakpoint off the nudge-mutated latest user message onto the last assistant.
+      nudgeThinking?: string;
     }
   ): AsyncGenerator<
     StreamChunk,
@@ -444,7 +542,8 @@ export class AnthropicClient implements APIClient {
         options.checkpointMessageId,
         options.tidyToolNames,
         apiDefinition.advancedSettings?.pruneThinking ?? false,
-        apiDefinition.advancedSettings?.pruneEmptyText ?? false
+        apiDefinition.advancedSettings?.pruneEmptyText ?? false,
+        options.pruneThinkingKeepTurns
       ) as typeof messages;
 
       // Convert our message format to Anthropic's format
@@ -586,24 +685,46 @@ export class AnthropicClient implements APIClient {
         }
       );
 
-      // Stable cache anchor at the last fully-tidied message (one before the tidy
-      // boundary checkpoint). In long agentic loops the boundary drifts far from
-      // the tail; without an explicit breakpoint the auto-cached window won't reach
-      // the stable prefix. Sliding breakpoints are restricted to AFTER the anchor
-      // so cache_control markers in the stable prefix stay fixed across calls.
+      // Anthropic allows up to 4 cache_control breakpoints. Layout:
+      //   1. system prompt (set further below)
+      //   2. checkpoint anchor — stable prefix, one before the tidy boundary
+      //   3. previous real user message — skips tool_result user-role messages
+      //   4. tail — conditional: last assistant when nudgeThinking mutates the
+      //      latest user message; otherwise the standard sliding tail
+      const cacheTtl: '5m' | '1h' = options.useAnthropicOneHourCache ? '1h' : '5m';
+
+      // Slot 2: stable anchor (only with a tidy checkpoint). Sliding/tail placements
+      // are restricted to AFTER the anchor so the stable prefix stays unchanged
+      // across calls — Anthropic's cache hash is cumulative over cache_control too.
       let anchorEndIdx = 0;
       if (options.checkpointMessageId) {
         const boundaryIdx = tidiedMessages.findIndex(m => m.id === options.checkpointMessageId);
         const anchorIdx = boundaryIdx - 1;
         if (anchorIdx >= 0 && anchorIdx < anthropicMessages.length) {
-          if (placeCacheControlOnMessage(anthropicMessages[anchorIdx])) {
+          if (placeCacheControlOnMessage(anthropicMessages[anchorIdx], cacheTtl)) {
             anchorEndIdx = anchorIdx + 1;
           }
         }
       }
 
-      // Add cache breakpoint to last eligible message (before pre-fill)
-      applyCacheBreakpoints(anthropicMessages, anchorEndIdx);
+      // Slot 3: previous real user message (skips tool_result responses)
+      const prevUserIdx = findPreviousUserMessageIdx(anthropicMessages, anchorEndIdx);
+      if (prevUserIdx >= 0) {
+        placeCacheControlOnMessage(anthropicMessages[prevUserIdx], cacheTtl);
+      }
+
+      // Slot 4: tail breakpoint. With nudgeThinking active, applyNudgeThinking
+      // (apiService.ts) has appended nudge text to the latest user message;
+      // anchor the tail one step earlier on the last assistant so the mutated
+      // user message stays inside the cached region instead of being the boundary.
+      if (options.nudgeThinking) {
+        const lastAsstIdx = findLastAssistantMessageIdx(anthropicMessages, anchorEndIdx);
+        if (lastAsstIdx >= 0) {
+          placeCacheControlOnMessage(anthropicMessages[lastAsstIdx], cacheTtl);
+        }
+      } else {
+        applyCacheBreakpoints(anthropicMessages, anchorEndIdx, cacheTtl);
+      }
 
       // Add pre-fill response if provided. Cannot pre-fill in reasoning mode.
       if (options.preFillResponse && !options.enableReasoning) {
@@ -657,18 +778,47 @@ export class AnthropicClient implements APIClient {
         }
       }
 
-      // Prepare thinking configuration if reasoning is enabled
+      // Determine if adaptive reasoning should be used:
+      // reasoning on + model supports it, and either budget falsy OR model is adaptive-only
+      const modelMeta = getModelMetadataFor(apiDefinition, modelId);
+      const useAdaptive =
+        options.enableReasoning &&
+        modelMeta.supportsAdaptiveReasoning === true &&
+        (modelMeta.onlyAdaptiveReasoning === true || !options.reasoningBudgetTokens);
+
+      // Anthropic thinking.display: opus 4.7 defaults server-side to 'omitted'. When the user
+      // has picked any value in the Reasoning Summary dropdown, opt into 'summarized' so thinking
+      // content is returned. Otherwise omit the field and let the model default apply.
+      const thinkingDisplay: 'summarized' | undefined =
+        options.reasoningSummary !== undefined ? 'summarized' : undefined;
+
       const thinkingConfig = options.enableReasoning
-        ? ({
-            type: 'enabled',
-            budget_tokens: options.reasoningBudgetTokens,
-          } as const)
+        ? useAdaptive
+          ? ({ type: 'adaptive', ...(thinkingDisplay && { display: thinkingDisplay }) } as const)
+          : ({
+              type: 'enabled',
+              budget_tokens: options.reasoningBudgetTokens,
+              ...(thinkingDisplay && { display: thinkingDisplay }),
+            } as const)
+        : undefined;
+
+      // Build output_config for adaptive mode (maps ReasoningEffort → API effort)
+      const outputConfig = useAdaptive
+        ? mapReasoningEffortToOutputConfig(
+            options.reasoningEffort,
+            modelMeta.supportsXhighEffort === true
+          )
         : undefined;
 
       // Auto-adjust maxTokens if reasoning is enabled and maxTokens <= reasoningBudgetTokens
       // Anthropic requires max_tokens > budget_tokens for reasoning to work
+      // Skip for adaptive mode (no budget to compare against)
       let effectiveMaxTokens = options.maxTokens;
-      if (options.enableReasoning && options.maxTokens <= options.reasoningBudgetTokens) {
+      if (
+        options.enableReasoning &&
+        !useAdaptive &&
+        options.maxTokens <= options.reasoningBudgetTokens
+      ) {
         effectiveMaxTokens = options.reasoningBudgetTokens + 500;
       }
 
@@ -705,19 +855,21 @@ export class AnthropicClient implements APIClient {
           betas,
           model: modelId,
           max_tokens: effectiveMaxTokens,
-          temperature: options.enableReasoning ? undefined : options.temperature, // Omit temperature for reasoning
+          // Omit temperature for enabled-mode reasoning; adaptive allows it
+          temperature: options.enableReasoning && !useAdaptive ? undefined : options.temperature,
           system: options.systemPrompt
             ? [
                 {
                   type: 'text',
                   text: options.systemPrompt,
-                  cache_control: { type: 'ephemeral' },
+                  cache_control: buildCacheControl(cacheTtl),
                 },
               ]
             : undefined,
           messages: anthropicMessages,
           ...(tools.length > 0 && { tools }),
           ...(thinkingConfig && { thinking: thinkingConfig }),
+          ...(outputConfig && { output_config: outputConfig }),
           ...(contextManagement && { context_management: contextManagement }),
         },
         { signal: options.signal }

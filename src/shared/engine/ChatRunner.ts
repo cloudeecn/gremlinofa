@@ -409,6 +409,14 @@ export class ChatRunner {
               };
               break;
 
+            case 'tool_groups_delta':
+              yield {
+                type: 'tool_groups_delta',
+                toolUseId: event.toolUseId,
+                delta: event.delta,
+              };
+              break;
+
             case 'checkpoint_set': {
               const cpChat: Chat = {
                 ...currentChat,

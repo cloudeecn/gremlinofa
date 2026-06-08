@@ -35,7 +35,7 @@ import type {
 } from '../../protocol/types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import { effectiveInjectionMode } from './fileInjectionHelper';
-import { findCheckpointIndex, findThinkingBoundary, tidyAgnosticMessage } from './contextTidy';
+import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
 import type { APIServiceDeps } from './apiService';
 import {
@@ -165,7 +165,33 @@ function mapEffortToNova(effort: ReasoningEffort | undefined): 'low' | 'medium' 
       return 'medium';
     case 'high':
     case 'xhigh':
+    case 'max':
       return 'high';
+  }
+}
+
+/** Map ReasoningEffort to Anthropic output_config for adaptive reasoning in Bedrock.
+ * When `supportsXhighEffort` is true, UI `xhigh` maps to API `xhigh` (a distinct
+ * level available on Opus 4.7+); otherwise it collapses up to `max` as before. */
+function mapEffortToOutputConfig(
+  effort: ReasoningEffort,
+  supportsXhighEffort: boolean
+): { output_config: { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' } } | undefined {
+  switch (effort) {
+    case 'none':
+    case 'minimal':
+    case 'low':
+      return { output_config: { effort: 'low' } };
+    case 'medium':
+      return { output_config: { effort: 'medium' } };
+    case 'high':
+      return { output_config: { effort: 'high' } };
+    case 'xhigh':
+      return { output_config: { effort: supportsXhighEffort ? 'xhigh' : 'max' } };
+    case 'max':
+      return { output_config: { effort: 'max' } };
+    case undefined:
+      return undefined;
   }
 }
 
@@ -180,6 +206,7 @@ function mapEffort(effort: ReasoningEffort | undefined): 'low' | 'medium' | 'hig
       return 'medium';
     case 'high':
     case 'xhigh':
+    case 'max':
       return 'high';
   }
 }
@@ -198,20 +225,43 @@ export function buildReasoningConfig(
     enableReasoning: boolean;
     reasoningBudgetTokens: number;
     reasoningEffort?: ReasoningEffort;
+    reasoningSummary?: 'auto' | 'concise' | 'detailed';
     thinkingKeepTurns?: number; // undefined = model default, -1 = all, 0+ = thinking_turns
+    supportsAdaptiveReasoning?: boolean;
+    onlyAdaptiveReasoning?: boolean;
+    supportsXhighEffort?: boolean;
   }
 ): DocumentType | undefined {
   if (!options.enableReasoning || modelType === 'none') {
     return undefined;
   }
 
+  // Adaptive mode: reasoning on + model supports it + (budget falsy OR model is adaptive-only)
+  const useAdaptive =
+    options.supportsAdaptiveReasoning &&
+    (options.onlyAdaptiveReasoning || !options.reasoningBudgetTokens);
+  const supportsXhigh = options.supportsXhighEffort === true;
+
+  // Claude thinking.display: opus 4.7 defaults server-side to 'omitted'. When the user has
+  // picked any value in the Reasoning Summary dropdown, opt into 'summarized' so thinking is
+  // returned. Otherwise omit the field and let the model default apply.
+  const displayField =
+    options.reasoningSummary !== undefined ? { display: 'summarized' as const } : {};
+
   switch (modelType) {
     case 'claude-3':
       // Claude 3.x uses thinking config
+      if (useAdaptive) {
+        return {
+          thinking: { type: 'adaptive', ...displayField },
+          ...mapEffortToOutputConfig(options.reasoningEffort, supportsXhigh),
+        } as DocumentType;
+      }
       return {
         thinking: {
           type: 'enabled',
           budget_tokens: options.reasoningBudgetTokens,
+          ...displayField,
         },
       } as DocumentType;
 
@@ -223,11 +273,14 @@ export function buildReasoningConfig(
         options.thinkingKeepTurns === undefined || options.thinkingKeepTurns === -1
           ? { type: 'all' }
           : { type: 'thinking_turns', value: options.thinkingKeepTurns };
+
+      const reasoningConfig = useAdaptive
+        ? { type: 'adaptive', ...displayField }
+        : { type: 'enabled', budget_tokens: options.reasoningBudgetTokens, ...displayField };
+
       return {
-        reasoning_config: {
-          type: 'enabled',
-          budget_tokens: options.reasoningBudgetTokens,
-        },
+        reasoning_config: reasoningConfig,
+        ...(useAdaptive && mapEffortToOutputConfig(options.reasoningEffort, supportsXhigh)),
         anthropic_beta: ['interleaved-thinking-2025-05-14', 'context-management-2025-06-27'],
         context_management: {
           edits: [
@@ -292,10 +345,14 @@ function tidyMessages(
   checkpointMessageId: string | undefined,
   tidyToolNames: Set<string> | undefined,
   pruneThinking: boolean,
-  pruneEmptyText: boolean
+  pruneEmptyText: boolean,
+  pruneThinkingKeepTurns: number | undefined
 ): Message<unknown>[] {
   const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
-  const thinkingBoundary = pruneThinking || pruneEmptyText ? findThinkingBoundary(messages) : -1;
+  const projectPruneActive = pruneThinkingKeepTurns !== undefined && pruneThinkingKeepTurns >= 0;
+  const effectiveKeep = projectPruneActive ? (pruneThinkingKeepTurns as number) : 1;
+  const anyPrune = pruneThinking || pruneEmptyText || projectPruneActive;
+  const thinkingBoundary = anyPrune ? findThinkingBoundaryN(messages, effectiveKeep) : -1;
 
   if (checkpointIdx === -1 && thinkingBoundary <= 0) return messages;
 
@@ -358,7 +415,7 @@ function tidyMessages(
       blocks = filtered;
     }
 
-    if (inThinking && !inCheckpoint && pruneThinking) {
+    if (inThinking && !inCheckpoint && (pruneThinking || projectPruneActive)) {
       blocks = blocks.filter(b => !b.reasoningContent);
     }
 
@@ -632,7 +689,8 @@ export class BedrockClient implements APIClient {
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
       thinkingKeepTurns?: number;
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      pruneThinkingKeepTurns?: number;
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       systemPrompt?: string;
       preFillResponse?: string;
@@ -664,7 +722,8 @@ export class BedrockClient implements APIClient {
         options.checkpointMessageId,
         options.tidyToolNames,
         apiDefinition.advancedSettings?.pruneThinking ?? false,
-        apiDefinition.advancedSettings?.pruneEmptyText ?? false
+        apiDefinition.advancedSettings?.pruneEmptyText ?? false,
+        options.pruneThinkingKeepTurns
       ) as typeof messages;
 
       // Convert messages to Bedrock format
@@ -686,7 +745,13 @@ export class BedrockClient implements APIClient {
 
       // Detect model reasoning type and build appropriate config
       const modelReasoningType = detectBedrockReasoningType(modelId);
-      const additionalModelRequestFields = buildReasoningConfig(modelReasoningType, options);
+      const modelMeta = getModelMetadataFor(apiDefinition, modelId);
+      const additionalModelRequestFields = buildReasoningConfig(modelReasoningType, {
+        ...options,
+        supportsAdaptiveReasoning: modelMeta.supportsAdaptiveReasoning,
+        onlyAdaptiveReasoning: modelMeta.onlyAdaptiveReasoning,
+        supportsXhighEffort: modelMeta.supportsXhighEffort,
+      });
 
       // Use non-streaming if requested
       if (options.disableStream) {

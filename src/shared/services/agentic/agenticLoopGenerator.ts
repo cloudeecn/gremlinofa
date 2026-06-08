@@ -30,6 +30,7 @@ import type {
   Model,
   RenderingBlockGroup,
   ToolContext,
+  ToolGroupsDelta,
   ToolOptions,
   ToolResult,
   ToolResultBlock,
@@ -111,7 +112,15 @@ export interface AgenticLoopOptions {
   toolOptions: Record<string, ToolOptions>;
   disableStream: boolean;
   extendedContext: boolean;
+  // Use 1h cache TTL on Anthropic cache_control breakpoints (default 5m).
+  // Only honored when apiDef.apiType === 'anthropic'.
+  useAnthropicOneHourCache?: boolean;
   noLineNumbers?: boolean;
+  // Thinking nudge text appended to the last user message at send time.
+  // Resolved at loop-build time from `apiDef.advancedSettings.nudgeThinking`
+  // (→ NUDGE_THINKING_DEFAULT) and overridable by callers like `minionTool`.
+  // Undefined or "" means no nudge.
+  nudgeThinking?: string;
 
   // VFS namespace for isolated minion personas
   namespace?: string;
@@ -126,6 +135,12 @@ export interface AgenticLoopOptions {
   enableReasoning: boolean;
   reasoningBudgetTokens: number;
   thinkingKeepTurns?: number;
+  // Client-side thinking pruning. When defined and >= 0, strip thinking
+  // blocks older than the N-th-from-last user text msg before sending.
+  // `buildLoopOptions` only forwards this when the project's
+  // `pruneThinkingBeforeApiCall` flag is on (and a value is set); the
+  // minion tool can override per call.
+  pruneThinkingKeepTurns?: number;
 
   // OpenAI/Responses reasoning
   reasoningEffort?: ReasoningEffort;
@@ -202,6 +217,7 @@ export type AgenticLoopEvent =
       toolUseId: string;
       block: Partial<ToolResultRenderBlock>;
     }
+  | { type: 'tool_groups_delta'; toolUseId: string; delta: ToolGroupsDelta }
   | { type: 'checkpoint_set'; messageId: string }
   | { type: 'dummy_hook_start'; hookName: string }
   | { type: 'dummy_hook_end'; result: 'passthrough' | 'user_stop' | 'intercepted' }
@@ -604,7 +620,8 @@ function extractIterationTokens(
     cacheReadTokens?: number;
     webSearchCount?: number;
   },
-  model: Model
+  model: Model,
+  cacheTtl?: '5m' | '1h'
 ): TokenTotals {
   const inputTokens = result.inputTokens ?? 0;
   const outputTokens = result.outputTokens ?? 0;
@@ -620,7 +637,8 @@ function extractIterationTokens(
     reasoningTokens,
     cacheCreationTokens,
     cacheReadTokens,
-    webSearchCount
+    webSearchCount,
+    cacheTtl
   );
 
   const costUnreliable = isCostUnreliable(
@@ -906,6 +924,18 @@ async function* executeToolsParallel(
           type: 'tool_block_update',
           toolUseId: ag.toolUse.id,
           block: { renderingGroups: event.groups, status: 'running' as const },
+        };
+      } else if (event.type === 'groups_delta') {
+        // Delta-encoded streaming path (minion tool). LoopRegistry consumes
+        // the same event server-side to maintain a per-tool-call
+        // `groupsState` cache that `attachChat` replays as a single
+        // `tool_groups_snapshot`. The placeholder message's
+        // `renderingContent` is populated client-side from these deltas;
+        // we no longer round-trip the full assembled snapshot per chunk.
+        yield {
+          type: 'tool_groups_delta',
+          toolUseId: ag.toolUse.id,
+          delta: event.delta,
         };
       }
       ag.pendingNext = safeGenNext(ag);
@@ -1612,6 +1642,7 @@ export async function* runAgenticLoop(
           enableReasoning: options.enableReasoning,
           reasoningBudgetTokens: options.reasoningBudgetTokens,
           thinkingKeepTurns: options.thinkingKeepTurns,
+          pruneThinkingKeepTurns: options.pruneThinkingKeepTurns,
           reasoningEffort: options.reasoningEffort,
           reasoningSummary: options.reasoningSummary,
           systemPrompt: options.systemPrompt,
@@ -1621,9 +1652,11 @@ export async function* runAgenticLoop(
           toolOptions,
           disableStream: options.disableStream,
           extendedContext: effectiveExtendedContext,
+          useAnthropicOneHourCache: options.useAnthropicOneHourCache,
           signal: options.signal,
           checkpointMessageId: tidyBoundaryId,
           tidyToolNames: deriveTidyToolNames(toolOptions),
+          nudgeThinking: options.nudgeThinking,
         };
 
         // Create assembler for streaming
@@ -1729,7 +1762,11 @@ export async function* runAgenticLoop(
         if (result.hasCoT) loopHasCoT = true;
 
         // Extract tokens and calculate cost
-        const iterTokens = extractIterationTokens(result, model);
+        const iterTokens = extractIterationTokens(
+          result,
+          model,
+          apiDef.apiType === 'anthropic' && options.useAnthropicOneHourCache ? '1h' : '5m'
+        );
         if (apiDef.advancedSettings?.isSubscription) {
           iterTokens.cost = 0;
           iterTokens.costUnreliable = false;

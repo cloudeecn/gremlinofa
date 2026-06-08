@@ -673,18 +673,30 @@ describe('memoryTool', () => {
   });
 
   describe('append command', () => {
-    it('appends to existing file', async () => {
+    it('appends with trailing newline', async () => {
       (mockAdapter.appendFile as Mock).mockResolvedValue({ created: false });
 
       const result = await executeMemory({
         command: 'append',
         path: '/memories/log.md',
-        file_text: '\nnew line',
+        file_text: 'new line',
       });
 
       expect(result.content).toBe('Content appended to /memories/log.md');
       expect(result.isError).toBeFalsy();
-      expect(mockAdapter.appendFile).toHaveBeenCalledWith('/memories/log.md', '\nnew line');
+      expect(mockAdapter.appendFile).toHaveBeenCalledWith('/memories/log.md', 'new line\n');
+    });
+
+    it('does not double-add newline when text already ends with one', async () => {
+      (mockAdapter.appendFile as Mock).mockResolvedValue({ created: false });
+
+      await executeMemory({
+        command: 'append',
+        path: '/memories/log.md',
+        file_text: 'new line\n',
+      });
+
+      expect(mockAdapter.appendFile).toHaveBeenCalledWith('/memories/log.md', 'new line\n');
     });
 
     it('creates file when it does not exist', async () => {
@@ -698,7 +710,7 @@ describe('memoryTool', () => {
 
       expect(result.content).toBe('File created successfully at: /memories/new.md');
       expect(result.isError).toBeFalsy();
-      expect(mockAdapter.appendFile).toHaveBeenCalledWith('/memories/new.md', 'initial content');
+      expect(mockAdapter.appendFile).toHaveBeenCalledWith('/memories/new.md', 'initial content\n');
     });
 
     it('returns error when path is a directory', async () => {
@@ -723,6 +735,34 @@ describe('memoryTool', () => {
 
       expect(result.content).toContain('Cannot append to the root path');
       expect(result.isError).toBe(true);
+    });
+  });
+
+  describe('append_raw command', () => {
+    it('appends verbatim without trailing newline', async () => {
+      (mockAdapter.appendFile as Mock).mockResolvedValue({ created: false });
+
+      await executeMemory({
+        command: 'append_raw',
+        path: '/memories/log.md',
+        file_text: 'raw text',
+      });
+
+      expect(mockAdapter.appendFile).toHaveBeenCalledWith('/memories/log.md', 'raw text');
+    });
+
+    it('creates file when it does not exist', async () => {
+      (mockAdapter.appendFile as Mock).mockResolvedValue({ created: true });
+
+      const result = await executeMemory({
+        command: 'append_raw',
+        path: '/memories/new.md',
+        file_text: 'initial',
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.content).toBe('File created successfully at: /memories/new.md');
+      expect(mockAdapter.appendFile).toHaveBeenCalledWith('/memories/new.md', 'initial');
     });
   });
 

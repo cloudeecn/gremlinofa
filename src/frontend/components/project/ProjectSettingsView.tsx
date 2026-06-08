@@ -60,6 +60,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [thinkingKeepTurns, setThinkingKeepTurns] = useState(
     project?.thinkingKeepTurns !== undefined ? project.thinkingKeepTurns.toString() : ''
   );
+  const [pruneThinkingBeforeApiCall, setPruneThinkingBeforeApiCall] = useState(
+    project?.pruneThinkingBeforeApiCall ?? false
+  );
   const [webSearchEnabled, setWebSearchEnabled] = useState(project?.webSearchEnabled || false);
   const [sendMessageMetadata, setSendMessageMetadata] = useState<boolean | 'template'>(
     project?.sendMessageMetadata || false
@@ -90,13 +93,16 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     project?.toolOptions ?? {}
   );
   const [reasoningEffort, setReasoningEffort] = useState<
-    'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | undefined
+    'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined
   >(project?.reasoningEffort);
   const [reasoningSummary, setReasoningSummary] = useState<
     'auto' | 'concise' | 'detailed' | undefined
   >(project?.reasoningSummary);
   const [disableStream, setDisableStream] = useState(project?.disableStream || false);
   const [extendedContext, setExtendedContext] = useState(project?.extendedContext || false);
+  const [useAnthropicOneHourCache, setUseAnthropicOneHourCache] = useState(
+    project?.useAnthropicOneHourCache || false
+  );
   const [noLineNumbers, setNoLineNumbers] = useState(project?.noLineNumbers || false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRemoteVfs, setShowRemoteVfs] = useState(false);
@@ -133,8 +139,12 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     title: string;
   } | null>(null);
 
-  // Update form fields when project loads
-  useEffect(() => {
+  // Seed form fields whenever a new project instance arrives. Tracking the
+  // last-seeded project during render is React's recommended alternative to a
+  // setState-in-effect.
+  const [seededProject, setSeededProject] = useState(project);
+  if (seededProject !== project) {
+    setSeededProject(project);
     if (project) {
       setSystemPrompt(project.systemPrompt || '');
       setPreFillResponse(project.preFillResponse || '');
@@ -143,6 +153,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setThinkingKeepTurns(
         project.thinkingKeepTurns !== undefined ? project.thinkingKeepTurns.toString() : ''
       );
+      setPruneThinkingBeforeApiCall(project.pruneThinkingBeforeApiCall ?? false);
       setWebSearchEnabled(project.webSearchEnabled || false);
       setSendMessageMetadata(project.sendMessageMetadata || false);
       setMetadataTimestampMode(project.metadataTimestampMode || 'disabled');
@@ -162,11 +173,12 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setSelectedModelId(project.modelId || null);
       setDisableStream(project.disableStream || false);
       setExtendedContext(project.extendedContext || false);
+      setUseAnthropicOneHourCache(project.useAnthropicOneHourCache || false);
       setNoLineNumbers(project.noLineNumbers || false);
       setRemoteVfsUrl(project.remoteVfsUrl || '');
       setRemoteVfsPassword(project.remoteVfsPassword || '');
     }
-  }, [project]);
+  }
 
   // Get API definition and model names for display
   const apiDef = selectedApiDefId ? apiDefinitions.find(a => a.id === selectedApiDefId) : null;
@@ -273,8 +285,11 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         systemPrompt,
         preFillResponse,
         enableReasoning,
-        reasoningBudgetTokens: parseInt(reasoningBudgetTokens) || 1024,
+        reasoningBudgetTokens: isNaN(parseInt(reasoningBudgetTokens))
+          ? 1024
+          : parseInt(reasoningBudgetTokens),
         thinkingKeepTurns: thinkingKeepTurns === '' ? undefined : parseInt(thinkingKeepTurns),
+        pruneThinkingBeforeApiCall: pruneThinkingBeforeApiCall || undefined,
         webSearchEnabled,
         sendMessageMetadata,
         metadataTimestampMode,
@@ -289,9 +304,10 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         reasoningEffort,
         reasoningSummary,
         temperature: temperature === '' ? null : parseFloat(temperature),
-        maxOutputTokens: parseInt(maxOutputTokens) || 1536,
+        maxOutputTokens: isNaN(parseInt(maxOutputTokens)) ? 1536 : parseInt(maxOutputTokens),
         disableStream: disableStream || undefined,
         extendedContext: extendedContext || undefined,
+        useAnthropicOneHourCache: useAnthropicOneHourCache || undefined,
         noLineNumbers: noLineNumbers || undefined,
         remoteVfsUrl: isServerMode ? undefined : remoteVfsUrl.trim() || undefined,
         remoteVfsPassword: isServerMode ? undefined : remoteVfsPassword || undefined,
@@ -314,6 +330,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     enableReasoning,
     reasoningBudgetTokens,
     thinkingKeepTurns,
+    pruneThinkingBeforeApiCall,
     webSearchEnabled,
     sendMessageMetadata,
     metadataTimestampMode,
@@ -330,6 +347,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     maxOutputTokens,
     disableStream,
     extendedContext,
+    useAnthropicOneHourCache,
     noLineNumbers,
     remoteVfsUrl,
     remoteVfsPassword,
@@ -610,8 +628,39 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
               {/* Section Content */}
               {enableReasoning && (
                 <div className="space-y-6 bg-white p-4">
-                  {/* Anthropic / Bedrock Claude Subsection */}
+                  {/* Shared: Reasoning Effort (used by OpenAI/Nova directly, maps to output effort for Anthropic adaptive) */}
                   <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-900">
+                      Reasoning Effort
+                    </label>
+                    <select
+                      value={reasoningEffort ?? ''}
+                      onChange={e =>
+                        setReasoningEffort(
+                          e.target.value === ''
+                            ? undefined
+                            : (e.target.value as typeof reasoningEffort)
+                        )
+                      }
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    >
+                      <option value="">(default)</option>
+                      <option value="none">None</option>
+                      <option value="minimal">Minimal</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="xhigh">Extra High</option>
+                      <option value="max">Max</option>
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Used by OpenAI/Nova models directly. For Anthropic adaptive reasoning (budget
+                      = 0), maps to output effort.
+                    </p>
+                  </div>
+
+                  {/* Anthropic / Bedrock Claude Subsection */}
+                  <div className="border-t border-gray-100 pt-4">
                     <h4 className="mb-3 text-xs font-medium tracking-wide text-gray-500 uppercase">
                       Anthropic / Bedrock Claude
                     </h4>
@@ -620,18 +669,18 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       setReasoningBudgetTokens={setReasoningBudgetTokens}
                       thinkingKeepTurns={thinkingKeepTurns}
                       setThinkingKeepTurns={setThinkingKeepTurns}
+                      pruneThinkingBeforeApiCall={pruneThinkingBeforeApiCall}
+                      setPruneThinkingBeforeApiCall={setPruneThinkingBeforeApiCall}
                       maxOutputTokens={maxOutputTokens}
                     />
                   </div>
 
-                  {/* OpenAI / Nova / DeepSeek Subsection */}
+                  {/* Reasoning Summary — shared across providers */}
                   <div className="border-t border-gray-100 pt-4">
                     <h4 className="mb-3 text-xs font-medium tracking-wide text-gray-500 uppercase">
-                      OpenAI / Bedrock Nova / DeepSeek
+                      Reasoning Summary
                     </h4>
                     <OpenAIReasoningConfig
-                      reasoningEffort={reasoningEffort}
-                      setReasoningEffort={setReasoningEffort}
                       reasoningSummary={reasoningSummary}
                       setReasoningSummary={setReasoningSummary}
                     />
@@ -1467,6 +1516,29 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       type="checkbox"
                       checked={noLineNumbers}
                       onChange={e => setNoLineNumbers(e.target.checked)}
+                      className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* 1-Hour Anthropic Cache TTL */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label
+                        htmlFor="useAnthropicOneHourCache"
+                        className="cursor-pointer text-sm font-medium text-gray-900"
+                      >
+                        1-Hour Cache TTL
+                      </label>
+                      <p className="text-xs text-gray-500">
+                        Anthropic only. Writes cost 2× input (vs 1.25× for 5m default); reads
+                        unchanged. Helps when chats sit idle &gt;5 min between turns.
+                      </p>
+                    </div>
+                    <input
+                      id="useAnthropicOneHourCache"
+                      type="checkbox"
+                      checked={useAnthropicOneHourCache}
+                      onChange={e => setUseAnthropicOneHourCache(e.target.checked)}
                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                   </div>

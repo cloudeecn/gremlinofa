@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   ToolResultRenderBlock,
   ToolInfoRenderBlock,
@@ -12,6 +13,7 @@ import { useMinionChatOverlay } from './MinionChatOverlayContext';
 import BackstageView from './BackstageView';
 import TextGroupView from './TextGroupView';
 import { InjectedFilesList } from './InjectedFilesList';
+import Modal from '../ui/Modal';
 
 export interface ToolResultViewProps {
   block: ToolResultRenderBlock;
@@ -152,7 +154,7 @@ function ComplexToolResult({
   groups: RenderingBlockGroup[];
 }) {
   const isRunning = block.status === 'running';
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [showModal, setShowModal] = useState(false);
   const { iconOnRight } = usePreferences();
   const { apiDefinitions } = useApp();
   const overlayCtx = useMinionChatOverlay();
@@ -169,8 +171,8 @@ function ComplexToolResult({
   const hasResult = !isRunning && block.content;
 
   const defaultIcon = block.icon ?? '🤖';
-  const previewText = !isExpanded ? getLastActivityPreview(activityGroups) : '';
-  const lastIcon = !isExpanded ? getLastBlockIcon(activityGroups) : undefined;
+  const previewText = getLastActivityPreview(activityGroups);
+  const lastIcon = getLastBlockIcon(activityGroups);
   const toolCost = block.tokenTotals?.cost;
   const displayLabel = toolInfo?.displayName ?? toolInfo?.persona;
 
@@ -184,9 +186,9 @@ function ComplexToolResult({
 
   return (
     <div className="overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50">
-      {/* Header */}
+      {/* Header — always collapsed, opens modal on click */}
       <button
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={() => setShowModal(true)}
         className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm font-medium text-purple-800 transition-colors hover:bg-purple-100"
       >
         <span className="flex shrink-0 items-center gap-1">
@@ -194,139 +196,159 @@ function ComplexToolResult({
           {displayLabel && (
             <span className="text-xs font-normal text-purple-600">{displayLabel}</span>
           )}
-          <span className="text-purple-600">{isExpanded ? '▼' : '▶'}</span>
+          <span className="text-purple-600">▶</span>
           {lastIcon && <span>{lastIcon}</span>}
         </span>
-        {!isExpanded && (
+        {previewText ? (
           <>
-            {previewText ? (
-              <>
-                <span className="flex min-w-0 overflow-hidden">
-                  <span className="flex max-w-full justify-end overflow-hidden text-xs font-normal whitespace-nowrap text-purple-600">
-                    {previewText}
-                  </span>
-                </span>
-                <span className="min-w-0 flex-1 overflow-hidden"></span>
-              </>
-            ) : toolInfo?.chatId ? (
-              <span className="min-w-0 flex-1 truncate text-right text-xs text-purple-400">
-                {toolInfo.chatId}
+            <span className="flex min-w-0 overflow-hidden">
+              <span className="flex max-w-full justify-end overflow-hidden text-xs font-normal whitespace-nowrap text-purple-600">
+                {previewText}
               </span>
-            ) : (
-              <span className="min-w-0 flex-1 overflow-hidden"></span>
-            )}
-            {toolCost != null && (
-              <span className="shrink-0 text-xs font-normal text-purple-500">
-                ${toolCost.toFixed(3)}
-              </span>
-            )}
+            </span>
+            <span className="min-w-0 flex-1 overflow-hidden"></span>
           </>
+        ) : toolInfo?.chatId ? (
+          <span className="min-w-0 flex-1 truncate text-right text-xs text-purple-400">
+            {toolInfo.chatId}
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 overflow-hidden"></span>
+        )}
+        {toolCost != null && (
+          <span className="shrink-0 text-xs font-normal text-purple-500">
+            ${toolCost.toFixed(3)}
+          </span>
         )}
         {iconOnRight && <span className="mr-2 shrink-0">{defaultIcon}</span>}
       </button>
 
-      {/* Expanded content */}
-      {isExpanded && (
-        <div className="space-y-3 border-t border-purple-200 bg-white px-4 py-3">
-          {/* Effective settings info line */}
-          {toolInfo && (toolInfo.persona || toolInfo.apiDefinitionId || toolInfo.modelId) && (
-            <div className="flex items-center gap-1.5 text-xs text-gray-500">
-              {toolInfo.persona && toolInfo.persona !== 'default' && (
-                <span className="font-medium text-purple-600">
-                  {toolInfo.displayName ?? toolInfo.persona}
-                </span>
-              )}
-              {apiDefIcon && <span>{apiDefIcon}</span>}
-              {toolInfo.modelId && <span className="text-gray-400">{toolInfo.modelId}</span>}
-            </div>
-          )}
-
-          {/* Tool info input in blue box */}
-          {toolInfo?.input && (
-            <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2">
-              <pre className="text-sm break-all whitespace-pre-wrap text-blue-800">
-                {toolInfo.input}
-              </pre>
-            </div>
-          )}
-
-          {/* Injected files */}
-          {toolInfo?.injectedFiles && toolInfo.injectedFiles.length > 0 && (
-            <InjectedFilesList files={toolInfo.injectedFiles} />
-          )}
-
-          {/* Activity groups */}
-          {activityGroups.length > 0 && (
-            <div className="space-y-2">
-              {activityGroups.map((group, idx) => {
-                if (group.category === 'backstage') {
-                  return (
-                    <BackstageView
-                      key={`backstage-${idx}`}
-                      blocks={group.blocks}
-                      isToolGenerated={group.isToolGenerated}
-                    />
-                  );
-                }
-                if (group.category === 'text') {
-                  return (
-                    <div key={`text-${idx}`}>
-                      <TextGroupView blocks={group.blocks} />
-                    </div>
-                  );
-                }
-                return null;
-              })}
-            </div>
-          )}
-
-          {/* Final result box */}
-          {hasResult && (
-            <div
-              className={`rounded border px-3 py-2 ${
-                isError ? 'border-red-300 bg-red-50' : 'border-green-300 bg-green-50'
-              }`}
-            >
-              <pre
-                className={`text-sm break-all whitespace-pre-wrap ${
-                  isError ? 'text-red-800' : 'text-green-800'
-                }`}
-              >
-                {block.renderedContent ?? block.content}
-              </pre>
-            </div>
-          )}
-
-          {/* Action buttons */}
-          <div className="flex justify-end gap-3 border-t border-purple-100 pt-2">
-            {toolInfo?.chatId && overlayCtx && (
+      {/* Portal modal out of message list to avoid stacking/scroll issues */}
+      {createPortal(
+        <Modal isOpen={showModal} onClose={() => setShowModal(false)} size="lg">
+          <div className="ios-scroll max-h-[80vh] overflow-y-auto overscroll-y-contain rounded-lg bg-white">
+            {/* Modal header */}
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-purple-200 bg-purple-50 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span>{defaultIcon}</span>
+                {displayLabel && (
+                  <span className="text-sm font-medium text-purple-700">{displayLabel}</span>
+                )}
+                {isRunning && <span className="text-xs text-purple-400">running…</span>}
+              </div>
               <button
-                className="text-xs text-gray-400 hover:text-gray-600"
-                title="View minion sub-chat"
-                onClick={e => {
-                  e.stopPropagation();
-                  overlayCtx.viewMinionChat(toolInfo.chatId!);
-                }}
+                onClick={() => setShowModal(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-700"
               >
-                💬 View Chat
+                ✕
               </button>
-            )}
-            <button
-              onClick={async e => {
-                e.stopPropagation();
-                try {
-                  await navigator.clipboard.writeText(JSON.stringify(block, null, 2));
-                } catch {
-                  // Silently fail if clipboard access denied
-                }
-              }}
-              className="text-xs text-gray-400 hover:text-gray-600"
-              title="Copy tool result data as JSON"
-            >
-              📋 Copy JSON
-            </button>
+            </div>
+
+            {/* Scrollable content */}
+            <div className="space-y-3 px-4 py-3">
+              {/* Effective settings info line */}
+              {toolInfo && (toolInfo.persona || toolInfo.apiDefinitionId || toolInfo.modelId) && (
+                <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                  {toolInfo.persona && toolInfo.persona !== 'default' && (
+                    <span className="font-medium text-purple-600">
+                      {toolInfo.displayName ?? toolInfo.persona}
+                    </span>
+                  )}
+                  {apiDefIcon && <span>{apiDefIcon}</span>}
+                  {toolInfo.modelId && <span className="text-gray-400">{toolInfo.modelId}</span>}
+                </div>
+              )}
+
+              {/* Tool info input in blue box */}
+              {toolInfo?.input && (
+                <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2">
+                  <pre className="text-sm break-all whitespace-pre-wrap text-blue-800">
+                    {toolInfo.input}
+                  </pre>
+                </div>
+              )}
+
+              {/* Injected files */}
+              {toolInfo?.injectedFiles && toolInfo.injectedFiles.length > 0 && (
+                <InjectedFilesList files={toolInfo.injectedFiles} />
+              )}
+
+              {/* Activity groups */}
+              {activityGroups.length > 0 && (
+                <div className="space-y-2">
+                  {activityGroups.map((group, idx) => {
+                    if (group.category === 'backstage') {
+                      return (
+                        <BackstageView
+                          key={`backstage-${idx}`}
+                          blocks={group.blocks}
+                          isToolGenerated={group.isToolGenerated}
+                        />
+                      );
+                    }
+                    if (group.category === 'text') {
+                      return (
+                        <div key={`text-${idx}`}>
+                          <TextGroupView blocks={group.blocks} />
+                        </div>
+                      );
+                    }
+                    return null;
+                  })}
+                </div>
+              )}
+
+              {/* Final result box */}
+              {hasResult && (
+                <div
+                  className={`rounded border px-3 py-2 ${
+                    isError ? 'border-red-300 bg-red-50' : 'border-green-300 bg-green-50'
+                  }`}
+                >
+                  <pre
+                    className={`text-sm break-all whitespace-pre-wrap ${
+                      isError ? 'text-red-800' : 'text-green-800'
+                    }`}
+                  >
+                    {block.renderedContent ?? block.content}
+                  </pre>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex justify-end gap-3 border-t border-purple-100 pt-2">
+                {toolInfo?.chatId && overlayCtx && (
+                  <button
+                    className="text-xs text-gray-400 hover:text-gray-600"
+                    title="View minion sub-chat"
+                    onClick={e => {
+                      e.stopPropagation();
+                      setShowModal(false);
+                      overlayCtx.viewMinionChat(toolInfo.chatId!);
+                    }}
+                  >
+                    💬 View Chat
+                  </button>
+                )}
+                <button
+                  onClick={async e => {
+                    e.stopPropagation();
+                    try {
+                      await navigator.clipboard.writeText(JSON.stringify(block, null, 2));
+                    } catch {
+                      // Silently fail if clipboard access denied
+                    }
+                  }}
+                  className="text-xs text-gray-400 hover:text-gray-600"
+                  title="Copy tool result data as JSON"
+                >
+                  📋 Copy JSON
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
+        </Modal>,
+        document.body
       )}
     </div>
   );

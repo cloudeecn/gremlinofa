@@ -8,6 +8,7 @@ export interface UseMinionChatResult {
   isLoading: boolean;
   tokenUsage: TokenUsage;
   deleteMessage: (messageId: string) => Promise<void>;
+  rollbackToMessage: (messageId: string) => Promise<void>;
 }
 
 export function useMinionChat(minionChatId: string): UseMinionChatResult {
@@ -63,5 +64,16 @@ export function useMinionChat(minionChatId: string): UseMinionChatResult {
     await gremlinClient.deleteSingleMessage(messageId);
   }, []);
 
-  return { minionChat, messages, isLoading, tokenUsage, deleteMessage };
+  const rollbackToMessage = useCallback(
+    async (messageId: string) => {
+      const messageIndex = messages.findIndex(m => m.id === messageId);
+      if (messageIndex === -1 || messageIndex === messages.length - 1) return;
+      const nextMessageId = messages[messageIndex + 1].id;
+      setMessages(prev => prev.slice(0, messageIndex + 1));
+      await gremlinClient.deleteMessageAndAfter(minionChatId, nextMessageId);
+    },
+    [messages, minionChatId]
+  );
+
+  return { minionChat, messages, isLoading, tokenUsage, deleteMessage, rollbackToMessage };
 }

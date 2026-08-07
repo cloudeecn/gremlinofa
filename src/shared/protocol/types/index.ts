@@ -142,6 +142,22 @@ export interface ModelMetadata {
   /** Per-request base price in USD (e.g., Perplexity charges per request) */
   requestPrice?: number;
 
+  /**
+   * Higher pricing tier some providers charge once a request's context length
+   * crosses a threshold (e.g. Qwen bills more above 256K tokens). Recorded for
+   * reference only — NOT applied by `calculateCost`, which always uses the base
+   * (sub-threshold) inputPrice/outputPrice/cacheReadPrice regardless of the
+   * actual context size. Wire it into a context-aware pricing pass to honor it.
+   */
+  unsupportedHighContextPricing?: {
+    /** Tier applies at/above this context length, in tokens */
+    thresholdTokens: number;
+    inputPrice?: number;
+    outputPrice?: number;
+    cacheReadPrice?: number;
+    cacheWritePrice?: number;
+  };
+
   // === Reasoning Capabilities ===
   /**
    * Reasoning mode classification

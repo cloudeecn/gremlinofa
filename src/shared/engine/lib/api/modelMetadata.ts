@@ -11,6 +11,9 @@ import { GOOGLE_MODELS } from './model_metadatas/google';
 import { XIAOMI_MODELS } from './model_metadatas/xiaomi';
 import { DEEPSEEK_MODELS } from './model_metadatas/deepseek';
 import { BYTEDANCE_MODELS } from './model_metadatas/bytedance';
+import { ALIBABA_MODELS } from './model_metadatas/alibaba';
+import { MOONSHOT_MODELS } from './model_metadatas/moonshot';
+import { ZHIPU_MODELS } from './model_metadatas/zhipu';
 import { OTHER_MODELS } from './model_metadatas/others';
 
 // Combined model knowledge from all providers
@@ -22,6 +25,9 @@ const ALL_MODEL_KNOWLEDGE: ModelKnowledge[] = [
   ...XIAOMI_MODELS,
   ...DEEPSEEK_MODELS,
   ...BYTEDANCE_MODELS,
+  ...ALIBABA_MODELS,
+  ...MOONSHOT_MODELS,
+  ...ZHIPU_MODELS,
   ...OTHER_MODELS,
 ];
 

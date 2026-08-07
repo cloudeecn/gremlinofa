@@ -1,6 +1,69 @@
 import type { ModelKnowledge } from '../../../../protocol/types';
 
 export const OPENAI_MODELS: ModelKnowledge[] = [
+  // === GPT-5.6 series (Sol / Terra / Luna) ===
+  {
+    matches: [
+      // 'gpt-5.6' is an official alias routing to Sol
+      { apiType: ['chatgpt', 'responses_api'], modelIdExact: ['gpt-5.6', 'gpt-5.6-sol'] },
+      { apiType: ['chatgpt', 'responses_api'], modelIdFuzz: [{ modelIdPrefix: 'gpt-5.6' }] },
+      {
+        apiType: ['chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'gpt-5.6', modelIdPostfix: '-sol' }],
+      },
+    ],
+    inputPrice: 5.0,
+    outputPrice: 30.0,
+    reasoningPrice: 30.0,
+    cacheReadPrice: 0.5,
+    contextWindow: 1050000,
+    reasoningMode: 'always',
+    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    webSearchPrice: 0.01,
+  },
+  {
+    matches: [
+      { apiType: ['chatgpt', 'responses_api'], modelIdExact: ['gpt-5.6-terra'] },
+      {
+        apiType: ['chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'gpt-5.6-terra' }],
+      },
+      {
+        apiType: ['chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'gpt-5.6', modelIdPostfix: '-terra' }],
+      },
+    ],
+    inputPrice: 2.5,
+    outputPrice: 15.0,
+    reasoningPrice: 15.0,
+    cacheReadPrice: 0.25,
+    contextWindow: 1050000,
+    reasoningMode: 'always',
+    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    webSearchPrice: 0.01,
+  },
+  {
+    matches: [
+      { apiType: ['chatgpt', 'responses_api'], modelIdExact: ['gpt-5.6-luna'] },
+      {
+        apiType: ['chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'gpt-5.6-luna' }],
+      },
+      {
+        apiType: ['chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'gpt-5.6', modelIdPostfix: '-luna' }],
+      },
+    ],
+    inputPrice: 1.0,
+    outputPrice: 6.0,
+    reasoningPrice: 6.0,
+    cacheReadPrice: 0.1,
+    contextWindow: 1050000,
+    reasoningMode: 'always',
+    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    webSearchPrice: 0.01,
+  },
+
   // === GPT-5.4 series ===
   {
     matches: [

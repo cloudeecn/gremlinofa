@@ -9,6 +9,7 @@
 import { getProxyConfig } from './proxyConfig';
 import {
   GoogleGenAI,
+  ServiceTier,
   ThinkingLevel,
   type Content,
   type Part,
@@ -295,9 +296,7 @@ export class GoogleClient implements APIClient {
       const config: GenerateContentConfig = {
         maxOutputTokens: options.maxTokens,
         abortSignal: options.signal,
-        // serviceTier may lag in @google/genai typings; cast for the single
-        // field rather than weakening the whole config.
-        ...(options.flexTierEnabled ? ({ serviceTier: 'flex' } as Record<string, unknown>) : null),
+        ...(options.flexTierEnabled ? { serviceTier: ServiceTier.FLEX } : null),
       };
 
       // Temperature (omit for reasoning models when reasoning is enabled)

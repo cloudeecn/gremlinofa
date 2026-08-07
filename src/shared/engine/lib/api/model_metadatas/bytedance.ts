@@ -1,6 +1,24 @@
 import type { ModelKnowledge } from '../../../../protocol/types';
 
 export const BYTEDANCE_MODELS: ModelKnowledge[] = [
+  // Doubao Seed 2.1 Pro
+  {
+    matches: [
+      {
+        apiType: ['anthropic', 'chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'doubao-seed-2-1-pro' }],
+      },
+    ],
+    inputPrice: 0.93,
+    cacheReadPrice: 0.186,
+    outputPrice: 4.65,
+    contextWindow: 256000,
+    maxOutputTokens: 128000,
+    reasoningMode: 'optional',
+    supportedReasoningEfforts: [],
+    deFactoThinking: true,
+    supportsTools: true,
+  },
   // Doubao Seed 2.0 Pro
   {
     matches: [

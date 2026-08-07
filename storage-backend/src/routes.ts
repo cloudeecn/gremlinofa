@@ -37,7 +37,7 @@ router.use(json({ limit: '50mb' }));
  * Validate table name middleware
  */
 function validateTable(req: Request, res: Response, next: NextFunction): void {
-  const { table } = req.params;
+  const { table } = req.params as Record<string, string>;
   if (!isValidTable(table)) {
     res.status(400).json({ error: `Invalid table: ${table}` });
     return;
@@ -79,7 +79,7 @@ function parseColumns(req: Request, res: Response): ColumnName[] | undefined | n
  */
 router.get('/:table/_export', validateTable, (req: Request, res: Response) => {
   try {
-    const { table } = req.params;
+    const { table } = req.params as Record<string, string>;
     const userId = req.userId!;
     const afterId = typeof req.query.afterId === 'string' ? req.query.afterId : undefined;
 
@@ -100,7 +100,7 @@ router.get('/:table/_export', validateTable, (req: Request, res: Response) => {
  */
 router.get('/:table/_batch', validateTable, (req: Request, res: Response) => {
   try {
-    const { table } = req.params;
+    const { table } = req.params as Record<string, string>;
     const userId = req.userId!;
 
     // Parse and validate ids
@@ -141,7 +141,7 @@ router.get('/:table/_batch', validateTable, (req: Request, res: Response) => {
  */
 router.post('/:table/_batch', validateTable, (req: Request, res: Response) => {
   try {
-    const { table } = req.params;
+    const { table } = req.params as Record<string, string>;
     const userId = req.userId!;
     const body = req.body as BatchSaveRequest;
 
@@ -173,7 +173,7 @@ router.post('/:table/_batch', validateTable, (req: Request, res: Response) => {
  */
 router.put('/:table/:id', validateTable, (req: Request, res: Response) => {
   try {
-    const { table, id } = req.params;
+    const { table, id } = req.params as Record<string, string>;
     const body = req.body as SaveRequest;
     const userId = req.userId!;
 
@@ -205,7 +205,7 @@ router.put('/:table/:id', validateTable, (req: Request, res: Response) => {
  */
 router.get('/:table/:id', validateTable, (req: Request, res: Response) => {
   try {
-    const { table, id } = req.params;
+    const { table, id } = req.params as Record<string, string>;
     const userId = req.userId!;
 
     // Special case: /_count is the count endpoint
@@ -237,7 +237,7 @@ router.get('/:table/:id', validateTable, (req: Request, res: Response) => {
  */
 router.get('/:table', validateTable, (req: Request, res: Response) => {
   try {
-    const { table } = req.params;
+    const { table } = req.params as Record<string, string>;
     const userId = req.userId!;
     const filters = parseQueryFilters(req);
     const records = queryRecords(userId, table, filters);
@@ -254,7 +254,7 @@ router.get('/:table', validateTable, (req: Request, res: Response) => {
  */
 router.delete('/:table/:id', validateTable, (req: Request, res: Response) => {
   try {
-    const { table, id } = req.params;
+    const { table, id } = req.params as Record<string, string>;
     const userId = req.userId!;
     deleteRecord(userId, table, id);
     res.status(204).end();
@@ -271,7 +271,7 @@ router.delete('/:table/:id', validateTable, (req: Request, res: Response) => {
  */
 router.delete('/:table', validateTable, (req: Request, res: Response) => {
   try {
-    const { table } = req.params;
+    const { table } = req.params as Record<string, string>;
     const userId = req.userId!;
     const filters = parseQueryFilters(req);
 

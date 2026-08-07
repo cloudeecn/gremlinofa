@@ -4,6 +4,7 @@ import TextGroupView from '../TextGroupView';
 import type {
   TextRenderBlock,
   ErrorRenderBlock,
+  FallbackRenderBlock,
   RenderingContentBlock,
 } from '../../../../shared/protocol/types/content';
 
@@ -67,6 +68,37 @@ describe('TextGroupView', () => {
       const errorDiv = container.querySelector('.error-block');
       expect(errorDiv).toBeInTheDocument();
       expect(errorDiv).toHaveClass('border-red-300', 'bg-red-50', 'text-red-700');
+    });
+  });
+
+  describe('fallback blocks', () => {
+    it('states the model handoff with amber styling', () => {
+      const blocks: RenderingContentBlock[] = [
+        {
+          type: 'fallback',
+          fromModel: 'claude-fable-5',
+          toModel: 'claude-opus-4-8',
+        } as FallbackRenderBlock,
+      ];
+      const { container } = render(<TextGroupView blocks={blocks} />);
+
+      expect(
+        screen.getByText('This request was handled by claude-opus-4-8 instead of claude-fable-5.')
+      ).toBeInTheDocument();
+      // Factual only — no claim about a "risky" prompt.
+      expect(screen.queryByText(/risky/i)).not.toBeInTheDocument();
+      const notice = container.querySelector('.fallback-block');
+      expect(notice).toBeInTheDocument();
+      expect(notice).toHaveClass('border-amber-400', 'bg-amber-50', 'text-amber-800');
+    });
+
+    it('falls back to a generic statement when models are unknown', () => {
+      const blocks: RenderingContentBlock[] = [{ type: 'fallback' } as FallbackRenderBlock];
+      render(<TextGroupView blocks={blocks} />);
+
+      expect(
+        screen.getByText('This request was handled by a different model.')
+      ).toBeInTheDocument();
     });
   });
 

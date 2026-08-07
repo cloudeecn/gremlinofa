@@ -30,12 +30,20 @@ export default function UserMessageBubble({
         .join('')
     : stripMetadata(message.content.content);
 
-  // Extract injected file blocks (from minion messages with injectFiles)
-  const injectedFiles = message.content.renderingContent
-    ? (message.content.renderingContent as RenderingBlockGroup[])
-        .flatMap(g => g.blocks)
-        .filter((b): b is InjectedFileRenderBlock => b.type === 'injected_file')
-    : [];
+  // Extract injected file blocks (from minion messages with injectFiles /
+  // injectFilesAfter). The tool puts the leading batch's group before the text
+  // group and the trailing batch's after it, so the text group is the split
+  // point — bars render on the same side of the bubble as their content sits
+  // in what the minion received.
+  const renderingGroups = (message.content.renderingContent ?? []) as RenderingBlockGroup[];
+  const textGroupIdx = renderingGroups.findIndex(g => g.blocks.some(b => b.type === 'text'));
+  const splitAt = textGroupIdx === -1 ? renderingGroups.length : textGroupIdx;
+  const pickInjectedFiles = (groups: RenderingBlockGroup[]) =>
+    groups
+      .flatMap(g => g.blocks)
+      .filter((b): b is InjectedFileRenderBlock => b.type === 'injected_file');
+  const injectedFiles = pickInjectedFiles(renderingGroups.slice(0, splitAt));
+  const injectedFilesAfter = pickInjectedFiles(renderingGroups.slice(splitAt));
 
   const handleCopy = async () => {
     try {
@@ -103,6 +111,13 @@ export default function UserMessageBubble({
           {displayContent}
         </div>
       </div>
+
+      {/* Trailing injected files (injectFilesAfter) below the bubble */}
+      {injectedFilesAfter.length > 0 && (
+        <div className="mt-1 w-full max-w-[90%]">
+          <InjectedFilesList files={injectedFilesAfter} />
+        </div>
+      )}
 
       {/* User metadata line (hidden in focus mode) */}
       {!focusMode && (

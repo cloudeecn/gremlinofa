@@ -181,6 +181,39 @@ describe('ActiveLoopsStore', () => {
     close();
   });
 
+  it('merges softStopRequested and preserves it across a status-only update', async () => {
+    const listener = vi.fn();
+    const unsubscribe = store.subscribe(listener);
+
+    push({
+      type: 'started',
+      loop: {
+        loopId: 'loop_1',
+        chatId: 'c1',
+        startedAt: 1000,
+        status: 'running',
+        apiDefinitionId: 'api_1',
+        modelId: 'm1',
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(store.getSnapshot()[0].softStopRequested).toBeUndefined();
+
+    // Soft-stop delta sets the flag.
+    push({ type: 'updated', loopId: 'loop_1', status: 'running', softStopRequested: true });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(store.getSnapshot()[0].softStopRequested).toBe(true);
+
+    // A later status-only delta (e.g. hard abort) must not clear the request.
+    push({ type: 'updated', loopId: 'loop_1', status: 'aborting' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(store.getSnapshot()[0].status).toBe('aborting');
+    expect(store.getSnapshot()[0].softStopRequested).toBe(true);
+
+    unsubscribe();
+    close();
+  });
+
   it('forwards abort() to the client', async () => {
     const listener = vi.fn();
     const unsubscribe = store.subscribe(listener);

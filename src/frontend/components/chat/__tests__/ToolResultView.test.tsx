@@ -543,6 +543,32 @@ describe('ToolResultView', () => {
         expect(fileContentPre).toBeTruthy();
       });
 
+      it('brackets the task input with leading and trailing file bars', () => {
+        const bracketedBlock: ToolResultRenderBlock = {
+          ...blockWithFiles,
+          renderingGroups: [
+            {
+              category: 'backstage',
+              blocks: [
+                {
+                  type: 'tool_info',
+                  input: 'Analyze code',
+                  chatId: 'minion_bracket',
+                  injectedFiles: [{ path: '/lead.ts', content: 'const a = 1;' }],
+                  injectedFilesAfter: [{ path: '/trail.ts', content: 'const b = 2;' }],
+                },
+              ],
+            },
+          ],
+        };
+        renderWithOverlay(<ToolResultView block={bracketedBlock} />);
+        fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+
+        const rendered = document.body.textContent ?? '';
+        expect(rendered.indexOf('/lead.ts')).toBeLessThan(rendered.indexOf('Analyze code'));
+        expect(rendered.indexOf('/trail.ts')).toBeGreaterThan(rendered.indexOf('Analyze code'));
+      });
+
       it('shows error styling for failed file reads', () => {
         const errorFiles = [{ path: '/missing.ts', content: 'File not found', error: true }];
         const errorBlock: ToolResultRenderBlock = {

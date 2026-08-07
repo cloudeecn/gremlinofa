@@ -1143,6 +1143,55 @@ describe('path normalization', () => {
     expect(result.isError).toBeFalsy();
     expect(mockAdapter.readFile).toHaveBeenCalledWith('/memories/test.md');
   });
+
+  describe('view line-number precedence', () => {
+    beforeEach(() => {
+      (mockAdapter.readFile as Mock).mockResolvedValue('alpha\nbeta');
+    });
+
+    it('per-call withLineNumbers:true shows numbers even when project strips them', async () => {
+      const result = await executeMemory(
+        { command: 'view', path: '/memories/f.md', withLineNumbers: true },
+        'p',
+        {},
+        { noLineNumbers: true }
+      );
+      expect(result.content).toContain('with line numbers');
+      expect(result.content).toContain('     1\talpha');
+    });
+
+    it('per-call withLineNumbers:false strips numbers even when the default shows them', async () => {
+      const result = await executeMemory({
+        command: 'view',
+        path: '/memories/f.md',
+        withLineNumbers: false,
+      });
+      expect(result.content).not.toContain('with line numbers');
+      expect(result.content).toContain('alpha\nbeta');
+      expect(result.content).not.toContain('     1\talpha');
+    });
+
+    it('loop-level fileLineNumbers overrides project noLineNumbers when no per-call value', async () => {
+      const result = await executeMemory(
+        { command: 'view', path: '/memories/f.md' },
+        'p',
+        {},
+        { noLineNumbers: true, fileLineNumbers: true }
+      );
+      expect(result.content).toContain('     1\talpha');
+    });
+
+    it('falls back to project noLineNumbers when nothing else is set', async () => {
+      const result = await executeMemory(
+        { command: 'view', path: '/memories/f.md' },
+        'p',
+        {},
+        { noLineNumbers: true }
+      );
+      expect(result.content).not.toContain('     1\talpha');
+      expect(result.content).toContain('alpha\nbeta');
+    });
+  });
 });
 
 /** Consume an async generator to get the final ToolResult */
@@ -1157,7 +1206,8 @@ async function collectToolResult(gen: ReturnType<typeof memoryTool.execute>): Pr
 async function executeMemory(
   input: Record<string, unknown>,
   projectId = 'test-project',
-  toolOptions: ToolOptions = {}
+  toolOptions: ToolOptions = {},
+  contextOverrides: Partial<ToolContext> = {}
 ) {
   const context: ToolContext = {
     projectId,
@@ -1165,6 +1215,7 @@ async function executeMemory(
     createVfsAdapter: () => createMockAdapter(),
     signal: new AbortController().signal,
     ...stubBackendDeps,
+    ...contextOverrides,
   };
   return collectToolResult(memoryTool.execute(input, toolOptions, context));
 }

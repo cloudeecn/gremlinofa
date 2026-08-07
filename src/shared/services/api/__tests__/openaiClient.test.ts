@@ -1,7 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { MockedClass } from 'vitest';
+import OpenAI from 'openai';
 import { OpenAIClient } from '../openaiClient';
 import type { CompletionMessage } from '../completionStreamMapper';
+import type { APIDefinition, Message } from '../../../protocol/types';
+import type { UnifiedStorage } from '../../storage/unifiedStorage';
 import { stubApiDeps } from './testStubs';
+
+// Mock OpenAI SDK
+vi.mock('openai');
 
 describe('OpenAIClient.extractToolUseBlocks', () => {
   const client = new OpenAIClient(stubApiDeps);
@@ -131,5 +138,90 @@ describe('OpenAIClient.extractToolUseBlocks', () => {
       expect(blocks).toHaveLength(1);
       expect(blocks[0].input).toEqual({});
     });
+  });
+});
+
+describe('OpenAIClient verbosity', () => {
+  const mockGetModel = vi.fn();
+  const client = new OpenAIClient({
+    ...stubApiDeps,
+    storage: { getModel: mockGetModel } as unknown as UnifiedStorage,
+  });
+
+  const apiDefinition: APIDefinition = {
+    id: 'test-api-def',
+    apiType: 'chatgpt',
+    name: 'Test OpenAI',
+    baseUrl: '',
+    apiKey: 'test-key',
+    isDefault: false,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  // Drains a non-streaming call and hands back the request params the SDK saw.
+  const captureRequest = async (
+    model: Record<string, unknown> | undefined,
+    verbosity?: 'low' | 'medium' | 'high'
+  ) => {
+    vi.clearAllMocks();
+    mockGetModel.mockResolvedValueOnce(model);
+
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    });
+    (OpenAI as MockedClass<typeof OpenAI>).mockImplementation(function (this: any) {
+      return { chat: { completions: { create } } } as any;
+    });
+
+    const messages: Message<any>[] = [
+      {
+        id: 'msg1',
+        role: 'user',
+        content: { type: 'text', content: 'Hi' },
+        timestamp: new Date(),
+      },
+    ];
+
+    const generator = client.sendMessageStream(messages, 'gpt-5', apiDefinition, {
+      temperature: 1,
+      maxTokens: 2048,
+      enableReasoning: true,
+      reasoningBudgetTokens: 2048,
+      signal: new AbortController().signal,
+      disableStream: true,
+      verbosity,
+    });
+    for await (const _chunk of generator) {
+      // drain
+    }
+
+    return create.mock.calls[0][0];
+  };
+
+  it('sends verbosity top-level for models that support it', async () => {
+    const request = await captureRequest(
+      { id: 'gpt-5', apiType: 'chatgpt', supportsVerbosity: true },
+      'high'
+    );
+
+    expect(request.verbosity).toBe('high');
+  });
+
+  it('omits verbosity for models without supportsVerbosity', async () => {
+    const request = await captureRequest({ id: 'gpt-4o', apiType: 'chatgpt' }, 'high');
+
+    expect(request.verbosity).toBeUndefined();
+  });
+
+  it('omits verbosity when the option is unset', async () => {
+    const request = await captureRequest({
+      id: 'gpt-5',
+      apiType: 'chatgpt',
+      supportsVerbosity: true,
+    });
+
+    expect(request.verbosity).toBeUndefined();
   });
 });

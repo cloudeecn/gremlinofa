@@ -22,6 +22,12 @@ export default function MinionChatView({
   const { minionChat, messages, isLoading, tokenUsage, deleteMessage, rollbackToMessage } =
     useMinionChat(minionChatId);
 
+  // claude-agent minions can't splice out a single message or rewind to a user
+  // turn — the SDK only resumes at assistant UUIDs. Hide ❌ delete + user-message
+  // ⏪/🔀, matching how ChatView treats claude-agent. Assistant/tool ⏪ rollback
+  // stays (it persists the SDK resumeAt server-side).
+  const isClaudeAgent = !!minionChat?.claudeAgentSessionId;
+
   const handleBack = () => {
     if (onClose) {
       onClose();
@@ -128,11 +134,12 @@ export default function MinionChatView({
       <MessageList
         messages={messages}
         onAction={handleAction}
-        onDeleteMessage={handleDeleteMessage}
+        onDeleteMessage={isClaudeAgent ? undefined : handleDeleteMessage}
         isLoading={isLoading}
         streamingGroups={[]}
         currentApiDefId={null}
         currentModelId={null}
+        isClaudeAgentChat={isClaudeAgent}
       />
     </div>
   );

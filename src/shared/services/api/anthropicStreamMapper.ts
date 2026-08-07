@@ -79,7 +79,7 @@ export function parseSSEText(text: string): SSEEvent[] {
         events.push({ event: currentEvent, data });
       } catch {
         // Skip malformed JSON
-        console.warn('Failed to parse SSE data:', currentData);
+        console.warn('Failed to parse SSE data (len=%d)', currentData.length);
       }
       currentEvent = null;
       currentData = null;

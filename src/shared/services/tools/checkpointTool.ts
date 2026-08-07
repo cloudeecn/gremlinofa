@@ -9,6 +9,7 @@
  */
 
 import type { ClientSideTool, ToolResult, ToolStreamEvent } from '../../protocol/types';
+import { coerceToString } from '../../lib/coerceToString';
 
 export const checkpointTool: ClientSideTool = {
   name: 'checkpoint',
@@ -101,6 +102,6 @@ export const checkpointTool: ClientSideTool = {
     };
   },
 
-  renderInput: input => (input.note as string) ?? '',
+  renderInput: input => coerceToString(input.note),
   renderOutput: output => output,
 };

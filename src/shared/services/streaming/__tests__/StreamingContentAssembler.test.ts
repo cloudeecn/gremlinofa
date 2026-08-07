@@ -9,6 +9,7 @@ import type {
   WebSearchRenderBlock,
   ErrorRenderBlock,
   WebFetchRenderBlock,
+  ToolResultRenderBlock,
 } from '../../../protocol/types/content';
 
 describe('StreamingContentAssembler', () => {
@@ -35,6 +36,75 @@ describe('StreamingContentAssembler', () => {
       assembler.reset();
 
       expect(assembler.getGroups()).toEqual([]);
+    });
+  });
+
+  describe('fallback blocks', () => {
+    it('creates a text-category fallback block carrying the from/to models', () => {
+      assembler.pushChunk({
+        type: 'fallback',
+        fromModel: 'claude-fable-5',
+        toModel: 'claude-opus-4-8',
+      });
+
+      const groups = assembler.getGroups();
+      expect(groups).toHaveLength(1);
+      expect(groups[0].category).toBe('text');
+      expect(groups[0].blocks).toEqual([
+        { type: 'fallback', fromModel: 'claude-fable-5', toModel: 'claude-opus-4-8' },
+      ]);
+    });
+
+    it('omits unknown models and groups inline after text', () => {
+      assembler.pushChunk({ type: 'content.start' });
+      assembler.pushChunk({ type: 'content', content: 'the answer' });
+      assembler.pushChunk({ type: 'content.end' });
+      assembler.pushChunk({ type: 'fallback' });
+
+      const groups = assembler.getGroups();
+      // Text and fallback share the single 'text' group, in order.
+      expect(groups).toHaveLength(1);
+      expect(groups[0].category).toBe('text');
+      expect(groups[0].blocks).toEqual([
+        { type: 'text', text: 'the answer' },
+        { type: 'fallback' },
+      ]);
+    });
+  });
+
+  describe('unknown_block blocks', () => {
+    it('creates a backstage unknown_block carrying all fields', () => {
+      assembler.pushChunk({
+        type: 'unknown_block',
+        blockType: 'server_tool_use',
+        name: 'code_execution',
+        id: 'srvtoolu_1',
+        json: '{\n  "type": "server_tool_use"\n}',
+      });
+
+      const groups = assembler.getGroups();
+      expect(groups).toHaveLength(1);
+      expect(groups[0].category).toBe('backstage');
+      expect(groups[0].blocks).toEqual([
+        {
+          type: 'unknown_block',
+          blockType: 'server_tool_use',
+          name: 'code_execution',
+          id: 'srvtoolu_1',
+          json: '{\n  "type": "server_tool_use"\n}',
+        },
+      ]);
+    });
+
+    it('omits absent name/id and survives finalize', () => {
+      assembler.pushChunk({ type: 'unknown_block', blockType: 'mystery', json: '{}' });
+
+      const finalized = assembler.finalize();
+      expect(finalized).toHaveLength(1);
+      expect(finalized[0].category).toBe('backstage');
+      expect(finalized[0].blocks).toEqual([
+        { type: 'unknown_block', blockType: 'mystery', json: '{}' },
+      ]);
     });
   });
 
@@ -312,6 +382,56 @@ describe('StreamingContentAssembler', () => {
 
       // Same object reference
       expect(block1).toBe(block2);
+    });
+  });
+
+  describe('tool_result annotation', () => {
+    const toolResult: Extract<StreamChunk, { type: 'tool_result' }> = {
+      type: 'tool_result',
+      tool_use_id: 'mcp_gremlin_1',
+      name: 'filesystem',
+      content: 'full result',
+    };
+
+    it('patches modelDelivery onto the matching tool_result block', () => {
+      assembler.pushChunk(toolResult);
+      assembler.pushChunk({
+        type: 'tool_result_annotation',
+        tool_use_id: 'mcp_gremlin_1',
+        modelDelivery: { status: 'truncated', detail: 'model received 5 of 11 chars' },
+      });
+
+      const block = assembler.getGroups()[0].blocks[0] as ToolResultRenderBlock;
+      expect(block.content).toBe('full result'); // full content preserved
+      expect(block.modelDelivery).toEqual({
+        status: 'truncated',
+        detail: 'model received 5 of 11 chars',
+      });
+    });
+
+    it('is a no-op when the annotation targets an unknown tool_use_id', () => {
+      assembler.pushChunk(toolResult);
+      assembler.pushChunk({
+        type: 'tool_result_annotation',
+        tool_use_id: 'mcp_gremlin_999',
+        modelDelivery: { status: 'error', detail: 'boom' },
+      });
+
+      const block = assembler.getGroups()[0].blocks[0] as ToolResultRenderBlock;
+      expect(block.modelDelivery).toBeUndefined();
+    });
+
+    it('preserves modelDelivery through finalize()', () => {
+      assembler.pushChunk(toolResult);
+      assembler.pushChunk({
+        type: 'tool_result_annotation',
+        tool_use_id: 'mcp_gremlin_1',
+        modelDelivery: { status: 'error', detail: 'exceeds max token' },
+      });
+
+      const finalized = assembler.finalize();
+      const block = finalized[0].blocks[0] as ToolResultRenderBlock;
+      expect(block.modelDelivery).toEqual({ status: 'error', detail: 'exceeds max token' });
     });
   });
 

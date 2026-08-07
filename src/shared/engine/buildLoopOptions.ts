@@ -170,6 +170,7 @@ export async function buildAgenticLoopOptionsForContext(
         : undefined,
     reasoningEffort: project.reasoningEffort,
     reasoningSummary: project.reasoningSummary,
+    verbosity: project.verbosity,
     checkpointMessageIds: enabledTools.includes('checkpoint')
       ? (chat.checkpointMessageIds ??
         (chat.checkpointMessageId ? [chat.checkpointMessageId] : undefined))

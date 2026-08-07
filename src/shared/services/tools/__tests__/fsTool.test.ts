@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { fsTool } from '../fsTool';
 import { VfsError } from '../../vfs';
+import type { DirEntry } from '../../vfs';
 import type { ToolContext, ToolOptions, ToolResult } from '../../../protocol/types';
 import type { VfsAdapter } from '../../vfs/vfsAdapter';
 import { stubBackendDeps } from './testStubs';
@@ -57,7 +58,8 @@ async function collectToolResult(gen: ReturnType<typeof fsTool.execute>): Promis
 async function executeFs(
   input: Record<string, unknown>,
   projectId = 'test-project',
-  toolOptions: ToolOptions = {}
+  toolOptions: ToolOptions = {},
+  contextOverrides: Partial<ToolContext> = {}
 ) {
   const context: ToolContext = {
     projectId,
@@ -65,6 +67,7 @@ async function executeFs(
     createVfsAdapter: () => createMockAdapter(),
     signal: new AbortController().signal,
     ...stubBackendDeps,
+    ...contextOverrides,
   };
   return collectToolResult(fsTool.execute(input, toolOptions, context));
 }
@@ -133,6 +136,153 @@ describe('fsTool view-all command', () => {
 
     expect(result.content).toContain('paths array is required and must not be empty');
     expect(result.isError).toBe(true);
+  });
+});
+
+describe('fsTool view directory listing', () => {
+  /** Build a DirEntry; files carry a size, dirs do not */
+  function entry(name: string, type: 'file' | 'dir', size?: number): DirEntry {
+    return { name, type, deleted: false, createdAt: 0, updatedAt: 0, size };
+  }
+
+  /** Back readDir with an in-memory tree keyed by absolute path */
+  function mountTree(tree: Record<string, DirEntry[]>) {
+    (mockAdapter.isDirectory as Mock).mockResolvedValue(true);
+    (mockAdapter.readDir as Mock).mockImplementation(async (p: string) => {
+      const node = tree[p];
+      if (!node) throw new VfsError(`Path not found: ${p}`, 'PATH_NOT_FOUND');
+      return node;
+    });
+  }
+
+  beforeEach(() => {
+    mockAdapter = createMockAdapter();
+  });
+
+  it('lists only immediate children by default (depth 1)', async () => {
+    mountTree({
+      '/proj': [entry('a.txt', 'file', 10), entry('sub', 'dir')],
+      '/proj/sub': [entry('child.txt', 'file', 5)],
+    });
+
+    const result = await executeFs({ command: 'view', path: '/proj' });
+
+    expect(result.content).toContain('directly in /proj');
+    expect(result.content).toContain('/proj/a.txt');
+    expect(result.content).toContain('/proj/sub');
+    expect(result.content).not.toContain('/proj/sub/child.txt');
+  });
+
+  it('descends one extra level with depth 2 (legacy behavior)', async () => {
+    mountTree({
+      '/proj': [entry('sub', 'dir')],
+      '/proj/sub': [entry('child.txt', 'file', 5)],
+    });
+
+    const result = await executeFs({ command: 'view', path: '/proj', depth: 2 });
+
+    expect(result.content).toContain('up to 2 levels deep in /proj');
+    expect(result.content).toContain('/proj/sub/child.txt');
+  });
+
+  it('recurses depth 3 in depth-first pre-order', async () => {
+    mountTree({
+      '/proj': [entry('a', 'dir')],
+      '/proj/a': [entry('b', 'dir')],
+      '/proj/a/b': [entry('c.txt', 'file', 3)],
+    });
+
+    const result = await executeFs({ command: 'view', path: '/proj', depth: 3 });
+    const content = result.content!;
+
+    expect(content).toContain('/proj/a/b/c.txt');
+    // Pre-order: each ancestor appears before its descendant
+    expect(content.indexOf('/proj/a\n')).toBeLessThan(content.indexOf('/proj/a/b\n'));
+    expect(content.indexOf('/proj/a/b\n')).toBeLessThan(content.indexOf('/proj/a/b/c.txt'));
+  });
+
+  it('renders file children with human-readable size and full path', async () => {
+    mountTree({
+      '/proj': [entry('sub', 'dir')],
+      '/proj/sub': [entry('big.bin', 'file', 2048)],
+    });
+
+    const result = await executeFs({ command: 'view', path: '/proj', depth: 2 });
+
+    expect(result.content).toContain('2.0K\t/proj/sub/big.bin');
+  });
+
+  it('clamps depth 0 and negative depth to 1', async () => {
+    const tree = {
+      '/proj': [entry('sub', 'dir')],
+      '/proj/sub': [entry('child.txt', 'file', 5)],
+    };
+
+    mountTree(tree);
+    const zero = await executeFs({ command: 'view', path: '/proj', depth: 0 });
+    expect(zero.content).toContain('directly in /proj');
+    expect(zero.content).not.toContain('/proj/sub/child.txt');
+
+    mockAdapter = createMockAdapter();
+    mountTree(tree);
+    const negative = await executeFs({ command: 'view', path: '/proj', depth: -3 });
+    expect(negative.content).toContain('directly in /proj');
+    expect(negative.content).not.toContain('/proj/sub/child.txt');
+  });
+
+  it('clamps depth above the max to 5', async () => {
+    mountTree({
+      '/proj': [entry('l1', 'dir')],
+      '/proj/l1': [entry('l2', 'dir')],
+      '/proj/l1/l2': [entry('l3', 'dir')],
+      '/proj/l1/l2/l3': [entry('l4', 'dir')],
+      '/proj/l1/l2/l3/l4': [entry('l5', 'dir')],
+      '/proj/l1/l2/l3/l4/l5': [entry('l6.txt', 'file', 1)],
+    });
+
+    const result = await executeFs({ command: 'view', path: '/proj', depth: 99 });
+
+    expect(result.content).toContain('up to 5 levels deep in /proj');
+    expect(result.content).toContain('/proj/l1/l2/l3/l4/l5');
+    expect(result.content).not.toContain('/proj/l1/l2/l3/l4/l5/l6.txt');
+  });
+
+  it('floors a non-integer depth', async () => {
+    mountTree({
+      '/proj': [entry('sub', 'dir')],
+      '/proj/sub': [entry('child', 'dir')],
+      '/proj/sub/child': [entry('deep.txt', 'file', 1)],
+    });
+
+    const result = await executeFs({ command: 'view', path: '/proj', depth: 2.7 });
+
+    expect(result.content).toContain('up to 2 levels deep in /proj');
+    expect(result.content).toContain('/proj/sub/child');
+    expect(result.content).not.toContain('/proj/sub/child/deep.txt');
+  });
+
+  it('reports an empty directory with depth-appropriate header', async () => {
+    mountTree({ '/proj': [] });
+
+    const result = await executeFs({ command: 'view', path: '/proj' });
+
+    expect(result.content).toContain('directly in /proj');
+    expect(result.content).toContain('(empty)');
+  });
+
+  it('skips an inaccessible child directory without failing the listing', async () => {
+    (mockAdapter.isDirectory as Mock).mockResolvedValue(true);
+    (mockAdapter.readDir as Mock).mockImplementation(async (p: string) => {
+      if (p === '/proj') return [entry('ok', 'dir'), entry('locked', 'dir')];
+      if (p === '/proj/ok') return [entry('keep.txt', 'file', 4)];
+      throw new VfsError('boom', 'PATH_NOT_FOUND');
+    });
+
+    const result = await executeFs({ command: 'view', path: '/proj', depth: 2 });
+
+    expect(result.content).toContain('/proj/ok/keep.txt');
+    expect(result.content).toContain('/proj/locked');
+    expect(result.isError).toBeFalsy();
   });
 });
 
@@ -756,5 +906,62 @@ describe('fsTool input validation', () => {
     const result = await executeFs({ command: 'view-all', paths: '/data/test.txt' });
     expect(result.content).toBe('Error: paths (array) is required for view-all command');
     expect(result.isError).toBe(true);
+  });
+});
+
+describe('fsTool view line-number precedence', () => {
+  beforeEach(() => {
+    mockAdapter = createMockAdapter();
+    (mockAdapter.isDirectory as Mock).mockResolvedValue(false);
+    (mockAdapter.readFileWithMeta as Mock).mockResolvedValue({
+      content: 'alpha\nbeta',
+      isBinary: false,
+    });
+  });
+
+  it('per-call withLineNumbers:true shows numbers even when project strips them', async () => {
+    const result = await executeFs(
+      { command: 'view', path: '/f.txt', withLineNumbers: true },
+      'p',
+      {},
+      {
+        noLineNumbers: true,
+      }
+    );
+    expect(result.content).toContain('with line numbers');
+    expect(result.content).toContain('     1\talpha');
+  });
+
+  it('per-call withLineNumbers:false strips numbers even when the default shows them', async () => {
+    const result = await executeFs({ command: 'view', path: '/f.txt', withLineNumbers: false });
+    expect(result.content).not.toContain('with line numbers');
+    expect(result.content).toContain('alpha\nbeta');
+    expect(result.content).not.toContain('     1\talpha');
+  });
+
+  it('loop-level fileLineNumbers overrides project noLineNumbers when no per-call value', async () => {
+    const result = await executeFs(
+      { command: 'view', path: '/f.txt' },
+      'p',
+      {},
+      {
+        noLineNumbers: true,
+        fileLineNumbers: true,
+      }
+    );
+    expect(result.content).toContain('     1\talpha');
+  });
+
+  it('falls back to project noLineNumbers when nothing else is set', async () => {
+    const result = await executeFs(
+      { command: 'view', path: '/f.txt' },
+      'p',
+      {},
+      {
+        noLineNumbers: true,
+      }
+    );
+    expect(result.content).not.toContain('     1\talpha');
+    expect(result.content).toContain('alpha\nbeta');
   });
 });

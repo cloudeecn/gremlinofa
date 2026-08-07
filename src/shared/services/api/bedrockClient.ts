@@ -34,9 +34,15 @@ import type {
   ToolOptions,
 } from '../../protocol/types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
-import { effectiveInjectionMode } from './fileInjectionHelper';
+import {
+  effectiveInjectionMode,
+  buildSeparateBlockText,
+  wrapInjectedFile,
+  type InjectedFile,
+} from './fileInjectionHelper';
 import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
+import { mapAnthropicEffort } from '../../engine/lib/reasoningEffort';
 import type { APIServiceDeps } from './apiService';
 import {
   createMapperState,
@@ -170,31 +176,6 @@ function mapEffortToNova(effort: ReasoningEffort | undefined): 'low' | 'medium' 
   }
 }
 
-/** Map ReasoningEffort to Anthropic output_config for adaptive reasoning in Bedrock.
- * When `supportsXhighEffort` is true, UI `xhigh` maps to API `xhigh` (a distinct
- * level available on Opus 4.7+); otherwise it collapses up to `max` as before. */
-function mapEffortToOutputConfig(
-  effort: ReasoningEffort,
-  supportsXhighEffort: boolean
-): { output_config: { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' } } | undefined {
-  switch (effort) {
-    case 'none':
-    case 'minimal':
-    case 'low':
-      return { output_config: { effort: 'low' } };
-    case 'medium':
-      return { output_config: { effort: 'medium' } };
-    case 'high':
-      return { output_config: { effort: 'high' } };
-    case 'xhigh':
-      return { output_config: { effort: supportsXhighEffort ? 'xhigh' : 'max' } };
-    case 'max':
-      return { output_config: { effort: 'max' } };
-    case undefined:
-      return undefined;
-  }
-}
-
 function mapEffort(effort: ReasoningEffort | undefined): 'low' | 'medium' | 'high' {
   switch (effort) {
     case 'none':
@@ -229,7 +210,7 @@ export function buildReasoningConfig(
     thinkingKeepTurns?: number; // undefined = model default, -1 = all, 0+ = thinking_turns
     supportsAdaptiveReasoning?: boolean;
     onlyAdaptiveReasoning?: boolean;
-    supportsXhighEffort?: boolean;
+    supportedReasoningEfforts?: readonly ReasoningEffort[];
   }
 ): DocumentType | undefined {
   if (!options.enableReasoning || modelType === 'none') {
@@ -240,7 +221,12 @@ export function buildReasoningConfig(
   const useAdaptive =
     options.supportsAdaptiveReasoning &&
     (options.onlyAdaptiveReasoning || !options.reasoningBudgetTokens);
-  const supportsXhigh = options.supportsXhighEffort === true;
+
+  // Effort clamped to what the model accepts; absent when it advertises none.
+  const effortLevel = useAdaptive
+    ? mapAnthropicEffort(options.reasoningEffort, options.supportedReasoningEfforts)
+    : undefined;
+  const outputConfigField = effortLevel ? { output_config: { effort: effortLevel } } : {};
 
   // Claude thinking.display: opus 4.7 defaults server-side to 'omitted'. When the user has
   // picked any value in the Reasoning Summary dropdown, opt into 'summarized' so thinking is
@@ -254,7 +240,7 @@ export function buildReasoningConfig(
       if (useAdaptive) {
         return {
           thinking: { type: 'adaptive', ...displayField },
-          ...mapEffortToOutputConfig(options.reasoningEffort, supportsXhigh),
+          ...outputConfigField,
         } as DocumentType;
       }
       return {
@@ -280,7 +266,7 @@ export function buildReasoningConfig(
 
       return {
         reasoning_config: reasoningConfig,
-        ...(useAdaptive && mapEffortToOutputConfig(options.reasoningEffort, supportsXhigh)),
+        ...outputConfigField,
         anthropic_beta: ['interleaved-thinking-2025-05-14', 'context-management-2025-06-27'],
         context_management: {
           edits: [
@@ -750,7 +736,7 @@ export class BedrockClient implements APIClient {
         ...options,
         supportsAdaptiveReasoning: modelMeta.supportsAdaptiveReasoning,
         onlyAdaptiveReasoning: modelMeta.onlyAdaptiveReasoning,
-        supportsXhighEffort: modelMeta.supportsXhighEffort,
+        supportedReasoningEfforts: modelMeta.supportedReasoningEfforts,
       });
 
       // Use non-streaming if requested
@@ -793,7 +779,6 @@ export class BedrockClient implements APIClient {
       let mapperState = createMapperState();
 
       for await (const event of response.stream) {
-        console.log(JSON.stringify(event));
         // Feed raw event to accumulator for fullContent assembly
         accumulator.pushRawEvent(event);
 
@@ -963,11 +948,13 @@ export class BedrockClient implements APIClient {
         }
       }
 
-      // Add injected file blocks based on injection mode
-      if (msg.content.injectedFiles?.length && msg.content.injectionMode) {
+      // Add injected file blocks based on injection mode. `injectedFiles` goes
+      // before the text block, `injectedFilesAfter` after it.
+      const pushInjectedFiles = (files?: InjectedFile[]) => {
+        if (!files?.length || !msg.content.injectionMode) return;
         const mode = effectiveInjectionMode(msg.content.injectionMode, 'bedrock');
         if (mode === 'as-file') {
-          for (const file of msg.content.injectedFiles) {
+          for (const file of files) {
             // Bedrock document name: alphanumeric, whitespace, hyphens, parens, brackets only
             const sanitizedName = file.path.replace(/[^a-zA-Z0-9\s\-()[\]]/g, '-');
             const encoder = new TextEncoder();
@@ -975,21 +962,24 @@ export class BedrockClient implements APIClient {
               document: {
                 format: 'txt',
                 name: sanitizedName,
-                source: { bytes: encoder.encode(file.content) },
+                source: { bytes: encoder.encode(wrapInjectedFile(file)) },
               },
             });
           }
         } else if (mode === 'separate-block') {
-          for (const file of msg.content.injectedFiles) {
-            contentBlocks.push({ text: `=== ${file.path} ===\n${file.content}` });
+          for (const file of files) {
+            contentBlocks.push({ text: buildSeparateBlockText(file) });
           }
         }
-      }
+      };
+      pushInjectedFiles(msg.content.injectedFiles);
 
       // Add text content
       if (msg.content.content.trim()) {
         contentBlocks.push({ text: msg.content.content });
       }
+
+      pushInjectedFiles(msg.content.injectedFilesAfter);
 
       return {
         role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),

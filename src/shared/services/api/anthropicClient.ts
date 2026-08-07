@@ -1,6 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getProxyConfig } from './proxyConfig';
-import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
+import {
+  AnthropicBedrock,
+  type ClientOptions as AnthropicBedrockOptions,
+} from '@anthropic-ai/bedrock-sdk';
 import {
   BedrockClient as BedrockControlPlaneClient,
   ListFoundationModelsCommand,
@@ -15,7 +18,12 @@ import type {
   ToolOptions,
 } from '../../protocol/types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
-import { effectiveInjectionMode } from './fileInjectionHelper';
+import {
+  effectiveInjectionMode,
+  buildSeparateBlockText,
+  wrapInjectedFile,
+  type InjectedFile,
+} from './fileInjectionHelper';
 import {
   createMapperState,
   mapAnthropicEventToStreamChunks,
@@ -24,32 +32,7 @@ import {
 import type { APIServiceDeps } from './apiService';
 import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
-import type { ReasoningEffort } from '../../protocol/types';
-
-/** Map ReasoningEffort to Anthropic output_config for adaptive reasoning.
- * When `supportsXhighEffort` is true, UI `xhigh` maps to API `xhigh` (a distinct
- * level available on Opus 4.7+); otherwise it collapses up to `max` as before. */
-function mapReasoningEffortToOutputConfig(
-  effort: ReasoningEffort,
-  supportsXhighEffort: boolean
-): { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' } | undefined {
-  switch (effort) {
-    case 'none':
-    case 'minimal':
-    case 'low':
-      return { effort: 'low' };
-    case 'medium':
-      return { effort: 'medium' };
-    case 'high':
-      return { effort: 'high' };
-    case 'xhigh':
-      return { effort: supportsXhighEffort ? 'xhigh' : 'max' };
-    case 'max':
-      return { effort: 'max' };
-    case undefined:
-      return undefined;
-  }
-}
+import { mapAnthropicEffort } from '../../engine/lib/reasoningEffort';
 
 /**
  * Build a `cache_control` value. `ttl` defaults to Anthropic's '5m' when omitted,
@@ -189,15 +172,17 @@ export function validateAnthropicResponse(
   }
 }
 
+export type BedrockEndpointInfo = {
+  isBedrock: boolean;
+  region: string;
+  url: string | undefined;
+};
+
 /**
  * Parse baseUrl to detect Bedrock endpoints.
  * Supports shorthand format "bedrock:us-east-2" and full URL.
  */
-function parseBedrockEndpoint(baseUrl: string | undefined): {
-  isBedrock: boolean;
-  region: string;
-  url: string | undefined;
-} {
+export function parseBedrockEndpoint(baseUrl: string | undefined): BedrockEndpointInfo {
   if (!baseUrl) {
     return { isBedrock: false, region: 'us-east-1', url: undefined };
   }
@@ -223,6 +208,26 @@ function parseBedrockEndpoint(baseUrl: string | undefined): {
   }
 
   return { isBedrock: false, region: 'us-east-1', url: baseUrl };
+}
+
+/**
+ * Build the AnthropicBedrock constructor options. The Bedrock API key is passed
+ * via the SDK's native `apiKey` option, which forwards to `authToken` and makes
+ * the SDK emit `Authorization: Bearer <key>`. Passing `skipAuth: true` would
+ * delete that header in `prepareRequest`, and a `defaultHeaders` Authorization
+ * gets stripped the same way — so neither is used here. With no key, the SDK
+ * falls back to SigV4 via the AWS credential chain.
+ */
+export function buildBedrockClientOptions(
+  apiDefinition: APIDefinition,
+  bedrockInfo: BedrockEndpointInfo
+): Omit<AnthropicBedrockOptions, 'awsAccessKey' | 'awsSecretKey' | 'awsSessionToken'> {
+  return {
+    dangerouslyAllowBrowser: true,
+    awsRegion: bedrockInfo.region,
+    ...(bedrockInfo.url && { baseURL: bedrockInfo.url }),
+    ...(apiDefinition.apiKey && { apiKey: apiDefinition.apiKey }),
+  };
 }
 
 /**
@@ -522,15 +527,7 @@ export class AnthropicClient implements APIClient {
       // Create appropriate client based on endpoint type
       const proxy = bedrockInfo.isBedrock ? null : getProxyConfig(apiDefinition);
       const client: Anthropic | AnthropicBedrock = bedrockInfo.isBedrock
-        ? new AnthropicBedrock({
-            dangerouslyAllowBrowser: true,
-            awsRegion: bedrockInfo.region,
-            ...(bedrockInfo.url && { baseURL: bedrockInfo.url }),
-            skipAuth: true, // Skip AWS SigV4 signing
-            defaultHeaders: {
-              Authorization: `Bearer ${apiDefinition.apiKey}`,
-            },
-          })
+        ? new AnthropicBedrock(buildBedrockClientOptions(apiDefinition, bedrockInfo))
         : new Anthropic({
             dangerouslyAllowBrowser: true,
             apiKey: apiDefinition.apiKey,
@@ -646,30 +643,33 @@ export class AnthropicClient implements APIClient {
               }
             }
 
-            // Add injected file blocks based on injection mode
-            if (msg.content.injectedFiles?.length && msg.content.injectionMode) {
+            // Add injected file blocks based on injection mode. `injectedFiles`
+            // goes before the text block, `injectedFilesAfter` after it.
+            const pushInjectedFiles = (files?: InjectedFile[]) => {
+              if (!files?.length || !msg.content.injectionMode) return;
               const mode = effectiveInjectionMode(msg.content.injectionMode, 'anthropic');
               if (mode === 'as-file') {
-                for (const file of msg.content.injectedFiles) {
+                for (const file of files) {
                   contentBlocks.push({
                     type: 'document',
                     source: {
                       type: 'text',
-                      data: file.content,
+                      data: wrapInjectedFile(file),
                       media_type: 'text/plain',
                     },
                     title: file.path,
                   } as Anthropic.Beta.BetaContentBlockParam);
                 }
               } else if (mode === 'separate-block') {
-                for (const file of msg.content.injectedFiles) {
+                for (const file of files) {
                   contentBlocks.push({
                     type: 'text',
-                    text: `=== ${file.path} ===\n${file.content}`,
+                    text: buildSeparateBlockText(file),
                   });
                 }
               }
-            }
+            };
+            pushInjectedFiles(msg.content.injectedFiles);
 
             // Add text content (only if non-empty)
             if (msg.content.content.trim()) {
@@ -678,6 +678,8 @@ export class AnthropicClient implements APIClient {
                 text: msg.content.content,
               });
             }
+
+            pushInjectedFiles(msg.content.injectedFilesAfter);
 
             return {
               role: msg.role === 'user' ? 'user' : 'assistant',
@@ -804,12 +806,10 @@ export class AnthropicClient implements APIClient {
             } as const)
         : undefined;
 
-      // Build output_config for adaptive mode (maps ReasoningEffort → API effort)
-      const outputConfig = useAdaptive
-        ? mapReasoningEffortToOutputConfig(
-            options.reasoningEffort,
-            modelMeta.supportsXhighEffort === true
-          )
+      // Effort for adaptive mode, clamped to what the model accepts. Omitted when
+      // the model advertises no configurable effort — the server default applies.
+      const effortLevel = useAdaptive
+        ? mapAnthropicEffort(options.reasoningEffort, modelMeta.supportedReasoningEfforts)
         : undefined;
 
       // Auto-adjust maxTokens if reasoning is enabled and maxTokens <= reasoningBudgetTokens
@@ -871,7 +871,7 @@ export class AnthropicClient implements APIClient {
           messages: anthropicMessages,
           ...(tools.length > 0 && { tools }),
           ...(thinkingConfig && { thinking: thinkingConfig }),
-          ...(outputConfig && { output_config: outputConfig }),
+          ...(effortLevel && { output_config: { effort: effortLevel } }),
           ...(contextManagement && { context_management: contextManagement }),
           ...(options.cacheRoutingKey && {
             metadata: { user_id: options.cacheRoutingKey },

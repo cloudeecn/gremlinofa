@@ -3,6 +3,7 @@ import type {
   RenderingContentBlock,
   TextRenderBlock,
   ErrorRenderBlock,
+  FallbackRenderBlock,
 } from '../../../shared/protocol/types/content';
 import { renderMarkdownSafe } from '../../lib/markdownRenderer';
 
@@ -40,6 +41,8 @@ function TextBlock({ block, disableMath }: TextBlockProps) {
       return <TextSegment block={block} disableMath={disableMath} />;
     case 'error':
       return <ErrorSegment block={block} />;
+    case 'fallback':
+      return <FallbackSegment block={block} />;
     case 'thinking':
     case 'web_search':
     case 'web_fetch':
@@ -47,6 +50,7 @@ function TextBlock({ block, disableMath }: TextBlockProps) {
     case 'injected_file':
     case 'tool_info':
     case 'tool_result':
+    case 'unknown_block':
     default:
       return null;
   }
@@ -94,6 +98,23 @@ function ErrorSegment({ block }: ErrorSegmentProps) {
     <div className="error-block my-2 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
       <span className="mr-2">⚠️</span>
       {block.message}
+    </div>
+  );
+}
+
+interface FallbackSegmentProps {
+  block: FallbackRenderBlock;
+}
+
+function FallbackSegment({ block }: FallbackSegmentProps) {
+  const { fromModel, toModel } = block;
+  const message = toModel
+    ? `This request was handled by ${toModel}${fromModel ? ` instead of ${fromModel}` : ''}.`
+    : 'This request was handled by a different model.';
+  return (
+    <div className="fallback-block my-2 rounded border-l-4 border-amber-400 bg-amber-50 p-3 text-sm text-amber-800">
+      <span className="mr-2">ℹ️</span>
+      {message}
     </div>
   );
 }

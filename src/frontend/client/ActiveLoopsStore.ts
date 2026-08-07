@@ -160,7 +160,13 @@ export class ActiveLoopsStore {
       case 'updated': {
         const existing = this.loops.get(change.loopId);
         if (existing) {
-          this.loops.set(change.loopId, { ...existing, status: change.status });
+          this.loops.set(change.loopId, {
+            ...existing,
+            status: change.status,
+            // Soft-stop is a one-way latch; a status-only delta (e.g. abort)
+            // omits the field and must not clear a prior request.
+            softStopRequested: change.softStopRequested ?? existing.softStopRequested,
+          });
         }
         break;
       }

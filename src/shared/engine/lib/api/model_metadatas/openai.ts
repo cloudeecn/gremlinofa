@@ -20,6 +20,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -41,6 +42,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -62,6 +64,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
 
   // === GPT-5.4 series ===
@@ -82,6 +85,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
 
   // === GPT-5.2 series ===
@@ -98,6 +102,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -115,6 +120,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['medium'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -132,6 +138,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -152,6 +159,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
 
   // === GPT-5.1 series ===
@@ -168,6 +176,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -185,6 +194,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['medium'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -202,6 +212,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -219,6 +230,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -236,6 +248,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
 
   // === GPT-5 series ===
@@ -252,6 +265,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -269,6 +283,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -286,6 +301,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -301,6 +317,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     contextWindow: 128000,
     reasoningMode: 'none',
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -318,6 +335,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [
@@ -338,6 +356,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningMode: 'always',
     supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high'],
     webSearchPrice: 0.01,
+    supportsVerbosity: true,
   },
   {
     matches: [

@@ -27,6 +27,7 @@ import type {
   ToolResult,
   ToolResultBlock,
   ToolStreamEvent,
+  Verbosity,
 } from '../../protocol/types';
 import type { ToolInfoRenderBlock, ToolResultRenderBlock } from '../../protocol/types/content';
 import type { ActiveLoop, LoopId } from '../../protocol/protocol';
@@ -45,14 +46,17 @@ import {
 } from '../agentic/agenticLoopGenerator';
 import { createTokenTotals, addTokens } from '../../engine/lib/tokenTotals';
 import { formatFileWithLineNumbers } from '../../engine/lib/formatFileContent';
-import type { InjectionMode } from '../api/fileInjectionHelper';
+import type { InjectedFile, InjectionMode } from '../api/fileInjectionHelper';
+import {
+  buildInlineSection,
+  effectiveInjectionMode,
+  hasCustomFraming,
+  wrapInjectedFile,
+} from '../api/fileInjectionHelper';
 import { NUDGE_THINKING_DEFAULT } from '../api/apiService';
 import { JsVMContext } from './jsvm/JsVMContext';
 import type { HookInputMessage } from '../agentic/dummyHookRuntime';
 import { makeEmitterState, nextStreamingDelta, finalizeMessageDelta } from './toolGroupsDelta';
-
-// Tool names that minions cannot use
-const MINION_EXCLUDED_TOOLS = ['minion'];
 
 /** Truncate error messages to avoid wasting parent LLM context tokens */
 export function truncateError(message: string, limit = 200): string {
@@ -115,8 +119,59 @@ interface StashedRetryContent {
   modelFamily?: string;
   fullContent?: unknown;
   renderingContent?: RenderingBlockGroup[];
-  injectedFiles?: Array<{ path: string; content: string }>;
+  injectedFiles?: Array<{ path: string; content: string; preamble?: string; postamble?: string }>;
+  injectedFilesAfter?: Array<{
+    path: string;
+    content: string;
+    preamble?: string;
+    postamble?: string;
+  }>;
   injectionMode?: string;
+}
+
+/**
+ * File text for the collapsible UI bars: the caller's custom preamble/postamble
+ * when they supplied one, otherwise the full default framing — `=== path ===`
+ * header plus the "Here's the content of…" intro. That is verbatim what the
+ * minion reads in inline mode, so the bar shows the file the way the model got
+ * it. Failed reads keep their bare error message.
+ */
+function buildInjectedFileDisplay(file: InjectedFile & { error?: boolean }, label = ''): string {
+  return file.error ? file.content : buildInlineSection(file, label);
+}
+
+/** ToolInfoRenderBlock entry for an injected file, with the framing baked in */
+function toInfoFileEntry(file: InjectedFile & { error?: boolean }, label = '') {
+  return { path: file.path, content: buildInjectedFileDisplay(file, label), error: file.error };
+}
+
+/** The same entry as a rendering block */
+function toInjectedFileBlock(file: InjectedFile & { error?: boolean }, label = '') {
+  return { type: 'injected_file' as const, ...toInfoFileEntry(file, label) };
+}
+
+/** Strip the read-time-only `error` flag before an entry is stored on a message */
+function toStoredInjectedFile(file: {
+  path: string;
+  content: string;
+  preamble?: string;
+  postamble?: string;
+}) {
+  return {
+    path: file.path,
+    content: file.content,
+    ...(file.preamble !== undefined && { preamble: file.preamble }),
+    ...(file.postamble !== undefined && { postamble: file.postamble }),
+  };
+}
+
+/** Object form of an `injectFiles` entry with optional custom framing */
+export interface InjectFileSpec {
+  path: string;
+  /** Text placed before the content, replacing the default `=== path ===` framing */
+  preamble?: string;
+  /** Text placed after the content, replacing the default framing */
+  postamble?: string;
 }
 
 /**
@@ -163,6 +218,10 @@ const MAX_ITERATIONS = 50;
 // Maximum auto-enforce retries when minion doesn't call the return tool
 const AUTO_ENFORCE_MAX_RETRIES = 2;
 
+// Default hard cap on minion nesting depth (depth 1 = a top-level chat's
+// minion). Overridable per project via the `maxNestingDepth` tool option.
+const DEFAULT_MAX_NESTING_DEPTH = 3;
+
 // Sentinel savepoint value meaning "before any messages" (enables first-run retry)
 export const SAVEPOINT_START = '_start';
 
@@ -184,8 +243,10 @@ interface MinionInput {
   model?: string;
   /** Display name shown in the UI for this minion call. If omitted, persona name is used. */
   displayName?: string;
-  /** VFS file paths to inject as context. Contents are prepended to the message. */
-  injectFiles?: string[];
+  /** VFS files to inject as context: paths, or objects with custom preamble/postamble framing. */
+  injectFiles?: Array<string | InjectFileSpec>;
+  /** Same as injectFiles, but the content lands after the message instead of before it. */
+  injectFilesAfter?: Array<string | InjectFileSpec>;
   /** Delegate to a remote human operator instead of an LLM sub-agent */
   remote?: boolean;
   /** Hook file name (without .js) in /hooks/ to verify minion output before savepoint advances */
@@ -196,12 +257,16 @@ interface MinionInput {
   reasoningBudgetTokens?: number;
   /** Override reasoning effort level */
   reasoningEffort?: string;
+  /** Override OpenAI response verbosity (low/medium/high). OpenAI GPT-5-era models only. */
+  verbosity?: string;
   /** Override temperature for this minion call */
   temperature?: number;
   /** Override max output tokens for this minion call */
   maxOutputTokens?: number;
   /** Override how injected files are sent to the minion */
   fileInjectionMode?: string;
+  /** Override line-number display (positive; true = show). Applies to injected files and the minion's own filesystem/memory reads. */
+  fileLineNumbers?: boolean;
   /** Additional system prompt text, appended after persona/configured prompt */
   systemPrompt?: string;
   /** VFS file path(s) to system prompt file(s). String or array of strings; contents appended after systemPrompt in order. */
@@ -212,12 +277,59 @@ interface MinionInput {
   thinkingKeepTurns?: number;
   /** Override: when true (and thinkingKeepTurns is set to 0+), prune older thinking blocks client-side before the API call. */
   pruneThinkingBeforeApiCall?: boolean;
+  /** Grant the spawned minion permission to spawn its own sub-minions (per-call nesting; default off). Bounded by the project `allowNesting` option + depth cap. */
+  allowNesting?: boolean;
+  /** Persona set the spawned minion may delegate to. Must be a subset of what THIS minion may delegate to. Omit to grant the full set this minion holds. */
+  availablePersonas?: string[];
 }
 
 /** Result of rolling back messages to a savepoint */
 interface RollbackResult {
   stashedRetryContent: StashedRetryContent | undefined;
   recoveredMessage: string | undefined;
+}
+
+/**
+ * Verify-feedback note markers (the `verifyFeedback` tool option). The note is
+ * appended to a retried user message's model-visible content, so recovery has
+ * to strip it back off — otherwise a second rejection would compare the
+ * orchestrator's original message against "original + stale note" and miss the
+ * true-retry match, and stale notes would stack in the rendered mirror.
+ */
+const VERIFY_FEEDBACK_NOTE_PREFIX = '[Previous attempt was rejected by verification: ';
+
+function buildVerifyFeedbackNote(reason: string): string {
+  return `${VERIFY_FEEDBACK_NOTE_PREFIX}${reason}]`;
+}
+
+/** Strip a trailing verify-feedback note (ours always ends the message). */
+export function stripVerifyFeedbackNote(text: string): string {
+  const idx = text.lastIndexOf(`\n\n${VERIFY_FEEDBACK_NOTE_PREFIX}`);
+  if (idx === -1 || !text.endsWith(']')) return text;
+  return text.slice(0, idx);
+}
+
+/** Rendering group holding a verify-feedback note (filtered on stash reuse). */
+function isVerifyFeedbackNoteGroup(group: RenderingBlockGroup): boolean {
+  if (group.isToolGenerated !== true || group.category !== 'text') return false;
+  const only = group.blocks.length === 1 ? group.blocks[0] : undefined;
+  return only?.type === 'text' && only.text.startsWith(VERIFY_FEEDBACK_NOTE_PREFIX);
+}
+
+/**
+ * Decide whether a post-rollback send is a true retry of the recovered
+ * original message, and hand back the stash only in that case. A different
+ * message must build fresh content: reusing the old fullContent would send
+ * the rolled-back text to the model (fullContent is canon for API providers),
+ * and reusing renderingContent would render the old text in the chat mirror.
+ */
+export function resolveRetryStash(
+  rollback: RollbackResult,
+  message: string | undefined
+): { isTrueRetry: boolean; stash: StashedRetryContent | undefined } {
+  const isTrueRetry =
+    rollback.recoveredMessage !== undefined && message === rollback.recoveredMessage;
+  return { isTrueRetry, stash: isTrueRetry ? rollback.stashedRetryContent : undefined };
 }
 
 /**
@@ -262,6 +374,7 @@ async function rollbackToSavepoint(
       fullContent: stashedFirst.fullContent,
       renderingContent: stashedFirst.renderingContent as RenderingBlockGroup[] | undefined,
       injectedFiles: stashedFirst.injectedFiles,
+      injectedFilesAfter: stashedFirst.injectedFilesAfter,
       injectionMode: stashedFirst.injectionMode,
     };
   } else if (stashedFirst.renderingContent) {
@@ -270,16 +383,18 @@ async function rollbackToSavepoint(
       fullContent: undefined,
       renderingContent: stashedFirst.renderingContent as RenderingBlockGroup[],
       injectedFiles: stashedFirst.injectedFiles,
+      injectedFilesAfter: stashedFirst.injectedFilesAfter,
       injectionMode: stashedFirst.injectionMode,
     };
   }
 
-  // Recover original message text from the first rolled-back message
+  // Recover original message text from the first rolled-back message,
+  // minus any verify-feedback note a previous retry appended to it.
   let recoveredMessage: string | undefined;
   const firstAfter = rolledBack[0];
   const textContent = firstAfter.content.content as string;
   if (textContent) {
-    recoveredMessage = textContent;
+    recoveredMessage = stripVerifyFeedbackNote(textContent);
   } else {
     recoveredMessage = extractToolResultText(firstAfter.content.fullContent) ?? undefined;
   }
@@ -329,10 +444,10 @@ async function rollbackToSavepoint(
 /**
  * Walk back through stored minion messages to find the most recent assistant
  * message at-or-before `savepoint` that carries a `claudeAgentMessageUuid`.
- * Used to compute the `resumeSessionAt` target when a verifyHook failure
- * needs the SDK to rewind on the next turn.
+ * Used to compute the `resumeSessionAt` target when a minion turn fails and the
+ * SDK session has to rewind on the next (retry / autoRollback) call.
  */
-function findPriorAssistantClaudeAgentUuid(
+export function findPriorAssistantClaudeAgentUuid(
   messages: { id: string; role: string; metadata?: { claudeAgentMessageUuid?: string } }[],
   savepoint: string | undefined
 ): string | undefined {
@@ -350,6 +465,81 @@ function findPriorAssistantClaudeAgentUuid(
   return undefined;
 }
 
+/**
+ * On a claude-agent minion turn failure, keep the SDK session in sync with the
+ * stored-message rollback the caller is about to do: rewind the session to the
+ * last assistant turn at-or-before `savepoint` (the last successful turn), or
+ * drop the session entirely when there's no prior assistant — a failed first
+ * turn, where a fresh session is the clean retry. No-op for non-claude-agent
+ * minions, whose whole history lives in the rolled-back stored messages.
+ * Mirrors the parent-chat rewind `computeClaudeAgentRewindBefore` (useChat).
+ */
+export async function applyClaudeAgentRewindOnFailure(
+  storage: UnifiedStorage,
+  minionChat: MinionChat,
+  isClaudeAgent: boolean,
+  existingMessages: Message<unknown>[],
+  newMessages: Message<unknown>[],
+  reason: string
+): Promise<void> {
+  if (!isClaudeAgent) return;
+  const priorUuid = findPriorAssistantClaudeAgentUuid(
+    [...existingMessages, ...newMessages],
+    minionChat.savepoint
+  );
+  if (priorUuid) {
+    minionChat.claudeAgentResumeAt = priorUuid;
+    console.debug(
+      '[minionTool] claude-agent %s: resumeAt=%s (savepoint=%s)',
+      reason,
+      priorUuid,
+      minionChat.savepoint
+    );
+  } else {
+    minionChat.claudeAgentSessionId = undefined;
+    minionChat.claudeAgentResumeAt = undefined;
+    console.debug('[minionTool] claude-agent %s: dropped SDK session (no prior assistant)', reason);
+  }
+  await storage.saveMinionChat(minionChat);
+}
+
+/**
+ * Manual minion-chat rollback (the overlay "View Chat" UI) for a claude-agent
+ * minion: rewind the SDK session to the last assistant turn at-or-before the kept
+ * tail so the next minion send resumes from a state that matches the trimmed
+ * message history. `firstDeletedMessageId` is the first message being removed;
+ * everything before it is kept. Mirrors `applyClaudeAgentRewindOnFailure`, but the
+ * rewind boundary is the rollback cutoff rather than the savepoint — the same
+ * "resume up to and including the kept assistant" semantics the parent chat uses
+ * in `computeClaudeAgentRewindKeeping` (useChat). No-op for non-claude-agent
+ * minions, whose whole history lives in the rolled-back stored messages.
+ */
+export async function applyClaudeAgentRewindOnRollback(
+  storage: UnifiedStorage,
+  minionChat: MinionChat,
+  messages: Message<unknown>[],
+  firstDeletedMessageId: string
+): Promise<void> {
+  if (!minionChat.claudeAgentSessionId) return;
+  const cutoffIdx = messages.findIndex(m => m.id === firstDeletedMessageId);
+  if (cutoffIdx === -1) return;
+  const keptTailId = cutoffIdx > 0 ? messages[cutoffIdx - 1].id : undefined;
+  const priorUuid = findPriorAssistantClaudeAgentUuid(messages, keptTailId);
+  if (priorUuid) {
+    minionChat.claudeAgentResumeAt = priorUuid;
+    console.debug(
+      '[minionTool] claude-agent rollback: resumeAt=%s (keptTail=%s)',
+      priorUuid,
+      keptTailId
+    );
+  } else {
+    minionChat.claudeAgentSessionId = undefined;
+    minionChat.claudeAgentResumeAt = undefined;
+    console.debug('[minionTool] claude-agent rollback: dropped SDK session (no prior assistant)');
+  }
+  await storage.saveMinionChat(minionChat);
+}
+
 function resolveReturnMode(opts: ToolOptions): string {
   if (typeof opts.returnMode === 'string') return opts.returnMode;
   if (opts.noReturnTool === true) return 'no-return';
@@ -365,10 +555,11 @@ function resolveReturnMode(opts: ToolOptions): string {
  * @param projectTools - Tools enabled for the project
  * @returns Final list of tools available to the minion
  */
-function buildMinionTools(
+export function buildMinionTools(
   requestedTools: string[] | undefined,
   projectTools: string[],
-  includeReturn: boolean
+  includeReturn: boolean,
+  includeMinion = false
 ): string[] {
   // Start with intersection
   let tools: string[];
@@ -381,14 +572,60 @@ function buildMinionTools(
     tools = [];
   }
 
-  // Remove excluded tools (minion can't spawn minions)
-  tools = tools.filter(t => !MINION_EXCLUDED_TOOLS.includes(t));
+  // `minion` is granted authoritatively, not by the model listing it: drop it
+  // unconditionally, then re-add it only when the caller granted nesting
+  // (`includeMinion`) and it's actually a project tool. This way `allowNesting`
+  // alone gives the child the tool, and the model can't sneak nesting in via
+  // `enabledTools` without the grant.
+  tools = tools.filter(t => t !== 'minion');
+  if (includeMinion && projectTools.includes('minion')) {
+    tools.push('minion');
+  }
 
   if (includeReturn && !tools.includes('return')) {
     tools.push('return');
   }
 
   return tools;
+}
+
+/**
+ * Whether a spawned child should receive the `minion` tool. All three gates
+ * must hold: the project allows nesting at all, a grandchild would still be
+ * within the depth cap, and the caller granted nesting for this spawn.
+ */
+export function resolveChildNesting(
+  projectAllowNesting: boolean,
+  childMayNest: boolean,
+  childDepth: number,
+  maxNestingDepth: number
+): boolean {
+  return projectAllowNesting && childMayNest && childDepth + 1 <= maxNestingDepth;
+}
+
+/**
+ * Validate a spawned minion's persona and its onward delegation grant against
+ * the caller's ceiling (the set the caller itself may delegate to). Returns a
+ * human-readable reason string when disallowed, or `null` when allowed.
+ * A `ceiling` of `undefined` means unrestricted (top-level chat); `'default'`
+ * (the no-persona baseline) is always allowed to adopt.
+ */
+export function checkPersonaDelegation(
+  ceiling: string[] | undefined,
+  persona: string,
+  grant: string[] | undefined
+): string | null {
+  if (!ceiling) return null;
+  if (persona !== 'default' && !ceiling.includes(persona)) {
+    return `persona "${persona}" is not in the set this minion may delegate to: [${ceiling.join(', ')}].`;
+  }
+  if (grant) {
+    const outside = grant.filter(p => !ceiling.includes(p));
+    if (outside.length > 0) {
+      return `cannot grant personas not available to this minion: [${outside.join(', ')}]. Available: [${ceiling.join(', ')}].`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -402,7 +639,8 @@ function buildInfoGroup(
   displayName?: string,
   apiDefinitionId?: string,
   modelId?: string,
-  injectedFiles?: Array<{ path: string; content: string; error?: boolean }>
+  injectedFiles?: Array<{ path: string; content: string; error?: boolean }>,
+  injectedFilesAfter?: Array<{ path: string; content: string; error?: boolean }>
 ): RenderingBlockGroup {
   const infoBlock: ToolInfoRenderBlock = {
     type: 'tool_info',
@@ -413,6 +651,7 @@ function buildInfoGroup(
     apiDefinitionId,
     modelId,
     injectedFiles,
+    injectedFilesAfter,
   };
   return { category: 'backstage', blocks: [infoBlock] };
 }
@@ -433,7 +672,8 @@ async function* executeRemoteMinion(
   toolOptions: ToolOptions,
   endpoint: string,
   injectedFileEntries: Array<{ path: string; content: string; error?: boolean }>,
-  injectedFilesPrefix: string
+  injectedFilesPrefix: string,
+  injectedFilesSuffix: string
 ): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
   const password = typeof toolOptions.remotePassword === 'string' ? toolOptions.remotePassword : '';
   const callerId = 'gremlinofa';
@@ -474,7 +714,7 @@ async function* executeRemoteMinion(
   }
 
   // Send message + files to the remote session
-  const fullMessage = injectedFilesPrefix + minionInput.message;
+  const fullMessage = injectedFilesPrefix + minionInput.message + injectedFilesSuffix;
   const files = injectedFileEntries
     .filter(f => !f.error)
     .map(f => ({ path: f.path, content: f.content }));
@@ -636,11 +876,42 @@ async function* executeRemoteMinion(
 /**
  * Execute the minion tool as an async generator.
  *
+ * Busy-guard wrapper: two callers driving the same minion chat concurrently
+ * would interleave the lazy savepoint rollback with the other's appends (and
+ * race the claude-agent session bookkeeping), so a chat id is exclusively held
+ * for the duration of a call. Newly created chats need no guard — their id
+ * isn't visible to other callers until this call returns it.
+ */
+async function* executeMinion(
+  input: Record<string, unknown>,
+  toolOptions?: ToolOptions,
+  context?: ToolContext
+): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
+  const guardChatId = (input as unknown as MinionInput).minionChatId;
+  const registry = context?.loopRegistry;
+  if (registry && guardChatId) {
+    if (!registry.acquireMinionChat(guardChatId)) {
+      return {
+        content: truncateError(
+          `Error: Minion chat ${guardChatId} is busy with another request. Wait for it to finish and resend.`
+        ),
+        isError: true,
+      };
+    }
+  }
+  try {
+    return yield* executeMinionInner(input, toolOptions, context);
+  } finally {
+    if (registry && guardChatId) registry.releaseMinionChat(guardChatId);
+  }
+}
+
+/**
  * Creates or continues a minion chat, runs an agentic loop with scoped tools,
  * yields groups_update events for real-time streaming, and returns the final
  * result with renderingGroups for nested display.
  */
-async function* executeMinion(
+async function* executeMinionInner(
   input: Record<string, unknown>,
   toolOptions?: ToolOptions,
   context?: ToolContext
@@ -651,12 +922,21 @@ async function* executeMinion(
   // Stashed fullContent from a rolled-back tool_result message for re-use during retry.
   // When the stashed modelFamily matches the current apiDef.apiType, we can re-use the
   // original fullContent directly instead of reconstructing from extracted text.
+  // Only valid when this send is a true retry of the recovered original message —
+  // a different message must build fresh content (reusing the old fullContent would
+  // send the rolled-back text to the model, since fullContent is canon; reusing
+  // renderingContent would render the old text in the chat mirror).
   let stashedRetryContent: StashedRetryContent | undefined;
+  // Whether this send re-attempts the exact message that was rolled back (as opposed
+  // to a new message arriving after a failed turn). Gates stash reuse above and the
+  // verify-feedback note below.
+  let isTrueRetry = false;
 
   // ── Phase 1: Validate inputs + load/create chat ──
   // Errors here indicate no state change; caller can resend to reattempt.
 
   const autoRollbackEnabled = toolOptions?.autoRollback === true;
+  const verifyFeedbackEnabled = toolOptions?.verifyFeedback === true;
   if (action === 'message' && !minionInput.message && !autoRollbackEnabled) {
     return {
       content: truncateError(
@@ -677,6 +957,28 @@ async function* executeMinion(
   if (!context?.projectId) {
     return {
       content: truncateError('Error: projectId is required in context. Resend to reattempt.'),
+      isError: true,
+    };
+  }
+
+  // ── Nested-minion depth guard ──
+  // `context.minionDepth` is the depth of the loop that called this minion
+  // (0/undefined for a top-level chat); the child we are about to spawn runs
+  // one level deeper. Hard-cap to avoid runaway recursion, before any chat is
+  // created so an over-cap call has no side effects. Nesting is gated off by
+  // default — children never receive the `minion` tool unless `allowNesting`
+  // is on (see buildMinionTools call below), so this only fires defensively.
+  const callerDepth = context.minionDepth ?? 0;
+  const childDepth = callerDepth + 1;
+  const maxNestingDepth =
+    typeof toolOptions?.maxNestingDepth === 'number' && toolOptions.maxNestingDepth >= 1
+      ? toolOptions.maxNestingDepth
+      : DEFAULT_MAX_NESTING_DEPTH;
+  if (childDepth > maxNestingDepth) {
+    return {
+      content: truncateError(
+        `Error: max minion nesting depth (${maxNestingDepth}) reached. This minion cannot spawn another minion.`
+      ),
       isError: true,
     };
   }
@@ -718,6 +1020,9 @@ async function* executeMinion(
     if (minionInput.displayName !== undefined) minionChat.displayName = minionInput.displayName;
     if (minionInput.persona !== undefined) minionChat.persona = minionInput.persona;
     if (minionInput.enabledTools !== undefined) minionChat.enabledTools = minionInput.enabledTools;
+    if (minionInput.allowNesting !== undefined) minionChat.allowNesting = minionInput.allowNesting;
+    if (minionInput.availablePersonas !== undefined)
+      minionChat.availablePersonas = minionInput.availablePersonas;
     if (minionInput.verifyHook !== undefined) minionChat.verifyHook = minionInput.verifyHook;
     if (minionInput.enableReasoning !== undefined)
       minionChat.enableReasoning = minionInput.enableReasoning;
@@ -725,11 +1030,15 @@ async function* executeMinion(
       minionChat.reasoningBudgetTokens = minionInput.reasoningBudgetTokens;
     if (minionInput.reasoningEffort !== undefined)
       minionChat.reasoningEffort = minionInput.reasoningEffort as ReasoningEffort;
+    if (minionInput.verbosity !== undefined)
+      minionChat.verbosity = minionInput.verbosity as Verbosity;
     if (minionInput.temperature !== undefined) minionChat.temperature = minionInput.temperature;
     if (minionInput.maxOutputTokens !== undefined)
       minionChat.maxOutputTokens = minionInput.maxOutputTokens;
     if (minionInput.fileInjectionMode !== undefined)
       minionChat.fileInjectionMode = minionInput.fileInjectionMode;
+    if (minionInput.fileLineNumbers !== undefined)
+      minionChat.fileLineNumbers = minionInput.fileLineNumbers;
     if (minionInput.systemPrompt !== undefined) minionChat.systemPrompt = minionInput.systemPrompt;
     if (minionInput.systemPromptFile !== undefined)
       minionChat.systemPromptFile = minionInput.systemPromptFile;
@@ -767,7 +1076,6 @@ async function* executeMinion(
         };
       }
 
-      if (rollback.stashedRetryContent) stashedRetryContent = rollback.stashedRetryContent;
       if (!minionInput.message && rollback.recoveredMessage) {
         minionInput.message = rollback.recoveredMessage;
       } else if (!minionInput.message) {
@@ -778,6 +1086,9 @@ async function* executeMinion(
           isError: true,
         };
       }
+      const resolved = resolveRetryStash(rollback, minionInput.message);
+      isTrueRetry = resolved.isTrueRetry;
+      stashedRetryContent = resolved.stash;
 
       existingMessages = await storage.getMinionMessages(minionChat.id);
       await storage.saveMinionChat(minionChat);
@@ -790,10 +1101,12 @@ async function* executeMinion(
           existingMessages,
           minionChat.savepoint
         );
-        if (rollback.stashedRetryContent) stashedRetryContent = rollback.stashedRetryContent;
         if (!minionInput.message && rollback.recoveredMessage) {
           minionInput.message = rollback.recoveredMessage;
         }
+        const resolved = resolveRetryStash(rollback, minionInput.message);
+        isTrueRetry = resolved.isTrueRetry;
+        stashedRetryContent = resolved.stash;
         existingMessages = await storage.getMinionMessages(minionChat.id);
         await storage.saveMinionChat(minionChat);
       }
@@ -809,10 +1122,13 @@ async function* executeMinion(
       displayName: minionInput.displayName,
       persona: minionInput.persona,
       enabledTools: minionInput.enabledTools,
+      allowNesting: minionInput.allowNesting,
+      availablePersonas: minionInput.availablePersonas,
       verifyHook: minionInput.verifyHook,
       enableReasoning: minionInput.enableReasoning,
       reasoningBudgetTokens: minionInput.reasoningBudgetTokens,
       reasoningEffort: minionInput.reasoningEffort as ReasoningEffort,
+      verbosity: minionInput.verbosity as Verbosity,
       temperature: minionInput.temperature,
       maxOutputTokens: minionInput.maxOutputTokens,
       fileInjectionMode: minionInput.fileInjectionMode,
@@ -938,32 +1254,34 @@ async function* executeMinion(
   }
 
   const projectTools = project.enabledTools ?? [];
-  let effectiveEnabledTools = minionInput.enabledTools ?? minionChat.enabledTools;
+  const effectiveEnabledTools = minionInput.enabledTools ?? minionChat.enabledTools;
 
-  // claude-agent MVP: no MCP tool plumbing yet, no `return` tool support
-  // (SDK call is single-turn from our side). Force tools off and text-only
-  // return mode; log everything else we're silently dropping.
+  // claude-agent runs its own agentic loop inside the SDK. Tools DO work — they
+  // bridge through the in-process MCP server (buildGremlinMcpServer) and web
+  // search rides the SDK's built-in WebSearch/WebFetch. Two constraints remain:
+  // the SDK owns sampling/reasoning so a few knobs are no-ops, and the `return`
+  // tool is free-run only — its MCP handler can't break the SDK's turn, so a
+  // return call stores a value (via the bridge side-channel) and the SDK keeps
+  // running until it stops on its own.
   const isClaudeAgent = apiDef.apiType === 'claude-agent';
   if (isClaudeAgent) {
-    if (effectiveEnabledTools && effectiveEnabledTools.length > 0) {
-      console.debug(
-        '[minionTool] claude-agent: ignoring enabledTools (no tool plumbing in MVP):',
-        effectiveEnabledTools
-      );
-    }
-    effectiveEnabledTools = [];
     const unsupportedInputs: string[] = [];
-    if (minionInput.enableWeb) unsupportedInputs.push('enableWeb');
     if (typeof minionInput.temperature === 'number') unsupportedInputs.push('temperature');
-    if (typeof minionInput.maxOutputTokens === 'number') unsupportedInputs.push('maxOutputTokens');
+    if (typeof minionInput.verbosity === 'string') unsupportedInputs.push('verbosity');
     if (typeof minionInput.nudgeThinking === 'string') unsupportedInputs.push('nudgeThinking');
     if (minionInput.thinkingKeepTurns !== undefined) unsupportedInputs.push('thinkingKeepTurns');
     if (minionInput.pruneThinkingBeforeApiCall !== undefined)
       unsupportedInputs.push('pruneThinkingBeforeApiCall');
     if (unsupportedInputs.length > 0) {
       console.debug(
-        '[minionTool] claude-agent: dropping unsupported minion params:',
+        '[minionTool] claude-agent: ignoring no-op minion params (SDK owns sampling/reasoning):',
         unsupportedInputs.join(', ')
+      );
+    }
+    if (fileInjectionMode === 'mock-tool-call' || fileInjectionMode === 'as-file') {
+      console.debug(
+        '[minionTool] claude-agent: fileInjectionMode downgraded to separate-block:',
+        fileInjectionMode
       );
     }
   }
@@ -983,10 +1301,28 @@ async function* executeMinion(
     }
   }
 
-  const returnMode = isClaudeAgent ? 'no-return' : resolveReturnMode(minionToolOptions);
+  const returnMode = resolveReturnMode(minionToolOptions);
   const includeReturn = returnMode !== 'no-return';
   const disableReasoning = minionToolOptions.disableReasoning === true;
-  const minionTools = buildMinionTools(effectiveEnabledTools, projectTools, includeReturn);
+  // Give the child the `minion` tool only when (a) the project gate is on,
+  // (b) a grandchild (childDepth + 1) is still within the cap, and (c) the
+  // caller explicitly granted nesting for this spawn (per-call opt-in, default
+  // off — persisted on the minion chat for continuations). All three are hard
+  // gates; the per-call grant can only narrow within the project gate + cap.
+  const projectAllowNesting = minionToolOptions.allowNesting === true;
+  const childMayNest = minionInput.allowNesting ?? minionChat.allowNesting ?? false;
+  const includeMinionTool = resolveChildNesting(
+    projectAllowNesting,
+    childMayNest,
+    childDepth,
+    maxNestingDepth
+  );
+  const minionTools = buildMinionTools(
+    effectiveEnabledTools,
+    projectTools,
+    includeReturn,
+    includeMinionTool
+  );
 
   // ── Phase 3: Message + execution ──
   // User message will be saved. Errors here can be retried via action: 'retry'.
@@ -1015,37 +1351,81 @@ async function* executeMinion(
     }
   }
 
-  // Read injected files from VFS
-  const injectedFileEntries: Array<{ path: string; content: string; error?: boolean }> = [];
-  let injectedFilesPrefix = '';
-  if (minionInput.injectFiles?.length) {
-    // Compute namespace prefix so display paths can be relative to the minion's root
-    const _nsMode = minionToolOptions.namespacedMinion ?? 'off';
-    const _persona = minionInput.persona ?? minionChat.persona ?? 'default';
-    const _shouldNs = _nsMode !== 'off' && (_nsMode === 'all' || _persona !== 'default');
-    const injectNsPrefix = _shouldNs ? `/minions/${_persona}` : undefined;
+  // Effective line-number setting for injected files: fileLineNumbers override
+  // (this call, else persisted on the minion chat) wins over the project default.
+  const injectFileLineNumbers =
+    minionInput.fileLineNumbers ?? minionChat.fileLineNumbers ?? !project.noLineNumbers;
+  const injectFileLabel = injectFileLineNumbers ? ' with line numbers' : '';
 
+  // Read injected files from VFS. `injectFiles` lands before the message,
+  // `injectFilesAfter` after it; both batches read and format identically.
+  type InjectedEntry = {
+    path: string;
+    content: string;
+    preamble?: string;
+    postamble?: string;
+    error?: boolean;
+  };
+  let injectedFileEntries: InjectedEntry[] = [];
+  let injectedFileAfterEntries: InjectedEntry[] = [];
+  let injectedFilesPrefix = '';
+  let injectedFilesEndMarker = '';
+  let injectedFilesSuffix = '';
+  if (minionInput.injectFiles?.length || minionInput.injectFilesAfter?.length) {
+    // Compute namespace prefix so display paths can be relative to the minion's root
+    const nsMode = minionToolOptions.namespacedMinion ?? 'off';
+    const persona = minionInput.persona ?? minionChat.persona ?? 'default';
+    const shouldNs = nsMode !== 'off' && (nsMode === 'all' || persona !== 'default');
+    const injectNsPrefix = shouldNs ? `/minions/${persona}` : undefined;
     const rootAdapter = context.createVfsAdapter();
-    const sections: string[] = [];
-    for (const filePath of minionInput.injectFiles) {
-      const displayPath = stripNsPrefix(filePath, injectNsPrefix);
-      try {
-        const fileContent = await rootAdapter.readFile(filePath);
-        const formatted = project.noLineNumbers
-          ? fileContent
-          : formatFileWithLineNumbers(fileContent);
-        const label = project.noLineNumbers ? '' : ' with line numbers';
-        sections.push(
-          `=== ${displayPath} ===\nHere's the content of ${displayPath}${label}:\n${formatted}`
-        );
-        injectedFileEntries.push({ path: displayPath, content: formatted });
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        injectedFileEntries.push({ path: filePath, content: errMsg, error: true });
+
+    const readInjectBatch = async (specs: Array<string | InjectFileSpec>) => {
+      const entries: InjectedEntry[] = [];
+      const sections: string[] = [];
+      for (const specOrPath of specs) {
+        const spec: InjectFileSpec =
+          typeof specOrPath === 'string' ? { path: specOrPath } : specOrPath;
+        const displayPath = stripNsPrefix(spec.path, injectNsPrefix);
+        try {
+          const fileContent = await rootAdapter.readFile(spec.path);
+          const formatted = injectFileLineNumbers
+            ? formatFileWithLineNumbers(fileContent)
+            : fileContent;
+          const entry = {
+            path: displayPath,
+            content: formatted,
+            preamble: spec.preamble,
+            postamble: spec.postamble,
+          };
+          sections.push(buildInlineSection(entry, injectFileLabel));
+          entries.push(entry);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          entries.push({ path: spec.path, content: errMsg, error: true });
+        }
+      }
+      return { entries, sections };
+    };
+
+    if (minionInput.injectFiles?.length) {
+      const { entries, sections } = await readInjectBatch(minionInput.injectFiles);
+      injectedFileEntries = entries;
+      injectedFilesPrefix = sections.join('\n\n') + '\n\n';
+      // Custom-framed files delimit themselves; the meta end marker is only
+      // needed when at least one file carries the default `=== path ===` framing.
+      if (entries.some(f => !f.error && !hasCustomFraming(f))) {
+        injectedFilesEndMarker = '=== end of files ===\n\n';
       }
     }
+    if (minionInput.injectFilesAfter?.length) {
+      const { entries, sections } = await readInjectBatch(minionInput.injectFilesAfter);
+      injectedFileAfterEntries = entries;
+      // No end marker: nothing follows the trailing batch.
+      injectedFilesSuffix = '\n\n' + sections.join('\n\n');
+    }
+
     // If any file failed to read, return error to the caller instead of launching minion
-    const failedFiles = injectedFileEntries.filter(f => f.error);
+    const failedFiles = [...injectedFileEntries, ...injectedFileAfterEntries].filter(f => f.error);
     if (failedFiles.length > 0) {
       const paths = failedFiles.map(f => `${f.path}: ${f.content}`).join('\n');
       return {
@@ -1055,7 +1435,6 @@ async function* executeMinion(
         isError: true,
       };
     }
-    injectedFilesPrefix = sections.join('\n\n') + '\n\n';
   }
 
   // ── Remote human minion branch ──
@@ -1078,8 +1457,9 @@ async function* executeMinion(
       minionChat,
       minionToolOptions,
       remoteEndpoint,
-      injectedFileEntries,
-      injectedFilesPrefix
+      [...injectedFileEntries, ...injectedFileAfterEntries],
+      injectedFilesPrefix,
+      injectedFilesSuffix
     );
   }
 
@@ -1098,13 +1478,32 @@ async function* executeMinion(
     minionChat.displayName,
     effectiveModelRef.apiDefinitionId,
     effectiveModelRef.modelId,
-    injectedFileEntries.length > 0 ? injectedFileEntries : undefined
+    injectedFileEntries.length > 0
+      ? injectedFileEntries.map(f => toInfoFileEntry(f, injectFileLabel))
+      : undefined,
+    injectedFileAfterEntries.length > 0
+      ? injectedFileAfterEntries.map(f => toInfoFileEntry(f, injectFileLabel))
+      : undefined
   );
 
   // Persist resolved model and tools into minionChat for future continuation
   minionChat.apiDefinitionId = effectiveModelRef.apiDefinitionId;
   minionChat.modelId = effectiveModelRef.modelId;
   minionChat.enabledTools = effectiveEnabledTools;
+
+  // Verify-feedback note: consume the pending rejection reason. Applied only to
+  // a true retry (re-attempting the rejected message) in the normal user-message
+  // branch below — a new message means the orchestrator already changed course,
+  // so the note is dropped as moot. The fullContent-reuse and return-tool
+  // branches keep their exact payloads and skip the note (a limitation).
+  const verifyFeedbackNote = isTrueRetry ? minionChat.pendingVerifyFeedback : undefined;
+  if (minionChat.pendingVerifyFeedback !== undefined) {
+    minionChat.pendingVerifyFeedback = undefined;
+    await storage.saveMinionChat(minionChat);
+  }
+  const verifyNoteText = verifyFeedbackNote
+    ? buildVerifyFeedbackNote(verifyFeedbackNote)
+    : undefined;
 
   // Build context for minion based on retry re-use, return tool resumption, or normal message
   let minionContext: Message<unknown>[];
@@ -1197,61 +1596,109 @@ async function* executeMinion(
     // Normal case: build user message for minion
     // Use stashed renderingContent from retry if available and no new files were injected,
     // preserving file bar UI instead of rendering file content as plain text.
+    const hasFreshInjectEntries =
+      injectedFileEntries.length > 0 || injectedFileAfterEntries.length > 0;
     let renderingGroups: RenderingBlockGroup[];
-    if (stashedRetryContent?.renderingContent && injectedFileEntries.length === 0) {
-      renderingGroups = stashedRetryContent.renderingContent;
+    if (stashedRetryContent?.renderingContent && !hasFreshInjectEntries) {
+      // Drop any stale verify-feedback note carried in the stash — the model
+      // only receives the current note (appended below), so rendering the old
+      // one would misrepresent what this attempt saw.
+      renderingGroups = stashedRetryContent.renderingContent.filter(
+        g => !isVerifyFeedbackNoteGroup(g)
+      );
     } else {
       renderingGroups = [];
       if (injectedFileEntries.length > 0) {
         renderingGroups.push({
           category: 'backstage',
-          blocks: injectedFileEntries.map(f => ({
-            type: 'injected_file' as const,
-            path: f.path,
-            content: f.content,
-            error: f.error,
-          })),
+          blocks: injectedFileEntries.map(f => toInjectedFileBlock(f, injectFileLabel)),
         });
       }
       renderingGroups.push({
         category: 'text',
         blocks: [{ type: 'text', text: minionInput.message }],
       });
+      if (injectedFileAfterEntries.length > 0) {
+        renderingGroups.push({
+          category: 'backstage',
+          blocks: injectedFileAfterEntries.map(f => toInjectedFileBlock(f, injectFileLabel)),
+        });
+      }
     }
 
     // Determine effective injection mode, restoring from stash on retry
-    const successFiles = injectedFileEntries.filter(f => !f.error);
-    const effectiveMode =
-      injectedFileEntries.length === 0 && stashedRetryContent?.injectedFiles
-        ? ((stashedRetryContent.injectionMode as typeof fileInjectionMode) ?? 'inline')
-        : fileInjectionMode;
-    const effectiveFiles =
-      successFiles.length > 0 ? successFiles : (stashedRetryContent?.injectedFiles ?? []);
-    const isMockToolCall = effectiveMode === 'mock-tool-call';
+    const restoreFromStash =
+      !hasFreshInjectEntries &&
+      Boolean(stashedRetryContent?.injectedFiles ?? stashedRetryContent?.injectedFilesAfter);
+    const effectiveMode = restoreFromStash
+      ? ((stashedRetryContent!.injectionMode as typeof fileInjectionMode) ?? 'inline')
+      : fileInjectionMode;
+    const effectiveFiles = restoreFromStash
+      ? (stashedRetryContent!.injectedFiles ?? [])
+      : injectedFileEntries.filter(f => !f.error);
+    const effectiveFilesAfter = restoreFromStash
+      ? (stashedRetryContent!.injectedFilesAfter ?? [])
+      : injectedFileAfterEntries.filter(f => !f.error);
+    // mock-tool-call changes the message shape (synthetic tool_use/tool_result
+    // pairs), so its downgrade must happen here at production time — the API
+    // client can't undo stored messages. Block-level modes stay stored raw and
+    // are downgraded client-side like every other provider.
+    const resolvedMode =
+      effectiveMode === 'mock-tool-call'
+        ? effectiveInjectionMode('mock-tool-call', apiDef.apiType)
+        : effectiveMode;
+    const isMockToolCall = resolvedMode === 'mock-tool-call';
     const useStructuredInjection =
-      !isMockToolCall && effectiveMode !== 'inline' && effectiveFiles.length > 0;
+      !isMockToolCall &&
+      resolvedMode !== 'inline' &&
+      effectiveFiles.length + effectiveFilesAfter.length > 0;
+    // Mock mode must also store the fields: its file content lives only in the
+    // synthetic pair messages, which a retry rollback deletes — the stash can
+    // only rebuild the pairs from fields carried by the user message itself.
+    // API clients ignore stored 'mock-tool-call' (no emit branch), so nothing
+    // double-injects.
+    const storeInjectionFields =
+      (useStructuredInjection || isMockToolCall) &&
+      effectiveFiles.length + effectiveFilesAfter.length > 0;
 
     // For mock-tool-call: keep content clean, files go into synthetic message pairs below.
-    // For inline mode: prepend file text into content string (original behavior).
+    // For inline mode: wrap the message with file text (prefix before, suffix after).
     // For separate-block / as-file: keep content clean, store files on the message
     // so the API client can build native blocks.
     const llmContent =
       isMockToolCall || useStructuredInjection
         ? minionInput.message
-        : injectedFilesPrefix
-          ? injectedFilesPrefix + '=== end of files ===\n\n' + minionInput.message
-          : minionInput.message;
+        : injectedFilesPrefix + injectedFilesEndMarker + minionInput.message + injectedFilesSuffix;
+
+    // Append the verify-feedback note to what the model receives AND to the
+    // rendered mirror (spread, not push — the stash branch above may have
+    // handed us the stashed array).
+    if (verifyNoteText) {
+      renderingGroups = [
+        ...renderingGroups,
+        {
+          category: 'text',
+          blocks: [{ type: 'text', text: verifyNoteText }],
+          isToolGenerated: true,
+        },
+      ];
+    }
 
     const userMessage: Message<string> = {
       id: generateUniqueId('msg_user'),
       role: 'user',
       content: {
         type: 'text',
-        content: llmContent,
+        content: verifyNoteText ? `${llmContent}\n\n${verifyNoteText}` : llmContent,
         renderingContent: renderingGroups,
-        ...(useStructuredInjection && {
-          injectedFiles: effectiveFiles.map(f => ({ path: f.path, content: f.content })),
-          injectionMode: effectiveMode,
+        ...(storeInjectionFields && {
+          ...(effectiveFiles.length > 0 && {
+            injectedFiles: effectiveFiles.map(toStoredInjectedFile),
+          }),
+          ...(effectiveFilesAfter.length > 0 && {
+            injectedFilesAfter: effectiveFilesAfter.map(toStoredInjectedFile),
+          }),
+          injectionMode: resolvedMode,
           modelFamily: apiDef.apiType,
         }),
       },
@@ -1265,10 +1712,15 @@ async function* executeMinion(
 
     // For mock-tool-call mode: insert synthetic assistant tool_use + user tool_result pairs
     // after the user message, so the LLM sees the files as if it had read them via a tool.
-    if (isMockToolCall && effectiveFiles.length > 0) {
-      for (const file of effectiveFiles) {
+    // Leading batch first, then the trailing one — same order the inline text uses.
+    if (isMockToolCall) {
+      for (const file of [...effectiveFiles, ...effectiveFilesAfter]) {
         const toolUseId = generateUniqueId('toolu');
-        const formattedContent = formatFileWithLineNumbers(file.content);
+        // file.content is already formatted per injectFileLineNumbers (inline
+        // seam above / stashed on retry) — re-formatting would double the line
+        // numbers. Custom preamble/postamble framing wraps the content inside
+        // the synthetic tool result.
+        const formattedContent = wrapInjectedFile(file);
 
         // Synthetic assistant message with tool_use (via toolCalls for cross-model reconstruction)
         const assistantMsg: Message<string> = {
@@ -1278,16 +1730,7 @@ async function* executeMinion(
             type: 'text',
             content: '',
             renderingContent: [
-              {
-                category: 'backstage',
-                blocks: [
-                  {
-                    type: 'injected_file' as const,
-                    path: file.path,
-                    content: file.content,
-                  },
-                ],
-              },
+              { category: 'backstage', blocks: [toInjectedFileBlock(file, injectFileLabel)] },
             ],
             toolCalls: [
               {
@@ -1327,6 +1770,14 @@ async function* executeMinion(
     }
   }
 
+  // Persona delegation capability. `personaCeiling` is the set THIS minion may
+  // delegate to (undefined = unrestricted, top-level chat). `requestedGrant` is
+  // what the caller hands the child; `childAvailablePersonas` is the effective
+  // ceiling threaded onto the child (inherits the full ceiling when omitted).
+  const personaCeiling = context.minionAvailablePersonas;
+  const requestedPersonaGrant = minionInput.availablePersonas ?? minionChat.availablePersonas;
+  const childAvailablePersonas = requestedPersonaGrant ?? personaCeiling;
+
   // Resolve persona and namespace based on namespacedMinion mode
   const nsMode = minionToolOptions.namespacedMinion ?? 'off';
   let minionNamespace: string | undefined;
@@ -1338,6 +1789,13 @@ async function* executeMinion(
       typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
   } else {
     const persona = minionInput.persona ?? minionChat.persona ?? 'default';
+
+    // Capability check: the caller may only spawn personas within its own
+    // ceiling, and may only grant a subset of that ceiling onward.
+    const delegationError = checkPersonaDelegation(personaCeiling, persona, requestedPersonaGrant);
+    if (delegationError) {
+      return { content: truncateError(`Error: ${delegationError} Resend.`), isError: true };
+    }
 
     // 'persona' mode: only non-default personas get namespaced
     // 'all' mode: everyone gets namespaced including default
@@ -1419,6 +1877,8 @@ async function* executeMinion(
     modelId: model.id,
     apiType: apiDef.apiType,
     namespace: minionNamespace,
+    // Filter the child's persona listing to the set it may delegate to.
+    minionAvailablePersonas: childAvailablePersonas,
     createVfsAdapter: context.createVfsAdapter,
   };
 
@@ -1435,9 +1895,12 @@ async function* executeMinion(
     .join('\n\n');
 
   // Build effective tool options — inject returnMode and deferReturn into return tool's options
-  // so its description function reflects the current mode
-  const deferReturnMode =
-    typeof minionToolOptions.deferReturn === 'string'
+  // so its description function reflects the current mode. claude-agent forces
+  // free-run: the bridged return tool can't break the SDK's turn, so its result
+  // is stored and delivered when the turn ends — the only honest description.
+  const deferReturnMode: 'no' | 'auto-ack' | 'free-run' | undefined = isClaudeAgent
+    ? 'free-run'
+    : typeof minionToolOptions.deferReturn === 'string'
       ? (minionToolOptions.deferReturn as 'no' | 'auto-ack' | 'free-run')
       : minionToolOptions.deferReturn === true
         ? 'free-run'
@@ -1504,6 +1967,12 @@ async function* executeMinion(
     // child's own `loopId` is minted by the backend in PR 7+.
     loopId: childLoopId,
     parentLoopId: context.loopId,
+    // The child runs one level deeper; threading this lets the child's own
+    // minion calls (if any) enforce the same depth cap.
+    minionDepth: childDepth,
+    // The persona set this child may delegate to — its ceiling for further
+    // narrowing, and what its persona listing is filtered to.
+    minionAvailablePersonas: childAvailablePersonas,
     temperature:
       minionInput.temperature !== undefined
         ? minionInput.temperature
@@ -1524,6 +1993,19 @@ async function* executeMinion(
     disableStream: project.disableStream ?? false,
     extendedContext: project.extendedContext ?? false,
     useAnthropicOneHourCache: project.useAnthropicOneHourCache ?? false,
+    // Thread the project setting (minion sub-loops otherwise never inherit it)
+    // plus the minion-level override, so the child's own fs/memory reads resolve
+    // the same precedence — a per-read withLineNumbers still wins over both.
+    noLineNumbers: project.noLineNumbers,
+    fileLineNumbers: minionInput.fileLineNumbers ?? minionChat.fileLineNumbers,
+    // Scope is the project's, but the key is derived from THIS loop's chatId —
+    // which is the minion chat — so 'chat' scope isolates each minion's cache
+    // bucket instead of sharing the parent's.
+    cacheRoutingScope: project.cacheRoutingScope,
+    // Gated against the MINION's apiDef, not the parent's: a minion routed to a
+    // flex-supporting provider gets the discount even when the main chat's
+    // provider doesn't support it.
+    flexTierEnabled: !!(project.flexTierEnabled && apiDef.advancedSettings?.flexTierSupported),
     namespace: minionNamespace,
     createVfsAdapter: context.createVfsAdapter,
     deferReturn: deferReturnMode && deferReturnMode !== 'no' ? deferReturnMode : undefined,
@@ -1596,6 +2078,7 @@ async function* executeMinion(
           ? minionChat.reasoningEffort
           : project.reasoningEffort,
     reasoningSummary: project.reasoningSummary,
+    verbosity: (minionInput.verbosity as Verbosity) ?? minionChat.verbosity ?? project.verbosity,
     // Nudge thinking — input override wins (empty string explicitly disables),
     // then the persisted minion-chat value, then the provider-level toggle with
     // the default text.
@@ -1727,12 +2210,19 @@ async function* executeMinion(
               // Persist SDK session ID on the MinionChat row and clear any
               // pending resumeAt — same idempotent pattern ChatRunner uses
               // for the parent-chat case.
-              const needsSessionSave = minionChat.claudeAgentSessionId !== event.sessionId;
+              const previousSessionId = minionChat.claudeAgentSessionId;
+              const needsSessionSave = previousSessionId !== event.sessionId;
               const needsResumeClear = minionChat.claudeAgentResumeAt !== undefined;
               if (needsSessionSave || needsResumeClear) {
                 minionChat.claudeAgentSessionId = event.sessionId;
                 minionChat.claudeAgentResumeAt = undefined;
                 await storage.saveMinionChat(minionChat);
+                // A changed id means a forked rewind superseded the old
+                // session. GC it only now — after the new id is durably on
+                // the minion chat row — so a crash never orphans the chat.
+                if (needsSessionSave && previousSessionId) {
+                  await apiService.deleteProviderSession('claude-agent', previousSessionId);
+                }
               }
               break;
             }
@@ -1766,6 +2256,14 @@ async function* executeMinion(
         usedReturnTool = true;
         returnValue = lastFinalResult.returnValue;
       } else if (lastFinalResult.status === 'error') {
+        await applyClaudeAgentRewindOnFailure(
+          storage,
+          minionChat,
+          isClaudeAgent,
+          existingMessages,
+          lastFinalResult?.messages ?? [],
+          'turn error'
+        );
         return {
           content: truncateError(`Minion error: ${lastFinalResult.error.message}`),
           isError: true,
@@ -1777,6 +2275,14 @@ async function* executeMinion(
         // through the wired listener). Return an error tool result so the
         // parent agentic loop continues with its other parallel branches
         // intact instead of inheriting the abort.
+        await applyClaudeAgentRewindOnFailure(
+          storage,
+          minionChat,
+          isClaudeAgent,
+          existingMessages,
+          lastFinalResult?.messages ?? [],
+          'aborted'
+        );
         return {
           content: truncateError('Minion was aborted'),
           isError: true,
@@ -1789,6 +2295,14 @@ async function* executeMinion(
           usedReturnTool = true;
           returnValue = lastFinalResult.returnValue;
         } else {
+          await applyClaudeAgentRewindOnFailure(
+            storage,
+            minionChat,
+            isClaudeAgent,
+            existingMessages,
+            lastFinalResult?.messages ?? [],
+            'max iterations'
+          );
           return {
             content: truncateError(`Minion reached maximum iterations (${MAX_ITERATIONS})`),
             isError: true,
@@ -1797,6 +2311,14 @@ async function* executeMinion(
           };
         }
       } else if (lastFinalResult.status === 'soft_stopped') {
+        await applyClaudeAgentRewindOnFailure(
+          storage,
+          minionChat,
+          isClaudeAgent,
+          existingMessages,
+          lastFinalResult?.messages ?? [],
+          'soft stopped'
+        );
         return {
           content: truncateError('Minion was stopped before completion'),
           isError: true,
@@ -1805,9 +2327,12 @@ async function* executeMinion(
         };
       }
 
-      // Auto-enforce retry: if return wasn't called and retries remain, send reminder and re-run
+      // Auto-enforce retry: if return wasn't called and retries remain, send reminder and re-run.
+      // Skipped for claude-agent — the SDK owns the loop, so return is free-run
+      // best-effort and there's no clean "re-run with a reminder" boundary.
       if (
         returnMode === 'auto-enforced' &&
+        !isClaudeAgent &&
         !usedReturnTool &&
         autoEnforceAttempts < AUTO_ENFORCE_MAX_RETRIES
       ) {
@@ -1844,6 +2369,14 @@ async function* executeMinion(
 
     // Guard: no assistant message produced at all
     if (assistantMessageCount === 0) {
+      await applyClaudeAgentRewindOnFailure(
+        storage,
+        minionChat,
+        isClaudeAgent,
+        existingMessages,
+        lastFinalResult?.messages ?? [],
+        'no assistant message'
+      );
       return {
         content: truncateError('Minion completed but no assistant message was produced'),
         isError: true,
@@ -1868,6 +2401,14 @@ async function* executeMinion(
     // Abnormal stop reasons → error (skip savepoint so next call can roll back)
     const normalStopReasons = new Set(['end_turn', 'stop_sequence']);
     if (!normalStopReasons.has(stopReason)) {
+      await applyClaudeAgentRewindOnFailure(
+        storage,
+        minionChat,
+        isClaudeAgent,
+        existingMessages,
+        lastFinalResult?.messages ?? [],
+        'abnormal stop'
+      );
       return {
         content: truncateError(`Minion ended unexpectedly (${stopReason})`),
         isError: true,
@@ -1959,34 +2500,23 @@ async function* executeMinion(
             typeof evalResult.value === 'string'
               ? evalResult.value
               : JSON.stringify(evalResult.value);
-          // claude-agent: mark the prior savepoint as the SDK rewind target
-          // so the next minion call (action: 'retry' or autoRollback) discards
-          // this rejected turn from the SDK's session history via
-          // resumeSessionAt. If the rejected turn was the very first one
-          // (no prior assistant exists), drop the SDK session entirely so
-          // the next call starts fresh — otherwise the SDK would happily
-          // continue from its stale, rejected history.
-          if (isClaudeAgent) {
-            const priorUuid = findPriorAssistantClaudeAgentUuid(
-              [...existingMessages, ...(lastFinalResult?.messages ?? [])],
-              minionChat.savepoint
-            );
-            if (priorUuid) {
-              minionChat.claudeAgentResumeAt = priorUuid;
-              console.debug(
-                '[minionTool] claude-agent verifyHook reject: resumeAt=%s (savepoint=%s)',
-                priorUuid,
-                minionChat.savepoint
-              );
-            } else {
-              minionChat.claudeAgentSessionId = undefined;
-              minionChat.claudeAgentResumeAt = undefined;
-              console.debug(
-                '[minionTool] claude-agent verifyHook reject: dropped SDK session (first turn, no prior assistant)'
-              );
-            }
+          if (verifyFeedbackEnabled) {
+            // Deliver the rejection reason with the next true retry so the
+            // model gets a corrective signal instead of a byte-identical
+            // resend. Capped — hooks can return arbitrarily large payloads.
+            minionChat.pendingVerifyFeedback = errorMsg.slice(0, 1000);
             await storage.saveMinionChat(minionChat);
           }
+          // claude-agent: rewind the SDK session past this rejected turn so the
+          // next call (action: 'retry' or autoRollback) doesn't resume from it.
+          await applyClaudeAgentRewindOnFailure(
+            storage,
+            minionChat,
+            isClaudeAgent,
+            existingMessages,
+            lastFinalResult?.messages ?? [],
+            'verifyHook reject'
+          );
           return {
             content: truncateError(`Verify hook rejected: ${errorMsg}`),
             isError: true,
@@ -2008,6 +2538,7 @@ async function* executeMinion(
     const updatedMinionChat: MinionChat = {
       ...minionChat,
       savepoint: finalSavepoint,
+      pendingVerifyFeedback: undefined,
       totalInputTokens: (minionChat.totalInputTokens ?? 0) + totals.inputTokens,
       totalOutputTokens: (minionChat.totalOutputTokens ?? 0) + totals.outputTokens,
       totalReasoningTokens: (minionChat.totalReasoningTokens ?? 0) + totals.reasoningTokens,
@@ -2087,11 +2618,38 @@ async function* executeMinion(
 }
 
 /**
- * Render minion tool input for display
+ * Comma-joined paths for an injected-file list. Custom preamble/postamble
+ * replaces the default `=== path ===` framing, which changes what the minion
+ * actually sees — flag it rather than rendering the entry identically to a
+ * plain path.
+ */
+function formatInjectPaths(files: Array<string | InjectFileSpec>): string {
+  return files
+    .map(file =>
+      typeof file === 'string'
+        ? file
+        : file.preamble || file.postamble
+          ? `${file.path} (framed)`
+          : file.path
+    )
+    .join(', ');
+}
+
+/**
+ * Render minion tool input for display.
+ *
+ * Every `MinionInput` field the caller actually passed gets a line — an
+ * explicitly-passed `false` or `[]` is a real instruction ("no tools", "don't
+ * nest") and reads very differently from an omitted parameter, so booleans and
+ * arrays test `!== undefined` rather than truthiness. Omitted fields stay
+ * absent; the display shows what was asked for, not the resolved defaults.
  */
 function renderMinionInput(input: Record<string, unknown>): string {
   const minionInput = input as unknown as MinionInput;
   const lines: string[] = [];
+
+  /** Keep one oversized prompt from swamping the rest of the call block */
+  const brief = (text: string) => (text.length > 80 ? text.slice(0, 77) + '...' : text);
 
   if (minionInput.action === 'retry') {
     lines.push('Action: retry');
@@ -2101,16 +2659,24 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push(`Continue: ${minionInput.minionChatId}`);
   }
 
-  if (minionInput.enabledTools?.length) {
-    lines.push(`Tools: ${minionInput.enabledTools.join(', ')}`);
+  if (minionInput.enabledTools !== undefined) {
+    lines.push(`Tools: ${minionInput.enabledTools.join(', ') || '(none)'}`);
   }
 
-  if (minionInput.enableWeb) {
-    lines.push('Web: enabled');
+  if (minionInput.enableWeb !== undefined) {
+    lines.push(`Web: ${minionInput.enableWeb ? 'enabled' : 'disabled'}`);
   }
 
   if (minionInput.persona) {
     lines.push(`Persona: ${minionInput.persona}`);
+  }
+
+  if (minionInput.allowNesting !== undefined) {
+    lines.push(`Nesting: ${minionInput.allowNesting ? 'granted' : 'denied'}`);
+  }
+
+  if (minionInput.availablePersonas !== undefined) {
+    lines.push(`Grants personas: ${minionInput.availablePersonas.join(', ') || '(none)'}`);
   }
 
   if (minionInput.model) {
@@ -2121,8 +2687,8 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push(`Display: ${minionInput.displayName}`);
   }
 
-  if (minionInput.remote) {
-    lines.push('Remote: human');
+  if (minionInput.remote !== undefined) {
+    lines.push(`Remote: ${minionInput.remote ? 'human' : 'local'}`);
   }
 
   if (minionInput.verifyHook) {
@@ -2130,7 +2696,19 @@ function renderMinionInput(input: Record<string, unknown>): string {
   }
 
   if (minionInput.injectFiles?.length) {
-    lines.push(`Files: ${minionInput.injectFiles.join(', ')}`);
+    lines.push(`Files: ${formatInjectPaths(minionInput.injectFiles)}`);
+  }
+
+  if (minionInput.injectFilesAfter?.length) {
+    lines.push(`FilesAfter: ${formatInjectPaths(minionInput.injectFilesAfter)}`);
+  }
+
+  if (minionInput.fileInjectionMode) {
+    lines.push(`Injection: ${minionInput.fileInjectionMode}`);
+  }
+
+  if (minionInput.fileLineNumbers !== undefined) {
+    lines.push(`LineNumbers: ${minionInput.fileLineNumbers}`);
   }
 
   if (minionInput.enableReasoning !== undefined) {
@@ -2145,18 +2723,29 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push(`Effort: ${minionInput.reasoningEffort}`);
   }
 
+  if (minionInput.thinkingKeepTurns !== undefined) {
+    const keep = minionInput.thinkingKeepTurns;
+    lines.push(`KeepThinking: ${keep === -1 ? 'all' : keep}`);
+  }
+
+  if (minionInput.pruneThinkingBeforeApiCall !== undefined) {
+    lines.push(`PruneThinking: ${minionInput.pruneThinkingBeforeApiCall ? 'on' : 'off'}`);
+  }
+
+  if (minionInput.verbosity) {
+    lines.push(`Verbosity: ${minionInput.verbosity}`);
+  }
+
   if (minionInput.temperature !== undefined) {
     lines.push(`Temp: ${minionInput.temperature}`);
   }
 
-  if (minionInput.fileInjectionMode) {
-    lines.push(`Injection: ${minionInput.fileInjectionMode}`);
+  if (minionInput.maxOutputTokens !== undefined) {
+    lines.push(`MaxTokens: ${minionInput.maxOutputTokens}`);
   }
 
   if (minionInput.systemPrompt) {
-    lines.push(
-      `Prompt: ${minionInput.systemPrompt.length > 80 ? minionInput.systemPrompt.slice(0, 77) + '...' : minionInput.systemPrompt}`
-    );
+    lines.push(`Prompt: ${brief(minionInput.systemPrompt)}`);
   }
 
   if (minionInput.systemPromptFile) {
@@ -2168,11 +2757,7 @@ function renderMinionInput(input: Record<string, unknown>): string {
 
   if (minionInput.nudgeThinking !== undefined) {
     const nudge = minionInput.nudgeThinking;
-    if (nudge === '') {
-      lines.push('Nudge: off');
-    } else {
-      lines.push(`Nudge: ${nudge.length > 80 ? nudge.slice(0, 77) + '...' : nudge}`);
-    }
+    lines.push(nudge === '' ? 'Nudge: off' : `Nudge: ${brief(nudge)}`);
   }
 
   if (minionInput.message) {
@@ -2253,6 +2838,9 @@ async function getMinionSystemPromptInjection(
 ): Promise<string> {
   if (opts.namespacedMinion === 'off' || !opts.namespacedMinion) return '';
 
+  const mode = typeof opts.personaListingMode === 'string' ? opts.personaListingMode : 'detailed';
+  if (mode === 'none') return '';
+
   // VFS access lives only in the worker. `createVfsAdapter` is always
   // populated by `buildLoopOptions`, which is the single production
   // constructor of `SystemPromptContext`. Anything reaching this code
@@ -2271,8 +2859,13 @@ async function getMinionSystemPromptInjection(
     if (!dirExists) return '';
 
     const entries = await adapter.readDir('/minions');
+    const allowedPersonas = context.minionAvailablePersonas
+      ? new Set(context.minionAvailablePersonas)
+      : undefined;
     const personaFiles = entries
       .filter(e => e.type === 'file' && e.name.endsWith('.md'))
+      // When this loop has a delegation ceiling, only list personas it may use.
+      .filter(e => !allowedPersonas || allowedPersonas.has(e.name.replace(/\.md$/, '')))
       .sort((a, b) => a.name.localeCompare(b.name));
 
     if (personaFiles.length === 0) return '';
@@ -2280,6 +2873,10 @@ async function getMinionSystemPromptInjection(
     const lines = ['## Available Minion Personas', ''];
     for (const file of personaFiles) {
       const name = file.name.replace(/\.md$/, '');
+      if (mode === 'name-only') {
+        lines.push(`- **${name}**`);
+        continue;
+      }
       try {
         const content = await adapter.readFile(`/minions/${file.name}`);
         const firstLine = content
@@ -2328,7 +2925,8 @@ function getMinionDescription(opts: ToolOptions): string {
   lines.push(
     '- Specify which tools the minion can use via enabledTools (must be a subset of project tools; defaults to none)',
     '- Provide a displayName to label this minion in the UI',
-    '- Inject file context via injectFiles (array of VFS paths). Contents are prepended to the message.',
+    '- Inject file context via injectFiles (array of VFS paths, or objects with path + optional preamble/postamble replacing the default framing). Contents are prepended to the message.',
+    '- Use injectFilesAfter for the same thing with the contents appended after the message instead',
     '- Provide a verifyHook (name of a /hooks/<name>.js file) to validate minion output before savepoint advances. The hook returns null to approve or a string to reject.'
   );
 
@@ -2387,17 +2985,44 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     type: 'array',
     items: { type: 'string' },
     description:
-      "Tools to enable for the minion (must be subset of project tools, 'minion' excluded). Defaults to none — specify tools explicitly.",
+      "Tools to enable for the minion (must be subset of project tools). The 'minion' tool is granted via the separate `allowNesting` parameter, not by listing it here. Defaults to none — specify tools explicitly.",
   };
   properties.displayName = {
     type: 'string',
     description:
       'Display name shown in the UI for this minion call. If omitted, persona name is used.',
   };
+  const injectFileItemsSchema = {
+    anyOf: [
+      { type: 'string' },
+      {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'VFS file path' },
+          preamble: {
+            type: 'string',
+            description: 'Text placed before the file content, replacing the default framing',
+          },
+          postamble: {
+            type: 'string',
+            description: 'Text placed after the file content, replacing the default framing',
+          },
+        },
+        required: ['path'],
+      },
+    ],
+  };
   properties.injectFiles = {
     type: 'array',
-    items: { type: 'string' },
-    description: 'VFS file paths to inject as context. Contents are prepended to the message.',
+    items: injectFileItemsSchema,
+    description:
+      'VFS files to inject as context, prepended to the message. Each item is a path string (default "=== path ===" framing), or an object with path plus optional preamble/postamble that replace the default framing (joined to the content with newlines).',
+  };
+  properties.injectFilesAfter = {
+    type: 'array',
+    items: injectFileItemsSchema,
+    description:
+      'VFS files to inject as context, appended after the message instead of before it. Same item shape as injectFiles. Use it to put instructions first and the reference material last.',
   };
   properties.verifyHook = {
     type: 'string',
@@ -2429,6 +3054,25 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
         description: 'Model to use for this minion call. Omit to use the default minion model.',
       };
     }
+
+    // Persona delegation allowlist — only meaningful when this minion can nest.
+    if (opts.allowNesting === true) {
+      properties.availablePersonas = {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Personas the spawned minion may delegate to when it spawns its own sub-minions. Must be a subset of the personas you yourself may delegate to. Omit to grant the full set you hold.',
+      };
+    }
+  }
+
+  // Per-call nesting grant — only when the project allows nesting at all.
+  if (opts.allowNesting === true) {
+    properties.allowNesting = {
+      type: 'boolean',
+      description:
+        'Grant the spawned minion the ability to spawn its own sub-minions (default false). Subject to the project nesting cap.',
+    };
   }
 
   if (typeof opts.remoteEndpoint === 'string' && opts.remoteEndpoint) {
@@ -2452,6 +3096,12 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     enum: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     description: 'Override reasoning effort level',
   };
+  properties.verbosity = {
+    type: 'string',
+    enum: ['low', 'medium', 'high'],
+    description:
+      "Override how long the minion's answer is, independent of maxOutputTokens and reasoning effort. OpenAI GPT-5-era models only; ignored elsewhere. Persisted on the minion chat.",
+  };
   properties.temperature = {
     type: 'number',
     description: 'Override temperature (default: use project setting)',
@@ -2464,6 +3114,11 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     type: 'string',
     enum: ['inline', 'separate-block', 'as-file', 'mock-tool-call'],
     description: 'Override how injected files are sent to the minion',
+  };
+  properties.fileLineNumbers = {
+    type: 'boolean',
+    description:
+      "Override line-number display for this minion: true shows line numbers, false strips them, omit to use the project setting. Applies to injected files and to the minion's own filesystem/memory reads (a per-read withLineNumbers still wins).",
   };
   properties.systemPrompt = {
     type: 'string',
@@ -2565,9 +3220,33 @@ export const minionTool: ClientSideTool = {
     },
     {
       type: 'boolean',
+      id: 'allowNesting',
+      label: 'Allow Nested Minions',
+      subtitle: 'Let a minion spawn its own sub-minions (off by default)',
+      default: false,
+    },
+    {
+      type: 'number',
+      id: 'maxNestingDepth',
+      label: 'Max Nesting Depth',
+      subtitle: 'Hard cap on how deep minions can nest (1 = no nesting)',
+      default: DEFAULT_MAX_NESTING_DEPTH,
+      min: 1,
+      visibleWhen: { optionId: 'allowNesting', value: true },
+    },
+    {
+      type: 'boolean',
       id: 'autoRollback',
       label: 'Auto Rollback',
       subtitle: 'Automatically roll back previously failed interactions on next continuation',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'verifyFeedback',
+      label: 'Verify Feedback',
+      subtitle:
+        'Append the verify-hook rejection reason to the retried message so the minion can correct itself',
       default: false,
     },
     {
@@ -2582,6 +3261,19 @@ export const minionTool: ClientSideTool = {
         { value: 'all', label: 'All' },
       ],
       migrateFrom: [{ optionId: 'namespacedMinion', whenTrue: 'all' }],
+    },
+    {
+      type: 'select',
+      id: 'personaListingMode',
+      label: 'Persona Listing',
+      subtitle: 'How personas are described in the system prompt',
+      default: 'detailed',
+      choices: [
+        { value: 'detailed', label: 'Detailed' },
+        { value: 'name-only', label: 'Name Only' },
+        { value: 'none', label: 'None' },
+      ],
+      visibleWhen: { optionId: 'namespacedMinion', value: ['persona', 'all'] },
     },
     {
       type: 'select',

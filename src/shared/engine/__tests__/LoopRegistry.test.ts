@@ -73,6 +73,54 @@ describe('LoopRegistry', () => {
     });
   });
 
+  describe('softStop', () => {
+    it('sets the flag, surfaces it in list(), and does not fire the controller', () => {
+      const reg = new LoopRegistry();
+      const ctrl = new AbortController();
+      reg.register(mkLoop({ loopId: 'loop_s' }), ctrl);
+
+      expect(reg.softStop('loop_s')).toBe(true);
+      expect(reg.isSoftStopRequested('loop_s')).toBe(true);
+      expect(reg.list().find(l => l.loopId === 'loop_s')?.softStopRequested).toBe(true);
+      // Soft stop leaves status running and never aborts the controller.
+      expect(reg.get('loop_s')?.status).toBe('running');
+      expect(ctrl.signal.aborted).toBe(false);
+    });
+
+    it('returns false for unknown loopId', () => {
+      const reg = new LoopRegistry();
+      expect(reg.softStop('nope')).toBe(false);
+    });
+
+    it('broadcasts one updated delta carrying softStopRequested', () => {
+      const reg = new LoopRegistry();
+      const sub = vi.fn();
+      reg.subscribe(sub); // initial snapshot
+      reg.register(mkLoop({ loopId: 'loop_b' }), new AbortController());
+
+      reg.softStop('loop_b');
+
+      // snapshot, started, updated
+      expect(sub).toHaveBeenCalledTimes(3);
+      expect(sub.mock.calls[2][0]).toEqual({
+        type: 'updated',
+        loopId: 'loop_b',
+        status: 'running',
+        softStopRequested: true,
+      });
+    });
+
+    it('is idempotent — a second request broadcasts nothing', () => {
+      const reg = new LoopRegistry();
+      reg.register(mkLoop({ loopId: 'loop_i' }), new AbortController());
+      const sub = vi.fn();
+      reg.subscribe(sub); // snapshot
+      reg.softStop('loop_i'); // one updated delta
+      reg.softStop('loop_i'); // no-op
+      expect(sub).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('end', () => {
     it('removes the entry and broadcasts an ended change', () => {
       const reg = new LoopRegistry();
@@ -437,6 +485,31 @@ describe('LoopRegistry', () => {
       });
       expect(reg.getStreamingGroups('chat_1')).toBeUndefined();
       expect(reg.getStreamingGroups('chat_2')).toEqual(mkGroups('b'));
+    });
+  });
+
+  describe('minion chat busy hold', () => {
+    it('acquire succeeds once, fails while held, succeeds after release', () => {
+      const reg = new LoopRegistry();
+      expect(reg.acquireMinionChat('minion_1')).toBe(true);
+      expect(reg.acquireMinionChat('minion_1')).toBe(false);
+      reg.releaseMinionChat('minion_1');
+      expect(reg.acquireMinionChat('minion_1')).toBe(true);
+    });
+
+    it('holds are independent per minion chat id', () => {
+      const reg = new LoopRegistry();
+      expect(reg.acquireMinionChat('minion_1')).toBe(true);
+      expect(reg.acquireMinionChat('minion_2')).toBe(true);
+      reg.releaseMinionChat('minion_1');
+      expect(reg.acquireMinionChat('minion_2')).toBe(false);
+      expect(reg.acquireMinionChat('minion_1')).toBe(true);
+    });
+
+    it('release of an unheld id is a safe no-op', () => {
+      const reg = new LoopRegistry();
+      expect(() => reg.releaseMinionChat('minion_x')).not.toThrow();
+      expect(reg.acquireMinionChat('minion_x')).toBe(true);
     });
   });
 });

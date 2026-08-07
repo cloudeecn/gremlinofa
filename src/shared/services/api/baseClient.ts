@@ -35,6 +35,8 @@ export interface APIClient {
       // OpenAI/Responses-specific reasoning
       reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
+      // OpenAI response-length control (Responses + Chat Completions only)
+      verbosity?: 'low' | 'medium' | 'high';
       // Common options
       systemPrompt?: string;
       preFillResponse?: string;
@@ -55,6 +57,15 @@ export interface APIClient {
    * Returns array of ToolUseBlock for client-side tool execution.
    */
   extractToolUseBlocks(fullContent: unknown): ToolUseBlock[];
+
+  /**
+   * GC provider-side per-chat session state (claude-agent: the on-disk SDK
+   * session JSONL) once a session id has been superseded on the chat row —
+   * a forked rewind replaced it, so nothing can resume it again. Best-effort:
+   * implementations swallow failures. Omitted by providers whose full history
+   * lives in the app's own message store.
+   */
+  deleteProviderSession?(sessionId: string): Promise<void>;
 }
 
 // Stream chunk types
@@ -71,6 +82,17 @@ export type StreamChunk =
   | { type: 'web_fetch.start'; id: string } // Emitted immediately when tool use starts
   | { type: 'web_fetch'; id: string; url: string } // Emitted when URL is known
   | { type: 'web_fetch.result'; tool_use_id: string; url: string; title?: string }
+  | { type: 'fallback'; fromModel?: string; toModel?: string } // claude-agent: request handed to a different model
+  | {
+      // claude-agent block we have no dedicated renderer for (unrecognized
+      // server_tool_use name, non-bridged tool_use, or a brand-new block type).
+      // `json` is the trimmed pretty-printed raw block.
+      type: 'unknown_block';
+      blockType: string;
+      name?: string;
+      id?: string;
+      json: string;
+    }
   | { type: 'citation'; url: string; title?: string; citedText?: string } // Citation for current text block
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> } // Client-side tool invocation
   | {
@@ -84,6 +106,16 @@ export type StreamChunk =
       isError?: boolean;
       renderingGroups?: RenderingBlockGroup[]; // nested (minion) rendering
       tokenTotals?: TokenTotals; // sub-agent costs incurred by this tool call
+    }
+  | {
+      // Follow-up patch for an already-emitted `tool_result` (claude-agent only):
+      // the SDK delivered a different payload to the model than our bridge sent —
+      // truncated for size, or replaced with an error. We still render the full
+      // result; this just flags the divergence on that block. `tool_use_id` is
+      // the bridge's synthetic id, matching the original `tool_result` chunk.
+      type: 'tool_result_annotation';
+      tool_use_id: string;
+      modelDelivery: { status: 'truncated' | 'error'; detail?: string };
     }
   | {
       type: 'token_usage';
@@ -125,4 +157,11 @@ export interface StreamResult<T> {
    * usage so subscription cost-zeroing doesn't wipe non-subscription tool costs.
    */
   toolTokenTotals?: TokenTotals;
+  /**
+   * Chat title/summary changes produced by bridged tools (the `metadata` tool)
+   * during the provider's own turn. The SDK owns the whole turn so these can't
+   * apply mid-turn; the agentic loop folds them in afterward via the
+   * `chat_metadata_updated` loop event. claude-agent only.
+   */
+  chatMetadata?: { name?: string; summary?: string };
 }

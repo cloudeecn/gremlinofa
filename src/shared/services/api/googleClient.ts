@@ -23,7 +23,13 @@ import type {
   ToolOptions,
 } from '../../protocol/types';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
-import { effectiveInjectionMode, buildInlinePrefix } from './fileInjectionHelper';
+import {
+  effectiveInjectionMode,
+  buildInlinePrefix,
+  buildInlineSuffix,
+  buildSeparateBlockText,
+  type InjectedFile,
+} from './fileInjectionHelper';
 import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
 import type { APIServiceDeps } from './apiService';
@@ -540,23 +546,28 @@ export class GoogleClient implements APIClient {
         }
       }
 
-      // Add injected file blocks (Google falls back as-file → separate-block)
-      if (msg.content.injectedFiles?.length && msg.content.injectionMode) {
+      // Add injected file blocks (Google falls back as-file → separate-block).
+      // `injectedFiles` goes before the text part, `injectedFilesAfter` after it.
+      const pushInjectedFiles = (files: InjectedFile[] | undefined, trailing: boolean) => {
+        if (!files?.length || !msg.content.injectionMode) return;
         const mode = effectiveInjectionMode(msg.content.injectionMode, 'google');
         if (mode === 'separate-block') {
-          for (const file of msg.content.injectedFiles) {
-            parts.push({ text: `=== ${file.path} ===\n${file.content}` });
+          for (const file of files) {
+            parts.push({ text: buildSeparateBlockText(file) });
           }
         } else if (mode === 'inline') {
-          // Inline fallback: prepend files into text
-          parts.push({ text: buildInlinePrefix(msg.content.injectedFiles) });
+          // Inline fallback: files as one text part on the message's own side
+          parts.push({ text: trailing ? buildInlineSuffix(files) : buildInlinePrefix(files) });
         }
-      }
+      };
+      pushInjectedFiles(msg.content.injectedFiles, false);
 
       // Add text content
       if (msg.content.content.trim()) {
         parts.push({ text: msg.content.content });
       }
+
+      pushInjectedFiles(msg.content.injectedFilesAfter, true);
 
       return {
         role: msg.role === 'user' ? 'user' : 'model',

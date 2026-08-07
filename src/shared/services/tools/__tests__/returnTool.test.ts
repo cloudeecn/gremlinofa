@@ -30,6 +30,10 @@ describe('returnTool', () => {
       expect(returnTool.internal).toBe(true);
     });
 
+    it('should be bridgeable to claude-agent (free-run return)', () => {
+      expect(returnTool.claudeAgentBridgeable).toBe(true);
+    });
+
     it('should have correct icons', () => {
       expect(returnTool.iconInput).toBe('↩️');
       expect(returnTool.iconOutput).toBe('✅');

@@ -56,6 +56,17 @@ const errorTool: ClientSideTool = {
   execute: async () => ({ content: 'kaboom', isError: true }),
 };
 
+const metaTool: ClientSideTool = {
+  name: 'meta',
+  claudeAgentBridgeable: true,
+  description: 'Sets chat metadata',
+  inputSchema: { type: 'object', properties: {}, required: [] },
+  execute: async () => ({
+    content: 'metadata updated',
+    chatMetadata: { name: 'Renamed', summary: 'A summary' },
+  }),
+};
+
 const hiddenTool: ClientSideTool = {
   name: 'secret',
   // Not bridgeable — must never reach the SDK.
@@ -64,9 +75,44 @@ const hiddenTool: ClientSideTool = {
   execute: async () => ({ content: 'nope' }),
 };
 
+// Mirrors the real `return` tool: free-run value via breakLoop. The bridge can't
+// stop the SDK turn, so it forwards the value on the onReturnValue side channel.
+const returnish: ClientSideTool = {
+  name: 'returnish',
+  claudeAgentBridgeable: true,
+  description: 'Returns a value',
+  inputSchema: {
+    type: 'object',
+    properties: { result: { type: 'string' } },
+    required: ['result'],
+  },
+  execute: async input => ({
+    content: String(input.result),
+    breakLoop: { returnValue: String(input.result) },
+  }),
+};
+
+// Mirrors the real `dummy` tool: register returns an activeHook string,
+// unregister returns null. The bridge forwards both on the onActiveHook side
+// channel; `null` must survive (it means "deactivate").
+const hookish: ClientSideTool = {
+  name: 'hookish',
+  claudeAgentBridgeable: true,
+  description: '(De)activates a DUMMY hook',
+  inputSchema: {
+    type: 'object',
+    properties: { action: { type: 'string' } },
+    required: ['action'],
+  },
+  execute: async input =>
+    input.action === 'register'
+      ? { content: 'hook on', activeHook: 'my-hook' }
+      : { content: 'hook off', activeHook: null },
+};
+
 function makeContext(): ToolContext {
   const registry = new ClientSideToolRegistry();
-  registry.registerAll([echoTool, errorTool, hiddenTool]);
+  registry.registerAll([echoTool, errorTool, hiddenTool, metaTool, returnish, hookish]);
   return { toolRegistry: registry } as unknown as ToolContext;
 }
 
@@ -81,6 +127,9 @@ describe('claudeAgentToolBridge', () => {
       signal: new AbortController().signal,
       pushChunk: noop,
       onToolTokens: noop,
+      onChatMetadata: noop,
+      onReturnValue: noop,
+      onActiveHook: noop,
     });
     expect(bridge).toBeNull();
   });
@@ -93,6 +142,9 @@ describe('claudeAgentToolBridge', () => {
       signal: new AbortController().signal,
       pushChunk: noop,
       onToolTokens: noop,
+      onChatMetadata: noop,
+      onReturnValue: noop,
+      onActiveHook: noop,
     });
     expect(bridge).not.toBeNull();
     expect(bridge!.server.type).toBe('sdk');
@@ -103,13 +155,19 @@ describe('claudeAgentToolBridge', () => {
   it('round-trips exact JSON Schema and dispatches calls to our tools', async () => {
     const chunks: StreamChunk[] = [];
     const tokens: TokenTotals[] = [];
+    const metadata: Array<{ name?: string; summary?: string }> = [];
+    const returnValues: string[] = [];
+    const activeHooks: Array<string | null> = [];
     const bridge = buildGremlinMcpServer({
       toolContext: makeContext(),
-      enabledTools: ['echo', 'boom'],
+      enabledTools: ['echo', 'boom', 'meta', 'returnish', 'hookish'],
       toolOptions: {},
       signal: new AbortController().signal,
       pushChunk: c => chunks.push(c),
       onToolTokens: t => tokens.push(t),
+      onChatMetadata: m => metadata.push(m),
+      onReturnValue: v => returnValues.push(v),
+      onActiveHook: h => activeHooks.push(h),
     })!;
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -144,6 +202,36 @@ describe('claudeAgentToolBridge', () => {
     const err = await client.callTool({ name: 'boom', arguments: {} });
     expect(err.isError).toBe(true);
     expect(err.content).toEqual([{ type: 'text', text: 'kaboom' }]);
+
+    // The echo and boom calls carry no chatMetadata signal.
+    expect(metadata).toHaveLength(0);
+
+    // (4) A chatMetadata-bearing result surfaces on the side channel for the
+    // client to fold into the chat after the turn.
+    const meta = await client.callTool({ name: 'meta', arguments: {} });
+    expect(meta.content).toEqual([{ type: 'text', text: 'metadata updated' }]);
+    expect(metadata).toEqual([{ name: 'Renamed', summary: 'A summary' }]);
+
+    // The echo/boom/meta calls carried no return value.
+    expect(returnValues).toHaveLength(0);
+
+    // (5) Free-run return: a breakLoop.returnValue surfaces on the onReturnValue
+    // side channel (the bridge can't stop the SDK turn), and the tool still
+    // returns its content to the model so the turn continues.
+    const ret = await client.callTool({ name: 'returnish', arguments: { result: 'final answer' } });
+    expect(ret.content).toEqual([{ type: 'text', text: 'final answer' }]);
+    expect(ret.isError).toBeFalsy();
+    expect(returnValues).toEqual(['final answer']);
+
+    // No DUMMY hook signal from any of the calls so far.
+    expect(activeHooks).toHaveLength(0);
+
+    // (6) DUMMY hook: register surfaces the hook name, unregister surfaces null
+    // (both ride the onActiveHook side channel; `null` survives as "deactivate").
+    await client.callTool({ name: 'hookish', arguments: { action: 'register' } });
+    expect(activeHooks).toEqual(['my-hook']);
+    await client.callTool({ name: 'hookish', arguments: { action: 'unregister' } });
+    expect(activeHooks).toEqual(['my-hook', null]);
 
     await client.close();
   });

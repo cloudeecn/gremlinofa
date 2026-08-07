@@ -14,12 +14,17 @@ import type {
   ToolResult,
   ToolStreamEvent,
 } from '../../protocol/types';
+import { coerceToString } from '../../lib/coerceToString';
 
 export const returnTool: ClientSideTool = {
   name: 'return',
   displayName: 'Return',
   displaySubtitle: 'Return a result and stop execution',
   internal: true, // Not shown in ProjectSettings UI - only available to minion agents
+  // Bridged into claude-agent minions as `mcp__gremlin__return`. The bridge
+  // can't break the SDK's turn, so it forwards the returnValue via a side-channel
+  // (free-run): the value is stored and delivered when the SDK turn ends.
+  claudeAgentBridgeable: true,
 
   description: (opts: ToolOptions) => {
     if (opts.deferReturn === 'auto-ack') {
@@ -56,7 +61,7 @@ export const returnTool: ClientSideTool = {
 
   // eslint-disable-next-line require-yield -- Simple tool: generator for interface compatibility, no streaming events
   execute: async function* (input): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
-    const result = (input.result as string) ?? '';
+    const result = coerceToString(input.result);
 
     return {
       content: result,
@@ -66,6 +71,6 @@ export const returnTool: ClientSideTool = {
     };
   },
 
-  renderInput: input => (input.result as string) ?? '',
+  renderInput: input => coerceToString(input.result),
   renderOutput: output => output,
 };

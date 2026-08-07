@@ -79,6 +79,10 @@ describe('dummyTool', () => {
       expect(dummyTool.internal).toBeFalsy();
     });
 
+    it('is bridgeable to claude-agent (activeHook rides the side-channel)', () => {
+      expect(dummyTool.claudeAgentBridgeable).toBe(true);
+    });
+
     it('requires action in input schema', () => {
       const schema =
         typeof dummyTool.inputSchema === 'function'

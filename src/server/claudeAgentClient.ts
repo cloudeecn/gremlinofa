@@ -14,7 +14,13 @@
  * Rollback is a metadata flag on the chat row consumed on the next send
  * (mapped to SDK `resumeSessionAt`).
  */
-import { query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  deleteSession,
+  type Options,
+  type SDKMessage,
+  type SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import type Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
@@ -35,11 +41,20 @@ import {
   mapAnthropicEventToStreamChunks,
 } from '../shared/services/api/anthropicStreamMapper';
 import { getModelMetadataFor } from '../shared/engine/lib/api/modelMetadata';
+import { mapAnthropicEffort } from '../shared/engine/lib/reasoningEffort';
 import { addTokens, createTokenTotals } from '../shared/engine/lib/tokenTotals';
 import { buildGremlinMcpServer, MCP_SERVER_NAME } from './claudeAgentToolBridge';
+import {
+  buildSeparateBlockText,
+  effectiveInjectionMode,
+  wrapInjectedFile,
+  type InjectedFile,
+  type InjectionMode,
+} from '../shared/services/api/fileInjectionHelper';
 
 /** Hard-coded model list — the SDK has no listing endpoint. */
 const CLAUDE_AGENT_MODELS = [
+  'claude-fable-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-sonnet-4-6',
@@ -60,13 +75,57 @@ function defaultSessionDir(): string {
   return base;
 }
 
-/** Extract the latest user text content from the message thread. */
-function extractLastUserText(messages: Message<unknown>[]): string {
+/** Extract the latest user message from the thread. */
+function extractLastUserMessage(messages: Message<unknown>[]): Message<unknown> | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role === 'user') return m.content.content ?? '';
+    if (m.role === 'user') return m;
   }
-  return '';
+  return undefined;
+}
+
+/**
+ * Content blocks for the outgoing user turn, in the same order the direct
+ * anthropic client uses: image attachments, leading injected files, the
+ * message text (skipped when empty), trailing injected files. The SDK's
+ * stream-json input takes a full MessageParam, so these ride the same wire
+ * path a plain string prompt does. Exported for unit tests.
+ */
+export function buildUserContentBlocks(
+  msg: Message<unknown>
+): Anthropic.Messages.ContentBlockParam[] {
+  const blocks: Anthropic.Messages.ContentBlockParam[] = [];
+
+  for (const attachment of msg.attachments ?? []) {
+    blocks.push({
+      type: 'image',
+      source: { type: 'base64', media_type: attachment.mimeType, data: attachment.data },
+    });
+  }
+
+  const pushInjectedFiles = (files?: InjectedFile[]) => {
+    if (!files?.length || !msg.content.injectionMode) return;
+    const mode = effectiveInjectionMode(msg.content.injectionMode as InjectionMode, 'claude-agent');
+    for (const file of files) {
+      if (mode === 'as-file') {
+        // Dormant until 'claude-agent' joins the as-file allowlist in
+        // effectiveInjectionMode (CLI document-block passthrough unverified).
+        blocks.push({
+          type: 'document',
+          source: { type: 'text', data: wrapInjectedFile(file), media_type: 'text/plain' },
+          title: file.path,
+        });
+      } else {
+        blocks.push({ type: 'text', text: buildSeparateBlockText(file) });
+      }
+    }
+  };
+
+  pushInjectedFiles(msg.content.injectedFiles);
+  const text = msg.content.content ?? '';
+  if (text) blocks.push({ type: 'text', text });
+  pushInjectedFiles(msg.content.injectedFilesAfter);
+  return blocks;
 }
 
 /**
@@ -102,10 +161,28 @@ function mapSdkUsage(usage: SdkUsageShape | undefined): {
  * so they only fire under `CLAUDE_AGENT_DEBUG=1` when diagnosing resume/rollback
  * or partial-stream issues. Keeps normal runs legible without losing the
  * diagnostics when you actually need them.
+ *
+ * Timestamps are added process-wide by the server entry's `installLogTimestamps`
+ * (full ISO), so nothing here stamps per-line.
  */
 const CLAUDE_AGENT_DEBUG = process.env.CLAUDE_AGENT_DEBUG === '1';
-function dbg(...args: unknown[]): void {
-  if (CLAUDE_AGENT_DEBUG) console.debug(...args);
+function dbg(fmt: string, ...args: unknown[]): void {
+  if (CLAUDE_AGENT_DEBUG) console.debug(fmt, ...args);
+}
+/** Full-fidelity JSON dump, gated like `dbg` — the stringify only runs when on. */
+function dbgJson(label: string, payload: unknown): void {
+  if (CLAUDE_AGENT_DEBUG) console.debug(label, JSON.stringify(payload));
+}
+
+/** Debug copy of the outgoing blocks with base64 image data elided. */
+function redactContentBlocks(
+  blocks: Anthropic.Messages.ContentBlockParam[]
+): Anthropic.Messages.ContentBlockParam[] {
+  return blocks.map(b =>
+    b.type === 'image' && b.source.type === 'base64'
+      ? { ...b, source: { ...b.source, data: `<${b.source.data.length} base64 chars>` } }
+      : b
+  );
 }
 
 /**
@@ -139,6 +216,18 @@ export interface TurnOutcomeSignals {
   refusalExplanation: string | undefined;
   refusalCategory: string | undefined;
   outputTokens: number;
+  /**
+   * The model emitted a `fallback` block and the provider's `treatFallbackAsError`
+   * is off, so it rendered as an inline notice — real output, not an empty turn.
+   */
+  sawFallback: boolean;
+  /**
+   * The apiDef's opt-in for treating empty output as an error. Gates only the
+   * thinking-only branch — the hard-failure branches (refusal / assistant error
+   * / bad stop / rejected quota) recover real signals the SDK hid and stay
+   * unconditional, matching how other providers surface those natively.
+   */
+  treatEmptyOutputAsError: boolean;
 }
 
 /**
@@ -150,11 +239,13 @@ export interface TurnOutcomeSignals {
  * with empty response" and the minion silently stalls.
  *
  * Pure, so the empty-turn cases can be unit-tested without driving a fake SDK
- * stream. Precedence matches the original inline logic: refusal first
- * (unconditional — even when partial text streamed), then, only when the turn
- * produced nothing, hardAssistantError > badStop > rejected-quota > thinking-only.
- * Returns `undefined` when the turn is fine. The caller applies this only when
- * no `resultError` is already set, so a non-success `result` subtype still wins.
+ * stream. Precedence: refusal first (unconditional — even when partial text
+ * streamed), then, only when the turn produced nothing, hardAssistantError >
+ * badStop > rejected-quota > thinking-only. The first four recover real failure
+ * signals the SDK hid, so they fire regardless of settings; thinking-only is a
+ * judgment call and fires only under the apiDef's `treatEmptyOutputAsError`
+ * opt-in. Returns `undefined` when the turn is fine. The caller applies this only
+ * when no `resultError` is already set, so a non-success `result` subtype still wins.
  */
 export function classifyTurnError(s: TurnOutcomeSignals): { message: string } | undefined {
   // A refusal always errors, even when the model streamed partial text first —
@@ -168,8 +259,9 @@ export function classifyTurnError(s: TurnOutcomeSignals): { message: string } | 
     };
   }
 
-  // Everything below concerns a turn that rendered nothing at all.
-  if (s.textLength > 0 || s.thinkingLength > 0) return undefined;
+  // Everything below concerns a turn that rendered nothing at all. A fallback
+  // notice (treatFallbackAsError off) is real rendered output, so it counts too.
+  if (s.textLength > 0 || s.thinkingLength > 0 || s.sawFallback) return undefined;
 
   if (s.assistantError && HARD_ASSISTANT_ERRORS.includes(s.assistantError)) {
     return { message: `claude-agent: ${s.assistantError}` };
@@ -183,10 +275,16 @@ export function classifyTurnError(s: TurnOutcomeSignals): { message: string } | 
     return { message: 'claude-agent: turn rejected (rate_limit_status=rejected)' };
   }
   // Thinking-only: spent the output budget on omitted/empty thinking, emitted no
-  // text and called no tool, and closed with no distinguishing signal. A
-  // malfunction worth surfacing. (A turn with no thinking is left to the loop's
-  // `treatEmptyOutputAsError` to honor the project preference.)
-  if (s.sawThinkingBlock && !s.sawToolUse && s.stopReason !== 'tool_use') {
+  // text and called no tool, and closed with no distinguishing signal. Unlike the
+  // branches above this is a judgment call, not a recovered failure signal, so it
+  // honors the apiDef's `treatEmptyOutputAsError` opt-in — same switch the loop
+  // applies to the structurally identical no-thinking empty turn.
+  if (
+    s.treatEmptyOutputAsError &&
+    s.sawThinkingBlock &&
+    !s.sawToolUse &&
+    s.stopReason !== 'tool_use'
+  ) {
     return {
       message: `claude-agent: turn produced only thinking and no output (${s.outputTokens} output tokens spent)`,
     };
@@ -194,9 +292,115 @@ export function classifyTurnError(s: TurnOutcomeSignals): { message: string } | 
   return undefined;
 }
 
+/**
+ * Factual message for a model-fallback turn — the SDK handed the request to a
+ * different model. We state only the model handoff (the `from`/`to` we can read
+ * off the block); we make no claim about *why*, since the block doesn't tell us
+ * (it is not necessarily a "risky" prompt). Pure, for unit testing.
+ */
+export function describeFallback(fromModel?: string, toModel?: string): string {
+  if (toModel && fromModel) {
+    return `claude-agent: request handled by ${toModel} instead of ${fromModel}`;
+  }
+  if (toModel) {
+    return `claude-agent: request handled by ${toModel}`;
+  }
+  return 'claude-agent: request handled by a different model';
+}
+
+/**
+ * Pretty-print a raw SDK block for the generic unknown-block renderer, capped
+ * so huge payloads (base64 images, full page dumps) don't bloat storage.
+ * Pure, for unit testing.
+ */
+export function trimBlockJson(block: unknown, maxChars = 2000): string {
+  let json: string;
+  try {
+    json = JSON.stringify(block, null, 2) ?? String(block);
+  } catch {
+    json = String(block);
+  }
+  if (json.length <= maxChars) return json;
+  return `${json.slice(0, maxChars)}… (+${json.length - maxChars} more chars)`;
+}
+
+/**
+ * Strip the `mcp__<server>__` prefix the model sees off a bridged tool name,
+ * recovering the bare name our bridge registered. Returns null for tools that
+ * aren't ours (built-in WebSearch/WebFetch). Pure, for the model-delivery hooks.
+ */
+export function bridgedToolName(mcpToolName: string): string | null {
+  const prefix = `mcp__${MCP_SERVER_NAME}__`;
+  return mcpToolName.startsWith(prefix) ? mcpToolName.slice(prefix.length) : null;
+}
+
+/**
+ * Deterministic key for matching a hook's `tool_input` back to the bridged call
+ * that produced it. Stability across the two SDK-built copies matters more than
+ * canonical form, so a plain stringify suffices.
+ */
+export function toolInputKey(input: unknown): string {
+  try {
+    return JSON.stringify(input ?? null);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Pull plain text out of a PostToolUse `tool_response` (typed `unknown` by the
+ * SDK). Handles a bare string, an MCP CallToolResult (`{ content: [{ text }] }`),
+ * and falls back to JSON. Pure.
+ */
+export function extractToolResponseText(resp: unknown): string {
+  if (typeof resp === 'string') return resp;
+  if (resp && typeof resp === 'object') {
+    const content = (resp as { content?: unknown }).content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map(block =>
+          block &&
+          typeof block === 'object' &&
+          typeof (block as { text?: unknown }).text === 'string'
+            ? (block as { text: string }).text
+            : ''
+        )
+        .join('');
+    }
+    try {
+      return JSON.stringify(resp);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+/**
+ * Decide whether what the model received (`received`) diverges from what the
+ * bridge sent (`sent`). Conservative: only a strictly shorter payload counts as
+ * truncated — the SDK's observable size-cap behavior. Returns null when they
+ * match (no annotation). Pure.
+ */
+export function detectTruncation(
+  sent: string,
+  received: string
+): { status: 'truncated'; detail: string } | null {
+  if (received.length < sent.length) {
+    return {
+      status: 'truncated',
+      detail: `model received ${received.length} of ${sent.length} chars`,
+    };
+  }
+  return null;
+}
+
 export interface ClaudeAgentClientOptions {
   /** Override the SDK `query` entry point (tests inject a fake). */
   query?: typeof query;
+  /** Override the SDK `deleteSession` entry point (tests inject a fake). */
+  deleteSession?: typeof deleteSession;
   /** Override the session dir resolver (tests inject a tmp dir). */
   sessionDir?: () => string;
   /** Override UUID generator (tests assert a deterministic ID). */
@@ -206,14 +410,31 @@ export interface ClaudeAgentClientOptions {
 export class ClaudeAgentClient implements APIClient {
   protected readonly deps: APIServiceDeps;
   private readonly queryFn: typeof query;
+  private readonly deleteSessionFn: typeof deleteSession;
   private readonly sessionDir: () => string;
   private readonly generateSessionId: () => string;
 
   constructor(deps: APIServiceDeps, options: ClaudeAgentClientOptions = {}) {
     this.deps = deps;
     this.queryFn = options.query ?? query;
+    this.deleteSessionFn = options.deleteSession ?? deleteSession;
     this.sessionDir = options.sessionDir ?? defaultSessionDir;
     this.generateSessionId = options.generateSessionId ?? (() => randomUUID());
+  }
+
+  /**
+   * GC a superseded on-disk SDK session (a forked retry replaced it on the
+   * chat row, so no future send can ever resume it). Best-effort: the forked
+   * session carries the entire kept history, so a stale file only wastes disk
+   * — a failed delete must never break the turn that triggered it.
+   */
+  async deleteProviderSession(sessionId: string): Promise<void> {
+    try {
+      await this.deleteSessionFn(sessionId, { dir: this.sessionDir() });
+      console.debug('[claudeAgent] deleted superseded session %s', sessionId);
+    } catch (err) {
+      console.debug('[claudeAgent] session GC failed for %s:', sessionId, err);
+    }
   }
 
   async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
@@ -238,6 +459,7 @@ export class ClaudeAgentClient implements APIClient {
       enableReasoning?: boolean;
       reasoningBudgetTokens?: number;
       reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      reasoningSummary?: 'auto' | 'concise' | 'detailed';
       claudeAgentSessionId?: string;
       claudeAgentResumeAt?: string;
       // Tool bridge inputs (claude-agent only). The agentic loop forwards its
@@ -248,12 +470,29 @@ export class ClaudeAgentClient implements APIClient {
       toolContext?: ToolContext;
       /** Project web-search toggle: enables the SDK's built-in WebSearch/WebFetch. */
       webSearchEnabled?: boolean;
+      /**
+       * Pre-gated by the agentic loop: when true, opt into the 1M context window
+       * by suffixing the model id with `[1m]` (the Claude Code convention; we
+       * use it rather than the SDK's `Options.betas`).
+       */
+      claudeAgentExtendedContext?: boolean;
     } & Record<string, unknown>
   ): AsyncGenerator<StreamChunk, StreamResult<Anthropic.Beta.BetaContentBlock[]>, unknown> {
-    const lastUser = extractLastUserText(messages);
-    if (!lastUser) {
+    const lastUserMsg = extractLastUserMessage(messages);
+    if (!lastUserMsg) {
       throw new Error('claude-agent: no user message to send');
     }
+    const contentBlocks = buildUserContentBlocks(lastUserMsg);
+    if (contentBlocks.length === 0) {
+      throw new Error('claude-agent: no user content to send');
+    }
+    // Single text block → keep the SDK's plain-string prompt path (it wraps
+    // the string into the identical stream-json user message). Anything more
+    // (images, injected files) goes through the streaming-input form.
+    const textOnlyPrompt =
+      contentBlocks.length === 1 && contentBlocks[0].type === 'text'
+        ? contentBlocks[0].text
+        : undefined;
 
     const sessionId = options.claudeAgentSessionId ?? this.generateSessionId();
     const isFirstTurn = !options.claudeAgentSessionId;
@@ -272,20 +511,43 @@ export class ClaudeAgentClient implements APIClient {
       env.ANTHROPIC_API_KEY = apiDefinition.apiKey;
       delete env.CLAUDE_CODE_OAUTH_TOKEN;
     }
+    // Hard per-call output ceiling (thinking tokens included), honored by the
+    // CLI via its env. `Options` has no direct equivalent, and the adaptive
+    // models' `thinking`/`maxThinkingTokens` knobs can't cap thinking depth —
+    // this is the one working guardrail against runaway-thinking turns. A
+    // capped turn surfaces the assistant's `max_tokens` on
+    // `StreamResult.stopReason` (see the surfacedStopReason return): minions
+    // rewind/retry via their abnormal-stop gate, parent chats badge the
+    // message as Truncated, and an empty capped turn (runaway thinking, no
+    // text) is still reclassified as a failed turn by `classifyTurnError`.
+    if (typeof options.maxTokens === 'number' && options.maxTokens > 0) {
+      env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(options.maxTokens);
+    }
 
     const abortController = new AbortController();
     const onAbort = () => abortController.abort();
     options.signal.addEventListener('abort', onAbort);
 
+    // Anthropic thinking.display: Opus 4.7+ / Claude 5 default server-side to
+    // 'omitted', which strips the content of thinking AND narration blocks — a
+    // tool-heavy turn then renders only its final text segment, with the model's
+    // mid-loop prose arriving as empty signed blocks. Same convention as the
+    // direct AnthropicClient: any Reasoning Summary selection opts into
+    // 'summarized' so the content is returned.
+    const thinkingDisplay: 'summarized' | undefined =
+      options.reasoningSummary !== undefined ? 'summarized' : undefined;
+
     // Map our reasoning controls onto SDK shapes.
     //   - explicit `false` → disabled
     //   - explicit `true` + positive budget → enabled with that budget
-    //   - explicit `true` + budget 0 / missing → omit `thinking` so the SDK's
-    //     adaptive default kicks in (matches GremlinOFA's "0 = adaptive"
-    //     convention; required for Opus 4.7+ which is `onlyAdaptiveReasoning`
-    //     and ignores `budgetTokens` entirely — control the level via `effort`)
+    //   - explicit `true` + budget 0 / missing → adaptive. Normally omitted so
+    //     the SDK's adaptive default kicks in (matches GremlinOFA's
+    //     "0 = adaptive" convention; required for Opus 4.7+ which is
+    //     `onlyAdaptiveReasoning` and ignores `budgetTokens` entirely — control
+    //     the level via `effort`), but a display opt-in needs the explicit
+    //     `{ type: 'adaptive' }` form to have somewhere to ride.
     //   - both unset → omit
-    let thinking: { type: 'enabled'; budgetTokens: number } | { type: 'disabled' } | undefined;
+    let thinking: Options['thinking'];
     if (options.enableReasoning === false) {
       thinking = { type: 'disabled' };
     } else if (
@@ -293,8 +555,23 @@ export class ClaudeAgentClient implements APIClient {
       typeof options.reasoningBudgetTokens === 'number' &&
       options.reasoningBudgetTokens > 0
     ) {
-      thinking = { type: 'enabled', budgetTokens: options.reasoningBudgetTokens };
+      thinking = {
+        type: 'enabled',
+        budgetTokens: options.reasoningBudgetTokens,
+        ...(thinkingDisplay && { display: thinkingDisplay }),
+      };
+    } else if (options.enableReasoning === true && thinkingDisplay) {
+      thinking = { type: 'adaptive', display: thinkingDisplay };
     }
+
+    // The SDK's EffortLevel has no 'none'/'minimal', and a model that doesn't take
+    // `effort` rejects it — clamp against metadata instead of casting. Gated on the
+    // model's effort list alone, not on adaptive mode: the SDK accepts `effort`
+    // independently of `thinking`.
+    const effortLevel = mapAnthropicEffort(
+      options.reasoningEffort,
+      getModelMetadataFor(apiDefinition, modelId).supportedReasoningEfforts
+    );
 
     // --- Tool bridge ------------------------------------------------------
     // Expose the enabled, bridgeable subset of our internal tools to the SDK
@@ -303,16 +580,71 @@ export class ClaudeAgentClient implements APIClient {
     // streaming loop below merges that queue with the SDK message iterator.
     const chunkQueue: StreamChunk[] = [];
     let notifyChunk: (() => void) | null = null;
+    // Model-delivery correlation: the PostToolUse/Failure hooks identify a call
+    // by the model's tool name + input, but the UI block is keyed by the bridge's
+    // synthetic id (MCP never surfaces the model's tool_use id to the server). We
+    // record each bridged call as its chunks flow through here and match later by
+    // (name, input) + FIFO. Approximate for parallel same-input calls — fine for
+    // a diagnostic, not a correctness path.
+    interface PendingBridgedCall {
+      syntheticId: string;
+      inputKey: string;
+      content: string;
+    }
+    const pendingByName = new Map<string, PendingBridgedCall[]>();
+    const pendingById = new Map<string, PendingBridgedCall>();
     const pushChunk = (chunk: StreamChunk): void => {
+      if (chunk.type === 'tool_use') {
+        const entry: PendingBridgedCall = {
+          syntheticId: chunk.id,
+          inputKey: toolInputKey(chunk.input),
+          content: '',
+        };
+        pendingById.set(chunk.id, entry);
+        const queue = pendingByName.get(chunk.name);
+        if (queue) queue.push(entry);
+        else pendingByName.set(chunk.name, [entry]);
+      } else if (chunk.type === 'tool_result') {
+        const entry = pendingById.get(chunk.tool_use_id);
+        if (entry) entry.content = chunk.content;
+      }
       chunkQueue.push(chunk);
       const notify = notifyChunk;
       notifyChunk = null;
       notify?.();
     };
+    // Pops the bridged call a hook event refers to: prefer an exact input match,
+    // else the oldest pending call for that tool. Returns null for non-bridged
+    // tools (WebSearch/WebFetch) or when nothing matches.
+    const consumeBridgedCall = (
+      mcpToolName: string,
+      toolInput: unknown
+    ): PendingBridgedCall | null => {
+      const bare = bridgedToolName(mcpToolName);
+      if (!bare) return null;
+      const queue = pendingByName.get(bare);
+      if (!queue || queue.length === 0) return null;
+      const wantKey = toolInputKey(toolInput);
+      const idx = queue.findIndex(e => e.inputKey === wantKey);
+      const [entry] = queue.splice(idx >= 0 ? idx : 0, 1);
+      return entry ?? null;
+    };
     // Sub-agent (minion) costs accrue here — the SDK's own `result.usage` never
     // includes them since they come from our apiService. Surfaced on the
     // StreamResult so the agentic loop folds them into the chat totals.
     const toolTokenTotals = createTokenTotals();
+    // Chat title/summary set by the metadata tool during this turn. The SDK owns
+    // the turn so it can't apply mid-turn — surfaced on the StreamResult and
+    // folded into the chat after the turn (last-write-wins per field).
+    let chatMetadata: { name?: string; summary?: string } | undefined;
+    // Free-run return value from a bridged `return` tool (minion sub-agents). The
+    // bridge can't break the SDK turn, so the value is stashed here and surfaced
+    // on the StreamResult; the agentic loop reports it as the minion's result.
+    let claudeAgentReturnValue: string | undefined;
+    // DUMMY hook (un)register from a bridged `dummy` tool. `undefined` = no
+    // change this turn; `string` = activate; `null` = deactivate. Surfaced on
+    // the StreamResult; the loop swaps the outer hook runtime after the turn.
+    let claudeAgentActiveHook: string | null | undefined;
 
     const toolContext = options.toolContext as ToolContext | undefined;
     const enabledTools = (options.enabledTools as string[] | undefined) ?? [];
@@ -336,6 +668,15 @@ export class ClaudeAgentClient implements APIClient {
         signal: abortController.signal,
         pushChunk,
         onToolTokens: (totals: TokenTotals) => addTokens(toolTokenTotals, totals),
+        onChatMetadata: metadata => {
+          chatMetadata = { ...chatMetadata, ...metadata };
+        },
+        onReturnValue: value => {
+          claudeAgentReturnValue = value;
+        },
+        onActiveHook: hook => {
+          claudeAgentActiveHook = hook;
+        },
       });
       if (bridge) {
         mcpServers = { [MCP_SERVER_NAME]: bridge.server };
@@ -362,13 +703,19 @@ export class ClaudeAgentClient implements APIClient {
       console.debug('[claudeAgent] web tools enabled: WebSearch, WebFetch');
     }
 
-    // Note: the project's max output tokens (`options.maxTokens`) has no SDK
-    // equivalent — `Options` exposes only `effort` / deprecated
-    // `maxThinkingTokens` / `maxTurns`, so a claude-agent turn's output length
-    // is governed by `effort` + CLI/model defaults. We intentionally don't
-    // forward it; the value is a no-op for this provider.
+    // Note: the project's max output tokens (`options.maxTokens`) rides the
+    // CLI env (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`, set with the auth env above) —
+    // `Options` itself has no equivalent field.
+    // The Agent SDK opts into the 1M window via a `[1m]` model-id suffix rather
+    // than a beta header. Eligibility is pre-gated upstream (the loop only sets
+    // claudeAgentExtendedContext for the supported Sonnet 4.5 / Opus 4.5–4.8 set).
+    const sdkModelId = options.claudeAgentExtendedContext ? `${modelId}[1m]` : modelId;
+    if (options.claudeAgentExtendedContext) {
+      console.debug('[claudeAgent] 1M context enabled, model=%s', sdkModelId);
+    }
+
     const sdkOptions: Options = {
-      model: modelId,
+      model: sdkModelId,
       // Emit raw token-by-token stream events (SDKPartialAssistantMessage) on top
       // of the coalesced assistant/result messages, so we can render claude-agent
       // turns live like every other provider and recover partial text on cut-off
@@ -389,13 +736,77 @@ export class ClaudeAgentClient implements APIClient {
       cwd: this.sessionDir(),
       env,
       abortController,
+      // Observe-only: detect when the SDK delivered a different payload to the
+      // model than our bridge sent (truncated for size, or replaced with an
+      // error) and annotate the matching tool_result block in the UI. Never
+      // mutates what the model receives — every callback returns unchanged.
+      hooks: {
+        PostToolUse: [
+          {
+            hooks: [
+              async input => {
+                if (input.hook_event_name === 'PostToolUse') {
+                  const pending = consumeBridgedCall(input.tool_name, input.tool_input);
+                  if (pending) {
+                    const received = extractToolResponseText(input.tool_response);
+                    const delivery = detectTruncation(pending.content, received);
+                    if (delivery) {
+                      console.debug(
+                        '[claudeAgent] model delivery truncated name=%s sent=%d recv=%d',
+                        input.tool_name,
+                        pending.content.length,
+                        received.length
+                      );
+                      pushChunk({
+                        type: 'tool_result_annotation',
+                        tool_use_id: pending.syntheticId,
+                        modelDelivery: delivery,
+                      });
+                    }
+                  }
+                }
+                return { continue: true };
+              },
+            ],
+          },
+        ],
+        PostToolUseFailure: [
+          {
+            hooks: [
+              async input => {
+                if (input.hook_event_name === 'PostToolUseFailure') {
+                  // Error string can quote tool input/output — content stays gated.
+                  console.debug('[claudeAgent] PostToolUseFailure name=%s', input.tool_name);
+                  dbg('[claudeAgent] PostToolUseFailure error=%s', input.error);
+                  const pending = consumeBridgedCall(input.tool_name, input.tool_input);
+                  if (pending) {
+                    pushChunk({
+                      type: 'tool_result_annotation',
+                      tool_use_id: pending.syntheticId,
+                      modelDelivery: { status: 'error', detail: input.error },
+                    });
+                  }
+                }
+                return { continue: true };
+              },
+            ],
+          },
+        ],
+      },
       ...(thinking ? { thinking } : {}),
-      ...(options.reasoningEffort && options.reasoningEffort !== 'none'
-        ? { effort: options.reasoningEffort as Options['effort'] }
-        : {}),
+      ...(effortLevel ? { effort: effortLevel } : {}),
+      // A rewound send (resumeAt set) FORKS into a fresh session containing
+      // history only up to the anchor uuid. Resuming the old session in place
+      // would leave the rejected/aborted turn in its JSONL, and whether a later
+      // plain `resume` excludes such dead branches is CLI-internal behavior we
+      // can't rely on. The forked id arrives on the `system:init` message and
+      // flows back through providerExtra; the engine then GCs the old session.
       ...(isFirstTurn
         ? { sessionId }
-        : { resume: sessionId, ...(resumeAt ? { resumeSessionAt: resumeAt } : {}) }),
+        : {
+            resume: sessionId,
+            ...(resumeAt ? { resumeSessionAt: resumeAt, forkSession: true } : {}),
+          }),
     };
 
     // Logged with env stripped — full process.env would leak credentials.
@@ -404,7 +815,18 @@ export class ClaudeAgentClient implements APIClient {
     const { env: _envForLog, abortController: _ac, ...sdkOptionsForLog } = sdkOptions;
     // Gated: prompt is user content; options dumps the full system prompt + tool
     // config. Both are diagnostic-only and shouldn't print on every normal turn.
-    dbg('[claudeAgent] query() prompt=', lastUser);
+    if (textOnlyPrompt !== undefined) {
+      dbg('[claudeAgent] query() prompt=', textOnlyPrompt);
+    } else {
+      console.debug(
+        '[claudeAgent] structured prompt: %d blocks (%d image, %d text, %d document)',
+        contentBlocks.length,
+        contentBlocks.filter(b => b.type === 'image').length,
+        contentBlocks.filter(b => b.type === 'text').length,
+        contentBlocks.filter(b => b.type === 'document').length
+      );
+      dbg('[claudeAgent] query() blocks=', redactContentBlocks(contentBlocks));
+    }
     dbg('[claudeAgent] query() options=', sdkOptionsForLog);
     console.debug(
       '[claudeAgent] turn lifecycle: isFirstTurn=%s sessionId=%s resumeAt=%s',
@@ -413,13 +835,31 @@ export class ClaudeAgentClient implements APIClient {
       resumeAt ?? '(none)'
     );
 
-    const iter = this.queryFn({ prompt: lastUser, options: sdkOptions });
+    // The one-shot generator mirrors the SDK's own string-prompt wrapper
+    // (`{type:'user', session_id:'', message, parent_tool_use_id:null}`); it
+    // returns immediately, so streamInput can close the CLI's stdin.
+    const prompt =
+      textOnlyPrompt !== undefined
+        ? textOnlyPrompt
+        : (async function* (): AsyncGenerator<SDKUserMessage> {
+            yield {
+              type: 'user',
+              session_id: '',
+              parent_tool_use_id: null,
+              message: { role: 'user', content: contentBlocks },
+            };
+          })();
+    const iter = this.queryFn({ prompt, options: sdkOptions });
 
     const fullContent: Anthropic.Beta.BetaContentBlock[] = [];
     let textBuf = '';
     let thinkingBuf = '';
     let stopReason: string | undefined;
     let assistantUuid: string | undefined;
+    // The session id the CLI actually writes to, from `system:init`. Differs
+    // from the id we passed on forked (rewound) sends — that new id is what
+    // must be persisted on the chat row, so it wins in providerExtra.
+    let sdkReportedSessionId: string | undefined;
     let usage: ReturnType<typeof mapSdkUsage> = {
       inputTokens: 0,
       outputTokens: 0,
@@ -470,22 +910,39 @@ export class ClaudeAgentClient implements APIClient {
     // Whether the model produced any text block at all (streamed or coalesced).
     // Gates the result-string fallback so a turn with real text never collapses.
     let sawTextBlock = false;
+    // The model softened a risky prompt instead of refusing (a `fallback` block).
+    // When `treatFallbackAsError` is off this counts as real output (an inline
+    // notice), so it suppresses the empty-turn classifier just like text does.
+    let sawFallback = false;
+    const treatFallbackAsError = apiDefinition.advancedSettings?.treatFallbackAsError === true;
     let loggedTtft = false;
     // Built-in WebSearch requests the SDK reports on its result usage. Surfaced
     // for the "N searches" display only — claude-agent cost is subscription-zeroed.
     let webSearchCount = 0;
+    // Block indices of in-flight web blocks (server_tool_use / *_tool_result) in
+    // the current partial Beta message. Their stream events are dumped in full
+    // under CLAUDE_AGENT_DEBUG to capture the exact wire shapes (renderer work).
+    const webBlockIndices = new Set<number>();
+    // id → name of non-bridged tool_use blocks surfaced as unknown_block (e.g.
+    // built-in WebSearch/WebFetch). Their results come back as tool_result
+    // blocks inside SDK `user` messages; this map picks those out for the same
+    // generic rendering while bridged results stay side-channel-only.
+    const nonBridgedToolUses = new Map<string, string>();
+    // Total turns the SDK spent on this prompt (from the result message). Logged
+    // for visibility into how many model round-trips a tool loop consumed.
+    let numTurns: number | undefined;
 
     // Map one SDK message to our StreamChunks, updating the closure state.
     // Closes over the accumulators above (assignment to outer `let` is fine).
     const handleSdkMessage = function* (msg: SDKMessage): Generator<StreamChunk, void, unknown> {
-      // Log every SDK message — verbose but invaluable when debugging
-      // resume/rollback issues. `type` + `subtype`/`uuid` is usually enough.
-      // Skip `stream_event` here: with includePartialMessages it fires per token,
-      // so logging each would bury the lifecycle one-liners (the branch below
-      // logs the few partial events worth seeing).
+      // Name every coarse SDK message as it arrives (always-on) so the event flow
+      // is legible by default — `type` + `subtype`/`uuid` is usually enough.
+      // `stream_event` is excluded here: with includePartialMessages it fires per
+      // token, so its branch below names its own lifecycle events (skipping the
+      // per-token deltas) instead of burying the log.
       if (msg.type !== 'stream_event') {
-        dbg(
-          '[claudeAgent] sdk msg type=%s%s%s',
+        console.debug(
+          '[claudeAgent] sdk event=%s%s%s',
           msg.type,
           'subtype' in msg ? ` subtype=${msg.subtype}` : '',
           'uuid' in msg ? ` uuid=${msg.uuid}` : ''
@@ -498,8 +955,39 @@ export class ClaudeAgentClient implements APIClient {
         // carries the truthful stop_reason + refusal stop_details.
         partialsActive = true;
         const event = msg.event;
+        // Name the stream lifecycle events always-on (message_start /
+        // content_block_start + its block type / content_block_stop /
+        // message_delta / message_stop), skipping the per-token
+        // content_block_delta so the flow stays legible.
+        if (event.type !== 'content_block_delta') {
+          console.debug(
+            '[claudeAgent] stream event=%s%s',
+            event.type,
+            event.type === 'content_block_start' ? ` block=${event.content_block.type}` : ''
+          );
+        }
+        // Full-event dumps for web blocks (server_tool_use + *_tool_result):
+        // every stream event touching one of their indices is dumped verbatim,
+        // including the input_json_delta fragments that build the tool input.
+        if (event.type === 'content_block_start') {
+          const blockType = event.content_block.type;
+          if (
+            blockType === 'server_tool_use' ||
+            blockType === 'web_search_tool_result' ||
+            blockType === 'web_fetch_tool_result'
+          ) {
+            webBlockIndices.add(event.index);
+            dbgJson('[claudeAgent] web stream content_block_start', event);
+          }
+        } else if (event.type === 'content_block_delta' && webBlockIndices.has(event.index)) {
+          dbgJson('[claudeAgent] web stream content_block_delta', event);
+        } else if (event.type === 'content_block_stop' && webBlockIndices.has(event.index)) {
+          webBlockIndices.delete(event.index);
+          dbg('[claudeAgent] web stream content_block_stop index=%d', event.index);
+        }
         if (event.type === 'message_start') {
           mapperState = createMapperState();
+          webBlockIndices.clear();
           dbg('[claudeAgent] partial message_start uuid=%s', msg.uuid);
         }
         if (event.type === 'message_delta') {
@@ -605,6 +1093,17 @@ export class ClaudeAgentClient implements APIClient {
           if (msgStopDetails.explanation) lastRefusalExplanation = msgStopDetails.explanation;
           if (msgStopDetails.category) lastRefusalCategory = msgStopDetails.category;
         }
+        if (msgStopReason === 'refusal') {
+          // Always-on: a refusal is the headline "why nothing came back" signal,
+          // so call it out explicitly instead of leaving it implicit in the
+          // stop_reason line above. The explanation is model text that can
+          // paraphrase the conversation — content stays gated.
+          console.debug(
+            '[claudeAgent] REFUSAL category=%s',
+            lastRefusalCategory ?? '(uncategorized)'
+          );
+          dbg('[claudeAgent] refusal explanation=%s', lastRefusalExplanation ?? '(none)');
+        }
         for (const block of blocks) {
           if (block.type === 'text') {
             // Record that the model produced text (gates the result-string
@@ -626,6 +1125,12 @@ export class ClaudeAgentClient implements APIClient {
             fullContent.push(block);
           } else if (block.type === 'thinking') {
             sawThinkingBlock = true;
+            // Surface the thinking length once per block (always-on). The coalesced
+            // assistant carries the full block even when partials streamed it live,
+            // so this fires exactly once regardless of the streaming path. The
+            // chain-of-thought itself is conversation content — gated.
+            console.debug('[claudeAgent] thinking block len=%d', block.thinking.length);
+            dbg('[claudeAgent] thinking content=%s', block.thinking);
             if (!partialsActive) {
               yield { type: 'thinking.start' };
               yield { type: 'thinking', content: block.thinking };
@@ -639,12 +1144,24 @@ export class ClaudeAgentClient implements APIClient {
             // the shared web_search.*/web_fetch.* chunks (the assembler renders
             // the query + source links). Our mcp__gremlin__* tools never appear
             // here — those results arrive on the side channel.
-            if (!partialsActive) {
+            dbgJson('[claudeAgent] server_tool_use block', block);
+            if (block.name !== 'web_search' && block.name !== 'web_fetch') {
+              // Server tool we have no dedicated renderer for (e.g. code
+              // execution). The partial mapper only emits for the web tools, so
+              // this coalesced branch is the sole emitter — always yield.
+              yield {
+                type: 'unknown_block',
+                blockType: block.type,
+                name: block.name,
+                id: block.id,
+                json: trimBlockJson(block),
+              };
+            } else if (!partialsActive) {
               if (block.name === 'web_search') {
                 const query = typeof block.input.query === 'string' ? block.input.query : '';
                 yield { type: 'web_search.start', id: block.id };
                 yield { type: 'web_search', id: block.id, query };
-              } else if (block.name === 'web_fetch') {
+              } else {
                 const url = typeof block.input.url === 'string' ? block.input.url : '';
                 yield { type: 'web_fetch.start', id: block.id };
                 yield { type: 'web_fetch', id: block.id, url };
@@ -653,6 +1170,7 @@ export class ClaudeAgentClient implements APIClient {
             fullContent.push(block);
           } else if (block.type === 'web_search_tool_result') {
             // `tool_use_id` matches the originating server_tool_use block's id.
+            dbgJson('[claudeAgent] web_search_tool_result block', block);
             if (Array.isArray(block.content)) {
               for (const hit of block.content) {
                 yield {
@@ -665,6 +1183,7 @@ export class ClaudeAgentClient implements APIClient {
             }
             fullContent.push(block);
           } else if (block.type === 'web_fetch_tool_result') {
+            dbgJson('[claudeAgent] web_fetch_tool_result block', block);
             if (block.content.type === 'web_fetch_result') {
               yield {
                 type: 'web_fetch.result',
@@ -673,17 +1192,99 @@ export class ClaudeAgentClient implements APIClient {
               };
             }
             fullContent.push(block);
-          } else {
-            // tool_use / tool_result blocks: the MCP bridge already emits
-            // tool_use/tool_result StreamChunks via the side channel, so don't
-            // render them here — just retain for fullContent/session fidelity.
-            if (block.type === 'tool_use') sawToolUse = true;
+          } else if ((block as { type: string }).type === 'fallback') {
+            // The SDK handed the request to a different model (e.g.
+            // claude-fable-5 → claude-opus-4-8): `{ from: { model }, to: { model } }`.
+            // The published block union may not type 'fallback' yet, so narrow via
+            // a cast. Dump the whole block under CLAUDE_AGENT_DEBUG to expose any
+            // extra fields. We state the model handoff as a fact and make no claim
+            // about why (we don't know — not necessarily a "risky" prompt).
+            sawFallback = true;
+            dbg('[claudeAgent] fallback block %o', block);
+            const fb = block as { from?: { model?: unknown }; to?: { model?: unknown } };
+            const fromModel = typeof fb.from?.model === 'string' ? fb.from.model : undefined;
+            const toModel = typeof fb.to?.model === 'string' ? fb.to.model : undefined;
+            if (treatFallbackAsError) {
+              // Surface it as an error — the same path a refusal takes (resultError
+              // → error block + loop `status: 'error'`). The SDK has already
+              // produced the fallback response by this point, so we can't truly
+              // abort generation; we just refuse to present it silently.
+              if (!resultError) {
+                resultError = { message: describeFallback(fromModel, toModel) };
+              }
+              fullContent.push(block);
+              break;
+            }
+            // Always emit (like *_tool_result): the partial stream never carries a
+            // fallback block, so this coalesced branch is its sole emitter.
+            yield {
+              type: 'fallback',
+              ...(fromModel ? { fromModel } : {}),
+              ...(toModel ? { toModel } : {}),
+            };
             fullContent.push(block);
+          } else if (block.type === 'tool_use') {
+            sawToolUse = true;
+            // Bridged (mcp__gremlin__*) tools: the MCP side channel already
+            // emits their tool_use/tool_result StreamChunks — retain for
+            // fullContent only. A non-bridged tool_use (an SDK tool we didn't
+            // whitelist knowingly) has no other emitter → generic render.
+            if (bridgedToolName(block.name) === null) {
+              dbgJson('[claudeAgent] non-bridged tool_use block', block);
+              nonBridgedToolUses.set(block.id, block.name);
+              yield {
+                type: 'unknown_block',
+                blockType: block.type,
+                name: block.name,
+                id: block.id,
+                json: trimBlockJson(block),
+              };
+            }
+            fullContent.push(block);
+          } else if ((block as { type: string }).type === 'tool_result') {
+            // Side-channel domain (see tool_use above); shouldn't appear in
+            // assistant messages, but never render it twice if it does.
+            fullContent.push(block);
+          } else {
+            // Block type we don't know at all (new SDK capability). Surface it
+            // via the generic unknown-block renderer instead of dropping it.
+            dbgJson('[claudeAgent] unknown block', block);
+            const raw = block as { type: string; name?: unknown; id?: unknown };
+            yield {
+              type: 'unknown_block',
+              blockType: raw.type,
+              ...(typeof raw.name === 'string' ? { name: raw.name } : {}),
+              ...(typeof raw.id === 'string' ? { id: raw.id } : {}),
+              json: trimBlockJson(block),
+            };
+            fullContent.push(block);
+          }
+        }
+      } else if (msg.type === 'user') {
+        // Tool results ride back on SDK user messages. Bridged (mcp__gremlin__*)
+        // results already render via the MCP side channel; results matching a
+        // non-bridged tool_use we surfaced (built-in WebSearch/WebFetch, …) get
+        // the same generic unknown_block rendering as their call.
+        const content = msg.message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type !== 'tool_result') continue;
+            const toolName = nonBridgedToolUses.get(block.tool_use_id);
+            if (toolName === undefined) continue;
+            dbgJson('[claudeAgent] non-bridged tool_result block', block);
+            yield {
+              type: 'unknown_block',
+              blockType: block.type,
+              name: toolName,
+              id: block.tool_use_id,
+              json: trimBlockJson(block),
+            };
           }
         }
       } else if (msg.type === 'result') {
         stopReason = msg.stop_reason ?? msg.subtype;
         usage = mapSdkUsage(msg.usage);
+        numTurns = msg.num_turns;
         // `result` (success only) holds the final text — kept as a fallback for
         // turns whose assistant message emitted no text block.
         if ('result' in msg && typeof msg.result === 'string') resultText = msg.result;
@@ -692,9 +1293,10 @@ export class ClaudeAgentClient implements APIClient {
         )?.server_tool_use;
         if (serverToolUse?.web_search_requests) webSearchCount += serverToolUse.web_search_requests;
         console.debug(
-          '[claudeAgent] result subtype=%s stop=%s resultLen=%d usage=',
+          '[claudeAgent] result subtype=%s stop=%s numTurns=%d resultLen=%d usage=',
           msg.subtype,
           stopReason,
+          numTurns,
           resultText.length,
           usage
         );
@@ -722,6 +1324,18 @@ export class ClaudeAgentClient implements APIClient {
           info.isUsingOverage ?? '(none)',
           info.surpassedThreshold ?? '(none)'
         );
+      } else if (msg.type === 'system' && 'subtype' in msg && msg.subtype === 'init') {
+        sdkReportedSessionId = msg.session_id;
+        if (msg.session_id !== sessionId) {
+          // Expected on forked sends; anywhere else it means the CLI diverged
+          // from the id we requested and resumes would silently miss history.
+          console.debug(
+            '[claudeAgent] init session_id=%s differs from requested %s%s',
+            msg.session_id,
+            sessionId,
+            resumeAt ? ' (forked rewind)' : ' — UNEXPECTED'
+          );
+        }
       } else if (msg.type === 'system' && 'subtype' in msg && msg.subtype === 'api_retry') {
         // The SDK retries retryable errors (overloaded, rate_limit, 5xx) with
         // backoff. Surfacing the attempt + delay explains stalls between turns.
@@ -733,8 +1347,8 @@ export class ClaudeAgentClient implements APIClient {
           msg.error_status ?? '(none)',
           msg.error
         );
-      } else if (msg.type === 'system' && 'subtype' in msg && msg.subtype !== 'init') {
-        // Untyped system telemetry beyond `init` (e.g. thinking_tokens) — keep it
+      } else if (msg.type === 'system' && 'subtype' in msg) {
+        // Untyped system telemetry beyond `init` (handled above) — keep it
         // to a one-liner, surfacing the thinking-token estimate when present.
         const sys = msg as { estimated_tokens?: number; estimated_tokens_delta?: number };
         dbg(
@@ -829,11 +1443,23 @@ export class ClaudeAgentClient implements APIClient {
         refusalExplanation: lastRefusalExplanation,
         refusalCategory: lastRefusalCategory,
         outputTokens: usage.outputTokens,
+        sawFallback,
+        treatEmptyOutputAsError: apiDefinition.advancedSettings?.treatEmptyOutputAsError === true,
       });
+      if (resultError) {
+        // Always-on: the SDK closed this turn "successfully" but it produced
+        // nothing usable — surface the recovered failure reason rather than
+        // letting the loop log a silent empty response.
+        console.debug(
+          '[claudeAgent] turn reclassified as error (fallback): %s',
+          resultError.message
+        );
+      }
     }
 
     console.debug(
-      '[claudeAgent] stream complete: textLen=%d thinkingLen=%d resultStop=%s assistantStop=%s rateLimit=%s assistantError=%s assistantUuid=%s',
+      '[claudeAgent] stream complete: numTurns=%s textLen=%d thinkingLen=%d resultStop=%s assistantStop=%s rateLimit=%s assistantError=%s assistantUuid=%s',
+      numTurns ?? '(n/a)',
       textBuf.length,
       thinkingBuf.length,
       stopReason,
@@ -843,21 +1469,38 @@ export class ClaudeAgentClient implements APIClient {
       assistantUuid
     );
 
+    // The session-level result stop_reason is often a generic `end_turn` even
+    // when the assistant message ended badly (e.g. mid-text `max_tokens` from
+    // the CLAUDE_CODE_MAX_OUTPUT_TOKENS cap). Surface the assistant-level
+    // reason only when it's a bad one: the truthful value drives the minion
+    // abnormal-stop rewind and the Truncated badge, while benign mid-turn
+    // values (`tool_use` between bridged calls) must not leak into the loop's
+    // continuation check.
+    const surfacedStopReason =
+      lastAssistantStopReason && BAD_STOP_REASONS.includes(lastAssistantStopReason)
+        ? lastAssistantStopReason
+        : stopReason;
+
     return {
       textContent: textBuf,
       thinkingContent: thinkingBuf,
       hasCoT: thinkingBuf.length > 0,
       fullContent,
-      stopReason,
+      stopReason: surfacedStopReason,
       ...usage,
       ...(webSearchCount > 0 ? { webSearchCount } : {}),
       ...(resultError ? { error: resultError } : {}),
       // Sub-agent (minion) costs the SDK incurred via our bridged tools. The
       // agentic loop folds this into chat totals (guarded by hasTokenUsage).
       toolTokenTotals,
+      // Chat title/summary set via the bridged metadata tool this turn. The
+      // loop yields it as a `chat_metadata_updated` event after the turn.
+      ...(chatMetadata ? { chatMetadata } : {}),
       providerExtra: {
-        claudeAgentSessionId: sessionId,
+        claudeAgentSessionId: sdkReportedSessionId ?? sessionId,
         claudeAgentMessageUuid: assistantUuid,
+        ...(claudeAgentReturnValue !== undefined ? { claudeAgentReturnValue } : {}),
+        ...(claudeAgentActiveHook !== undefined ? { claudeAgentActiveHook } : {}),
         ...(lastRateLimitStatus ? { rateLimitStatus: lastRateLimitStatus } : {}),
       },
     };

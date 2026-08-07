@@ -74,6 +74,10 @@ describe('metadataTool', () => {
       expect(metadataTool.internal).toBeFalsy();
     });
 
+    it('is bridgeable into claude-agent mode', () => {
+      expect(metadataTool.claudeAgentBridgeable).toBe(true);
+    });
+
     it('has input schema with required command field', () => {
       const schema = metadataTool.inputSchema;
       expect(schema).toBeDefined();

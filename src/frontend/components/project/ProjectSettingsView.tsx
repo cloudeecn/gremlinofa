@@ -10,6 +10,7 @@ import type {
   ToolOptions,
   ModelReference,
   ToolOptionValue,
+  Verbosity,
 } from '../../../shared/protocol/types';
 import {
   isBooleanOption,
@@ -98,6 +99,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const [reasoningSummary, setReasoningSummary] = useState<
     'auto' | 'concise' | 'detailed' | undefined
   >(project?.reasoningSummary);
+  const [verbosity, setVerbosity] = useState<Verbosity>(project?.verbosity);
   const [disableStream, setDisableStream] = useState(project?.disableStream || false);
   const [extendedContext, setExtendedContext] = useState(project?.extendedContext || false);
   const [useAnthropicOneHourCache, setUseAnthropicOneHourCache] = useState(
@@ -171,6 +173,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       setToolOptionsState(project.toolOptions ?? {});
       setReasoningEffort(project.reasoningEffort);
       setReasoningSummary(project.reasoningSummary);
+      setVerbosity(project.verbosity);
       setTemperature(project.temperature?.toString() || '');
       setMaxOutputTokens(project.maxOutputTokens.toString() || '1536');
       setSelectedApiDefId(project.apiDefinitionId || null);
@@ -201,6 +204,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
 
   // Check selected API type for conditional UI
   const isAnthropic = selectedApiType === 'anthropic';
+  const isOpenAICompatible = selectedApiType === 'chatgpt' || selectedApiType === 'responses_api';
   const hasModelSelected = !!selectedModelId;
 
   const modelDisplayText = hasModelSelected
@@ -310,6 +314,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         toolOptions: Object.keys(toolOptionsState).length > 0 ? toolOptionsState : undefined,
         reasoningEffort,
         reasoningSummary,
+        verbosity,
         temperature: temperature === '' ? null : parseFloat(temperature),
         maxOutputTokens: isNaN(parseInt(maxOutputTokens)) ? 1536 : parseInt(maxOutputTokens),
         disableStream: disableStream || undefined,
@@ -352,6 +357,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     toolOptionsState,
     reasoningEffort,
     reasoningSummary,
+    verbosity,
     temperature,
     maxOutputTokens,
     disableStream,
@@ -1621,6 +1627,38 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                         )}
                       </span>
                     </label>
+                  </div>
+
+                  {/* Verbosity (OpenAI only) */}
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-900">
+                      Verbosity
+                    </label>
+                    <select
+                      value={verbosity ?? ''}
+                      onChange={e =>
+                        setVerbosity(
+                          e.target.value === '' ? undefined : (e.target.value as Verbosity)
+                        )
+                      }
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    >
+                      <option value="">(default)</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      OpenAI only. Constrains answer length independently of max output tokens and
+                      reasoning effort. Sent only to GPT-5-era models — if it seems ignored, refresh
+                      the model list in Settings so cached models pick up the capability flag.
+                      {!isOpenAICompatible && (
+                        <span className="mt-1 block">
+                          This project's current provider is not an OpenAI API, so the setting is a
+                          no-op for direct calls here. Minions on an OpenAI provider still honor it.
+                        </span>
+                      )}
+                    </p>
                   </div>
                 </div>
               )}

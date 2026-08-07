@@ -463,7 +463,8 @@ export class ChatRunner {
               break;
 
             case 'claude_agent_turn': {
-              const needsSessionSave = currentChat.claudeAgentSessionId !== event.sessionId;
+              const previousSessionId = currentChat.claudeAgentSessionId;
+              const needsSessionSave = previousSessionId !== event.sessionId;
               const needsResumeClear = currentChat.claudeAgentResumeAt !== undefined;
               if (needsSessionSave || needsResumeClear) {
                 currentChat = await this.storage.patchChat(
@@ -472,6 +473,15 @@ export class ChatRunner {
                   needsResumeClear ? { unset: ['claudeAgentResumeAt'] } : undefined
                 );
                 yield { type: 'chat_updated', chat: currentChat };
+                // A changed id means a forked rewind superseded the old
+                // session. GC it only now — after the new id is durably on
+                // the chat row — so a crash in between never orphans the chat.
+                if (needsSessionSave && previousSessionId) {
+                  await this.deps.apiService.deleteProviderSession(
+                    'claude-agent',
+                    previousSessionId
+                  );
+                }
               }
               break;
             }

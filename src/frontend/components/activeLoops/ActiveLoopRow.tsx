@@ -5,8 +5,12 @@ import type { ActiveLoop } from '../../../shared/protocol/protocol';
 
 interface ActiveLoopRowProps {
   loop: ActiveLoop;
-  /** True for minion sub-loops; renders with a left indent + tree marker. */
-  isChild?: boolean;
+  /**
+   * Nesting depth in the loops tree. 0 = root chat loop; each level deeper is
+   * a minion sub-loop, rendered with progressively more left indent + a tree
+   * marker so minion-of-minion runs read at a glance.
+   */
+  depth?: number;
   /** Click target for the chat name — usually navigates to the chat. */
   chatLabel: string;
   /** Optional close handler so mobile sidebar overlays dismiss after navigate. */
@@ -25,10 +29,11 @@ interface ActiveLoopRowProps {
  */
 export default function ActiveLoopRow({
   loop,
-  isChild,
+  depth = 0,
   chatLabel,
   onAfterNavigate,
 }: ActiveLoopRowProps) {
+  const isChild = depth > 0;
   const navigate = useNavigate();
   const [elapsedSec, setElapsedSec] = useState(() =>
     Math.floor((Date.now() - loop.startedAt) / 1000)
@@ -53,6 +58,9 @@ export default function ActiveLoopRow({
 
   const elapsedLabel = formatElapsed(elapsedSec);
   const aborting = loop.status === 'aborting';
+  // A soft stop was requested but the loop is still finishing its current
+  // step. Hard abort takes visual precedence — it's the more forceful signal.
+  const softStopping = !aborting && !!loop.softStopRequested;
 
   return (
     <div
@@ -66,22 +74,25 @@ export default function ActiveLoopRow({
         }
       }}
       className={`group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-gray-800 ${
-        isChild ? 'ml-3 border-l border-gray-700 pl-3' : ''
+        isChild ? 'border-l border-gray-700 pl-3' : ''
       } ${aborting ? 'opacity-60' : ''}`}
+      // Indent scales with depth (0.75rem/level), matching the old single-level
+      // `ml-3` at depth 1. Inline because Tailwind can't purge dynamic margins.
+      style={isChild ? { marginLeft: `${depth * 0.75}rem` } : undefined}
     >
-      {/* Status pip */}
+      {/* Status pip — yellow aborting, amber soft-stopping, green running */}
       <span
-        className={`h-2 w-2 flex-shrink-0 rounded-full ${
-          aborting ? 'animate-pulse bg-yellow-500' : 'animate-pulse bg-green-500'
+        className={`h-2 w-2 flex-shrink-0 animate-pulse rounded-full ${
+          aborting ? 'bg-yellow-500' : softStopping ? 'bg-amber-400' : 'bg-green-500'
         }`}
-        aria-label={aborting ? 'Aborting' : 'Running'}
+        aria-label={aborting ? 'Aborting' : softStopping ? 'Stopping' : 'Running'}
       />
 
       {/* Label + model */}
       <div className="min-w-0 flex-1">
         <div className="truncate text-gray-200">{loop.displayName ?? chatLabel}</div>
         <div className="truncate text-[10px] text-gray-500">
-          {loop.modelId} · {elapsedLabel}
+          {loop.modelId} · {softStopping ? 'stopping…' : elapsedLabel}
         </div>
       </div>
 

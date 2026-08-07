@@ -3,6 +3,7 @@
  * defaults. Validates at startup so the server fails fast on misconfiguration.
  */
 
+import path from 'node:path';
 import { loadVfsAccessConfig, type VfsAccessConfig } from './vfsEngine/accessConfig.js';
 
 export interface ServerConfig {
@@ -25,32 +26,46 @@ export interface ServerConfig {
   claudeAgentSessionDir: string;
 }
 
-export function loadServerConfig(): ServerConfig {
-  const port = parseInt(process.env.PORT ?? '3100', 10);
+/**
+ * @param baseDir When set (server started with `--instance-env`), relative
+ *   STORAGE_PATH / VFS_BASE_PATH / CLAUDE_AGENT_SESSION_DIR values resolve
+ *   against it so the env file's directory acts as the instance root. When
+ *   undefined, values pass through untouched (implicit cwd resolution —
+ *   the single-instance behavior).
+ */
+export function loadServerConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  baseDir?: string
+): ServerConfig {
+  const resolveMaybe = (p: string) => (baseDir !== undefined ? path.resolve(baseDir, p) : p);
+
+  const port = parseInt(env.PORT ?? '3100', 10);
   if (Number.isNaN(port) || port < 1 || port > 65535) {
-    throw new Error(`Invalid PORT: ${process.env.PORT}`);
+    throw new Error(`Invalid PORT: ${env.PORT}`);
   }
 
-  const host = process.env.HOST ?? '127.0.0.1';
-  const storagePath = process.env.STORAGE_PATH ?? './data/gremlin.db';
+  const host = env.HOST ?? '127.0.0.1';
+  const storagePath = resolveMaybe(env.STORAGE_PATH ?? './data/gremlin.db');
 
-  const vfsModeRaw = process.env.VFS_MODE ?? 'filesystem';
+  const vfsModeRaw = env.VFS_MODE ?? 'filesystem';
   if (vfsModeRaw !== 'encrypted' && vfsModeRaw !== 'filesystem') {
     throw new Error(`Invalid VFS_MODE: ${vfsModeRaw} (expected 'encrypted' or 'filesystem')`);
   }
   const vfsMode = vfsModeRaw;
 
-  const vfsBasePath = process.env.VFS_BASE_PATH ?? './data/vfs';
-  const vfsAccessConfig = loadVfsAccessConfig();
+  const vfsBasePath = resolveMaybe(env.VFS_BASE_PATH ?? './data/vfs');
+  const vfsAccessConfig = loadVfsAccessConfig(env);
 
   // Default sits next to the SQLite DB so a single STORAGE_PATH override
   // also relocates claude-agent's working dir. CLAUDE_AGENT_SESSION_DIR
-  // wins when set explicitly.
+  // wins when set explicitly. storagePath is already baseDir-resolved, so
+  // the derived default lands next to the resolved DB.
   const storageDir = storagePath.includes('/')
     ? storagePath.slice(0, storagePath.lastIndexOf('/'))
     : '.';
-  const claudeAgentSessionDir =
-    process.env.CLAUDE_AGENT_SESSION_DIR ?? `${storageDir}/claude-agent-sessions`;
+  const claudeAgentSessionDir = resolveMaybe(
+    env.CLAUDE_AGENT_SESSION_DIR ?? `${storageDir}/claude-agent-sessions`
+  );
 
   return {
     port,

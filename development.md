@@ -50,6 +50,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Production source maps with runtime mapping for readable stack traces
 - [x] CORS proxy backend (`cors-proxy/` - Express, SSE streaming) with per-API-definition proxy URL + optional caller auth: set `PROXY_AUTH_TOKEN` on the proxy and a per-API-definition `proxyAuthToken` in the app; sent as the `X-Proxy-Auth` header (distinct from the upstream `Authorization` key) and stripped before forwarding. Unset = open proxy (deploy behind an authenticating reverse proxy)
 - [ ] Bundle size analysis (chunk splitting for large KaTeX/highlight.js bundles)
+- [x] Multi-instance server mode: `--instance-env <path>` loads a specific env file; relative data paths resolve against the file's directory; `gremlinofa-server@.service` systemd template + OpenRC symlink convention for per-user instances
 - [ ] Native TLS termination in the Node WebSocket server (currently requires reverse proxy)
 - [ ] Configurable DB backend for the server (currently hardcoded to `better-sqlite3`; candidates: `node:sqlite` (built-in, zero deps, Node 22.5+), external DB via pure JS drivers (`pg`, `mysql2`), or custom adapters)
 
@@ -267,8 +268,9 @@ src/
 │                   # createStorageAdapter, createVfsAdapter (factories injected
 │                   # into BackendDeps via setBootstrapAdapterFactories)
 ├── server/         # Phase 2 Node WebSocket backend
-│   ├── nodeEntry.ts           # Server entry — loads config, GremlinServer, WebSocket listener
-│   ├── config.ts              # Env-based config (PORT, STORAGE_PATH, VFS_MODE, etc.)
+│   ├── nodeEntry.ts           # Server entry — CLI args (--instance-env), config, GremlinServer, WebSocket listener
+│   ├── envFile.ts             # CLI parsing + env-file loading (multi-instance: one env file per instance; not --env-file — Node intercepts that flag even after the script path)
+│   ├── config.ts              # Env-based config (PORT, STORAGE_PATH, VFS_MODE, etc.); baseDir resolves relative paths under --instance-env
 │   ├── websocketTransport.ts  # Server-side ws handler — dispatches to GremlinServer
 │   ├── installLogTimestamps.ts # Prefix every console.* line with an ISO timestamp (server only)
 │   └── adapters/              # SqliteStorageAdapter, FilesystemVfsAdapter, factories

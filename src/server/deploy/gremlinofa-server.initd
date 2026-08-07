@@ -1,5 +1,17 @@
 #!/sbin/openrc-run
 # GremlinOFA WebSocket Server - OpenRC init script for Alpine Linux
+#
+# Multi-instance: symlink this script and give the symlink its own conf.d
+# file — pidfile and logs already key off RC_SVCNAME:
+#   ln -s gremlinofa-server /etc/init.d/gremlinofa-server.alice
+#   /etc/conf.d/gremlinofa-server.alice:
+#     GREMLINOFA_ENVFILE=/var/lib/gremlinofa/alice/.env
+#     GREMLINOFA_USER=gremlinofa-alice
+#     GREMLINOFA_GROUP=gremlinofa-alice
+#
+# The env file is passed to the server via --instance-env (not sourced into
+# the shell), so relative STORAGE_PATH / VFS_BASE_PATH entries resolve
+# against the env file's directory — not the daemon's cwd.
 
 name="gremlinofa-server"
 description="GremlinOFA WebSocket Server - Node backend with SQLite + filesystem VFS"
@@ -12,6 +24,7 @@ description="GremlinOFA WebSocket Server - Node backend with SQLite + filesystem
 
 command="/usr/bin/node"
 command_args="${GREMLINOFA_DIR}/server.js"
+[ -f "${GREMLINOFA_ENVFILE}" ] && command_args="${command_args} --instance-env ${GREMLINOFA_ENVFILE}"
 command_user="${GREMLINOFA_USER}:${GREMLINOFA_GROUP}"
 command_background=true
 
@@ -25,13 +38,6 @@ depend() {
 }
 
 start_pre() {
-    # Load environment file if it exists
-    if [ -f "${GREMLINOFA_ENVFILE}" ]; then
-        set -a
-        . "${GREMLINOFA_ENVFILE}"
-        set +a
-    fi
-
     # Create log files if they don't exist
     checkpath --file --owner ${GREMLINOFA_USER}:${GREMLINOFA_GROUP} "${output_log}"
     checkpath --file --owner ${GREMLINOFA_USER}:${GREMLINOFA_GROUP} "${error_log}"

@@ -174,7 +174,18 @@ export function useProject({ projectId, callbacks }: UseProjectProps): UseProjec
     try {
       // Patch only the changed fields (+ touch lastUsedAt) so edits made while
       // a loop runs in this project survive its final lastUsedAt bump.
-      await app.patchProject(project.id, updates, { touch: true });
+      //
+      // Optional fields cleared in the UI arrive as `undefined`. The wire (JSON
+      // in server mode) drops undefined-valued keys, so a clear would be silently
+      // preserved instead of applied. Route clears through `unset` — the same
+      // discipline patchChat callers already follow.
+      const unset = (Object.keys(updates) as (keyof Project)[]).filter(
+        key => updates[key] === undefined
+      );
+      await app.patchProject(project.id, updates, {
+        touch: true,
+        ...(unset.length ? { unset } : {}),
+      });
       console.debug('[useProject] Project updated');
       const updatedProject = { ...project, ...updates, lastUsedAt: new Date() };
       setProject(updatedProject);

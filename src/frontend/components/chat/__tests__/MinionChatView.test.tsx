@@ -22,10 +22,12 @@ vi.mock('../MessageList', () => ({
     messages,
     onAction,
     onDeleteMessage,
+    isClaudeAgentChat,
   }: {
     messages: Message<unknown>[];
     onAction?: unknown;
     onDeleteMessage?: (messageId: string) => void;
+    isClaudeAgentChat?: boolean;
   }) => {
     capturedOnDeleteMessage = onDeleteMessage;
     return (
@@ -33,6 +35,7 @@ vi.mock('../MessageList', () => ({
         <span data-testid="message-count">{messages.length}</span>
         <span data-testid="has-on-action">{onAction ? 'true' : 'false'}</span>
         <span data-testid="has-on-delete">{onDeleteMessage ? 'true' : 'false'}</span>
+        <span data-testid="is-claude-agent">{isClaudeAgentChat ? 'true' : 'false'}</span>
       </div>
     );
   },
@@ -168,5 +171,26 @@ describe('MinionChatView', () => {
   it('passes onDeleteMessage to MessageList', () => {
     renderView();
     expect(capturedOnDeleteMessage).toBeTypeOf('function');
+  });
+
+  it('marks the chat as non-claude-agent and keeps delete for ordinary minions', () => {
+    renderView();
+    expect(screen.getByTestId('is-claude-agent').textContent).toBe('false');
+    expect(screen.getByTestId('has-on-delete').textContent).toBe('true');
+  });
+
+  it('hides single-message delete and flags claude-agent when the minion has an SDK session', () => {
+    mockUseMinionChat.mockReturnValue({
+      minionChat: { ...mockMinionChat, claudeAgentSessionId: 'sess-1' },
+      messages: mockMessages,
+      isLoading: false,
+      tokenUsage: mockTokenUsage,
+      deleteMessage: mockDeleteMessage,
+      rollbackToMessage: mockRollbackToMessage,
+    });
+    renderView();
+    expect(screen.getByTestId('is-claude-agent').textContent).toBe('true');
+    expect(screen.getByTestId('has-on-delete').textContent).toBe('false');
+    expect(capturedOnDeleteMessage).toBeUndefined();
   });
 });

@@ -241,6 +241,10 @@ export class APIService {
       // OpenAI/Responses-specific reasoning
       reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
+      // OpenAI response-length control. Responses nests it under `text`,
+      // Chat Completions takes it top-level. Both clients drop it for models
+      // without `supportsVerbosity`; every other provider ignores it.
+      verbosity?: 'low' | 'medium' | 'high';
       // Common options
       systemPrompt?: string;
       preFillResponse?: string;
@@ -253,6 +257,10 @@ export class APIService {
       toolContext?: ToolContext;
       disableStream?: boolean;
       extendedContext?: boolean;
+      // claude-agent only: when true, the model id is sent to the Agent SDK with
+      // a `[1m]` suffix to opt into the 1M context window (no beta-header
+      // equivalent). Pre-gated by the loop; the stub client ignores it.
+      claudeAgentExtendedContext?: boolean;
       // Use 1h cache TTL on Anthropic cache_control blocks (default 5m).
       // Only honored by the Anthropic client.
       useAnthropicOneHourCache?: boolean;
@@ -354,5 +362,14 @@ export class APIService {
       return [];
     }
     return client.extractToolUseBlocks(fullContent);
+  }
+
+  /**
+   * GC provider-side session state for a superseded session id (claude-agent
+   * session JSONLs after a forked rewind). No-op for providers without
+   * server-side sessions; never throws (the client swallows failures).
+   */
+  async deleteProviderSession(apiType: APIType, sessionId: string): Promise<void> {
+    await this.getClient(apiType)?.deleteProviderSession?.(sessionId);
   }
 }

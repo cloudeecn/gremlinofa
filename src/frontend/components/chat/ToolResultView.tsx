@@ -20,6 +20,29 @@ export interface ToolResultViewProps {
 }
 
 /**
+ * Amber notice shown when the claude-agent SDK delivered a different payload to
+ * the model than the full result rendered here — truncated for size, or replaced
+ * with an error. The full result still shows; this flags that the model didn't
+ * see it.
+ */
+function ModelDeliveryBadge({
+  modelDelivery,
+}: {
+  modelDelivery: NonNullable<ToolResultRenderBlock['modelDelivery']>;
+}) {
+  const what = modelDelivery.status === 'error' ? 'an error instead of' : 'a truncated copy of';
+  return (
+    <div className="flex items-start gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+      <span aria-hidden>⚠</span>
+      <span>
+        The model received {what} this result — it may have acted on incomplete data.
+        {modelDelivery.detail ? ` (${modelDelivery.detail})` : ''}
+      </span>
+    </div>
+  );
+}
+
+/**
  * Unified renderer for tool results — handles both simple results (no renderingGroups)
  * and complex results with nested content (e.g., minion sub-agent work).
  *
@@ -59,6 +82,12 @@ function SimpleToolResult({ block }: { block: ToolResultRenderBlock }) {
         <span className="text-purple-500">{isExpanded ? '▼' : '▶'}</span>
       </button>
 
+      {block.modelDelivery && (
+        <div className="mb-1 ml-4">
+          <ModelDeliveryBadge modelDelivery={block.modelDelivery} />
+        </div>
+      )}
+
       {isExpanded && (
         <pre className="ml-4 rounded bg-gray-100 p-2 text-xs break-all whitespace-pre-wrap text-gray-700">
           {renderedContent}
@@ -83,11 +112,14 @@ function getBlockIcon(block: RenderingContentBlock): string {
       return block.icon ?? '🔧';
     case 'tool_result':
       return block.icon ?? (block.is_error ? '❌' : '✅');
+    case 'unknown_block':
+      return '🧩';
     case 'error':
       return '❌';
     case 'injected_file':
     case 'tool_info':
     case 'text':
+    case 'fallback':
     default:
       return '💬';
   }
@@ -136,9 +168,12 @@ function getLastActivityPreview(groups: RenderingBlockGroup[]): string {
           return `Searched: "${block.query}"`;
         case 'web_fetch':
           return `Fetched: ${block.title || block.url}`;
+        case 'unknown_block':
+          return block.name ?? block.blockType;
         case 'injected_file':
         case 'tool_info':
         case 'error':
+        case 'fallback':
           break;
       }
     }
@@ -223,6 +258,12 @@ function ComplexToolResult({
         {iconOnRight && <span className="mr-2 shrink-0">{defaultIcon}</span>}
       </button>
 
+      {block.modelDelivery && (
+        <div className="px-4 pb-2">
+          <ModelDeliveryBadge modelDelivery={block.modelDelivery} />
+        </div>
+      )}
+
       {/* Portal modal out of message list to avoid stacking/scroll issues */}
       {createPortal(
         <Modal isOpen={showModal} onClose={() => setShowModal(false)} size="lg">
@@ -259,6 +300,11 @@ function ComplexToolResult({
                 </div>
               )}
 
+              {/* Leading injected files (injectFiles) */}
+              {toolInfo?.injectedFiles && toolInfo.injectedFiles.length > 0 && (
+                <InjectedFilesList files={toolInfo.injectedFiles} />
+              )}
+
               {/* Tool info input in blue box */}
               {toolInfo?.input && (
                 <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2">
@@ -268,9 +314,9 @@ function ComplexToolResult({
                 </div>
               )}
 
-              {/* Injected files */}
-              {toolInfo?.injectedFiles && toolInfo.injectedFiles.length > 0 && (
-                <InjectedFilesList files={toolInfo.injectedFiles} />
+              {/* Trailing injected files (injectFilesAfter) */}
+              {toolInfo?.injectedFilesAfter && toolInfo.injectedFilesAfter.length > 0 && (
+                <InjectedFilesList files={toolInfo.injectedFilesAfter} />
               )}
 
               {/* Activity groups */}
@@ -297,6 +343,9 @@ function ComplexToolResult({
                   })}
                 </div>
               )}
+
+              {/* Model-delivery notice */}
+              {block.modelDelivery && <ModelDeliveryBadge modelDelivery={block.modelDelivery} />}
 
               {/* Final result box */}
               {hasResult && (
@@ -398,6 +447,11 @@ export function FocusedMinionView({ block }: { block: ToolResultRenderBlock }) {
         </div>
       )}
 
+      {/* Leading injected files (injectFiles) */}
+      {toolInfo?.injectedFiles && toolInfo.injectedFiles.length > 0 && (
+        <InjectedFilesList files={toolInfo.injectedFiles} />
+      )}
+
       {/* Input in blue box */}
       {toolInfo?.input && (
         <div className="rounded border border-blue-300 bg-blue-50 px-3 py-2">
@@ -407,9 +461,9 @@ export function FocusedMinionView({ block }: { block: ToolResultRenderBlock }) {
         </div>
       )}
 
-      {/* Injected files */}
-      {toolInfo?.injectedFiles && toolInfo.injectedFiles.length > 0 && (
-        <InjectedFilesList files={toolInfo.injectedFiles} />
+      {/* Trailing injected files (injectFilesAfter) */}
+      {toolInfo?.injectedFilesAfter && toolInfo.injectedFilesAfter.length > 0 && (
+        <InjectedFilesList files={toolInfo.injectedFilesAfter} />
       )}
 
       {/* Result in green/red box */}

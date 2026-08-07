@@ -204,7 +204,17 @@ export class LoopRegistry {
   softStop(loopId: LoopId): boolean {
     const entry = this.entries.get(loopId);
     if (!entry) return false;
+    // Idempotent: only the first request flips the flag and broadcasts. The
+    // `updated` delta carries the soft-stop state (status stays unchanged) so
+    // the sidebar + a re-attaching chat view can reflect "Stopping…" live.
+    if (entry.softStopRequested) return true;
     entry.softStopRequested = true;
+    this.broadcast({
+      type: 'updated',
+      loopId,
+      status: entry.loop.status,
+      softStopRequested: true,
+    });
     return true;
   }
 
@@ -219,7 +229,10 @@ export class LoopRegistry {
 
   /** Get a snapshot of every currently-running loop. Used by `listActiveLoops`. */
   list(): ActiveLoop[] {
-    return Array.from(this.entries.values()).map(e => ({ ...e.loop }));
+    return Array.from(this.entries.values()).map(e => ({
+      ...e.loop,
+      softStopRequested: e.softStopRequested,
+    }));
   }
 
   /** Look up a single loop by id. Returns the live record (callers must not mutate). */
@@ -233,6 +246,27 @@ export class LoopRegistry {
       if (entry.loop.chatId === chatId) return true;
     }
     return false;
+  }
+
+  /**
+   * Minion chats have no ChatRunner CHAT_BUSY equivalent (their child loops
+   * register under the PARENT chat id), so the minion tool takes an exclusive
+   * hold on the minion chat id for the duration of a call. Guards the lazy
+   * savepoint rollback and claude-agent session bookkeeping against a second
+   * caller driving the same minion chat concurrently.
+   */
+  private readonly busyMinionChats = new Set<string>();
+
+  /** Take the exclusive hold. False = already held; caller must not proceed. */
+  acquireMinionChat(minionChatId: string): boolean {
+    if (this.busyMinionChats.has(minionChatId)) return false;
+    this.busyMinionChats.add(minionChatId);
+    return true;
+  }
+
+  /** Release the hold taken by `acquireMinionChat`. Safe to call when unheld. */
+  releaseMinionChat(minionChatId: string): void {
+    this.busyMinionChats.delete(minionChatId);
   }
 
   /**

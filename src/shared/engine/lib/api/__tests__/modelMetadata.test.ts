@@ -113,21 +113,195 @@ describe('modelMetadata', () => {
 
       it('resolves claude-opus-4-8 to its own entry, not the claude-opus catch-all', () => {
         const apiDef = createApiDef({ apiType: 'anthropic' });
-        // The opus-4-6 entry carries a `claude-opus` catch-all that also
-        // prefix-matches 4-8 at the same specificity score; the dedicated
-        // opus-4-8 entry must win on array order. Its onlyAdaptiveReasoning /
-        // supportsXhighEffort flags (absent on opus-4-6) prove which entry hit.
+        // The opus-4-8 entry carries the `claude-opus` catch-all in a separate
+        // low-specificity match, so 4-8's dedicated specific match wins. Its
+        // onlyAdaptiveReasoning flag and xhigh support (both absent on opus-4-6)
+        // prove which entry hit.
         for (const id of ['claude-opus-4-8', 'claude-opus-4-8-20260301']) {
           const result = getModelMetadataFor(apiDef, id);
           expect(result.matchedMode).toBe('fuzz');
           expect(result.onlyAdaptiveReasoning).toBe(true);
-          expect(result.supportsXhighEffort).toBe(true);
+          expect(result.supportedReasoningEfforts).toEqual([
+            'low',
+            'medium',
+            'high',
+            'xhigh',
+            'max',
+          ]);
           expect(result.maxOutputTokens).toBe(128000);
         }
 
         // Sanity: opus-4-6 lacks those flags, so the assertions above can't pass by accident
         const opus46 = getModelMetadataFor(apiDef, 'claude-opus-4-6-20260101');
         expect(opus46.onlyAdaptiveReasoning).toBeUndefined();
+      });
+
+      it('flags supportsVerbosity on the GPT-5 family only', () => {
+        const apiDef = createApiDef({ apiType: 'responses_api' });
+
+        for (const id of ['gpt-5', 'gpt-5-mini', 'gpt-5.1-codex', 'gpt-5.2', 'gpt-5.6']) {
+          expect(getModelMetadataFor(apiDef, id).supportsVerbosity).toBe(true);
+        }
+
+        // Pre-GPT-5 models reject the param, and gpt-5-search-api is left off
+        // deliberately (search endpoints are picky about sampling params).
+        for (const id of ['gpt-4o', 'gpt-4.1', 'o3', 'o4-mini', 'gpt-5-search-api']) {
+          expect(getModelMetadataFor(apiDef, id).supportsVerbosity).toBeUndefined();
+        }
+      });
+
+      it('routes an unknown future opus to the adaptive-only 4.8 entry via catch-all', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+
+        // The likely next minor and a hypothetical major bump both fall through
+        // to the 4.8 catch-all rather than the legacy $15/$75 base entry.
+        for (const id of ['claude-opus-4-9-20270101', 'claude-opus-5']) {
+          const result = getModelMetadataFor(apiDef, id);
+          expect(result.matchedMode).toBe('fuzz');
+          expect(result.inputPrice).toBe(5);
+          expect(result.outputPrice).toBe(25);
+          expect(result.onlyAdaptiveReasoning).toBe(true);
+          expect(result.supportedReasoningEfforts).toEqual([
+            'low',
+            'medium',
+            'high',
+            'xhigh',
+            'max',
+          ]);
+        }
+      });
+
+      it('carries the documented effort ladder per Claude model', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        const ALL = ['low', 'medium', 'high', 'xhigh', 'max'];
+        const NO_XHIGH = ['low', 'medium', 'high', 'max'];
+
+        // xhigh is a curated list: Fable 5, Opus 5/4.8/4.7, Sonnet 5.
+        // max additionally covers Opus 4.6 and Sonnet 4.6.
+        const cases: [string, string[] | undefined][] = [
+          ['claude-fable-5', ALL],
+          ['claude-opus-4-8', ALL],
+          ['claude-opus-5', ALL], // via the claude-opus catch-all
+          ['claude-opus-4-7', ALL],
+          ['claude-sonnet-5', ALL],
+          ['claude-opus-4-6', NO_XHIGH],
+          ['claude-sonnet-4-6', NO_XHIGH],
+          ['claude-haiku-5', NO_XHIGH],
+          // Effort is unsupported below the 4.6 generation (Opus 4.5 takes it,
+          // but only outside adaptive mode, so it is deliberately unannotated).
+          ['claude-opus-4-5', undefined],
+          ['claude-sonnet-4-5', undefined],
+          ['claude-haiku-4-5', undefined],
+          ['claude-3-5-sonnet', undefined],
+        ];
+
+        for (const [id, expected] of cases) {
+          expect(getModelMetadataFor(apiDef, id).supportedReasoningEfforts, id).toEqual(expected);
+        }
+      });
+
+      it('resolves legacy Opus 4.0 / 4.1 to their own $15/$75 tier (no longer shadowed)', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        for (const id of [
+          'claude-opus-4-0',
+          'claude-opus-4-20250514',
+          'claude-opus-4-1',
+          'claude-opus-4-1-20250805',
+          'anthropic.claude-opus-4-20250514-v1:0',
+        ]) {
+          const result = getModelMetadataFor(apiDef, id);
+          expect(result.matchedMode).toBe('fuzz');
+          expect(result.inputPrice).toBe(15);
+          expect(result.outputPrice).toBe(75);
+          expect(result.onlyAdaptiveReasoning).toBeUndefined();
+        }
+      });
+
+      it('resolves claude-fable-5 with its pricing + adaptive thinking on both api types', () => {
+        for (const apiType of ['anthropic', 'claude-agent'] as const) {
+          const apiDef = createApiDef({ apiType });
+          for (const id of [
+            'claude-fable-5',
+            'claude-fable-5-20260601',
+            'anthropic.claude-fable-5',
+          ]) {
+            const result = getModelMetadataFor(apiDef, id);
+            expect(result.matchedMode).toBe('fuzz');
+            expect(result.inputPrice).toBe(10);
+            expect(result.outputPrice).toBe(50);
+            expect(result.supportsAdaptiveReasoning).toBe(true);
+            expect(result.onlyAdaptiveReasoning).toBe(true);
+            expect(result.contextWindow).toBe(200000);
+          }
+        }
+      });
+
+      it('resolves Sonnet 5 to adaptive-only pricing matching Sonnet 4.6', () => {
+        for (const apiType of ['anthropic', 'claude-agent'] as const) {
+          const apiDef = createApiDef({ apiType });
+          for (const id of [
+            'claude-sonnet-5',
+            'claude-sonnet-5-20260601',
+            'anthropic.claude-sonnet-5',
+          ]) {
+            const result = getModelMetadataFor(apiDef, id);
+            expect(result.matchedMode).toBe('fuzz');
+            expect(result.inputPrice).toBe(3);
+            expect(result.outputPrice).toBe(15);
+            expect(result.supportsAdaptiveReasoning).toBe(true);
+            expect(result.onlyAdaptiveReasoning).toBe(true);
+          }
+        }
+      });
+
+      it('resolves Haiku 5 to adaptive-only pricing matching Haiku 4.5', () => {
+        for (const apiType of ['anthropic', 'claude-agent'] as const) {
+          const apiDef = createApiDef({ apiType });
+          for (const id of [
+            'claude-haiku-5',
+            'claude-haiku-5-20260601',
+            'anthropic.claude-haiku-5',
+          ]) {
+            const result = getModelMetadataFor(apiDef, id);
+            expect(result.matchedMode).toBe('fuzz');
+            expect(result.inputPrice).toBe(1);
+            expect(result.outputPrice).toBe(5);
+            expect(result.supportsAdaptiveReasoning).toBe(true);
+            expect(result.onlyAdaptiveReasoning).toBe(true);
+          }
+        }
+      });
+
+      it('routes an unknown future sonnet/haiku to the adaptive-only 5 entry via catch-all', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+
+        const sonnet6 = getModelMetadataFor(apiDef, 'claude-sonnet-6-20270101');
+        expect(sonnet6.matchedMode).toBe('fuzz');
+        expect(sonnet6.inputPrice).toBe(3);
+        expect(sonnet6.onlyAdaptiveReasoning).toBe(true);
+
+        const haiku6 = getModelMetadataFor(apiDef, 'claude-haiku-6-20270101');
+        expect(haiku6.matchedMode).toBe('fuzz');
+        expect(haiku6.inputPrice).toBe(1);
+        expect(haiku6.onlyAdaptiveReasoning).toBe(true);
+      });
+
+      it('keeps the catch-all off specific sonnet/haiku entries (no false adaptive-only)', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+
+        // The 5-entry catch-all lives in its own low-specificity match, so
+        // dedicated older ids still resolve to themselves — not the 5 profile.
+        const sonnet46 = getModelMetadataFor(apiDef, 'claude-sonnet-4-6-20260101');
+        expect(sonnet46.supportsAdaptiveReasoning).toBe(true);
+        expect(sonnet46.onlyAdaptiveReasoning).toBeUndefined();
+
+        const sonnet4 = getModelMetadataFor(apiDef, 'claude-sonnet-4-20250514');
+        expect(sonnet4.maxOutputTokens).toBe(16384);
+        expect(sonnet4.onlyAdaptiveReasoning).toBeUndefined();
+
+        const haiku45 = getModelMetadataFor(apiDef, 'claude-haiku-4-5-20250101');
+        expect(haiku45.onlyAdaptiveReasoning).toBeUndefined();
+        expect(haiku45.supportsAdaptiveReasoning).toBeUndefined();
       });
 
       it('prioritizes more specific fuzz matches', () => {

@@ -41,6 +41,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formNudgeThinking, setFormNudgeThinking] = useState(false);
   const [formMandateCoT, setFormMandateCoT] = useState(false);
   const [formTreatEmptyOutputAsError, setFormTreatEmptyOutputAsError] = useState(false);
+  const [formTreatFallbackAsError, setFormTreatFallbackAsError] = useState(false);
   const [formUseStreamAccumulator, setFormUseStreamAccumulator] = useState(false);
   const [formFlexTierSupported, setFormFlexTierSupported] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -68,6 +69,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormNudgeThinking(false);
     setFormMandateCoT(false);
     setFormTreatEmptyOutputAsError(false);
+    setFormTreatFallbackAsError(false);
     setFormUseStreamAccumulator(false);
     setFormFlexTierSupported(false);
     setShowAdvanced(false);
@@ -109,6 +111,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormNudgeThinking(def.advancedSettings?.nudgeThinking || false);
     setFormMandateCoT(def.advancedSettings?.mandateCoT || false);
     setFormTreatEmptyOutputAsError(def.advancedSettings?.treatEmptyOutputAsError || false);
+    setFormTreatFallbackAsError(def.advancedSettings?.treatFallbackAsError || false);
     setFormUseStreamAccumulator(def.advancedSettings?.useStreamAccumulator || false);
     setFormFlexTierSupported(def.advancedSettings?.flexTierSupported || false);
     setShowAdvanced(false);
@@ -126,6 +129,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormNudgeThinking(def.advancedSettings?.nudgeThinking || false);
     setFormMandateCoT(def.advancedSettings?.mandateCoT || false);
     setFormTreatEmptyOutputAsError(def.advancedSettings?.treatEmptyOutputAsError || false);
+    setFormTreatFallbackAsError(def.advancedSettings?.treatFallbackAsError || false);
     setFormUseStreamAccumulator(def.advancedSettings?.useStreamAccumulator || false);
     setFormFlexTierSupported(def.advancedSettings?.flexTierSupported || false);
     setShowAdvanced(true);
@@ -153,6 +157,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormNudgeThinking(false);
     setFormMandateCoT(false);
     setFormTreatEmptyOutputAsError(false);
+    setFormTreatFallbackAsError(false);
     setFormUseStreamAccumulator(false);
     setFormFlexTierSupported(false);
     setShowAdvanced(false);
@@ -203,6 +208,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
           formNudgeThinking ||
           formMandateCoT ||
           formTreatEmptyOutputAsError ||
+          formTreatFallbackAsError ||
           formUseStreamAccumulator ||
           formFlexTierSupported
             ? {
@@ -214,6 +220,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                 ...(formNudgeThinking && { nudgeThinking: true }),
                 ...(formMandateCoT && { mandateCoT: true }),
                 ...(formTreatEmptyOutputAsError && { treatEmptyOutputAsError: true }),
+                ...(formTreatFallbackAsError && { treatFallbackAsError: true }),
                 ...(formUseStreamAccumulator && { useStreamAccumulator: true }),
                 ...(formFlexTierSupported && { flexTierSupported: true }),
               }
@@ -253,6 +260,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formNudgeThinking,
     formMandateCoT,
     formTreatEmptyOutputAsError,
+    formTreatFallbackAsError,
     formUseStreamAccumulator,
     formFlexTierSupported,
     editingId,
@@ -281,6 +289,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
           formNudgeThinking ||
           formMandateCoT ||
           formTreatEmptyOutputAsError ||
+          formTreatFallbackAsError ||
           formUseStreamAccumulator ||
           formFlexTierSupported
             ? {
@@ -292,6 +301,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                 ...(formNudgeThinking && { nudgeThinking: true }),
                 ...(formMandateCoT && { mandateCoT: true }),
                 ...(formTreatEmptyOutputAsError && { treatEmptyOutputAsError: true }),
+                ...(formTreatFallbackAsError && { treatFallbackAsError: true }),
                 ...(formUseStreamAccumulator && { useStreamAccumulator: true }),
                 ...(formFlexTierSupported && { flexTierSupported: true }),
               }
@@ -313,6 +323,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formNudgeThinking,
     formMandateCoT,
     formTreatEmptyOutputAsError,
+    formTreatFallbackAsError,
     formUseStreamAccumulator,
     formFlexTierSupported,
     saveAPIDefinition,
@@ -553,6 +564,25 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           Returns an error when a turn produces text that trims to empty and has no
                           tool calls. Catches degenerate responses from unreliable providers.
                         </p>
+
+                        {formApiType === 'claude-agent' && (
+                          <>
+                            <label className="mb-2 flex cursor-pointer items-center">
+                              <input
+                                type="checkbox"
+                                checked={formTreatFallbackAsError}
+                                onChange={e => setFormTreatFallbackAsError(e.target.checked)}
+                                className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              <span className="text-sm text-gray-700">Treat fallback as error</span>
+                            </label>
+                            <p className="mb-4 ml-6 text-xs text-gray-500">
+                              Surfaces an error when the SDK hands the request to a different model
+                              (a fallback block). Off shows an inline notice instead and keeps the
+                              response.
+                            </p>
+                          </>
+                        )}
 
                         {formApiType === 'responses_api' && (
                           <>
@@ -885,6 +915,25 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         Returns an error when a turn produces text that trims to empty and has no
                         tool calls. Catches degenerate responses from unreliable providers.
                       </p>
+
+                      {formApiType === 'claude-agent' && (
+                        <>
+                          <label className="mb-2 flex cursor-pointer items-center">
+                            <input
+                              type="checkbox"
+                              checked={formTreatFallbackAsError}
+                              onChange={e => setFormTreatFallbackAsError(e.target.checked)}
+                              className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span className="text-sm text-gray-700">Treat fallback as error</span>
+                          </label>
+                          <p className="mb-3 ml-6 text-xs text-gray-500">
+                            Surfaces an error when the SDK hands the request to a different model (a
+                            fallback block). Off shows an inline notice instead and keeps the
+                            response.
+                          </p>
+                        </>
+                      )}
 
                       {formApiType === 'responses_api' && (
                         <>

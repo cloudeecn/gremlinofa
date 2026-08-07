@@ -158,6 +158,9 @@ export const metadataTool: ClientSideTool = {
   name: 'metadata',
   displayName: 'Metadata',
   displaySubtitle: 'Set chat title/summary, list recent chats',
+  // Its only side-effect signal is `chatMetadata`, which the claude-agent
+  // bridge collects and applies after the SDK turn (see claudeAgentClient).
+  claudeAgentBridgeable: true,
 
   description:
     'Manage chat metadata. Commands: update_chat_metadata (set title and/or summary for the current chat — only provided fields are updated, empty string clears the field), list_recent_chats (list titles and summaries of recent chats in this project).',

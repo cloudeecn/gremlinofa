@@ -5,6 +5,9 @@
  */
 
 import { createVfsApp, config } from './app.js';
+import { installLogTimestamps } from '../installLogTimestamps.js';
+
+installLogTimestamps();
 
 const app = createVfsApp();
 

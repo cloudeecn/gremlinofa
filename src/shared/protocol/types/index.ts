@@ -68,6 +68,7 @@ export interface APIDefinition {
     nudgeThinking?: boolean; // Append "<<WITH THINKING STEPS>>" to last user message
     mandateCoT?: boolean; // Reject responses without chain-of-thought reasoning tokens
     treatEmptyOutputAsError?: boolean; // Reject turns that produce empty text and no tool calls
+    treatFallbackAsError?: boolean; // claude-agent: surface a fallback content block as a turn error instead of an inline notice
     useStreamAccumulator?: boolean; // Build result from stream events instead of stream.finalResponse() — for Responses API providers that return empty finalResponse
     // Provider accepts the flex/batch service tier param (OpenAI service_tier,
     // Gemini serviceTier). When false (default), the project's flex toggle is a
@@ -97,6 +98,12 @@ export type ReasoningEffort =
   | 'max'
   | undefined;
 export type ReasoningSummary = 'auto' | 'concise' | 'detailed' | undefined;
+
+/**
+ * OpenAI response-length control. Responses API nests it under `text.verbosity`,
+ * Chat Completions takes it top-level. Gated per model by `supportsVerbosity`.
+ */
+export type Verbosity = 'low' | 'medium' | 'high' | undefined;
 
 /**
  * Anthropic-specific reasoning configuration
@@ -168,13 +175,16 @@ export interface ModelMetadata {
   reasoningMode?: ModelReasoningMode;
 
   /**
-   * Supported reasoning effort levels for OpenAI/xAI models
-   * Used by mapReasoningEffort() to validate/map user-specified effort
+   * Supported reasoning effort levels for this model.
+   * Used by mapReasoningEffort() (OpenAI/xAI) and mapAnthropicEffort() (Claude) to
+   * clamp a user-specified effort to something the model accepts.
    * Examples:
    * - o-series: ['low', 'medium', 'high']
    * - gpt-5: ['minimal', 'low', 'medium', 'high']
    * - gpt-5.1/5.2: ['none', 'minimal', 'low', 'medium', 'high']
    * - grok-3-mini: ['low', 'high']
+   * - Claude Opus 4.7+/Sonnet 5/Fable 5: ['low', 'medium', 'high', 'xhigh', 'max']
+   * - Claude Opus 4.6/Sonnet 4.6: ['low', 'medium', 'high', 'max'] (no xhigh)
    */
   supportedReasoningEfforts?: ReasoningEffort[];
 
@@ -191,8 +201,8 @@ export interface ModelMetadata {
   /** When true, adaptive mode is forced regardless of `reasoningBudgetTokens` — Anthropic Opus 4.7+. */
   onlyAdaptiveReasoning?: boolean;
 
-  /** Accepts `xhigh` as a distinct output_config.effort value (between `high` and `max`) — Anthropic Opus 4.7+. */
-  supportsXhighEffort?: boolean;
+  /** Accepts the OpenAI `verbosity` parameter — GPT-5 family only; gpt-4.x and the o-series reject it. */
+  supportsVerbosity?: boolean;
 
   /** Supports function/tool calling */
   supportsTools?: boolean;
@@ -255,6 +265,8 @@ export interface Project {
   // OpenAI/Responses API reasoning
   reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'; // undefined = auto
   reasoningSummary?: 'auto' | 'concise' | 'detailed'; // undefined = auto
+  // OpenAI response-length control. Only sent to models with `supportsVerbosity`.
+  verbosity?: Verbosity;
   // Message metadata settings
   sendMessageMetadata?: boolean | 'template';
   metadataTimestampMode?: 'utc' | 'local' | 'relative' | 'disabled';
@@ -392,8 +404,14 @@ export interface MessageContent<T> {
   attachmentIds?: string[]; // References to attachment records
   originalAttachmentCount?: number; // Number of attachments when message was sent (for tracking deleted attachments)
   stopReason?: MessageStopReason; // Why message ended (end_turn, max_tokens, etc.)
-  injectedFiles?: Array<{ path: string; content: string }>; // Files for API-client-level block construction
-  injectionMode?: 'inline' | 'separate-block' | 'as-file'; // How API client should render injectedFiles
+  injectedFiles?: Array<{ path: string; content: string; preamble?: string; postamble?: string }>; // Files for API-client-level block construction, placed before the text; preamble/postamble replace the default framing
+  injectedFilesAfter?: Array<{
+    path: string;
+    content: string;
+    preamble?: string;
+    postamble?: string;
+  }>; // Same, but placed after the text block
+  injectionMode?: 'inline' | 'separate-block' | 'as-file' | 'mock-tool-call'; // How API client should render both injected-file arrays
 }
 
 // Attachment types
@@ -778,6 +796,8 @@ export interface ToolContext {
   chatId?: string;
   namespace?: string;
   noLineNumbers?: boolean;
+  /** Loop-level override for line-number display; positive (true = show). Wins over noLineNumbers. */
+  fileLineNumbers?: boolean;
   /** Pre-bound adapter using the context's namespace */
   vfsAdapter: import('../../services/vfs/vfsAdapter').VfsAdapter;
   /** Factory to create adapters for other namespaces */
@@ -794,6 +814,21 @@ export interface ToolContext {
    * `parentLoopId` so the LoopRegistry can group parent/child runs.
    */
   loopId?: string;
+  /**
+   * Minion nesting depth of the loop this context belongs to. 0 (or absent)
+   * for a top-level chat; a minion spawned from a depth-N loop runs at N+1.
+   * `minionTool` reads this to enforce its hard nesting cap and to gate
+   * whether the child it spawns is even offered the `minion` tool.
+   */
+  minionDepth?: number;
+  /**
+   * Persona set this loop may delegate to when it spawns minions (the
+   * "ceiling" for per-call persona allowlisting). `undefined` = unrestricted
+   * (top-level chat). `minionTool` validates a spawned minion's persona and
+   * its onward `availablePersonas` grant against this set, and narrows it for
+   * the child. Mirrors the `minionDepth` capability-threading.
+   */
+  minionAvailablePersonas?: string[];
   /**
    * Injected backend dependencies. Tools read storage / encryption / api /
    * tool registry from the context instead of importing module-level
@@ -829,6 +864,13 @@ export interface SystemPromptContext {
   apiType?: APIType;
   /** VFS namespace for isolated minion personas */
   namespace?: string;
+  /**
+   * Persona allowlist for this loop — when set, the minion tool's persona
+   * listing injection is filtered to this subset. `undefined` = list all
+   * personas (top-level chat). Threaded by `executeMinion` for child loops so
+   * a minion only sees the personas it was granted permission to delegate to.
+   */
+  minionAvailablePersonas?: string[];
   /**
    * VFS adapter factory — uses correct backend (local/remote) for the
    * project. Always populated by the worker / backend before invoking a
@@ -886,10 +928,14 @@ export interface ClientSideTool {
    * chat exposes the tool to the host `claude` CLI as an in-process MCP tool
    * (`mcp__gremlin__<name>`) and dispatches its calls through
    * `executeClientSideTool`. Tools whose `ToolResult` only carries
-   * `content`/`isError`/`renderingGroups`/`tokenTotals` bridge cleanly; loop-
-   * control tools (return/checkpoint/dummy) and chat-side-effect tools
-   * (metadata) are intentionally left off — their `ToolResult` signals are
-   * meaningful only to the GremlinOFA agentic loop, which the SDK bypasses.
+   * `content`/`isError`/`renderingGroups`/`tokenTotals` bridge cleanly. The
+   * `metadata` tool also bridges: its `chatMetadata` signal can't apply
+   * mid-turn (the SDK owns the whole turn) so the bridge collects it and the
+   * client surfaces it on `StreamResult.chatMetadata`, folded into the chat
+   * after the turn via the `chat_metadata_updated` loop event — available to
+   * the next turn and the user, just not the in-flight one. Loop-control tools
+   * (return/checkpoint/dummy) stay off — they steer the GremlinOFA loop the
+   * SDK replaces, so their signals have no meaning in a claude-agent turn.
    */
   claudeAgentBridgeable?: boolean;
   /** Tool description - can be static string or function for dynamic content */
@@ -961,6 +1007,10 @@ export interface MinionChat {
   modelId?: string;
   /** Tools enabled for this minion (persisted for continuation) */
   enabledTools?: string[];
+  /** Whether this minion was granted permission to spawn its own sub-minions (per-call nesting grant, persisted for continuation) */
+  allowNesting?: boolean;
+  /** Persona set this minion may delegate to (the ceiling for its own minion calls, persisted for continuation) */
+  availablePersonas?: string[];
   /** Hook name in /hooks/ for verifying minion output before savepoint advances */
   verifyHook?: string;
   /** Override: enable/disable reasoning for this minion */
@@ -969,11 +1019,13 @@ export interface MinionChat {
   reasoningBudgetTokens?: number;
   /** Override: reasoning effort level */
   reasoningEffort?: ReasoningEffort;
+  /** Override: OpenAI response verbosity */
+  verbosity?: Verbosity;
   /** Override: temperature */
   temperature?: number;
   /** Override: max output tokens */
   maxOutputTokens?: number;
-  /** Override: file injection mode (inline, separate-block, as-file) */
+  /** Override: file injection mode (inline, separate-block, as-file, mock-tool-call) */
   fileInjectionMode?: string;
   /** Override: inline system prompt appended to minion prompt */
   systemPrompt?: string;
@@ -981,6 +1033,8 @@ export interface MinionChat {
   systemPromptFile?: string | string[];
   /** Override: thinking-nudge text appended to last user message. Empty string = explicitly off. */
   nudgeThinking?: string;
+  /** Override: line-number display (positive; true = show). Applies to injected files and the minion's own reads. */
+  fileLineNumbers?: boolean;
   /** Override: thinkingKeepTurns (forwarded to API as server-side context edit). */
   thinkingKeepTurns?: number;
   /** Override: prune thinking blocks client-side before the API call. */
@@ -991,6 +1045,12 @@ export interface MinionChat {
   claudeAgentSessionId?: string;
   /** SDK assistant UUID to rewind to on next minion send. Cleared after consumption. */
   claudeAgentResumeAt?: string;
+  /**
+   * Verify-hook rejection reason awaiting delivery (verifyFeedback tool option).
+   * Appended to the next true-retry message so the model gets a corrective
+   * signal instead of a byte-identical resend. Cleared on consumption/success.
+   */
+  pendingVerifyFeedback?: string;
 }
 
 // Virtual Filesystem (VFS) types

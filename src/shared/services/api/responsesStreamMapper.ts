@@ -73,7 +73,7 @@ export function parseResponsesSSEText(text: string): ResponsesSSEEvent[] {
             events.push({ type: data.type, data });
           }
         } catch {
-          console.warn('Failed to parse SSE data:', currentData);
+          console.warn('Failed to parse SSE data (len=%d)', currentData.length);
         }
       } else if (currentEvent) {
         // Standard format with event line
@@ -81,7 +81,7 @@ export function parseResponsesSSEText(text: string): ResponsesSSEEvent[] {
           const data = JSON.parse(currentData) as Record<string, unknown>;
           events.push({ type: currentEvent, data });
         } catch {
-          console.warn('Failed to parse SSE data:', currentData);
+          console.warn('Failed to parse SSE data (len=%d)', currentData.length);
         }
       }
       currentEvent = null;

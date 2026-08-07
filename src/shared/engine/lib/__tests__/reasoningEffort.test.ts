@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { mapReasoningEffort, REASONING_EFFORTS } from '../reasoningEffort';
+import {
+  isAnthropicEffort,
+  mapAnthropicEffort,
+  mapReasoningEffort,
+  REASONING_EFFORTS,
+} from '../reasoningEffort';
 
 describe('REASONING_EFFORTS', () => {
   it('contains all effort levels in order', () => {
@@ -116,6 +121,75 @@ describe('mapReasoningEffort', () => {
 
     it('maps xhigh to xhigh when xhigh present but max not', () => {
       expect(mapReasoningEffort('xhigh', ['low', 'medium', 'xhigh'] as const)).toBe('xhigh');
+    });
+  });
+});
+
+describe('isAnthropicEffort', () => {
+  it('accepts the five levels Anthropic exposes', () => {
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      expect(isAnthropicEffort(level)).toBe(true);
+    }
+  });
+
+  it('rejects levels the Anthropic API has no value for', () => {
+    expect(isAnthropicEffort('none')).toBe(false);
+    expect(isAnthropicEffort('minimal')).toBe(false);
+    expect(isAnthropicEffort(undefined)).toBe(false);
+  });
+});
+
+describe('mapAnthropicEffort', () => {
+  const ALL = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+  const NO_XHIGH = ['low', 'medium', 'high', 'max'] as const; // Opus 4.6 / Sonnet 4.6
+
+  describe('omitting the parameter', () => {
+    it('returns undefined when no effort was requested', () => {
+      expect(mapAnthropicEffort(undefined, ALL)).toBeUndefined();
+    });
+
+    it('returns undefined when the model advertises no effort list', () => {
+      expect(mapAnthropicEffort('high', undefined)).toBeUndefined();
+    });
+
+    // mapReasoningEffort throws on an empty array, and [] is the normal value
+    // for models with no configurable effort — this must never reach a request.
+    it('returns undefined instead of throwing on an empty list', () => {
+      expect(() => mapAnthropicEffort('high', [])).not.toThrow();
+      expect(mapAnthropicEffort('high', [])).toBeUndefined();
+    });
+  });
+
+  describe('clamping', () => {
+    it('maps below-range levels down to low', () => {
+      expect(mapAnthropicEffort('none', ALL)).toBe('low');
+      expect(mapAnthropicEffort('minimal', ALL)).toBe('low');
+    });
+
+    it('passes through levels the model supports', () => {
+      expect(mapAnthropicEffort('medium', ALL)).toBe('medium');
+      expect(mapAnthropicEffort('high', ALL)).toBe('high');
+      expect(mapAnthropicEffort('xhigh', ALL)).toBe('xhigh');
+      expect(mapAnthropicEffort('max', ALL)).toBe('max');
+    });
+
+    it('drops levels the Anthropic API rejects from a malformed list', () => {
+      expect(mapAnthropicEffort('minimal', ['none', 'minimal', 'low', 'high'])).toBe('low');
+    });
+
+    it('maps max down to the highest supported level', () => {
+      expect(mapAnthropicEffort('max', ['low', 'medium', 'high'])).toBe('high');
+    });
+  });
+
+  // xhigh means "deeper than high", so it escalates rather than rounding down.
+  describe('xhigh on a model without it', () => {
+    it('escalates to max when max is available', () => {
+      expect(mapAnthropicEffort('xhigh', NO_XHIGH)).toBe('max');
+    });
+
+    it('falls back to the highest supported level when max is not', () => {
+      expect(mapAnthropicEffort('xhigh', ['low', 'medium', 'high'])).toBe('high');
     });
   });
 });

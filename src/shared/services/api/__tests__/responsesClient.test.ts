@@ -807,4 +807,72 @@ describe('ResponsesClient', () => {
       expect(mockClient.responses.create).not.toHaveBeenCalled();
     });
   });
+
+  describe('verbosity', () => {
+    // Drains a non-streaming call and hands back the request params the SDK saw.
+    const captureRequest = async (
+      model: Record<string, unknown> | undefined,
+      verbosity?: 'low' | 'medium' | 'high'
+    ) => {
+      mockGetModel.mockResolvedValueOnce(model);
+
+      const mockClient = {
+        responses: {
+          create: vi.fn().mockResolvedValue({ output: [], usage: {} }),
+          stream: vi.fn(),
+        },
+      };
+      (OpenAI as MockedClass<typeof OpenAI>).mockImplementation(function (this: any) {
+        return mockClient as any;
+      });
+
+      const messages: Message<any>[] = [
+        {
+          id: 'msg1',
+          role: 'user',
+          content: { type: 'text', content: 'Hi' },
+          timestamp: new Date(),
+        },
+      ];
+
+      const generator = client.sendMessageStream(messages, 'gpt-5', mockApiDefinition, {
+        maxTokens: 2048,
+        enableReasoning: true,
+        reasoningBudgetTokens: 2048,
+        signal: new AbortController().signal,
+        disableStream: true,
+        verbosity,
+      });
+      for await (const _chunk of generator) {
+        // drain
+      }
+
+      return mockClient.responses.create.mock.calls[0][0];
+    };
+
+    it('nests verbosity under text for models that support it', async () => {
+      const request = await captureRequest(
+        { id: 'gpt-5', apiType: 'responses_api', supportsVerbosity: true },
+        'low'
+      );
+
+      expect(request.text).toEqual({ verbosity: 'low' });
+    });
+
+    it('omits verbosity for models without supportsVerbosity', async () => {
+      const request = await captureRequest({ id: 'gpt-4o', apiType: 'responses_api' }, 'low');
+
+      expect(request.text).toBeUndefined();
+    });
+
+    it('omits verbosity when the option is unset', async () => {
+      const request = await captureRequest({
+        id: 'gpt-5',
+        apiType: 'responses_api',
+        supportsVerbosity: true,
+      });
+
+      expect(request.text).toBeUndefined();
+    });
+  });
 });

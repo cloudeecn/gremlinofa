@@ -22,6 +22,7 @@ import type {
   ToolResult,
   ToolStreamEvent,
   ToolExecuteReturn,
+  RenderingBlockGroup,
 } from '../../../protocol/types';
 
 // Hoisted mock holders so the singleton-replacing mocks below don't have
@@ -164,6 +165,7 @@ vi.mock('../../../protocol/idGenerator', () => ({
 
 import { executeClientSideTool } from '../clientSideTools';
 import type { VfsAdapter } from '../../vfs/vfsAdapter';
+import { sha256Hex } from '../../../protocol/sha256Hex';
 import { stubBackendDeps } from './testStubs';
 
 // minionIntegration tests don't reach into vfs adapter methods.
@@ -676,6 +678,7 @@ describe('Minion Integration', () => {
             enableReasoning: true,
             reasoningBudgetTokens: 8192,
             reasoningEffort: 'high',
+            verbosity: 'low',
             temperature: 0.3,
             maxOutputTokens: 2048,
             systemPrompt: 'Be concise.',
@@ -696,6 +699,7 @@ describe('Minion Integration', () => {
       expect(loopOpts.enableReasoning).toBe(true);
       expect(loopOpts.reasoningBudgetTokens).toBe(8192);
       expect(loopOpts.reasoningEffort).toBe('high');
+      expect(loopOpts.verbosity).toBe('low');
       expect(loopOpts.systemPrompt).toContain('Be concise.');
 
       // Verify the overrides were stored on the MinionChat
@@ -705,6 +709,7 @@ describe('Minion Integration', () => {
       expect(created!.enableReasoning).toBe(true);
       expect(created!.reasoningBudgetTokens).toBe(8192);
       expect(created!.reasoningEffort).toBe('high');
+      expect(created!.verbosity).toBe('low');
       expect(created!.temperature).toBe(0.3);
       expect(created!.maxOutputTokens).toBe(2048);
       expect(created!.systemPrompt).toBe('Be concise.');
@@ -732,7 +737,145 @@ describe('Minion Integration', () => {
       expect(loopOpts2.enableReasoning).toBe(true);
       expect(loopOpts2.reasoningBudgetTokens).toBe(8192);
       expect(loopOpts2.reasoningEffort).toBe('high');
+      expect(loopOpts2.verbosity).toBe('low');
       expect(loopOpts2.systemPrompt).toContain('Be concise.');
+    });
+
+    it('threads cacheRoutingScope and the flex tier from the project', async () => {
+      const runMinion = async (input: Record<string, unknown>, toolOptions: ToolOptions) => {
+        vi.clearAllMocks();
+        const mockStream = createMockStream([{ type: 'content', content: 'Done!' }], {
+          textContent: 'Done!',
+          fullContent: [{ type: 'text', text: 'Done!' }],
+          stopReason: 'end_turn',
+          inputTokens: 50,
+          outputTokens: 25,
+        });
+        vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+        vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+        await collectToolResult(
+          minionTool.execute(input, toolOptions, {
+            projectId: 'proj_test',
+            chatId: 'chat_test',
+            vfsAdapter: minionAdapter,
+            createVfsAdapter: minionAdapterFactory,
+            signal: new AbortController().signal,
+            ...mockMinionDeps,
+          })
+        );
+
+        return vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      };
+
+      // A second provider that supports flex, unlike the project's default one
+      mockStorageData.apiDefinitions.set('api_flex', {
+        id: 'api_flex',
+        apiType: 'anthropic',
+        name: 'Flex API',
+        baseUrl: '',
+        apiKey: 'flex-key',
+        advancedSettings: { flexTierSupported: true },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      mockStorageData.models.set('api_flex:claude-3-sonnet', {
+        id: 'claude-3-sonnet',
+        name: 'Claude 3 Sonnet',
+        apiType: 'anthropic',
+        contextWindow: 200000,
+        inputPrice: 3,
+        outputPrice: 15,
+      });
+
+      const defaultModel: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const flexModel: ToolOptions = {
+        model: { apiDefinitionId: 'api_flex', modelId: 'claude-3-sonnet' },
+      };
+
+      const project = mockStorageData.projects.get('proj_test')!;
+
+      // Project opts out of flex → off regardless of provider support
+      expect((await runMinion({ message: 'Go' }, flexModel)).flexTierEnabled).toBe(false);
+
+      project.flexTierEnabled = true;
+
+      // Gate is evaluated against the MINION's provider, not the parent's:
+      // api_test lacks flexTierSupported, api_flex has it.
+      expect((await runMinion({ message: 'Go' }, defaultModel)).flexTierEnabled).toBe(false);
+      expect((await runMinion({ message: 'Go' }, flexModel)).flexTierEnabled).toBe(true);
+
+      // Cache routing scope rides along from the project, and the loop derives
+      // the key from it. Default scope buckets every minion under the project.
+      const beforeDefault = new Set(mockStorageData.minionChats.keys());
+      const defaultScopeOpts = await runMinion({ message: 'Go' }, defaultModel);
+      expect(defaultScopeOpts.cacheRoutingKey).toBe(await sha256Hex('proj_test'));
+
+      // 'chat' scope isolates each minion under its OWN chat id — this is the
+      // whole point of the setting, and it silently didn't happen before.
+      project.cacheRoutingScope = 'chat';
+      const chatScopeOpts = await runMinion({ message: 'Go' }, defaultModel);
+      const newChatIds = [...mockStorageData.minionChats.keys()].filter(
+        id => !beforeDefault.has(id)
+      );
+      const chatScopeMinionId = newChatIds[newChatIds.length - 1];
+      expect(chatScopeOpts.cacheRoutingKey).toBe(await sha256Hex(chatScopeMinionId));
+      expect(chatScopeOpts.cacheRoutingKey).not.toBe(defaultScopeOpts.cacheRoutingKey);
+    });
+
+    it('resolves verbosity input → minion chat → project default', async () => {
+      const runMinion = async (input: Record<string, unknown>) => {
+        vi.clearAllMocks();
+        const mockStream = createMockStream([{ type: 'content', content: 'Done!' }], {
+          textContent: 'Done!',
+          fullContent: [{ type: 'text', text: 'Done!' }],
+          stopReason: 'end_turn',
+          inputTokens: 50,
+          outputTokens: 25,
+        });
+        vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+        vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+        await collectToolResult(
+          minionTool.execute(
+            input,
+            { model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' } },
+            {
+              projectId: 'proj_test',
+              chatId: 'chat_test',
+              vfsAdapter: minionAdapter,
+              createVfsAdapter: minionAdapterFactory,
+              signal: new AbortController().signal,
+              ...mockMinionDeps,
+            }
+          )
+        );
+
+        return vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      };
+
+      const project = mockStorageData.projects.get('proj_test')!;
+      project.verbosity = 'medium';
+
+      // Layer 3: neither input nor chat sets it — project default applies
+      expect((await runMinion({ message: 'Go' })).verbosity).toBe('medium');
+
+      // Layer 1: input beats the project default and persists on the new chat
+      const withInput = await runMinion({ message: 'Go', verbosity: 'high' });
+      expect(withInput.verbosity).toBe('high');
+      const chatId = [...mockStorageData.minionChats.values()].find(
+        c => c.verbosity === 'high'
+      )!.id;
+
+      // Layer 2: continuation without the param falls back to the stored value
+      expect((await runMinion({ message: 'More', minionChatId: chatId })).verbosity).toBe('high');
+
+      // Layer 1 again: a fresh input on that same chat overrides the stored value
+      expect(
+        (await runMinion({ message: 'More', minionChatId: chatId, verbosity: 'low' })).verbosity
+      ).toBe('low');
     });
 
     it('override parameters on continuation update stored values', async () => {
@@ -1833,6 +1976,145 @@ describe('Minion Integration', () => {
       expect(chat.totalCost).toBeCloseTo(0.005 - 0.002 + 0.001); // 0.001 from calculateCost mock
     });
 
+    /**
+     * A failed injected turn, as the production code stores it: the user
+     * message carries the injection fields, mock mode additionally has its
+     * synthetic pair messages (which the rollback deletes).
+     */
+    function setupInjectedRetryChat(injectionMode: 'mock-tool-call' | 'separate-block') {
+      const chat: MinionChat = {
+        id: 'minion_inject_retry',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        savepoint: 'msg_assistant_1',
+        fileInjectionMode: injectionMode,
+      };
+      mockStorageData.minionChats.set('minion_inject_retry', chat);
+
+      const messages: Message<unknown>[] = [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          content: { type: 'text', content: 'First' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          content: { type: 'text', content: 'ok' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_user_2',
+          role: 'user',
+          content: {
+            type: 'text',
+            content: 'analyze',
+            renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: 'analyze' }] }],
+            injectedFiles: [{ path: '/f.ts', content: 'const x = 1;' }],
+            injectionMode,
+            modelFamily: 'anthropic',
+          },
+          timestamp: new Date(),
+        },
+        ...(injectionMode === 'mock-tool-call'
+          ? ([
+              {
+                id: 'msg_mock_call',
+                role: 'assistant',
+                content: { type: 'text', content: '', renderingContent: [] },
+                toolCalls: [
+                  {
+                    type: 'tool_use',
+                    id: 'mocktool_1',
+                    name: 'filesystem',
+                    input: { action: 'readFile', path: '/f.ts' },
+                  },
+                ],
+                timestamp: new Date(),
+              },
+              {
+                id: 'msg_mock_result',
+                role: 'user',
+                content: {
+                  type: 'text',
+                  content: '',
+                  renderingContent: [],
+                  toolResults: [
+                    { type: 'tool_result', tool_use_id: 'mocktool_1', content: 'const x = 1;' },
+                  ],
+                },
+                timestamp: new Date(),
+              },
+            ] as unknown as Message<unknown>[])
+          : []),
+        {
+          id: 'msg_assistant_2',
+          role: 'assistant',
+          content: { type: 'text', content: 'truncated answ', stopReason: 'max_tokens' },
+          timestamp: new Date(),
+        },
+      ];
+      mockStorageData.minionMessages.set('minion_inject_retry', messages);
+    }
+
+    it('retry rebuilds mock-tool-call synthetic pairs from the stashed injection fields', async () => {
+      setupInjectedRetryChat('mock-tool-call');
+      setupMockStream();
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { action: 'retry', minionChatId: 'minion_inject_retry' },
+          toolOptions,
+          context
+        )
+      );
+      expect(result.isError).toBeUndefined();
+
+      // The re-run sends rebuilt synthetic pairs carrying the file content.
+      const sent = vi.mocked(apiService.sendMessageStream).mock.calls[0][0] as Message<unknown>[];
+      const toolResults = sent.flatMap(
+        m => (m.content as { toolResults?: Array<{ content: string }> }).toolResults ?? []
+      );
+      expect(toolResults.some(tr => tr.content.includes('const x = 1;'))).toBe(true);
+
+      // The re-stored user message carries the fields again for the next retry.
+      const stored = mockStorageData.minionMessages.get('minion_inject_retry')!;
+      const userMsg = stored.find(
+        m => m.role === 'user' && (m.content as { content?: string }).content === 'analyze'
+      )!;
+      const content = userMsg.content as { injectedFiles?: unknown; injectionMode?: string };
+      expect(content.injectionMode).toBe('mock-tool-call');
+      expect(content.injectedFiles).toEqual([{ path: '/f.ts', content: 'const x = 1;' }]);
+    });
+
+    it('retry restores separate-block injection fields onto the new user message', async () => {
+      setupInjectedRetryChat('separate-block');
+      setupMockStream();
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { action: 'retry', minionChatId: 'minion_inject_retry' },
+          toolOptions,
+          context
+        )
+      );
+      expect(result.isError).toBeUndefined();
+
+      const sent = vi.mocked(apiService.sendMessageStream).mock.calls[0][0] as Message<unknown>[];
+      const lastUserMsg = sent.filter(m => m.role === 'user').pop()!;
+      const content = lastUserMsg.content as {
+        content: string;
+        injectedFiles?: unknown;
+        injectionMode?: string;
+      };
+      expect(content.content).toBe('analyze');
+      expect(content.injectionMode).toBe('separate-block');
+      expect(content.injectedFiles).toEqual([{ path: '/f.ts', content: 'const x = 1;' }]);
+    });
+
     it('returns Phase 1 error when savepoint is missing', async () => {
       const chat: MinionChat = {
         id: 'minion_no_cp',
@@ -2445,6 +2727,460 @@ describe('Minion Integration', () => {
       expect(result.content).toContain('/a.ts');
       expect(result.content).toContain('/b.ts');
       expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+    });
+
+    it('reports failures from both batches in one error', async () => {
+      const failingFactory = buildFailingAdapterFactory();
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: failingFactory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'Analyze', injectFiles: ['/lead.ts'], injectFilesAfter: ['/trail.ts'] },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('/lead.ts');
+      expect(result.content).toContain('/trail.ts');
+      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+    });
+
+    it('aborts the launch when only a trailing-batch file fails', async () => {
+      const failingFactory = buildFailingAdapterFactory('/trail.ts');
+
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: failingFactory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'Analyze', injectFilesAfter: ['/trail.ts'] },
+          toolOptions,
+          context
+        )
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('/trail.ts');
+      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('injectFiles / injectFilesAfter assembly', () => {
+    const FILE_BODY = 'const x = 1;\nconst y = 2;';
+
+    function fileAdapterFactory(content = FILE_BODY) {
+      const adapter = { readFile: vi.fn(async () => content) } as unknown as VfsAdapter;
+      return () => adapter;
+    }
+
+    function okStream() {
+      const mockResult = {
+        textContent: 'ok',
+        fullContent: [{ type: 'text', text: 'ok' }],
+        stopReason: 'end_turn',
+        inputTokens: 10,
+        outputTokens: 5,
+      };
+      return createMockStream([{ type: 'content', content: 'ok' }], mockResult);
+    }
+
+    async function runInject(input: Record<string, unknown>) {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: fileAdapterFactory(),
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+      await collectToolResult(
+        minionTool.execute(
+          { message: 'analyze', injectFiles: ['/f.ts'], ...input },
+          { model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' } },
+          context
+        )
+      );
+      return [...mockStorageData.minionMessages.values()].flat();
+    }
+
+    /** The synthetic tool_result content for mock-tool-call injection. */
+    function toolResultContent(messages: Message<unknown>[]): string {
+      const msg = messages.find(
+        m => (m.content as { toolResults?: Array<{ content: string }> }).toolResults?.length
+      );
+      return (
+        (msg?.content as { toolResults?: Array<{ content: string }> }).toolResults?.[0].content ??
+        ''
+      );
+    }
+
+    /** The first user message body (inline injection lives here). */
+    function firstUserContent(messages: Message<unknown>[]): string {
+      const msg = messages.find(m => m.role === 'user');
+      return (msg?.content as { content?: string }).content ?? '';
+    }
+
+    it('inline mode numbers injected files by default', async () => {
+      const body = firstUserContent(await runInject({ fileInjectionMode: 'inline' }));
+      expect(body).toContain('with line numbers');
+      expect(body).toContain('     1\tconst x = 1;');
+      expect(body).toContain('     2\tconst y = 2;');
+    });
+
+    it('inline mode strips numbers when fileLineNumbers is false', async () => {
+      const body = firstUserContent(
+        await runInject({ fileInjectionMode: 'inline', fileLineNumbers: false })
+      );
+      expect(body).not.toContain('with line numbers');
+      expect(body).toContain('const x = 1;\nconst y = 2;');
+      expect(body).not.toContain('     1\tconst x = 1;');
+    });
+
+    it('mock-tool-call numbers each line exactly once (no double numbering)', async () => {
+      const content = toolResultContent(await runInject({ fileInjectionMode: 'mock-tool-call' }));
+      expect(content).toContain('     1\tconst x = 1;');
+      expect(content).toContain('     2\tconst y = 2;');
+      // Regression: the old code re-formatted already-numbered content.
+      expect(content).not.toMatch(/\d\t\s+1\tconst x/);
+    });
+
+    it('mock-tool-call strips numbers when fileLineNumbers is false', async () => {
+      const content = toolResultContent(
+        await runInject({ fileInjectionMode: 'mock-tool-call', fileLineNumbers: false })
+      );
+      expect(content).toBe(FILE_BODY);
+      expect(content).not.toContain('     1\t');
+    });
+
+    it('fileLineNumbers:true overrides a project that strips line numbers', async () => {
+      const project = mockStorageData.projects.get('proj_test')!;
+      mockStorageData.projects.set('proj_test', { ...project, noLineNumbers: true });
+
+      const content = toolResultContent(
+        await runInject({ fileInjectionMode: 'mock-tool-call', fileLineNumbers: true })
+      );
+      expect(content).toContain('     1\tconst x = 1;');
+    });
+
+    it('defers to project noLineNumbers when no override is given', async () => {
+      const project = mockStorageData.projects.get('proj_test')!;
+      mockStorageData.projects.set('proj_test', { ...project, noLineNumbers: true });
+
+      const content = toolResultContent(await runInject({ fileInjectionMode: 'mock-tool-call' }));
+      expect(content).toBe(FILE_BODY);
+    });
+
+    it('inline mode wraps a custom-framed file and skips all meta markers', async () => {
+      const body = firstUserContent(
+        await runInject({
+          fileInjectionMode: 'inline',
+          fileLineNumbers: false,
+          injectFiles: [
+            { path: '/f.ts', preamble: 'She opened the diary:', postamble: 'She closed it.' },
+          ],
+        })
+      );
+      expect(body).toBe(`She opened the diary:\n${FILE_BODY}\nShe closed it.\n\nanalyze`);
+      expect(body).not.toContain('=== /f.ts ===');
+      expect(body).not.toContain('=== end of files ===');
+    });
+
+    it('inline mode keeps the end marker for a mixed default + custom batch', async () => {
+      const body = firstUserContent(
+        await runInject({
+          fileInjectionMode: 'inline',
+          fileLineNumbers: false,
+          injectFiles: ['/plain.ts', { path: '/f.ts', preamble: 'Custom:' }],
+        })
+      );
+      expect(body).toContain('=== /plain.ts ===');
+      expect(body).toContain(`Custom:\n${FILE_BODY}`);
+      expect(body).not.toContain('=== /f.ts ===');
+      expect(body).toContain('=== end of files ===');
+    });
+
+    it('inline mode applies line numbers inside the custom framing', async () => {
+      const body = firstUserContent(
+        await runInject({
+          fileInjectionMode: 'inline',
+          injectFiles: [{ path: '/f.ts', preamble: 'Numbered:' }],
+        })
+      );
+      expect(body).toContain('Numbered:\n     1\tconst x = 1;');
+      expect(body).not.toContain('with line numbers');
+    });
+
+    it('mock-tool-call wraps the synthetic tool result in the custom framing', async () => {
+      const content = toolResultContent(
+        await runInject({
+          fileInjectionMode: 'mock-tool-call',
+          fileLineNumbers: false,
+          injectFiles: [{ path: '/f.ts', preamble: 'pre', postamble: 'post' }],
+        })
+      );
+      expect(content).toBe(`pre\n${FILE_BODY}\npost`);
+    });
+
+    it('mock-tool-call stores injection fields on the user message for retry-restore', async () => {
+      // Without the fields, a retry rollback (which deletes the synthetic pair
+      // messages) would have nothing to rebuild the pairs from.
+      const messages = await runInject({
+        fileInjectionMode: 'mock-tool-call',
+        fileLineNumbers: false,
+      });
+      const content = messages.find(m => m.role === 'user')!.content as {
+        content: string;
+        injectedFiles?: Array<{ path: string; content: string }>;
+        injectionMode?: string;
+      };
+      expect(content.content).toBe('analyze');
+      expect(content.injectionMode).toBe('mock-tool-call');
+      expect(content.injectedFiles).toEqual([{ path: '/f.ts', content: FILE_BODY }]);
+    });
+
+    it('separate-block stores preamble/postamble on the message for the API client', async () => {
+      const messages = await runInject({
+        fileInjectionMode: 'separate-block',
+        fileLineNumbers: false,
+        injectFiles: [{ path: '/f.ts', preamble: 'pre', postamble: 'post' }],
+      });
+      const userMsg = messages.find(m => m.role === 'user')!;
+      const content = userMsg.content as {
+        content: string;
+        injectedFiles?: Array<{ path: string; preamble?: string; postamble?: string }>;
+      };
+      expect(content.content).toBe('analyze');
+      expect(content.injectedFiles).toEqual([
+        { path: '/f.ts', content: FILE_BODY, preamble: 'pre', postamble: 'post' },
+      ]);
+    });
+
+    /** Synthetic tool_result contents, in message order (mock-tool-call). */
+    function toolResultContents(messages: Message<unknown>[]): string[] {
+      return messages
+        .flatMap(m => (m.content as { toolResults?: Array<{ content: string }> }).toolResults ?? [])
+        .map(tr => tr.content);
+    }
+
+    it('inline mode appends injectFilesAfter below the message, with no end marker', async () => {
+      const body = firstUserContent(
+        await runInject({
+          fileInjectionMode: 'inline',
+          fileLineNumbers: false,
+          injectFiles: undefined,
+          injectFilesAfter: ['/f.ts'],
+        })
+      );
+      expect(body).toBe(`analyze\n\n=== /f.ts ===\nHere's the content of /f.ts:\n${FILE_BODY}`);
+      expect(body).not.toContain('=== end of files ===');
+    });
+
+    it('inline mode brackets the message when both parameters are given', async () => {
+      const body = firstUserContent(
+        await runInject({
+          fileInjectionMode: 'inline',
+          fileLineNumbers: false,
+          injectFiles: [{ path: '/before.ts', preamble: 'Before:' }],
+          injectFilesAfter: [{ path: '/after.ts', preamble: 'After:' }],
+        })
+      );
+      expect(body).toBe(`Before:\n${FILE_BODY}\n\nanalyze\n\nAfter:\n${FILE_BODY}`);
+    });
+
+    it('inline mode keeps the leading end marker while the trailing batch has none', async () => {
+      const body = firstUserContent(
+        await runInject({
+          fileInjectionMode: 'inline',
+          fileLineNumbers: false,
+          injectFiles: ['/before.ts'],
+          injectFilesAfter: ['/after.ts'],
+        })
+      );
+      expect(body).toContain('=== /before.ts ===');
+      expect(body.indexOf('=== end of files ===')).toBeLessThan(body.indexOf('analyze'));
+      expect(body.match(/=== end of files ===/g)).toHaveLength(1);
+      expect(body.trimEnd().endsWith(FILE_BODY)).toBe(true);
+    });
+
+    it('mock-tool-call emits leading-batch pairs before trailing-batch pairs', async () => {
+      const messages = await runInject({
+        fileInjectionMode: 'mock-tool-call',
+        fileLineNumbers: false,
+        injectFiles: [{ path: '/before.ts', preamble: 'BEFORE' }],
+        injectFilesAfter: [{ path: '/after.ts', preamble: 'AFTER' }],
+      });
+      expect(toolResultContents(messages)).toEqual([`BEFORE\n${FILE_BODY}`, `AFTER\n${FILE_BODY}`]);
+      expect(firstUserContent(messages)).toBe('analyze');
+    });
+
+    it('separate-block stores the trailing batch under injectedFilesAfter', async () => {
+      const messages = await runInject({
+        fileInjectionMode: 'separate-block',
+        fileLineNumbers: false,
+        injectFiles: ['/before.ts'],
+        injectFilesAfter: [{ path: '/after.ts', postamble: 'post' }],
+      });
+      const content = messages.find(m => m.role === 'user')!.content as {
+        content: string;
+        injectedFiles?: Array<{ path: string }>;
+        injectedFilesAfter?: Array<{ path: string; postamble?: string }>;
+      };
+      expect(content.content).toBe('analyze');
+      expect(content.injectedFiles).toEqual([{ path: '/before.ts', content: FILE_BODY }]);
+      expect(content.injectedFilesAfter).toEqual([
+        { path: '/after.ts', content: FILE_BODY, postamble: 'post' },
+      ]);
+    });
+
+    it('separate-block omits injectedFiles entirely for a trailing-only batch', async () => {
+      const messages = await runInject({
+        fileInjectionMode: 'separate-block',
+        fileLineNumbers: false,
+        injectFiles: undefined,
+        injectFilesAfter: ['/after.ts'],
+      });
+      const content = messages.find(m => m.role === 'user')!.content as {
+        injectedFiles?: unknown;
+        injectedFilesAfter?: Array<{ path: string }>;
+      };
+      expect(content.injectedFiles).toBeUndefined();
+      expect(content.injectedFilesAfter).toEqual([{ path: '/after.ts', content: FILE_BODY }]);
+    });
+
+    /** Injected-file render blocks of the user message, in group order. */
+    function injectedFileBlocks(
+      messages: Message<unknown>[]
+    ): Array<{ path: string; content: string }> {
+      const msg = messages.find(m => m.role === 'user')!;
+      const groups = (msg.content as { renderingContent?: RenderingBlockGroup[] })
+        .renderingContent!;
+      return groups
+        .flatMap(g => g.blocks)
+        .filter(b => b.type === 'injected_file')
+        .map(b => {
+          const file = b as { path: string; content: string };
+          return { path: file.path, content: file.content };
+        });
+    }
+
+    it('bakes the default framing into the rendered file content', async () => {
+      const blocks = injectedFileBlocks(
+        await runInject({ fileInjectionMode: 'inline', fileLineNumbers: false })
+      );
+      expect(blocks).toEqual([
+        { path: '/f.ts', content: `=== /f.ts ===\nHere's the content of /f.ts:\n${FILE_BODY}` },
+      ]);
+    });
+
+    it('carries the line-numbers note into the rendered framing', async () => {
+      const blocks = injectedFileBlocks(await runInject({ fileInjectionMode: 'mock-tool-call' }));
+      expect(blocks[0].content).toContain("Here's the content of /f.ts with line numbers:");
+      expect(blocks[0].content).toContain('     1\tconst x = 1;');
+    });
+
+    it('bakes custom framing into the rendered file content instead of the default', async () => {
+      const messages = await runInject({
+        fileInjectionMode: 'separate-block',
+        fileLineNumbers: false,
+        injectFiles: [{ path: '/f.ts', preamble: 'pre', postamble: 'post' }],
+      });
+      expect(injectedFileBlocks(messages)).toEqual([
+        { path: '/f.ts', content: `pre\n${FILE_BODY}\npost` },
+      ]);
+      // Framing is baked in for display only — the API payload keeps raw
+      // content plus the framing fields, so the client frames it once.
+      const payload = messages.find(m => m.role === 'user')!.content as {
+        injectedFiles?: Array<{ content: string; preamble?: string }>;
+      };
+      expect(payload.injectedFiles).toEqual([
+        { path: '/f.ts', content: FILE_BODY, preamble: 'pre', postamble: 'post' },
+      ]);
+    });
+
+    it('renders leading files before the text group and trailing files after it', async () => {
+      const messages = await runInject({
+        fileInjectionMode: 'separate-block',
+        fileLineNumbers: false,
+        injectFiles: ['/lead.ts'],
+        injectFilesAfter: ['/trail.ts'],
+      });
+      const groups = (
+        messages.find(m => m.role === 'user')!.content as {
+          renderingContent: RenderingBlockGroup[];
+        }
+      ).renderingContent;
+      const shape = groups.map(g => g.blocks.map(b => (b as { path?: string }).path ?? b.type));
+      expect(shape).toEqual([['/lead.ts'], ['text'], ['/trail.ts']]);
+    });
+
+    it('numbers trailing-batch files like leading ones', async () => {
+      const body = firstUserContent(
+        await runInject({ injectFiles: undefined, injectFilesAfter: ['/f.ts'] })
+      );
+      expect(body).toContain('with line numbers');
+      expect(body).toContain('     1\tconst x = 1;');
+    });
+
+    it('claude-agent downgrades mock-tool-call to separate-block at production time', async () => {
+      const apiDef = mockStorageData.apiDefinitions.get('api_test')!;
+      mockStorageData.apiDefinitions.set('api_test', { ...apiDef, apiType: 'claude-agent' });
+
+      const messages = await runInject({
+        fileInjectionMode: 'mock-tool-call',
+        fileLineNumbers: false,
+      });
+
+      // No synthetic tool_use/tool_result pairs — the SDK owns the session
+      // history, so the files ride the user message as separate-block fields.
+      expect(toolResultContents(messages)).toEqual([]);
+      const content = messages.find(m => m.role === 'user')!.content as {
+        content: string;
+        injectedFiles?: Array<{ path: string; content: string }>;
+        injectionMode?: string;
+      };
+      expect(content.content).toBe('analyze');
+      expect(content.injectedFiles).toEqual([{ path: '/f.ts', content: FILE_BODY }]);
+      expect(content.injectionMode).toBe('separate-block');
+    });
+
+    it('claude-agent stores separate-block files unchanged (no production-time downgrade)', async () => {
+      const apiDef = mockStorageData.apiDefinitions.get('api_test')!;
+      mockStorageData.apiDefinitions.set('api_test', { ...apiDef, apiType: 'claude-agent' });
+
+      const messages = await runInject({
+        fileInjectionMode: 'separate-block',
+        fileLineNumbers: false,
+      });
+      const content = messages.find(m => m.role === 'user')!.content as {
+        injectedFiles?: Array<{ path: string }>;
+        injectionMode?: string;
+      };
+      expect(content.injectedFiles).toEqual([{ path: '/f.ts', content: FILE_BODY }]);
+      expect(content.injectionMode).toBe('separate-block');
     });
   });
 

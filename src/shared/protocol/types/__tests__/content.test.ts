@@ -19,6 +19,12 @@ describe('categorizeBlock', () => {
   it('should categorize text blocks as text', () => {
     expect(categorizeBlock({ type: 'text', text: 'Hello world' })).toBe('text');
   });
+
+  it('should categorize unknown_block blocks as backstage', () => {
+    expect(
+      categorizeBlock({ type: 'unknown_block', blockType: 'server_tool_use', json: '{}' })
+    ).toBe('backstage');
+  });
 });
 
 describe('groupAndConsolidateBlocks', () => {

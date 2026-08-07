@@ -6,6 +6,7 @@ import {
   formatTokenCount,
 } from '../../lib/messageFormatters';
 import { showAlert } from '../../lib/alerts';
+import { coerceToString } from '../../../shared/lib/coerceToString';
 import type { AssistantMessageBubbleProps } from './types';
 import BackstageView from './BackstageView';
 import ErrorBlockView from './ErrorBlockView';
@@ -21,7 +22,7 @@ export default function AssistantMessageBubble({
   disableMath,
   isLastMessage,
 }: AssistantMessageBubbleProps) {
-  const renderingContent = message.content.renderingContent as RenderingBlockGroup[];
+  const renderingContent = (message.content.renderingContent ?? []) as RenderingBlockGroup[];
 
   const handleCopy = async () => {
     try {
@@ -60,8 +61,8 @@ export default function AssistantMessageBubble({
 
   const isDummy = message.content.modelFamily === 'ds01-dummy-system';
   const dummyBrief = isDummy
-    ? (((message.metadata as Record<string, unknown> | undefined)?.dummyBrief as string) ??
-      'intercepted')
+    ? coerceToString((message.metadata as Record<string, unknown> | undefined)?.dummyBrief) ||
+      'intercepted'
     : undefined;
 
   return (

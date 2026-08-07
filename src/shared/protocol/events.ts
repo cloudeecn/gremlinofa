@@ -149,6 +149,13 @@ export interface ActiveLoop {
   modelId: string;
   /** Minion persona / display name when applicable. */
   displayName?: string;
+  /**
+   * Whether a soft stop has been requested for this loop. Carried in the
+   * snapshot (not just the terminal status) so the UI can reconstruct the
+   * "Stopping…" indicator after a chat re-attach — the request lives on the
+   * backend `LoopRegistry`, not in frontend component state.
+   */
+  softStopRequested?: boolean;
 }
 
 /**
@@ -159,7 +166,13 @@ export interface ActiveLoop {
 export type ActiveLoopsChange =
   | { type: 'snapshot'; loops: ActiveLoop[] }
   | { type: 'started'; loop: ActiveLoop }
-  | { type: 'updated'; loopId: LoopId; status: ActiveLoop['status'] }
+  | {
+      type: 'updated';
+      loopId: LoopId;
+      status: ActiveLoop['status'];
+      /** Present only on the soft-stop transition; omitted deltas leave it unchanged. */
+      softStopRequested?: boolean;
+    }
   | {
       type: 'ended';
       loopId: LoopId;

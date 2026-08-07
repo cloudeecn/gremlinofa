@@ -12,8 +12,13 @@
  * `message.content.toolUseBlocks ?? message.content.toolCalls ?? []`
  * with no awareness of provider shapes.
  *
- * `toolUseBlocks` is computed fresh on every yield and never persisted —
- * `prepareMessageForWire` returns a shallow copy with the field added so
+ * The same boundary also backfills `renderingContent` for legacy non-user
+ * messages persisted before the field existed: a single text group derived
+ * from `content.content` (the pure display text), so old chats render
+ * their text instead of crashing the assistant bubble.
+ *
+ * Both fields are computed fresh on every yield and never persisted —
+ * `prepareMessageForWire` returns a shallow copy with the fields added so
  * the storage row format is unchanged. The persisted column for
  * assistant messages still carries `fullContent` (the raw provider
  * payload) and `toolCalls` (the cross-model reconstruction the agentic
@@ -22,22 +27,14 @@
  */
 
 import { extractToolUseBlocks } from './lib/apiHelpers';
-import type { Message, ToolUseBlock } from '../protocol/types';
+import type { Message, MessageContent, ToolUseBlock } from '../protocol/types';
 
-/**
- * Return a shallow copy of `message` with `content.toolUseBlocks` populated
- * from the provider-specific `fullContent`. Returns the original reference
- * (no copy) when there's nothing to extract — keeps the no-op path cheap.
- *
- * Idempotent: if `content.toolUseBlocks` is already populated, the message
- * is returned unchanged.
- */
-export function prepareMessageForWire<T>(message: Message<T>): Message<T> {
-  if (message.content.toolUseBlocks) return message;
+function extractWireToolUseBlocks<T>(content: MessageContent<T>): ToolUseBlock[] | undefined {
+  if (content.toolUseBlocks) return undefined;
 
-  const apiType = message.content.modelFamily;
-  const fullContent = message.content.fullContent;
-  if (!apiType || fullContent == null) return message;
+  const apiType = content.modelFamily;
+  const fullContent = content.fullContent;
+  if (!apiType || fullContent == null) return undefined;
 
   let blocks: ToolUseBlock[];
   try {
@@ -47,12 +44,39 @@ export function prepareMessageForWire<T>(message: Message<T>): Message<T> {
     // `toolCalls` field carries (the frontend's `?? toolCalls` path
     // covers this case). Logging here would be noise; the frontend
     // already handles missing tool blocks gracefully.
-    return message;
+    return undefined;
   }
-  if (blocks.length === 0) return message;
+  return blocks.length > 0 ? blocks : undefined;
+}
+
+/**
+ * Return a shallow copy of `message` with wire-only fields populated:
+ * `content.toolUseBlocks` from the provider-specific `fullContent`, and a
+ * text-group `content.renderingContent` for legacy non-user messages that
+ * predate the field. User messages are excluded from the backfill —
+ * `UserMessageBubble` has its own `stripMetadata(content.content)`
+ * fallback and a raw backfill would bypass the stripping.
+ *
+ * Returns the original reference (no copy) when there's nothing to add —
+ * keeps the no-op path cheap. Idempotent: already-populated fields are
+ * left unchanged.
+ */
+export function prepareMessageForWire<T>(message: Message<T>): Message<T> {
+  const patch: Partial<MessageContent<T>> = {};
+
+  const toolUseBlocks = extractWireToolUseBlocks(message.content);
+  if (toolUseBlocks) patch.toolUseBlocks = toolUseBlocks;
+
+  if (message.role !== 'user' && !message.content.renderingContent && message.content.content) {
+    patch.renderingContent = [
+      { category: 'text', blocks: [{ type: 'text', text: message.content.content }] },
+    ];
+  }
+
+  if (Object.keys(patch).length === 0) return message;
 
   return {
     ...message,
-    content: { ...message.content, toolUseBlocks: blocks },
+    content: { ...message.content, ...patch },
   };
 }

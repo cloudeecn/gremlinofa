@@ -38,7 +38,13 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   });
 
   const [showModelSelector, setShowModelSelector] = useState(false);
-  const [activeMinionChatId, setActiveMinionChatId] = useState<string | null>(null);
+  // Stack of open minion-chat overlays. "View Chat" inside a minion overlay
+  // drills in by pushing onto this stack (a minion can itself spawn sub-minions),
+  // and each layer's back/close pops one level. Empty = no overlay.
+  const [minionChatStack, setMinionChatStack] = useState<string[]>([]);
+  const pushMinionChat = useCallback((id: string) => {
+    setMinionChatStack(stack => [...stack, id]);
+  }, []);
   const [isRenamingChat, setIsRenamingChat] = useState(false);
   const [renameChatText, setRenameChatText] = useState('');
   const [isSavingRename, setIsSavingRename] = useState(false);
@@ -358,7 +364,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   if (!chat) return null;
 
   return (
-    <MinionChatOverlayContext.Provider value={{ viewMinionChat: setActiveMinionChatId }}>
+    <MinionChatOverlayContext.Provider value={{ viewMinionChat: pushMinionChat }}>
       <div className="relative flex h-full flex-col bg-white">
         {/* Header with safe area */}
         <div className="border-b border-gray-200 bg-white">
@@ -700,16 +706,20 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           </div>
         )}
 
-        {/* Minion Chat Overlay */}
-        {activeMinionChatId && (
-          <div className="absolute inset-0 z-30 flex flex-col bg-white">
+        {/* Minion Chat Overlay(s) — layered so drilling into a sub-minion
+            keeps the parent overlay mounted underneath; closing pops one. */}
+        {minionChatStack.map((id, idx) => (
+          <div
+            key={`${idx}-${id}`}
+            className="absolute inset-0 flex flex-col bg-white"
+            style={{ zIndex: 30 + idx }}
+          >
             <MinionChatView
-              key={activeMinionChatId}
-              minionChatId={activeMinionChatId}
-              onClose={() => setActiveMinionChatId(null)}
+              minionChatId={id}
+              onClose={() => setMinionChatStack(stack => stack.slice(0, idx))}
             />
           </div>
-        )}
+        ))}
       </div>
     </MinionChatOverlayContext.Provider>
   );

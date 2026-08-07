@@ -18,6 +18,7 @@ import {
   shouldPrependPrefill,
 } from '../../engine/lib/apiHelpers';
 import { calculateCost, isCostUnreliable } from '../../engine/lib/api/modelMetadata';
+import { supportsClaudeAgent1mContext } from '../../engine/lib/api/claudeAgentExtendedContext';
 import { StreamingContentAssembler } from '../streaming/StreamingContentAssembler';
 import { executeClientSideTool, type ClientSideToolRegistry } from '../tools/clientSideTools';
 import type { BackendDeps } from '../../engine/backendDeps';
@@ -38,6 +39,7 @@ import type {
   ToolUseBlock,
   ReasoningEffort,
   ReasoningSummary,
+  Verbosity,
   TokenTotals,
 } from '../../protocol/types';
 import { type ToolResultRenderBlock, type ToolUseRenderBlock } from '../../protocol/types/content';
@@ -102,6 +104,13 @@ export interface AgenticLoopOptions {
   // works correctly when neither is set (e.g. unit tests).
   loopId?: string;
   parentLoopId?: string;
+  // Minion nesting depth of this loop run. Top-level chats omit it (treated as
+  // 0); minionTool sets it to caller-depth + 1 on the child loop it spawns so
+  // the depth cap can be enforced across arbitrarily nested minions.
+  minionDepth?: number;
+  // Persona set this loop may delegate to (ceiling for its minion calls).
+  // Undefined = unrestricted (top-level chat). minionTool narrows it per spawn.
+  minionAvailablePersonas?: string[];
 
   // Stream settings (flattened from Project)
   temperature?: number;
@@ -117,6 +126,10 @@ export interface AgenticLoopOptions {
   // Only honored when apiDef.apiType === 'anthropic'.
   useAnthropicOneHourCache?: boolean;
   noLineNumbers?: boolean;
+  // Loop-level override for line-number display (positive; true = show).
+  // Wins over the project's noLineNumbers; a per-call tool `withLineNumbers`
+  // still wins over this. Undefined = defer to noLineNumbers.
+  fileLineNumbers?: boolean;
   // Cache-routing key scope. 'project' (default) → hash projectId,
   // 'chat' → hash chatId. Resolved into `cacheRoutingKey` in streamOptions
   // at call time. See `Project.cacheRoutingScope`.
@@ -155,6 +168,10 @@ export interface AgenticLoopOptions {
   // OpenAI/Responses reasoning
   reasoningEffort?: ReasoningEffort;
   reasoningSummary?: ReasoningSummary;
+
+  // OpenAI response-length control. The clients drop it for models without
+  // `supportsVerbosity`, so a project default can't poison a gpt-4.x call.
+  verbosity?: Verbosity;
 
   // Pre-existing tool_use blocks to execute before the first API call
   // (used by resolvePendingToolCalls to delegate tool execution with streaming)
@@ -1465,6 +1482,15 @@ export async function* runAgenticLoop(
   // inference profiles whose IDs (e.g. us.anthropic.claude-...) don't match fuzz patterns.
   const effectiveExtendedContext = options.extendedContext && !!model.supportsExtendedContext;
 
+  // claude-agent opts into the 1M window by suffixing the model id with `[1m]`
+  // (the Claude Code convention, used instead of the SDK's `Options.betas`).
+  // Eligibility is its own set (see supportsClaudeAgent1mContext), distinct
+  // from `supportsExtendedContext`.
+  const claudeAgentExtendedContext =
+    apiDef.apiType === 'claude-agent' &&
+    !!options.extendedContext &&
+    supportsClaudeAgent1mContext(model.id);
+
   // VFS access lives only in the worker. `createVfsAdapter` is required
   // on `AgenticLoopOptions`; `buildLoopOptions` is the single production
   // constructor and always supplies it from `BackendDeps`. Anything
@@ -1483,12 +1509,17 @@ export async function* runAgenticLoop(
     chatId,
     namespace: options.namespace,
     noLineNumbers: options.noLineNumbers,
+    fileLineNumbers: options.fileLineNumbers,
     vfsAdapter,
     createVfsAdapter: adapterFactory,
     signal: options.signal,
     // PR 4: forward the running loop's id so tools (notably minionTool) can
     // register child loops with the right parent in the LoopRegistry.
     loopId: options.loopId,
+    // Nesting depth so minionTool can enforce its hard recursion cap.
+    minionDepth: options.minionDepth,
+    // Persona delegation ceiling so minionTool can validate + filter personas.
+    minionAvailablePersonas: options.minionAvailablePersonas,
     // Phase 1: thread injected backend deps through to tools. Phase 2 is
     // when `minionTool` / `metadataTool` actually start reading from these
     // fields instead of importing the singletons directly.
@@ -1714,6 +1745,7 @@ export async function* runAgenticLoop(
           pruneThinkingKeepTurns: options.pruneThinkingKeepTurns,
           reasoningEffort: options.reasoningEffort,
           reasoningSummary: options.reasoningSummary,
+          verbosity: options.verbosity,
           systemPrompt: options.systemPrompt,
           preFillResponse: iteration === 1 ? options.preFillResponse : undefined,
           webSearchEnabled: options.webSearchEnabled,
@@ -1721,6 +1753,7 @@ export async function* runAgenticLoop(
           toolOptions,
           disableStream: options.disableStream,
           extendedContext: effectiveExtendedContext,
+          claudeAgentExtendedContext,
           useAnthropicOneHourCache: options.useAnthropicOneHourCache,
           flexTierEnabled: options.flexTierEnabled,
           signal: options.signal,
@@ -1882,11 +1915,14 @@ export async function* runAgenticLoop(
           options.deps.toolRegistry
         );
 
-        // Fill context window from model metadata (extended context overrides to 1M)
+        // Fill context window from model metadata (extended context overrides to 1M).
+        // claude-agent's `[1m]` suffix path also yields a 1M window — notably for
+        // Opus 4.5, which gets the suffix but carries no supportsExtendedContext flag.
         if (assistantMessage.metadata) {
-          assistantMessage.metadata.contextWindow = effectiveExtendedContext
-            ? 1_000_000
-            : model.contextWindow || 0;
+          assistantMessage.metadata.contextWindow =
+            effectiveExtendedContext || claudeAgentExtendedContext
+              ? 1_000_000
+              : model.contextWindow || 0;
         }
 
         messages.push(assistantMessage);
@@ -1904,6 +1940,49 @@ export async function* runAgenticLoop(
             type: 'claude_agent_turn',
             sessionId: result.providerExtra.claudeAgentSessionId,
           };
+        }
+
+        // claude-agent: free-run return value from a bridged `return` tool. The
+        // SDK owns the loop, so the return tool couldn't break it — the bridge
+        // stashed the value and the client surfaced it here. Fold it into
+        // storedReturnValue so the terminal `complete` return reports it as the
+        // minion's result, exactly like the normal loop's return-tool path.
+        if (
+          apiDef.apiType === 'claude-agent' &&
+          typeof result.providerExtra?.claudeAgentReturnValue === 'string'
+        ) {
+          storedReturnValue = result.providerExtra.claudeAgentReturnValue;
+        }
+
+        // claude-agent: DUMMY hook (un)register from a bridged `dummy` tool. The
+        // SDK couldn't swap the outer-loop hook mid-turn, so the client surfaced
+        // the change here. Apply it exactly like the break-result hook path
+        // above: dispose the old runtime, load the new one, and emit the same
+        // `active_hook_changed` event (ChatRunner persists chat.activeHook; the
+        // minion dispatcher swallows it — same as the normal loop). The hook
+        // fires on the next iteration, before the next SDK turn. Gate on key
+        // presence, not `typeof === 'string'`, so `null` (deactivate) passes.
+        if (
+          apiDef.apiType === 'claude-agent' &&
+          result.providerExtra &&
+          'claudeAgentActiveHook' in result.providerExtra
+        ) {
+          const nextHook = result.providerExtra.claudeAgentActiveHook as string | null;
+          hookRuntime?.dispose();
+          activeHookName = nextHook;
+          hookRuntime = activeHookName
+            ? await DummyHookRuntime.load(vfsAdapter, activeHookName)
+            : null;
+          yield { type: 'active_hook_changed', hookName: activeHookName };
+        }
+
+        // claude-agent: chat title/summary the bridged metadata tool set during
+        // the SDK turn. Couldn't apply mid-turn (the SDK owns it); fold it in now
+        // via the same event the normal loop uses, so ChatRunner persists it and
+        // broadcasts chat_updated. Only the claude-agent client sets this field,
+        // so there's no double-fire with the per-tool-result path above.
+        if (result.chatMetadata) {
+          yield { type: 'chat_metadata_updated', ...result.chatMetadata };
         }
 
         // Stream finalized into a real message — clear so the abort path

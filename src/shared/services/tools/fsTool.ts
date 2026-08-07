@@ -17,7 +17,10 @@ import type {
 } from '../../protocol/types';
 import type { VfsAdapter } from '../vfs/vfsAdapter';
 import { VfsError, normalizePath, base64ToBuffer } from '../vfs';
-import { formatFileWithLineNumbers } from '../../engine/lib/formatFileContent';
+import {
+  formatFileWithLineNumbers,
+  resolveNoLineNumbers,
+} from '../../engine/lib/formatFileContent';
 
 const MAX_LINE_COUNT = 999999;
 
@@ -37,6 +40,8 @@ interface ViewInput {
   command: 'view';
   path: string;
   view_range?: [number, number];
+  depth?: number;
+  withLineNumbers?: boolean;
 }
 
 interface CreateInput {
@@ -99,6 +104,7 @@ interface AppendRawInput {
 interface ViewAllInput {
   command: 'view-all';
   paths: string[];
+  withLineNumbers?: boolean;
 }
 
 type FsInput =
@@ -129,29 +135,35 @@ interface ListingEntry {
   size?: number;
 }
 
+/** Maximum directory depth the view command will recurse into */
+const MAX_LIST_DEPTH = 5;
+
+/** Clamp a requested listing depth into [1, MAX_LIST_DEPTH], defaulting to 1 */
+function clampListDepth(depth?: number): number {
+  return Math.min(MAX_LIST_DEPTH, Math.max(1, Math.floor(Number(depth)) || 1));
+}
+
 /**
- * List directory contents up to 2 levels deep
+ * List directory contents recursively, descending `depth` levels.
+ * depth=1 lists immediate children only; depth=2 reproduces the legacy two-level view.
+ * Entries are returned depth-first in pre-order (each entry precedes its descendants).
  */
-async function listTwoLevels(adapter: VfsAdapter, basePath: string): Promise<ListingEntry[]> {
+async function listToDepth(
+  adapter: VfsAdapter,
+  basePath: string,
+  depth: number
+): Promise<ListingEntry[]> {
   const entries: ListingEntry[] = [];
 
-  // Level 1: direct children
-  const level1 = await adapter.readDir(basePath);
+  const level = await adapter.readDir(basePath);
 
-  for (const entry of level1) {
+  for (const entry of level) {
     const entryPath = basePath === '/' ? `/${entry.name}` : `${basePath}/${entry.name}`;
     entries.push({ path: entryPath, size: entry.size });
 
-    // Level 2: children of directories
-    if (entry.type === 'dir') {
+    if (entry.type === 'dir' && depth > 1) {
       try {
-        const level2 = await adapter.readDir(entryPath);
-        for (const child of level2) {
-          entries.push({
-            path: `${entryPath}/${child.name}`,
-            size: child.size,
-          });
-        }
+        entries.push(...(await listToDepth(adapter, entryPath, depth - 1)));
       } catch {
         // Directory might be empty or inaccessible
       }
@@ -170,7 +182,8 @@ async function handleView(
   adapter: VfsAdapter,
   path: string,
   viewRange?: [number, number],
-  noLineNumbers?: boolean
+  noLineNumbers?: boolean,
+  depth?: number
 ): Promise<ToolResult> {
   const vfsPath = normalizePath(path);
 
@@ -180,12 +193,15 @@ async function handleView(
     const isDir = await adapter.isDirectory(vfsPath);
 
     if (isDir) {
-      const entries = await listTwoLevels(adapter, vfsPath);
+      const effectiveDepth = clampListDepth(depth);
+      const depthLabel =
+        effectiveDepth === 1 ? 'directly in' : `up to ${effectiveDepth} levels deep in`;
+      const header = `Here're the files and directories ${depthLabel} ${vfsPath}, excluding hidden items:`;
+
+      const entries = await listToDepth(adapter, vfsPath, effectiveDepth);
 
       if (entries.length === 0) {
-        return {
-          content: `Here're the files and directories up to 2 levels deep in ${vfsPath}, excluding hidden items:\n(empty)`,
-        };
+        return { content: `${header}\n(empty)` };
       }
 
       const listing = entries
@@ -195,9 +211,7 @@ async function handleView(
         })
         .join('\n');
 
-      return {
-        content: `Here're the files and directories up to 2 levels deep in ${vfsPath}, excluding hidden items:\n${listing}`,
-      };
+      return { content: `${header}\n${listing}` };
     }
 
     // File content - use readFileWithMeta to handle binary files
@@ -791,8 +805,12 @@ async function* executeFsCommand(
   }
 
   const adapter = context.vfsAdapter;
-  const noLineNumbers = context.noLineNumbers;
   const fsInput = input as unknown as FsInput;
+  const noLineNumbers = resolveNoLineNumbers(
+    (fsInput as { withLineNumbers?: boolean }).withLineNumbers,
+    context.fileLineNumbers,
+    context.noLineNumbers
+  );
 
   // Validate required fields before dispatch — LLMs sometimes omit them
   const cmd = input.command;
@@ -845,7 +863,7 @@ async function* executeFsCommand(
 
   switch (fsInput.command) {
     case 'view':
-      return handleView(adapter, fsInput.path, fsInput.view_range, noLineNumbers);
+      return handleView(adapter, fsInput.path, fsInput.view_range, noLineNumbers, fsInput.depth);
     case 'create':
       return handleCreate(adapter, fsInput.path, fsInput.file_text ?? '', fsInput.overwrite);
     case 'str_replace':
@@ -904,6 +922,7 @@ export const fsTool: ClientSideTool = {
   claudeAgentBridgeable: true,
   // No options - just enable/disable
   description: `Access the project's virtual filesystem. Read/write files anywhere except /memories (readonly, managed by memory tool). Use for: storing code, data files, configuration, scripts.
+The view command on a directory lists its contents; pass depth (default 1, max 5) to control how many levels deep to recurse.
 Binary file support: view returns dataUrl format for binary files, create accepts dataUrl format (data:<mime>;base64,<data>) to write binary files. str_replace, insert, and append are blocked on binary files.
 The create command fails if the file already exists. Set overwrite to true to replace existing files.
 The str_replace command replaces text in a file. Requires an exact, unique match of old_str. Omitting new_str deletes the matched text.
@@ -979,6 +998,16 @@ The view-all command reads multiple files in one call. Takes a paths array, retu
         type: 'array',
         items: { type: 'number' },
         description: 'Optional line range [start, end] for view command',
+      },
+      depth: {
+        type: 'number',
+        description:
+          'Optional for view on a directory. How many directory levels deep to list. Default 1 (immediate children only). Max 5.',
+      },
+      withLineNumbers: {
+        type: 'boolean',
+        description:
+          'Optional override for view / view-all: true shows line numbers, false strips them. Omit to use the project setting.',
       },
     },
     required: ['command'],

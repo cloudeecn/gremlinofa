@@ -53,6 +53,27 @@ export interface BuildGremlinMcpServerParams {
   pushChunk: (chunk: StreamChunk) => void;
   /** Receives sub-agent (minion) costs so the client can surface them. */
   onToolTokens: (totals: TokenTotals) => void;
+  /**
+   * Receives chat title/summary changes from the `metadata` tool. The SDK owns
+   * the turn so these can't apply mid-turn; the client surfaces them on the
+   * StreamResult to be folded in after the turn.
+   */
+  onChatMetadata: (metadata: { name?: string; summary?: string }) => void;
+  /**
+   * Receives the value from the `return` tool (minion sub-agents). The bridge
+   * can't break the SDK's turn, so this is free-run: the value is stored here
+   * and the SDK keeps running. The client surfaces it on the StreamResult; the
+   * agentic loop reports it as the minion's result. Last-write-wins.
+   */
+  onReturnValue: (value: string) => void;
+  /**
+   * Receives the DUMMY-system hook change from the `dummy` tool (string =
+   * activate, null = deactivate). The SDK owns the turn so it can't swap the
+   * outer-loop hook mid-turn; the bridge hands it to the client, which surfaces
+   * it on the StreamResult, and the loop activates it after the turn (it fires
+   * on the next iteration, before the next SDK turn). Last-write-wins.
+   */
+  onActiveHook: (hook: string | null) => void;
 }
 
 /**
@@ -63,7 +84,17 @@ export interface BuildGremlinMcpServerParams {
 export function buildGremlinMcpServer(
   params: BuildGremlinMcpServerParams
 ): GremlinMcpBridge | null {
-  const { toolContext, enabledTools, toolOptions, signal, pushChunk, onToolTokens } = params;
+  const {
+    toolContext,
+    enabledTools,
+    toolOptions,
+    signal,
+    pushChunk,
+    onToolTokens,
+    onChatMetadata,
+    onReturnValue,
+    onActiveHook,
+  } = params;
 
   const bridged = enabledTools.filter(
     name => toolContext.toolRegistry.get(name)?.claudeAgentBridgeable
@@ -101,6 +132,13 @@ export function buildGremlinMcpServer(
     const result = await executeToolSimple(name, input, enabledTools, toolOptions, ctx);
 
     if (result.tokenTotals) onToolTokens(result.tokenTotals);
+    if (result.chatMetadata) onChatMetadata(result.chatMetadata);
+    // Free-run return: the tool's `breakLoop.returnValue` can't stop the SDK
+    // here, so hand it to the client to surface on the StreamResult instead.
+    if (result.breakLoop?.returnValue !== undefined) onReturnValue(result.breakLoop.returnValue);
+    // DUMMY hook (un)register: `null` is the meaningful "deactivate" value, so
+    // gate on `!== undefined` (a plain truthiness check would swallow it).
+    if (result.activeHook !== undefined) onActiveHook(result.activeHook);
 
     pushChunk({
       type: 'tool_result',

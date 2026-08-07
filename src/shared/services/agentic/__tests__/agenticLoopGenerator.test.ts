@@ -470,6 +470,193 @@ describe('agenticLoopGenerator', () => {
       }
     });
 
+    describe('claude-agent 1M context ([1m] suffix gating)', () => {
+      async function runOnce(
+        modelId: string,
+        apiType: APIDefinition['apiType'],
+        extendedContext: boolean
+      ) {
+        const mockResult = {
+          textContent: 'ok',
+          fullContent: [{ type: 'text', text: 'ok' }],
+          stopReason: 'end_turn',
+          inputTokens: 10,
+          outputTokens: 5,
+        };
+        vi.mocked(apiService.sendMessageStream).mockReturnValue(
+          createMockStream([{ type: 'content', content: 'ok' }], mockResult) as never
+        );
+        vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+        const options = createMockOptions({
+          apiDef: { ...createMockApiDef(), apiType },
+          model: { ...createMockModel(), id: modelId, apiType },
+          extendedContext,
+        });
+        const result = await collectAgenticLoop(
+          runAgenticLoop(options, [createMockUserMessage('hi')])
+        );
+        const streamOpts = vi.mocked(apiService.sendMessageStream).mock.calls[0][3] as {
+          claudeAgentExtendedContext?: boolean;
+        };
+        return { result, streamOpts };
+      }
+
+      it('forwards claudeAgentExtendedContext=true for an eligible claude-agent model', async () => {
+        const { result, streamOpts } = await runOnce('claude-opus-4-8', 'claude-agent', true);
+        expect(streamOpts.claudeAgentExtendedContext).toBe(true);
+        // Opus 4.8 (like 4.5) reports a 1M window even though metadata carries no
+        // supportsExtendedContext flag, because the `[1m]` suffix is sent.
+        expect(result.messages[1]?.metadata?.contextWindow).toBe(1_000_000);
+      });
+
+      it('forwards false for a claude-agent model outside the set (Sonnet 4.6 is 1M-native)', async () => {
+        const { streamOpts } = await runOnce('claude-sonnet-4-6', 'claude-agent', true);
+        expect(streamOpts.claudeAgentExtendedContext).toBe(false);
+      });
+
+      it('forwards false for non-claude-agent providers regardless of model', async () => {
+        const { streamOpts } = await runOnce('claude-opus-4-8', 'anthropic', true);
+        expect(streamOpts.claudeAgentExtendedContext).toBe(false);
+      });
+
+      it('forwards false when the project 1M toggle is off', async () => {
+        const { streamOpts } = await runOnce('claude-opus-4-8', 'claude-agent', false);
+        expect(streamOpts.claudeAgentExtendedContext).toBe(false);
+      });
+    });
+
+    // claude-agent's SDK owns the loop, so a bridged `return` tool can't break
+    // it — the value rides back on the StreamResult's providerExtra instead. The
+    // loop folds it into the complete result the same as a normal return.
+    it('folds claude-agent providerExtra.claudeAgentReturnValue into the result', async () => {
+      const sdkResult = {
+        textContent: 'all done',
+        fullContent: [],
+        stopReason: 'end_turn',
+        inputTokens: 10,
+        outputTokens: 5,
+        providerExtra: {
+          claudeAgentSessionId: 'sess_1',
+          claudeAgentReturnValue: 'the final answer',
+        },
+      };
+      const mockStream = createMockStream([{ type: 'content', content: 'all done' }], sdkResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), apiType: 'claude-agent' },
+        enabledTools: ['return'],
+      });
+      const result = await collectAgenticLoop(
+        runAgenticLoop(options, [createMockUserMessage('go')])
+      );
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBe('the final answer');
+      }
+    });
+
+    // A bridged `dummy` (un)register can't swap the outer-loop hook mid-turn
+    // (the SDK owns it), so the change rides back on providerExtra and the loop
+    // emits the same `active_hook_changed` event the normal path uses.
+    it('folds providerExtra.claudeAgentActiveHook into an active_hook_changed event', async () => {
+      const sdkResult = {
+        textContent: 'hook registered',
+        fullContent: [],
+        stopReason: 'end_turn',
+        inputTokens: 10,
+        outputTokens: 5,
+        providerExtra: {
+          claudeAgentSessionId: 'sess_3',
+          claudeAgentActiveHook: 'my-hook',
+        },
+      };
+      const mockStream = createMockStream(
+        [{ type: 'content', content: 'hook registered' }],
+        sdkResult
+      );
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), apiType: 'claude-agent' },
+        enabledTools: ['dummy'],
+      });
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, [createMockUserMessage('register it')]);
+      let step = await gen.next();
+      while (!step.done) {
+        events.push(step.value);
+        step = await gen.next();
+      }
+
+      const hookEvent = events.find(e => e.type === 'active_hook_changed');
+      expect(hookEvent).toEqual({ type: 'active_hook_changed', hookName: 'my-hook' });
+    });
+
+    it('folds a null claude-agent active hook (deactivate) into the event', async () => {
+      const sdkResult = {
+        textContent: 'hook off',
+        fullContent: [],
+        stopReason: 'end_turn',
+        inputTokens: 10,
+        outputTokens: 5,
+        providerExtra: {
+          claudeAgentSessionId: 'sess_4',
+          claudeAgentActiveHook: null,
+        },
+      };
+      const mockStream = createMockStream([{ type: 'content', content: 'hook off' }], sdkResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), apiType: 'claude-agent' },
+        enabledTools: ['dummy'],
+      });
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(options, [createMockUserMessage('turn it off')]);
+      let step = await gen.next();
+      while (!step.done) {
+        events.push(step.value);
+        step = await gen.next();
+      }
+
+      const hookEvent = events.find(e => e.type === 'active_hook_changed');
+      expect(hookEvent).toEqual({ type: 'active_hook_changed', hookName: null });
+    });
+
+    it('leaves returnValue undefined when a claude-agent turn carries none', async () => {
+      const sdkResult = {
+        textContent: 'just text, no return',
+        fullContent: [],
+        stopReason: 'end_turn',
+        inputTokens: 10,
+        outputTokens: 5,
+        providerExtra: { claudeAgentSessionId: 'sess_2' },
+      };
+      const mockStream = createMockStream([{ type: 'content', content: 'just text' }], sdkResult);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions({
+        apiDef: { ...createMockApiDef(), apiType: 'claude-agent' },
+      });
+      const result = await collectAgenticLoop(
+        runAgenticLoop(options, [createMockUserMessage('go')])
+      );
+
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') {
+        expect(result.returnValue).toBeUndefined();
+      }
+    });
+
     it('handles stream errors gracefully', async () => {
       const errorResult = {
         textContent: '',

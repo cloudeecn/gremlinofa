@@ -11,7 +11,12 @@ import type {
 import { mapReasoningEffort } from '../../engine/lib/reasoningEffort';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import type { APIServiceDeps } from './apiService';
-import { effectiveInjectionMode } from './fileInjectionHelper';
+import {
+  effectiveInjectionMode,
+  buildSeparateBlockText,
+  wrapInjectedFile,
+  type InjectedFile,
+} from './fileInjectionHelper';
 import {
   convertOutputToStreamChunks,
   createMapperState,
@@ -227,6 +232,7 @@ export class ResponsesClient implements APIClient {
       pruneThinkingKeepTurns?: number;
       reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
+      verbosity?: 'low' | 'medium' | 'high';
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
@@ -323,32 +329,37 @@ export class ResponsesClient implements APIClient {
             }
           }
 
-          // Add injected file blocks based on injection mode
-          if (msg.content.injectedFiles?.length && msg.content.injectionMode) {
+          // Add injected file blocks based on injection mode. `injectedFiles`
+          // goes before the text item, `injectedFilesAfter` after it.
+          const pushInjectedFiles = (files?: InjectedFile[]) => {
+            if (!files?.length || !msg.content.injectionMode) return;
             const mode = effectiveInjectionMode(msg.content.injectionMode, 'responses_api');
             if (mode === 'as-file') {
-              for (const file of msg.content.injectedFiles) {
+              for (const file of files) {
                 contentItems.push({
                   type: 'input_file',
-                  file_data: `data:text/plain;base64,${btoa(unescape(encodeURIComponent(file.content)))}`,
+                  file_data: `data:text/plain;base64,${btoa(unescape(encodeURIComponent(wrapInjectedFile(file))))}`,
                   filename: file.path,
                 } as OpenAI.Responses.ResponseInputContent);
               }
             } else if (mode === 'separate-block') {
-              for (const file of msg.content.injectedFiles) {
+              for (const file of files) {
                 contentItems.push({
                   type: 'input_text',
-                  text: `=== ${file.path} ===\n${file.content}`,
+                  text: buildSeparateBlockText(file),
                 });
               }
             }
-          }
+          };
+          pushInjectedFiles(msg.content.injectedFiles);
 
           // Add text content
           contentItems.push({
             type: 'input_text',
             text: msg.content.content,
           });
+
+          pushInjectedFiles(msg.content.injectedFilesAfter);
 
           input.push({
             role: 'user',
@@ -438,6 +449,12 @@ export class ResponsesClient implements APIClient {
       // Get model metadata for reasoning configuration
       const model = await this.deps.storage.getModel(apiDefinition.id, modelId);
       this.applyReasoning(requestParams, options, model, apiDefinition);
+
+      // Verbosity is GPT-5-era only — older models reject the param, so it
+      // rides on the per-model flag rather than the project setting alone.
+      if (options.verbosity && model?.supportsVerbosity) {
+        requestParams.text = { verbosity: options.verbosity };
+      }
 
       // Add tools if present
       if (tools.length > 0) {

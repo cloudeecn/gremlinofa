@@ -23,7 +23,10 @@ import type {
 } from '../../protocol/types';
 import type { VfsAdapter } from '../vfs/vfsAdapter';
 import { VfsError } from '../vfs';
-import { formatFileWithLineNumbers } from '../../engine/lib/formatFileContent';
+import {
+  formatFileWithLineNumbers,
+  resolveNoLineNumbers,
+} from '../../engine/lib/formatFileContent';
 
 const MEMORIES_ROOT = '/memories';
 const MAX_LINE_COUNT = 999999;
@@ -34,6 +37,7 @@ interface ViewInput {
   command: 'view';
   path: string;
   view_range?: [number, number];
+  withLineNumbers?: boolean;
 }
 
 interface CreateInput {
@@ -96,6 +100,7 @@ interface AppendRawInput {
 interface ViewAllInput {
   command: 'view-all';
   paths: string[];
+  withLineNumbers?: boolean;
 }
 
 type MemoryInput =
@@ -720,6 +725,11 @@ async function* executeMemoryCommand(
 
   const adapter = context.vfsAdapter;
   const memoryInput = input as unknown as MemoryInput;
+  const noLineNumbers = resolveNoLineNumbers(
+    (memoryInput as { withLineNumbers?: boolean }).withLineNumbers,
+    context.fileLineNumbers,
+    context.noLineNumbers
+  );
 
   // Validate required fields before dispatch — LLMs sometimes omit them
   const cmd = input.command;
@@ -772,7 +782,7 @@ async function* executeMemoryCommand(
 
   switch (memoryInput.command) {
     case 'view':
-      return handleView(adapter, memoryInput.path, memoryInput.view_range, context.noLineNumbers);
+      return handleView(adapter, memoryInput.path, memoryInput.view_range, noLineNumbers);
     case 'create':
       return handleCreate(
         adapter,
@@ -812,7 +822,7 @@ async function* executeMemoryCommand(
     case 'append_raw':
       return handleAppendRaw(adapter, memoryInput.path, memoryInput.file_text ?? '');
     case 'view-all':
-      return handleMultiView(adapter, memoryInput.paths, context.noLineNumbers);
+      return handleMultiView(adapter, memoryInput.paths, noLineNumbers);
     default:
       return {
         content: `Unknown memory command: ${(memoryInput as { command: string }).command}`,
@@ -1049,6 +1059,11 @@ const MEMORY_INPUT_SCHEMA = {
         'Optional parameter for the view command (text files only). Format: [start_line, end_line]',
       items: { type: 'integer' },
       type: 'array',
+    },
+    withLineNumbers: {
+      description:
+        'Optional override for view / view-all: true shows line numbers, false strips them. Omit to use the project setting.',
+      type: 'boolean',
     },
   },
   required: ['command'],

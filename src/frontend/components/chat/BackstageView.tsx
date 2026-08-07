@@ -6,6 +6,7 @@ import type {
   WebFetchRenderBlock,
   ToolUseRenderBlock,
   ToolResultRenderBlock,
+  UnknownBlockRenderBlock,
 } from '../../../shared/protocol/types/content';
 import { usePreferences } from '../../hooks/usePreferences';
 import ToolResultView from './ToolResultView';
@@ -65,11 +66,14 @@ export default function BackstageView({
         return `${block.icon ?? '🔧'}`;
       case 'tool_result':
         return `${block.icon ?? (block.is_error ? '❌' : '✅')}`;
+      case 'unknown_block':
+        return '🧩';
       case 'error':
         return '❌';
       case 'injected_file':
       case 'tool_info':
       case 'text':
+      case 'fallback':
       default:
         return '💬';
     }
@@ -93,10 +97,13 @@ export default function BackstageView({
         return lastBlock.renderedInput ?? JSON.stringify(lastBlock.input);
       case 'tool_result':
         return lastBlock.renderedContent ?? lastBlock.content;
+      case 'unknown_block':
+        return lastBlock.name ?? lastBlock.blockType;
       case 'injected_file':
       case 'tool_info':
       case 'text':
       case 'error':
+      case 'fallback':
       default:
         return '';
     }
@@ -203,10 +210,13 @@ function BackstageBlock({ block }: BackstageBlockProps) {
       return <ToolUseSegment block={block} />;
     case 'tool_result':
       return <ToolResultSegment block={block} />;
+    case 'unknown_block':
+      return <UnknownBlockSegment block={block} />;
     case 'injected_file':
     case 'tool_info':
     case 'text':
     case 'error':
+    case 'fallback':
     default:
       return null;
   }
@@ -323,6 +333,43 @@ function ToolUseSegment({ block }: ToolUseSegmentProps) {
       {hasInput && inputExpanded && (
         <pre className="ml-4 rounded bg-gray-100 p-2 text-xs break-all whitespace-pre-wrap text-gray-700">
           {renderedInput}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+interface UnknownBlockSegmentProps {
+  block: UnknownBlockRenderBlock;
+}
+
+/**
+ * Generic renderer for claude-agent blocks we have no dedicated view for —
+ * shows the block type/name with the trimmed raw JSON behind a toggle, so the
+ * activity is visible and the wire shape is inspectable for future renderers.
+ */
+function UnknownBlockSegment({ block }: UnknownBlockSegmentProps) {
+  const [jsonExpanded, setJsonExpanded] = useState(false);
+
+  return (
+    <div className="backstage-segment mb-3 last:mb-0">
+      <div className="mb-1 flex items-center gap-1 text-xs font-medium text-purple-700">
+        <span>🧩</span>
+        <span>
+          {block.blockType}
+          {block.name ? `: ${block.name}` : ''}
+        </span>
+        <button
+          onClick={() => setJsonExpanded(!jsonExpanded)}
+          className="text-purple-500 hover:text-purple-700"
+        >
+          {jsonExpanded ? '▼' : '▶'}
+        </button>
+      </div>
+
+      {jsonExpanded && (
+        <pre className="ml-4 rounded bg-gray-100 p-2 text-xs break-all whitespace-pre-wrap text-gray-700">
+          {block.json}
         </pre>
       )}
     </div>

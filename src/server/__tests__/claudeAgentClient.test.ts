@@ -11,6 +11,12 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   ClaudeAgentClient,
   classifyTurnError,
+  describeFallback,
+  bridgedToolName,
+  toolInputKey,
+  extractToolResponseText,
+  detectTruncation,
+  trimBlockJson,
   type TurnOutcomeSignals,
 } from '../claudeAgentClient';
 import type {
@@ -64,11 +70,25 @@ interface ScriptedTurn {
   stop_reason?: string;
 }
 
-function makeFakeQuery(turn: ScriptedTurn, optsSink: { value?: unknown } = {}) {
+function makeFakeQuery(
+  turn: ScriptedTurn,
+  optsSink: { value?: unknown } = {},
+  promptSink: { value?: unknown; messages?: unknown[] } = {}
+) {
   // The signature mirrors `@anthropic-ai/claude-agent-sdk`'s `query`.
   return vi.fn((params: { prompt: unknown; options?: unknown }) => {
     optsSink.value = params.options;
+    promptSink.value = params.prompt;
     const iter = (async function* () {
+      // Drain an AsyncIterable prompt first, the way the SDK's streamInput
+      // consumes it before (or while) the CLI produces output.
+      const p = params.prompt;
+      if (p !== null && typeof p === 'object' && Symbol.asyncIterator in p) {
+        promptSink.messages = [];
+        for await (const m of p as AsyncIterable<unknown>) {
+          promptSink.messages.push(m);
+        }
+      }
       yield {
         type: 'system' as const,
         subtype: 'init' as const,
@@ -164,14 +184,110 @@ function makeFailingTurnQuery(opts: {
   );
 }
 
+/**
+ * Scripts a turn whose assistant message carries a `fallback` block — the SDK
+ * handed the request to a different model (`{ from: { model }, to: { model } }`).
+ * Optionally precedes it with a text block (the response that model produced).
+ */
+function makeFallbackQuery(opts: { fromModel?: string; toModel?: string; text?: string } = {}) {
+  return vi.fn(
+    () =>
+      (async function* () {
+        yield { type: 'system' as const, subtype: 'init' as const, session_id: 's' };
+        yield {
+          type: 'assistant' as const,
+          uuid: 'a1',
+          session_id: 's',
+          message: {
+            content: [
+              ...(opts.text ? [{ type: 'text', text: opts.text }] : []),
+              {
+                type: 'fallback',
+                ...(opts.fromModel ? { from: { model: opts.fromModel } } : {}),
+                ...(opts.toModel ? { to: { model: opts.toModel } } : {}),
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'result' as const,
+          subtype: 'success' as const,
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 5, output_tokens: 7 },
+        };
+      })() as unknown
+  );
+}
+
+/**
+ * Scripts a turn whose assistant message mixes blocks we have no dedicated
+ * renderer for (an unrecognized server_tool_use name, a brand-new block type,
+ * a non-bridged tool_use) with ones we deliberately skip (a bridged
+ * mcp__gremlin__* tool_use — the MCP side channel renders those).
+ */
+function makeUnknownBlocksQuery() {
+  return vi.fn(
+    () =>
+      (async function* () {
+        yield { type: 'system' as const, subtype: 'init' as const, session_id: 's' };
+        yield {
+          type: 'assistant' as const,
+          uuid: 'a1',
+          session_id: 's',
+          message: {
+            content: [
+              {
+                type: 'server_tool_use',
+                id: 'srvtoolu_1',
+                name: 'code_execution',
+                input: { code: '1+1' },
+              },
+              {
+                type: 'code_execution_tool_result',
+                tool_use_id: 'srvtoolu_1',
+                content: { stdout: '2' },
+              },
+              { type: 'tool_use', id: 'toolu_1', name: 'mcp__gremlin__memo', input: {} },
+              { type: 'tool_use', id: 'toolu_2', name: 'WebSearch', input: { query: 'best LLM' } },
+              { type: 'text', text: 'done' },
+            ],
+          },
+        };
+        // Tool results ride back on a user message: one for the non-bridged
+        // WebSearch (→ generic render), one for the bridged memo (→ skipped).
+        yield {
+          type: 'user' as const,
+          uuid: 'u1',
+          session_id: 's',
+          parent_tool_use_id: null,
+          message: {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_2', content: 'search hits here' },
+              { type: 'tool_result', tool_use_id: 'toolu_1', content: 'memo saved' },
+            ],
+          },
+        };
+        yield {
+          type: 'result' as const,
+          subtype: 'success' as const,
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 5, output_tokens: 7 },
+        };
+      })() as unknown
+  );
+}
+
 async function consume(
   client: ClaudeAgentClient,
   messages: Message<unknown>[],
   apiDef: APIDefinition,
-  options: Record<string, unknown> = {}
+  options: Record<string, unknown> = {},
+  // Haiku 4.5 has no effort support — override for effort-sensitive cases.
+  modelId = 'claude-haiku-4-5'
 ) {
   const ac = new AbortController();
-  const gen = client.sendMessageStream(messages, 'claude-haiku-4-5', apiDef, {
+  const gen = client.sendMessageStream(messages, modelId, apiDef, {
     signal: ac.signal,
     ...options,
   } as Parameters<ClaudeAgentClient['sendMessageStream']>[3]);
@@ -216,8 +332,117 @@ describe('ClaudeAgentClient', () => {
     };
     expect(r.textContent).toBe('hi');
     expect(r.thinkingContent).toBe('reasoning…');
-    expect(r.providerExtra?.claudeAgentSessionId).toBe('fixed-uuid');
+    // The CLI-reported `system:init` session id is authoritative (it differs
+    // from the requested id on forked rewinds), so it wins over 'fixed-uuid'.
+    expect(r.providerExtra?.claudeAgentSessionId).toBe('sess-1');
     expect(r.providerExtra?.claudeAgentMessageUuid).toBe('asst-uuid-1');
+  });
+
+  describe('fallback block', () => {
+    it('treatFallbackAsError on: surfaces a neutral model-handoff error, no fallback chunk', async () => {
+      const client = new ClaudeAgentClient(makeDeps(), {
+        query: makeFallbackQuery({
+          fromModel: 'claude-fable-5',
+          toModel: 'claude-opus-4-8',
+        }) as never,
+        sessionDir: () => '/tmp',
+        generateSessionId: () => 'u',
+      });
+
+      const { chunks, result } = await consume(
+        client,
+        [userMessage('a request')],
+        makeApiDef({ advancedSettings: { treatFallbackAsError: true } })
+      );
+
+      expect(chunks.some(c => c.type === 'fallback')).toBe(false);
+      const r = result as { error?: { message: string } };
+      expect(r.error?.message).toBe(
+        'claude-agent: request handled by claude-opus-4-8 instead of claude-fable-5'
+      );
+      // States the fact only — never speculates about a "risky" prompt.
+      expect(r.error?.message).not.toMatch(/risky/i);
+    });
+
+    it('treatFallbackAsError off: emits a fallback chunk carrying from/to models, no error', async () => {
+      const client = new ClaudeAgentClient(makeDeps(), {
+        query: makeFallbackQuery({
+          fromModel: 'claude-fable-5',
+          toModel: 'claude-opus-4-8',
+          text: 'here is the answer',
+        }) as never,
+        sessionDir: () => '/tmp',
+        generateSessionId: () => 'u',
+      });
+
+      const { chunks, result } = await consume(client, [userMessage('a request')], makeApiDef());
+
+      const fallback = chunks.find(c => c.type === 'fallback');
+      expect(fallback).toEqual({
+        type: 'fallback',
+        fromModel: 'claude-fable-5',
+        toModel: 'claude-opus-4-8',
+      });
+      const r = result as { error?: unknown; textContent: string };
+      expect(r.error).toBeUndefined();
+      expect(r.textContent).toBe('here is the answer');
+    });
+  });
+
+  describe('unknown blocks', () => {
+    it('emits unknown_block chunks for unhandled block shapes, skips bridged tool_use', async () => {
+      const client = new ClaudeAgentClient(makeDeps(), {
+        query: makeUnknownBlocksQuery() as never,
+        sessionDir: () => '/tmp',
+        generateSessionId: () => 'u',
+      });
+
+      const { chunks, result } = await consume(client, [userMessage('run code')], makeApiDef());
+
+      const unknowns = chunks.filter(
+        (c): c is Extract<StreamChunk, { type: 'unknown_block' }> => c.type === 'unknown_block'
+      );
+      expect(unknowns).toHaveLength(4);
+
+      // Unrecognized server tool name — full block dumped as JSON.
+      expect(unknowns[0]).toMatchObject({
+        blockType: 'server_tool_use',
+        name: 'code_execution',
+        id: 'srvtoolu_1',
+      });
+      expect(JSON.parse(unknowns[0].json)).toEqual({
+        type: 'server_tool_use',
+        id: 'srvtoolu_1',
+        name: 'code_execution',
+        input: { code: '1+1' },
+      });
+
+      // Brand-new block type — no name, still surfaced.
+      expect(unknowns[1]).toMatchObject({ blockType: 'code_execution_tool_result' });
+      expect(unknowns[1].name).toBeUndefined();
+
+      // Non-bridged tool_use — surfaced; the bridged mcp__gremlin__memo is not.
+      expect(unknowns[2]).toMatchObject({
+        blockType: 'tool_use',
+        name: 'WebSearch',
+        id: 'toolu_2',
+      });
+      expect(unknowns.some(c => c.name === 'mcp__gremlin__memo')).toBe(false);
+
+      // Its tool_result (from the SDK user message) — surfaced under the
+      // originating tool's name; the bridged memo's result is not.
+      expect(unknowns[3]).toMatchObject({
+        blockType: 'tool_result',
+        name: 'WebSearch',
+        id: 'toolu_2',
+      });
+      expect(JSON.parse(unknowns[3].json)).toMatchObject({ content: 'search hits here' });
+      expect(unknowns.filter(c => c.blockType === 'tool_result')).toHaveLength(1);
+
+      const r = result as { error?: unknown; textContent: string };
+      expect(r.error).toBeUndefined();
+      expect(r.textContent).toBe('done');
+    });
   });
 
   it('first turn passes sessionId; resume turn passes resume + resumeSessionAt', async () => {
@@ -240,7 +465,68 @@ describe('ClaudeAgentClient', () => {
     });
     expect((optsSink.value as Record<string, unknown>).resume).toBe('persisted-uuid');
     expect((optsSink.value as Record<string, unknown>).resumeSessionAt).toBe('asst-uuid-prev');
+    // Rewound sends fork so the dead branch stays in the old session file.
+    expect((optsSink.value as Record<string, unknown>).forkSession).toBe(true);
     expect((optsSink.value as Record<string, unknown>).sessionId).toBeUndefined();
+
+    // Plain resume (no rewind): same session continued in place, no fork.
+    optsSink.value = undefined;
+    await consume(client, [userMessage('third')], makeApiDef(), {
+      claudeAgentSessionId: 'persisted-uuid',
+    });
+    expect((optsSink.value as Record<string, unknown>).resume).toBe('persisted-uuid');
+    expect((optsSink.value as Record<string, unknown>).resumeSessionAt).toBeUndefined();
+    expect((optsSink.value as Record<string, unknown>).forkSession).toBeUndefined();
+  });
+
+  it('forwards maxTokens as the CLI output-token env cap', async () => {
+    // The client copies process.env, so pin the ambient value out of the way.
+    const saved = process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+    delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+    try {
+      const optsSink: { value?: unknown } = {};
+      const client = new ClaudeAgentClient(makeDeps(), {
+        query: makeFakeQuery({ text: 'ok' }, optsSink) as never,
+        sessionDir: () => '/tmp',
+        generateSessionId: () => 'u',
+      });
+
+      await consume(client, [userMessage('hey')], makeApiDef(), { maxTokens: 9000 });
+      let env = (optsSink.value as { env: Record<string, string> }).env;
+      expect(env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('9000');
+
+      optsSink.value = undefined;
+      await consume(client, [userMessage('hey')], makeApiDef(), { maxTokens: 0 });
+      env = (optsSink.value as { env: Record<string, string> }).env;
+      expect(env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBeUndefined();
+    } finally {
+      if (saved !== undefined) process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = saved;
+    }
+  });
+
+  it('deleteProviderSession forwards to the SDK deleteSession with the session dir', async () => {
+    const del = vi.fn(async () => {});
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: vi.fn() as never,
+      deleteSession: del as never,
+      sessionDir: () => '/tmp/sessions',
+      generateSessionId: () => 'u',
+    });
+    await client.deleteProviderSession('old-sess');
+    expect(del).toHaveBeenCalledExactlyOnceWith('old-sess', { dir: '/tmp/sessions' });
+  });
+
+  it('deleteProviderSession swallows SDK failures (best-effort GC)', async () => {
+    const del = vi.fn(async () => {
+      throw new Error('No session found');
+    });
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: vi.fn() as never,
+      deleteSession: del as never,
+      sessionDir: () => '/tmp/sessions',
+      generateSessionId: () => 'u',
+    });
+    await expect(client.deleteProviderSession('gone')).resolves.toBeUndefined();
   });
 
   it('maps reasoning controls onto SDK thinking / effort options', async () => {
@@ -251,12 +537,15 @@ describe('ClaudeAgentClient', () => {
       sessionDir: () => '/tmp',
       generateSessionId: () => 'u',
     });
+    const OPUS = 'claude-opus-4-8'; // supports the full effort ladder
 
-    await consume(client, [userMessage('hey')], makeApiDef(), {
-      enableReasoning: true,
-      reasoningBudgetTokens: 4000,
-      reasoningEffort: 'high',
-    });
+    await consume(
+      client,
+      [userMessage('hey')],
+      makeApiDef(),
+      { enableReasoning: true, reasoningBudgetTokens: 4000, reasoningEffort: 'high' },
+      OPUS
+    );
     const opts = optsSink.value as Record<string, unknown>;
     expect(opts.thinking).toEqual({ type: 'enabled', budgetTokens: 4000 });
     expect(opts.effort).toBe('high');
@@ -273,13 +562,155 @@ describe('ClaudeAgentClient', () => {
     // Adaptive: enableReasoning=true + budget=0 → omit `thinking` so the SDK's
     // adaptive default applies (required for Opus 4.7+ which only does adaptive).
     optsSink.value = undefined;
+    await consume(
+      client,
+      [userMessage('hey')],
+      makeApiDef(),
+      { enableReasoning: true, reasoningBudgetTokens: 0, reasoningEffort: 'high' },
+      OPUS
+    );
+    expect((optsSink.value as Record<string, unknown>).thinking).toBeUndefined();
+    expect((optsSink.value as Record<string, unknown>).effort).toBe('high');
+  });
+
+  it('opts into thinking.display=summarized when a reasoning summary is selected', async () => {
+    const optsSink: { value?: unknown } = {};
+    const fakeQuery = makeFakeQuery({ text: 'ok' }, optsSink);
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+    const OPUS = 'claude-opus-4-8';
+
+    // Fixed budget + summary → display rides the enabled config.
+    await consume(
+      client,
+      [userMessage('hey')],
+      makeApiDef(),
+      { enableReasoning: true, reasoningBudgetTokens: 4000, reasoningSummary: 'auto' },
+      OPUS
+    );
+    expect((optsSink.value as Record<string, unknown>).thinking).toEqual({
+      type: 'enabled',
+      budgetTokens: 4000,
+      display: 'summarized',
+    });
+
+    // Adaptive (budget 0) + summary → the explicit adaptive form carries the
+    // display opt-in (without a summary, adaptive omits `thinking` entirely —
+    // covered by the mapping test above).
+    optsSink.value = undefined;
+    await consume(
+      client,
+      [userMessage('hey')],
+      makeApiDef(),
+      { enableReasoning: true, reasoningBudgetTokens: 0, reasoningSummary: 'detailed' },
+      OPUS
+    );
+    expect((optsSink.value as Record<string, unknown>).thinking).toEqual({
+      type: 'adaptive',
+      display: 'summarized',
+    });
+
+    // Reasoning disabled → summary changes nothing.
+    optsSink.value = undefined;
+    await consume(client, [userMessage('hey')], makeApiDef(), {
+      enableReasoning: false,
+      reasoningSummary: 'auto',
+    });
+    expect((optsSink.value as Record<string, unknown>).thinking).toEqual({ type: 'disabled' });
+
+    // Reasoning not configured at all → summary alone doesn't force thinking on.
+    optsSink.value = undefined;
+    await consume(client, [userMessage('hey')], makeApiDef(), { reasoningSummary: 'auto' });
+    expect((optsSink.value as Record<string, unknown>).thinking).toBeUndefined();
+  });
+
+  it('clamps effort to what the model accepts', async () => {
+    const optsSink: { value?: unknown } = {};
+    const fakeQuery = makeFakeQuery({ text: 'ok' }, optsSink);
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    // The SDK's EffortLevel has no 'none'/'minimal' — both clamp up to 'low'
+    // rather than being passed through or dropped.
+    const cases: [string, string, string][] = [
+      ['claude-opus-4-8', 'minimal', 'low'],
+      ['claude-opus-4-8', 'none', 'low'],
+      ['claude-opus-4-8', 'xhigh', 'xhigh'],
+      ['claude-opus-4-8', 'max', 'max'],
+      // Sonnet 4.6 has no xhigh, so it escalates to max.
+      ['claude-sonnet-4-6', 'xhigh', 'max'],
+    ];
+
+    for (const [modelId, requested, expected] of cases) {
+      optsSink.value = undefined;
+      await consume(
+        client,
+        [userMessage('hey')],
+        makeApiDef(),
+        { enableReasoning: true, reasoningBudgetTokens: 0, reasoningEffort: requested },
+        modelId
+      );
+      expect((optsSink.value as Record<string, unknown>).effort, `${modelId} ${requested}`).toBe(
+        expected
+      );
+    }
+  });
+
+  it('omits effort for a model that does not accept it', async () => {
+    const optsSink: { value?: unknown } = {};
+    const fakeQuery = makeFakeQuery({ text: 'ok' }, optsSink);
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    // Haiku 4.5 predates the effort parameter — sending it would be rejected.
     await consume(client, [userMessage('hey')], makeApiDef(), {
       enableReasoning: true,
       reasoningBudgetTokens: 0,
       reasoningEffort: 'high',
     });
-    expect((optsSink.value as Record<string, unknown>).thinking).toBeUndefined();
-    expect((optsSink.value as Record<string, unknown>).effort).toBe('high');
+    expect((optsSink.value as Record<string, unknown>).effort).toBeUndefined();
+  });
+
+  it('appends the [1m] suffix to the SDK model id when claudeAgentExtendedContext is set', async () => {
+    const optsSink: { value?: unknown } = {};
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFakeQuery({ text: 'ok' }, optsSink) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    const ac = new AbortController();
+    const gen = client.sendMessageStream([userMessage('hi')], 'claude-opus-4-8', makeApiDef(), {
+      signal: ac.signal,
+      claudeAgentExtendedContext: true,
+    } as Parameters<ClaudeAgentClient['sendMessageStream']>[3]);
+    while (!(await gen.next()).done) {
+      /* drain */
+    }
+
+    expect((optsSink.value as Record<string, unknown>).model).toBe('claude-opus-4-8[1m]');
+  });
+
+  it('sends the bare model id when claudeAgentExtendedContext is omitted', async () => {
+    const optsSink: { value?: unknown } = {};
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFakeQuery({ text: 'ok' }, optsSink) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    // consume() uses model id 'claude-haiku-4-5' and sets no extended-context flag.
+    await consume(client, [userMessage('hi')], makeApiDef());
+    expect((optsSink.value as Record<string, unknown>).model).toBe('claude-haiku-4-5');
   });
 
   it('routes OAuth tokens via CLAUDE_CODE_OAUTH_TOKEN, API keys via ANTHROPIC_API_KEY', async () => {
@@ -319,6 +750,7 @@ describe('ClaudeAgentClient', () => {
     });
     const models = await client.discoverModels(makeApiDef());
     expect(models.map(m => m.id).sort()).toEqual([
+      'claude-fable-5',
       'claude-haiku-4-5',
       'claude-opus-4-7',
       'claude-opus-4-8',
@@ -337,6 +769,163 @@ describe('ClaudeAgentClient', () => {
       signal: ac.signal,
     } as Parameters<ClaudeAgentClient['sendMessageStream']>[3]);
     await expect(gen.next()).rejects.toThrow(/no user message/);
+  });
+
+  it('throws when the last user message has no text, attachments, or files', async () => {
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: vi.fn() as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+    const ac = new AbortController();
+    const gen = client.sendMessageStream([userMessage('')], 'claude-haiku-4-5', makeApiDef(), {
+      signal: ac.signal,
+    } as Parameters<ClaudeAgentClient['sendMessageStream']>[3]);
+    await expect(gen.next()).rejects.toThrow(/no user content/);
+  });
+
+  it('passes a plain string prompt when the message is text-only', async () => {
+    const promptSink: { value?: unknown; messages?: unknown[] } = {};
+    const fakeQuery = makeFakeQuery({ text: 'ok' }, {}, promptSink);
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    await consume(client, [userMessage('hello world')], makeApiDef());
+
+    expect(promptSink.value).toBe('hello world');
+    expect(promptSink.messages).toBeUndefined();
+  });
+
+  it('sends image attachments as content blocks via the streaming-input prompt', async () => {
+    const promptSink: { value?: unknown; messages?: unknown[] } = {};
+    const fakeQuery = makeFakeQuery({ text: 'ok' }, {}, promptSink);
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+    const msg: Message<unknown> = {
+      ...userMessage('look at these'),
+      attachments: [
+        { id: 'a1', type: 'image', mimeType: 'image/png', data: 'AAAA' },
+        { id: 'a2', type: 'image', mimeType: 'image/jpeg', data: 'BBBB' },
+      ],
+    };
+
+    await consume(client, [msg], makeApiDef());
+
+    expect(typeof promptSink.value).not.toBe('string');
+    expect(promptSink.messages).toHaveLength(1);
+    const sdkMsg = promptSink.messages![0] as {
+      type: string;
+      parent_tool_use_id: unknown;
+      message: { role: string; content: unknown[] };
+    };
+    expect(sdkMsg.type).toBe('user');
+    expect(sdkMsg.parent_tool_use_id).toBeNull();
+    expect(sdkMsg.message.role).toBe('user');
+    expect(sdkMsg.message.content).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'BBBB' } },
+      { type: 'text', text: 'look at these' },
+    ]);
+  });
+
+  it('accepts an attachment-only message with no text', async () => {
+    const promptSink: { value?: unknown; messages?: unknown[] } = {};
+    const fakeQuery = makeFakeQuery({ text: 'ok' }, {}, promptSink);
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+    const msg: Message<unknown> = {
+      ...userMessage(''),
+      attachments: [{ id: 'a1', type: 'image', mimeType: 'image/webp', data: 'CCCC' }],
+    };
+
+    await consume(client, [msg], makeApiDef());
+
+    const sdkMsg = promptSink.messages![0] as { message: { content: unknown[] } };
+    expect(sdkMsg.message.content).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/webp', data: 'CCCC' } },
+    ]);
+  });
+
+  it('sends separate-block injected files bracketing the text', async () => {
+    const promptSink: { value?: unknown; messages?: unknown[] } = {};
+    const fakeQuery = makeFakeQuery({ text: 'ok' }, {}, promptSink);
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+    const msg = userMessage('analyze this');
+    msg.content.injectedFiles = [{ path: '/a.ts', content: 'aaa' }];
+    msg.content.injectedFilesAfter = [{ path: '/b.ts', content: 'bbb' }];
+    msg.content.injectionMode = 'separate-block';
+
+    await consume(client, [msg], makeApiDef());
+
+    const sdkMsg = promptSink.messages![0] as { message: { content: unknown[] } };
+    expect(sdkMsg.message.content).toEqual([
+      { type: 'text', text: '=== /a.ts ===\naaa' },
+      { type: 'text', text: 'analyze this' },
+      { type: 'text', text: '=== /b.ts ===\nbbb' },
+    ]);
+  });
+
+  it('downgrades as-file injected files to separate-block text blocks', async () => {
+    const promptSink: { value?: unknown; messages?: unknown[] } = {};
+    const fakeQuery = makeFakeQuery({ text: 'ok' }, {}, promptSink);
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+    const msg = userMessage('analyze this');
+    msg.content.injectedFiles = [{ path: '/a.ts', content: 'aaa' }];
+    msg.content.injectionMode = 'as-file';
+
+    await consume(client, [msg], makeApiDef());
+
+    const sdkMsg = promptSink.messages![0] as { message: { content: { type: string }[] } };
+    expect(sdkMsg.message.content.map(b => b.type)).toEqual(['text', 'text']);
+    expect(sdkMsg.message.content[0]).toEqual({ type: 'text', text: '=== /a.ts ===\naaa' });
+  });
+
+  it('emits document blocks for as-file once the capability table allows it', async () => {
+    // The document branch is dormant behind effectiveInjectionMode's as-file
+    // allowlist; force the mode through to pin the branch's output shape.
+    vi.resetModules();
+    vi.doMock('../../shared/services/api/fileInjectionHelper', async importOriginal => {
+      const actual =
+        await importOriginal<typeof import('../../shared/services/api/fileInjectionHelper')>();
+      return { ...actual, effectiveInjectionMode: () => 'as-file' as const };
+    });
+    try {
+      const { buildUserContentBlocks: build } = await import('../claudeAgentClient');
+      const msg = userMessage('go');
+      msg.content.injectedFiles = [
+        { path: '/a.ts', content: 'aaa', preamble: 'PRE', postamble: 'POST' },
+      ];
+      msg.content.injectionMode = 'as-file';
+
+      expect(build(msg)).toEqual([
+        {
+          type: 'document',
+          source: { type: 'text', data: 'PRE\naaa\nPOST', media_type: 'text/plain' },
+          title: '/a.ts',
+        },
+        { type: 'text', text: 'go' },
+      ]);
+    } finally {
+      vi.doUnmock('../../shared/services/api/fileInjectionHelper');
+      vi.resetModules();
+    }
   });
 
   it('bridges enabled tools into mcpServers + allowedTools, keeping built-ins off', async () => {
@@ -468,6 +1057,300 @@ describe('ClaudeAgentClient', () => {
     >;
     expect(toolResult.name).toBe('echo');
     expect(toolResult.content).toBe('echo:hi');
+  });
+
+  // Shared setup for the model-delivery hook tests: an echo tool plus a fake
+  // query that runs the tool, then invokes one of the SDK hooks the way the
+  // real CLI would after deciding what the model actually received.
+  function makeHookDrivenQuery(
+    fireHook: (hooks: {
+      PostToolUse: Array<{
+        hooks: Array<
+          (input: unknown, id: string | undefined, o: { signal: AbortSignal }) => Promise<unknown>
+        >;
+      }>;
+      PostToolUseFailure: Array<{
+        hooks: Array<
+          (input: unknown, id: string | undefined, o: { signal: AbortSignal }) => Promise<unknown>
+        >;
+      }>;
+    }) => Promise<void>
+  ) {
+    const registry = new ClientSideToolRegistry();
+    const echoTool: ClientSideTool = {
+      name: 'echo',
+      claudeAgentBridgeable: true,
+      description: 'echo',
+      inputSchema: {
+        type: 'object',
+        properties: { message: { type: 'string' } },
+        required: ['message'],
+      },
+      execute: async input => ({ content: `echo:${String(input.message)}` }),
+    };
+    registry.registerAll([echoTool]);
+    const toolContext = { toolRegistry: registry } as unknown as ToolContext;
+
+    const fakeQuery = vi.fn((params: { prompt: unknown; options?: unknown }) => {
+      const options = params.options as {
+        mcpServers: {
+          gremlin: { instance: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer };
+        };
+        hooks: Parameters<typeof fireHook>[0];
+      };
+      return (async function* () {
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await options.mcpServers.gremlin.instance.connect(serverTransport);
+        const sdkSim = new Client({ name: 'sdk-sim', version: '1.0.0' });
+        await sdkSim.connect(clientTransport);
+
+        yield { type: 'system' as const, subtype: 'init' as const, session_id: 's' };
+        await sdkSim.callTool({ name: 'echo', arguments: { message: 'hi' } });
+        await fireHook(options.hooks);
+        yield {
+          type: 'result' as const,
+          subtype: 'success' as const,
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })() as unknown;
+    });
+
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+    return { client, toolContext };
+  }
+
+  const signal = () => new AbortController().signal;
+
+  it('annotates the tool_result block when PostToolUseFailure fires', async () => {
+    const { client, toolContext } = makeHookDrivenQuery(hooks =>
+      hooks.PostToolUseFailure[0].hooks[0](
+        {
+          hook_event_name: 'PostToolUseFailure',
+          tool_name: 'mcp__gremlin__echo',
+          tool_input: { message: 'hi' },
+          tool_use_id: 'toolu_x',
+          error: 'exceeds max token',
+        },
+        'toolu_x',
+        { signal: signal() }
+      ).then(() => undefined)
+    );
+
+    const { chunks } = await consume(client, [userMessage('go')], makeApiDef(), {
+      toolContext,
+      enabledTools: ['echo'],
+      toolOptions: {},
+    });
+
+    const annotation = chunks.find(c => c.type === 'tool_result_annotation') as Extract<
+      StreamChunk,
+      { type: 'tool_result_annotation' }
+    >;
+    expect(annotation).toBeDefined();
+    // Correlated back to the bridge's synthetic id, not the model's tool_use_id.
+    expect(annotation.tool_use_id).toBe('mcp_gremlin_1');
+    expect(annotation.modelDelivery).toEqual({ status: 'error', detail: 'exceeds max token' });
+  });
+
+  it('annotates the tool_result block when PostToolUse shows a shorter payload', async () => {
+    const { client, toolContext } = makeHookDrivenQuery(hooks =>
+      hooks.PostToolUse[0].hooks[0](
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'mcp__gremlin__echo',
+          tool_input: { message: 'hi' },
+          tool_use_id: 'toolu_x',
+          // SDK delivered a truncated copy: 'echo' vs the full 'echo:hi'.
+          tool_response: { content: [{ type: 'text', text: 'echo' }] },
+        },
+        'toolu_x',
+        { signal: signal() }
+      ).then(() => undefined)
+    );
+
+    const { chunks } = await consume(client, [userMessage('go')], makeApiDef(), {
+      toolContext,
+      enabledTools: ['echo'],
+      toolOptions: {},
+    });
+
+    const annotation = chunks.find(c => c.type === 'tool_result_annotation') as Extract<
+      StreamChunk,
+      { type: 'tool_result_annotation' }
+    >;
+    expect(annotation).toBeDefined();
+    expect(annotation.tool_use_id).toBe('mcp_gremlin_1');
+    expect(annotation.modelDelivery).toEqual({
+      status: 'truncated',
+      detail: 'model received 4 of 7 chars',
+    });
+  });
+
+  it('emits no annotation when PostToolUse matches what the bridge sent', async () => {
+    const { client, toolContext } = makeHookDrivenQuery(hooks =>
+      hooks.PostToolUse[0].hooks[0](
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'mcp__gremlin__echo',
+          tool_input: { message: 'hi' },
+          tool_use_id: 'toolu_x',
+          tool_response: { content: [{ type: 'text', text: 'echo:hi' }] },
+        },
+        'toolu_x',
+        { signal: signal() }
+      ).then(() => undefined)
+    );
+
+    const { chunks } = await consume(client, [userMessage('go')], makeApiDef(), {
+      toolContext,
+      enabledTools: ['echo'],
+      toolOptions: {},
+    });
+
+    expect(chunks.some(c => c.type === 'tool_result_annotation')).toBe(false);
+  });
+
+  it('surfaces a free-run return tool value on providerExtra', async () => {
+    const registry = new ClientSideToolRegistry();
+    const returnTool: ClientSideTool = {
+      name: 'return',
+      claudeAgentBridgeable: true,
+      description: 'return a result',
+      inputSchema: {
+        type: 'object',
+        properties: { result: { type: 'string' } },
+        required: ['result'],
+      },
+      execute: async input => ({
+        content: String(input.result),
+        breakLoop: { returnValue: String(input.result) },
+      }),
+    };
+    registry.registerAll([returnTool]);
+    const toolContext = { toolRegistry: registry } as unknown as ToolContext;
+
+    // The SDK can't be stopped by our return tool, so the turn keeps going
+    // after the call (free-run); the value rides back on providerExtra.
+    const fakeQuery = vi.fn((params: { prompt: unknown; options?: unknown }) => {
+      const instance = (
+        params.options as {
+          mcpServers: {
+            gremlin: { instance: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer };
+          };
+        }
+      ).mcpServers.gremlin.instance;
+      return (async function* () {
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await instance.connect(serverTransport);
+        const sdkSim = new Client({ name: 'sdk-sim', version: '1.0.0' });
+        await sdkSim.connect(clientTransport);
+
+        yield { type: 'system' as const, subtype: 'init' as const, session_id: 's' };
+        await sdkSim.callTool({ name: 'return', arguments: { result: 'the answer' } });
+        yield {
+          type: 'assistant' as const,
+          uuid: 'a1',
+          session_id: 's',
+          message: { content: [{ type: 'text', text: 'wrapping up' }] },
+        };
+        yield {
+          type: 'result' as const,
+          subtype: 'success' as const,
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })() as unknown;
+    });
+
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    const { result } = await consume(client, [userMessage('go')], makeApiDef(), {
+      toolContext,
+      enabledTools: ['return'],
+      toolOptions: {},
+    });
+
+    const r = result as { providerExtra?: Record<string, unknown> };
+    expect(r.providerExtra?.claudeAgentReturnValue).toBe('the answer');
+  });
+
+  it('surfaces a DUMMY hook (un)register on providerExtra (last-write-wins)', async () => {
+    const registry = new ClientSideToolRegistry();
+    const dummyish: ClientSideTool = {
+      name: 'dummy',
+      claudeAgentBridgeable: true,
+      description: '(de)activate a hook',
+      inputSchema: {
+        type: 'object',
+        properties: { action: { type: 'string' } },
+        required: ['action'],
+      },
+      execute: async input =>
+        input.action === 'register'
+          ? { content: 'on', activeHook: 'h1' }
+          : { content: 'off', activeHook: null },
+    };
+    registry.registerAll([dummyish]);
+    const toolContext = { toolRegistry: registry } as unknown as ToolContext;
+
+    // register then unregister within the same turn — the surfaced value is the
+    // last one (null = deactivate), and `null` must survive the !== undefined guard.
+    const fakeQuery = vi.fn((params: { prompt: unknown; options?: unknown }) => {
+      const instance = (
+        params.options as {
+          mcpServers: {
+            gremlin: { instance: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer };
+          };
+        }
+      ).mcpServers.gremlin.instance;
+      return (async function* () {
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await instance.connect(serverTransport);
+        const sdkSim = new Client({ name: 'sdk-sim', version: '1.0.0' });
+        await sdkSim.connect(clientTransport);
+
+        yield { type: 'system' as const, subtype: 'init' as const, session_id: 's' };
+        await sdkSim.callTool({ name: 'dummy', arguments: { action: 'register' } });
+        await sdkSim.callTool({ name: 'dummy', arguments: { action: 'unregister' } });
+        yield {
+          type: 'assistant' as const,
+          uuid: 'a1',
+          session_id: 's',
+          message: { content: [{ type: 'text', text: 'done' }] },
+        };
+        yield {
+          type: 'result' as const,
+          subtype: 'success' as const,
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })() as unknown;
+    });
+
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    const { result } = await consume(client, [userMessage('go')], makeApiDef(), {
+      toolContext,
+      enabledTools: ['dummy'],
+      toolOptions: {},
+    });
+
+    const r = result as { providerExtra?: Record<string, unknown> };
+    expect('claudeAgentActiveHook' in (r.providerExtra ?? {})).toBe(true);
+    expect(r.providerExtra?.claudeAgentActiveHook).toBeNull();
   });
 
   it('delivers toolContext + enabledTools through APIService to the SDK options', async () => {
@@ -762,7 +1645,43 @@ describe('ClaudeAgentClient', () => {
     debugSpy.mockRestore();
   });
 
-  it('surfaces a thinking-only turn (omitted thinking, no text, no signal) as an error', async () => {
+  it('surfaces the assistant max_tokens stop_reason on a mid-text truncated turn', async () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = new ClaudeAgentClient(makeDeps(), {
+      // CLAUDE_CODE_MAX_OUTPUT_TOKENS fired mid-answer: assistant message says
+      // max_tokens, the session-level result still closes success/end_turn.
+      query: makeFailingTurnQuery({
+        text: 'partial answer that got cut',
+        messageStopReason: 'max_tokens',
+      }) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    const { result } = await consume(client, [userMessage('hi')], makeApiDef());
+    const r = result as { stopReason?: string; error?: { message: string } };
+    expect(r.stopReason).toBe('max_tokens');
+    // Accept-the-turn convention (matches direct anthropicClient): the partial
+    // text stands, downstream reacts to the stop reason.
+    expect(r.error).toBeUndefined();
+    debugSpy.mockRestore();
+  });
+
+  it('does not let a benign assistant tool_use stop_reason mask the session stop_reason', async () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFailingTurnQuery({ text: 'done', messageStopReason: 'tool_use' }) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    const { result } = await consume(client, [userMessage('hi')], makeApiDef());
+    const r = result as { stopReason?: string };
+    expect(r.stopReason).toBe('end_turn');
+    debugSpy.mockRestore();
+  });
+
+  it('surfaces a thinking-only turn as an error when treatEmptyOutputAsError is on', async () => {
     const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const client = new ClaudeAgentClient(makeDeps(), {
       query: makeFailingTurnQuery({
@@ -775,9 +1694,28 @@ describe('ClaudeAgentClient', () => {
       generateSessionId: () => 'u',
     });
 
-    const { result } = await consume(client, [userMessage('hi')], makeApiDef());
+    const apiDef = makeApiDef({ advancedSettings: { treatEmptyOutputAsError: true } });
+    const { result } = await consume(client, [userMessage('hi')], apiDef);
     const r = result as { error?: { message: string } };
     expect(r.error?.message).toMatch(/only thinking and no output/);
+    debugSpy.mockRestore();
+  });
+
+  it('does not error on a thinking-only turn when treatEmptyOutputAsError is off', async () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFailingTurnQuery({
+        rateLimitStatus: 'allowed',
+        thinking: { thinking: '', signature: 'sig-abc' },
+      }) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    // Default apiDef has the opt-in off — the judgment call defers to the loop.
+    const { result } = await consume(client, [userMessage('hi')], makeApiDef());
+    const r = result as { error?: { message: string } };
+    expect(r.error).toBeUndefined();
     debugSpy.mockRestore();
   });
 
@@ -1435,6 +2373,8 @@ describe('classifyTurnError', () => {
     refusalExplanation: undefined,
     refusalCategory: undefined,
     outputTokens: 0,
+    sawFallback: false,
+    treatEmptyOutputAsError: false,
   };
 
   it('is undefined for a turn that produced text', () => {
@@ -1476,10 +2416,36 @@ describe('classifyTurnError', () => {
     );
   });
 
-  it('surfaces a thinking-only malfunction (omitted thinking, no text, no tool)', () => {
-    const err = classifyTurnError({ ...base, sawThinkingBlock: true, outputTokens: 256 });
+  it('surfaces a thinking-only malfunction when treatEmptyOutputAsError is on', () => {
+    const err = classifyTurnError({
+      ...base,
+      sawThinkingBlock: true,
+      outputTokens: 256,
+      treatEmptyOutputAsError: true,
+    });
     expect(err?.message).toBe(
       'claude-agent: turn produced only thinking and no output (256 output tokens spent)'
+    );
+  });
+
+  it('does not flag a thinking-only turn when treatEmptyOutputAsError is off', () => {
+    // Same shape as above but opt-in off — left to the loop / verifyHook, matching
+    // how the structurally identical no-thinking empty turn is handled.
+    expect(
+      classifyTurnError({ ...base, sawThinkingBlock: true, outputTokens: 256 })
+    ).toBeUndefined();
+  });
+
+  it('does not flag a notice-only fallback turn as empty output', () => {
+    // treatFallbackAsError off → the fallback rendered as an inline notice, which
+    // is real output, so an otherwise-empty turn must not be reclassified.
+    expect(classifyTurnError({ ...base, sawFallback: true })).toBeUndefined();
+  });
+
+  it('still surfaces a hard error on an empty turn even with treatEmptyOutputAsError off', () => {
+    // Hard-failure branches recover real signals and stay unconditional.
+    expect(classifyTurnError({ ...base, assistantError: 'overloaded' })?.message).toBe(
+      'claude-agent: overloaded'
     );
   });
 
@@ -1494,6 +2460,15 @@ describe('classifyTurnError', () => {
     ).toBeUndefined();
   });
 
+  it('is undefined for a truncated turn that produced text (accept-the-turn convention)', () => {
+    // max_tokens + partial text is not a turn error — the truthful stopReason
+    // rides StreamResult instead, driving the minion abnormal-stop rewind and
+    // the Truncated badge.
+    expect(
+      classifyTurnError({ ...base, textLength: 30, assistantStopReason: 'max_tokens' })
+    ).toBeUndefined();
+  });
+
   it('hard assistant error takes precedence over a bad stop_reason', () => {
     expect(
       classifyTurnError({
@@ -1502,5 +2477,112 @@ describe('classifyTurnError', () => {
         assistantStopReason: 'max_tokens',
       })?.message
     ).toBe('claude-agent: overloaded');
+  });
+});
+
+describe('describeFallback', () => {
+  it('names both models when known', () => {
+    expect(describeFallback('claude-fable-5', 'claude-opus-4-8')).toBe(
+      'claude-agent: request handled by claude-opus-4-8 instead of claude-fable-5'
+    );
+  });
+
+  it('names just the target when the source is unknown', () => {
+    expect(describeFallback(undefined, 'claude-opus-4-8')).toBe(
+      'claude-agent: request handled by claude-opus-4-8'
+    );
+  });
+
+  it('falls back to a generic statement when neither model is known', () => {
+    expect(describeFallback()).toBe('claude-agent: request handled by a different model');
+  });
+});
+
+describe('trimBlockJson', () => {
+  it('pretty-prints small blocks in full', () => {
+    expect(trimBlockJson({ type: 'x', input: { a: 1 } })).toBe(
+      JSON.stringify({ type: 'x', input: { a: 1 } }, null, 2)
+    );
+  });
+
+  it('caps oversized blocks and reports the overflow', () => {
+    const trimmed = trimBlockJson({ payload: 'y'.repeat(5000) }, 100);
+    expect(trimmed.length).toBeLessThan(150);
+    expect(trimmed.startsWith('{\n  "payload"')).toBe(true);
+    expect(trimmed).toMatch(/… \(\+\d+ more chars\)$/);
+  });
+
+  it('never throws on unstringifiable input', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(trimBlockJson(cyclic)).toBe('[object Object]');
+    expect(trimBlockJson(undefined)).toBe('undefined');
+  });
+});
+
+describe('model-delivery detection helpers', () => {
+  describe('bridgedToolName', () => {
+    it('strips the mcp__gremlin__ prefix', () => {
+      expect(bridgedToolName('mcp__gremlin__filesystem')).toBe('filesystem');
+    });
+
+    it('returns null for non-bridged tools', () => {
+      expect(bridgedToolName('WebSearch')).toBeNull();
+      expect(bridgedToolName('mcp__other__filesystem')).toBeNull();
+    });
+  });
+
+  describe('toolInputKey', () => {
+    it('is stable for equal inputs and distinct for different ones', () => {
+      expect(toolInputKey({ a: 1, b: 2 })).toBe(toolInputKey({ a: 1, b: 2 }));
+      expect(toolInputKey({ a: 1 })).not.toBe(toolInputKey({ a: 2 }));
+    });
+
+    it('handles undefined/null without throwing', () => {
+      expect(toolInputKey(undefined)).toBe('null');
+      expect(toolInputKey(null)).toBe('null');
+    });
+  });
+
+  describe('extractToolResponseText', () => {
+    it('returns a bare string as-is', () => {
+      expect(extractToolResponseText('hello')).toBe('hello');
+    });
+
+    it('joins text from an MCP CallToolResult content array', () => {
+      expect(
+        extractToolResponseText({
+          content: [
+            { type: 'text', text: 'foo' },
+            { type: 'text', text: 'bar' },
+          ],
+        })
+      ).toBe('foobar');
+    });
+
+    it('reads a string content field', () => {
+      expect(extractToolResponseText({ content: 'baz' })).toBe('baz');
+    });
+
+    it('falls back to JSON for unrecognized shapes', () => {
+      expect(extractToolResponseText({ other: 1 })).toBe('{"other":1}');
+    });
+  });
+
+  describe('detectTruncation', () => {
+    it('flags a strictly shorter received payload as truncated', () => {
+      expect(detectTruncation('full result', 'full')).toEqual({
+        status: 'truncated',
+        detail: 'model received 4 of 11 chars',
+      });
+    });
+
+    it('returns null when the payloads match', () => {
+      expect(detectTruncation('same', 'same')).toBeNull();
+    });
+
+    it('returns null when received is longer (not a truncation)', () => {
+      expect(detectTruncation('short', 'short plus more')).toBeNull();
+    });
   });
 });

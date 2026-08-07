@@ -15,9 +15,14 @@ import { WebSocketTransportServer } from './websocketTransport';
 import { GremlinServer } from '../shared/engine/GremlinServer';
 import { RemoteVfsAdapter } from '../shared/services/vfs/RemoteVfsAdapter';
 import { ClaudeAgentClient } from './claudeAgentClient';
+import { installLogTimestamps } from './installLogTimestamps';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+
+// Stamp every server log with an ISO timestamp before anything logs — lets
+// interleaved request/turn lines be correlated. Server-only; worker untouched.
+installLogTimestamps();
 
 // Load .env file if present (no external dependency needed).
 // Only sets vars that aren't already in the environment so explicit

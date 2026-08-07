@@ -33,6 +33,8 @@ export type RenderingContentBlock =
   | ToolResultRenderBlock
   | ToolInfoRenderBlock
   | InjectedFileRenderBlock
+  | FallbackRenderBlock
+  | UnknownBlockRenderBlock
   | ErrorRenderBlock;
 
 /** Thinking block - just the thinking text */
@@ -103,6 +105,14 @@ export interface ToolResultRenderBlock {
   renderingGroups?: RenderingBlockGroup[];
   /** Token/cost totals incurred by this tool call (e.g., minion sub-agent API costs) */
   tokenTotals?: TokenTotals;
+
+  /**
+   * claude-agent only: set when the SDK delivered a different payload to the
+   * model than the full `content` shown here — truncated for size, or replaced
+   * with an error. Diagnostic flag; the full result still renders. `detail`
+   * carries the SDK's error string or a short size note.
+   */
+  modelDelivery?: { status: 'truncated' | 'error'; detail?: string };
 }
 
 /** Info block for tool context (input description, sub-chat references) */
@@ -120,8 +130,10 @@ export interface ToolInfoRenderBlock {
   apiDefinitionId?: string;
   /** Model ID used for this minion call */
   modelId?: string;
-  /** Files injected as context via injectFiles parameter */
+  /** Files injected as context via injectFiles — shown before the task input */
   injectedFiles?: Array<{ path: string; content: string; error?: boolean }>;
+  /** Files injected via injectFilesAfter — shown after the task input */
+  injectedFilesAfter?: Array<{ path: string; content: string; error?: boolean }>;
 }
 
 /**
@@ -148,6 +160,36 @@ export interface InjectedFileRenderBlock {
   error?: boolean;
 }
 
+/**
+ * Fallback block — the claude-agent SDK handed the request to a different model
+ * (it emits `{ type: 'fallback', from: { model }, to: { model } }`). Rendered as
+ * an inline notice stating the model handoff; only created when the provider's
+ * `treatFallbackAsError` is off. We make no claim about *why* the handoff
+ * happened — the block doesn't say.
+ */
+export interface FallbackRenderBlock {
+  type: 'fallback';
+  fromModel?: string;
+  toModel?: string;
+}
+
+/**
+ * Unknown block — a claude-agent SDK block we have no dedicated renderer for
+ * (e.g. a server_tool_use with an unrecognized name, or a block type the SDK
+ * added after us). Carries the raw block as trimmed pretty-printed JSON so the
+ * activity is at least visible instead of silently dropped.
+ */
+export interface UnknownBlockRenderBlock {
+  type: 'unknown_block';
+  /** Raw SDK block type, e.g. 'server_tool_use', 'code_execution_tool_result' */
+  blockType: string;
+  /** Tool name when the block carries one */
+  name?: string;
+  id?: string;
+  /** Trimmed pretty-printed JSON of the raw block */
+  json: string;
+}
+
 /** Error block */
 export interface ErrorRenderBlock {
   type: 'error';
@@ -168,8 +210,10 @@ export function categorizeBlock(block: RenderingContentBlock): BlockCategory {
     case 'tool_result':
     case 'tool_info':
     case 'injected_file':
+    case 'unknown_block':
       return 'backstage';
     case 'text':
+    case 'fallback':
       return 'text';
     case 'error':
       return 'error';

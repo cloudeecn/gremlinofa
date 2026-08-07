@@ -185,6 +185,37 @@ describe('AssistantMessageBubble', () => {
 
       expect(screen.getByText('2024-01-01')).toBeInTheDocument();
     });
+
+    it('renders without crashing when renderingContent is missing (legacy message)', () => {
+      const props = createProps({
+        message: createMessage({
+          content: {
+            type: 'text',
+            content: 'Legacy message text',
+          },
+        }),
+      });
+      render(<AssistantMessageBubble {...props} />);
+
+      // No content groups, but the metadata line still renders
+      expect(screen.queryByTestId('text-group-view')).not.toBeInTheDocument();
+      expect(screen.getByTitle('Copy message')).toBeInTheDocument();
+    });
+
+    it('renders without crashing in focus mode when renderingContent is missing', () => {
+      const props = createProps({
+        focusMode: true,
+        message: createMessage({
+          content: {
+            type: 'text',
+            content: 'Legacy message text',
+          },
+        }),
+      });
+      render(<AssistantMessageBubble {...props} />);
+
+      expect(screen.queryByTestId('text-group-view')).not.toBeInTheDocument();
+    });
   });
 
   describe('Action Buttons', () => {

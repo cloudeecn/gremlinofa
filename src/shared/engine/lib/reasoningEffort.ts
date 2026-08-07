@@ -57,3 +57,35 @@ export function mapReasoningEffort<T extends ReasoningEffort>(
   // Fallback (shouldn't reach here)
   return REASONING_EFFORTS[minSupported] as T;
 }
+
+const ANTHROPIC_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** Levels Anthropic's `output_config.effort` and the Agent SDK's `EffortLevel` accept. */
+export type AnthropicEffort = (typeof ANTHROPIC_EFFORT_LEVELS)[number];
+
+const ANTHROPIC_EFFORT_SET: ReadonlySet<string> = new Set(ANTHROPIC_EFFORT_LEVELS);
+
+export function isAnthropicEffort(effort: ReasoningEffort): effort is AnthropicEffort {
+  return effort !== undefined && ANTHROPIC_EFFORT_SET.has(effort);
+}
+
+/**
+ * Map a reasoning effort to the nearest level a given Claude model accepts.
+ *
+ * Returns undefined when no effort was requested, or when the model advertises no
+ * configurable effort — callers then omit the field entirely and Anthropic's server
+ * default (`high`) applies. Also absorbs the empty/undefined array that the generic
+ * `mapReasoningEffort` throws on, so metadata gaps can never break a live request.
+ */
+export function mapAnthropicEffort(
+  effort: ReasoningEffort,
+  supportedEfforts: readonly ReasoningEffort[] | undefined
+): AnthropicEffort | undefined {
+  if (effort === undefined) return undefined;
+  const levels = (supportedEfforts ?? []).filter(isAnthropicEffort);
+  if (levels.length === 0) return undefined;
+  // `xhigh` means "deeper than high", so on a model without it escalate to `max`
+  // rather than letting the generic helper round down to `high`.
+  if (effort === 'xhigh' && !levels.includes('xhigh') && levels.includes('max')) return 'max';
+  return mapReasoningEffort(effort, levels);
+}

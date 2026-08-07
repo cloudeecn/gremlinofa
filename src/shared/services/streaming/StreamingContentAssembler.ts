@@ -10,12 +10,14 @@
 import type { StreamChunk } from '../api/baseClient';
 import type {
   ErrorRenderBlock,
+  FallbackRenderBlock,
   RenderingBlockGroup,
   RenderingContentBlock,
   TextRenderBlock,
   ThinkingRenderBlock,
   ToolResultRenderBlock,
   ToolUseRenderBlock,
+  UnknownBlockRenderBlock,
   WebFetchRenderBlock,
   WebSearchRenderBlock,
   WebSearchResult,
@@ -44,6 +46,9 @@ export class StreamingContentAssembler {
   private currentBlock: RenderingContentBlock | null = null;
   private webSearchMap: Map<string, WebSearchRenderBlock> = new Map();
   private webFetchMap: Map<string, WebFetchRenderBlock> = new Map();
+  // Keyed by tool_use_id so a later `tool_result_annotation` can patch the
+  // already-emitted block in place (claude-agent model-delivery divergence).
+  private toolResultMap: Map<string, ToolResultRenderBlock> = new Map();
   private lastEndedBlockType: string | null = null;
   // Track pending citations for current text block (received before text)
   private pendingCitations: Array<{ url: string; title?: string; citedText?: string }> = [];
@@ -105,6 +110,14 @@ export class StreamingContentAssembler {
         this.handleWebFetchResult(chunk.tool_use_id, chunk.url, chunk.title);
         break;
 
+      case 'fallback':
+        this.handleFallback(chunk.fromModel, chunk.toModel);
+        break;
+
+      case 'unknown_block':
+        this.handleUnknownBlock(chunk);
+        break;
+
       case 'citation':
         this.handleCitation(chunk.url, chunk.title, chunk.citedText);
         break;
@@ -119,6 +132,10 @@ export class StreamingContentAssembler {
 
       case 'tool_result':
         this.handleToolResult(chunk);
+        break;
+
+      case 'tool_result_annotation':
+        this.handleToolResultAnnotation(chunk.tool_use_id, chunk.modelDelivery);
         break;
     }
   }
@@ -349,6 +366,33 @@ export class StreamingContentAssembler {
     }
   }
 
+  private handleFallback(fromModel?: string, toModel?: string): void {
+    // Discrete inline notice — the request was handed to a different model.
+    // Categorized as 'text', so it lands in the main message flow next to the
+    // response that model produced.
+    const fallbackBlock: FallbackRenderBlock = {
+      type: 'fallback',
+      ...(fromModel ? { fromModel } : {}),
+      ...(toModel ? { toModel } : {}),
+    };
+    this.addBlockToGroups(fallbackBlock);
+    this.lastEndedBlockType = null;
+  }
+
+  private handleUnknownBlock(chunk: Extract<StreamChunk, { type: 'unknown_block' }>): void {
+    // Generic raw dump of a claude-agent block we have no dedicated renderer
+    // for — lands in the backstage group as a collapsible JSON view.
+    const unknownBlock: UnknownBlockRenderBlock = {
+      type: 'unknown_block',
+      blockType: chunk.blockType,
+      ...(chunk.name ? { name: chunk.name } : {}),
+      ...(chunk.id ? { id: chunk.id } : {}),
+      json: chunk.json,
+    };
+    this.addBlockToGroups(unknownBlock);
+    this.lastEndedBlockType = null;
+  }
+
   private handleToolUse(id: string, name: string, input: Record<string, unknown>): void {
     const toolUseBlock: ToolUseRenderBlock = {
       type: 'tool_use',
@@ -378,7 +422,23 @@ export class StreamingContentAssembler {
       ...(chunk.tokenTotals ? { tokenTotals: chunk.tokenTotals } : {}),
     };
     this.addBlockToGroups(toolResultBlock);
+    this.toolResultMap.set(chunk.tool_use_id, toolResultBlock);
     this.lastEndedBlockType = null;
+  }
+
+  /**
+   * Patch an already-emitted tool_result block when the claude-agent SDK
+   * delivered a truncated/error payload to the model. No-op if the block isn't
+   * found (the annotation can outlive a non-rendered result).
+   */
+  private handleToolResultAnnotation(
+    toolUseId: string,
+    modelDelivery: { status: 'truncated' | 'error'; detail?: string }
+  ): void {
+    const block = this.toolResultMap.get(toolUseId);
+    if (block) {
+      block.modelDelivery = modelDelivery;
+    }
   }
 
   private handleCitation(url: string, title?: string, citedText?: string): void {

@@ -35,7 +35,7 @@
  */
 
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { gremlinClient, GremlinSession } from '../client';
+import { activeLoopsStore, gremlinClient, GremlinSession } from '../client';
 import type {
   APIDefinition,
   Chat,
@@ -416,7 +416,19 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           const update = batch.get((block as ToolResultRenderBlock).tool_use_id);
           if (update) {
             anyFound = true;
-            return { ...block, ...update };
+            const current = (block as ToolResultRenderBlock).status;
+            const merged = { ...block, ...update };
+            // Never downgrade a terminal block: the tool-block and
+            // tool-groups buffers flush on independent timers, so a stale
+            // non-terminal status may land after 'complete'/'error'.
+            if (
+              (current === 'complete' || current === 'error') &&
+              update.status !== 'complete' &&
+              update.status !== 'error'
+            ) {
+              merged.status = current;
+            }
+            return merged;
           }
           return block;
         });
@@ -444,9 +456,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     for (const toolUseId of toolGroupsDirtyRef.current) {
       const state = toolGroupsRef.current.get(toolUseId);
       if (!state) continue;
+      // Project only the groups — status is owned by `tool_block_update`
+      // events ('running' at tool start, 'complete'/'error' at tool end).
+      // Writing 'running' here would race the tool-block flush on its own
+      // timer and could clobber a finished block back to running, hiding
+      // the minion result box until reload.
       batch.set(toolUseId, {
         renderingGroups: assembleGroups(state),
-        status: 'running',
       });
     }
     toolGroupsDirtyRef.current.clear();
@@ -500,7 +516,15 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
         case 'loop_started':
           // The session itself tracks loopId; we just transition phase.
           setLoopPhase('pending');
-          setSoftStopRequested(false);
+          // Seed the soft-stop indicator from backend canon rather than
+          // forcing false. A fresh loop has the flag unset in the registry;
+          // a re-attach (attachChat synthesizes loop_started) carries the
+          // real request through the ActiveLoopsStore snapshot, so the
+          // "Stopping…" button survives a chat switch.
+          setSoftStopRequested(
+            activeLoopsStore.getSnapshot().find(l => l.chatId === chatId)?.softStopRequested ??
+              false
+          );
           break;
 
         case 'loop_ended':

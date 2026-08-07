@@ -392,6 +392,9 @@ describe('buildReasoningConfig', () => {
   });
 
   describe('Claude 4+ adaptive mode (output_config effort mapping)', () => {
+    const NO_XHIGH = ['low', 'medium', 'high', 'max'] as const; // 4.6-class
+    const ALL_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const; // 4.7+
+
     const baseAdaptive = {
       enableReasoning: true,
       reasoningBudgetTokens: 0,
@@ -399,9 +402,10 @@ describe('buildReasoningConfig', () => {
       supportsAdaptiveReasoning: true,
     } as const;
 
-    it('on 4.6-class (supportsXhighEffort=false): xhigh collapses to max', () => {
+    it('on 4.6-class (no xhigh): xhigh escalates to max', () => {
       const result = buildReasoningConfig('claude-4', {
         ...baseAdaptive,
+        supportedReasoningEfforts: NO_XHIGH,
         reasoningEffort: 'xhigh',
       }) as { output_config?: { effort: string } };
       expect(result.output_config).toEqual({ effort: 'max' });
@@ -410,15 +414,16 @@ describe('buildReasoningConfig', () => {
     it('on 4.6-class: max maps to max', () => {
       const result = buildReasoningConfig('claude-4', {
         ...baseAdaptive,
+        supportedReasoningEfforts: NO_XHIGH,
         reasoningEffort: 'max',
       }) as { output_config?: { effort: string } };
       expect(result.output_config).toEqual({ effort: 'max' });
     });
 
-    it('on 4.7-class (supportsXhighEffort=true): xhigh stays xhigh', () => {
+    it('on 4.7-class: xhigh stays xhigh', () => {
       const result = buildReasoningConfig('claude-4', {
         ...baseAdaptive,
-        supportsXhighEffort: true,
+        supportedReasoningEfforts: ALL_LEVELS,
         reasoningEffort: 'xhigh',
       }) as { output_config?: { effort: string } };
       expect(result.output_config).toEqual({ effort: 'xhigh' });
@@ -427,10 +432,25 @@ describe('buildReasoningConfig', () => {
     it('on 4.7-class: max maps to max', () => {
       const result = buildReasoningConfig('claude-4', {
         ...baseAdaptive,
-        supportsXhighEffort: true,
+        supportedReasoningEfforts: ALL_LEVELS,
         reasoningEffort: 'max',
       }) as { output_config?: { effort: string } };
       expect(result.output_config).toEqual({ effort: 'max' });
+    });
+
+    it('omits output_config when the model advertises no configurable effort', () => {
+      const empty = buildReasoningConfig('claude-4', {
+        ...baseAdaptive,
+        supportedReasoningEfforts: [],
+        reasoningEffort: 'high',
+      }) as { output_config?: { effort: string } };
+      expect(empty.output_config).toBeUndefined();
+
+      const absent = buildReasoningConfig('claude-4', {
+        ...baseAdaptive,
+        reasoningEffort: 'high',
+      }) as { output_config?: { effort: string } };
+      expect(absent.output_config).toBeUndefined();
     });
 
     it('onlyAdaptiveReasoning forces adaptive even with a non-zero budget', () => {
@@ -440,7 +460,7 @@ describe('buildReasoningConfig', () => {
         thinkingKeepTurns: -1,
         supportsAdaptiveReasoning: true,
         onlyAdaptiveReasoning: true,
-        supportsXhighEffort: true,
+        supportedReasoningEfforts: ALL_LEVELS,
         reasoningEffort: 'xhigh',
       }) as { reasoning_config?: { type: string }; output_config?: { effort: string } };
       expect(result.reasoning_config).toEqual({ type: 'adaptive' });

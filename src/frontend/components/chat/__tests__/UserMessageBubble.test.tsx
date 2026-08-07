@@ -225,6 +225,33 @@ describe('UserMessageBubble', () => {
       expect(screen.getByText('src/baz/qux.ts')).toBeInTheDocument();
     });
 
+    it('splits file bars around the bubble on the text group', () => {
+      const props = createProps({
+        message: createMessage({
+          content: {
+            type: 'text',
+            content: 'Analyze these',
+            renderingContent: [
+              {
+                category: 'backstage',
+                blocks: [{ type: 'injected_file', path: 'lead.ts', content: 'const a = 1;' }],
+              },
+              { category: 'text', blocks: [{ type: 'text', text: 'Analyze these' }] },
+              {
+                category: 'backstage',
+                blocks: [{ type: 'injected_file', path: 'trail.ts', content: 'const b = 2;' }],
+              },
+            ],
+          },
+        }),
+      });
+      const { container } = render(<UserMessageBubble {...props} />);
+
+      const rendered = container.textContent ?? '';
+      expect(rendered.indexOf('lead.ts')).toBeLessThan(rendered.indexOf('Analyze these'));
+      expect(rendered.indexOf('trail.ts')).toBeGreaterThan(rendered.indexOf('Analyze these'));
+    });
+
     it('does not render file bars when no injected files present', () => {
       const props = createProps({
         message: createMessage({

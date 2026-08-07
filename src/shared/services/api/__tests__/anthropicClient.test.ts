@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
+import type { APIDefinition } from '../../../protocol/types';
 import {
   applyCacheBreakpoints,
   buildAnthropicBetas,
+  buildBedrockClientOptions,
   findLastAssistantMessageIdx,
   findPreviousUserMessageIdx,
+  parseBedrockEndpoint,
   placeCacheControlOnMessage,
   validateAnthropicResponse,
 } from '../anthropicClient';
@@ -476,5 +479,63 @@ describe('findLastAssistantMessageIdx', () => {
   it('respects startIdx — never returns indices before the anchor', () => {
     const messages = [asstMsg('pre-anchor'), userMsg('u'), userMsg('latest')];
     expect(findLastAssistantMessageIdx(messages, 1)).toBe(-1);
+  });
+});
+
+describe('parseBedrockEndpoint', () => {
+  it('detects the "bedrock:region" shorthand and lets the SDK build the URL', () => {
+    expect(parseBedrockEndpoint('bedrock:us-east-2')).toEqual({
+      isBedrock: true,
+      region: 'us-east-2',
+      url: undefined,
+    });
+  });
+
+  it('detects a full bedrock-runtime URL and keeps it as the baseURL', () => {
+    const url = 'https://bedrock-runtime.us-west-2.amazonaws.com';
+    expect(parseBedrockEndpoint(url)).toEqual({ isBedrock: true, region: 'us-west-2', url });
+  });
+
+  it('treats a non-Bedrock baseUrl as a passthrough', () => {
+    expect(parseBedrockEndpoint('https://api.anthropic.com')).toEqual({
+      isBedrock: false,
+      region: 'us-east-1',
+      url: 'https://api.anthropic.com',
+    });
+  });
+});
+
+describe('buildBedrockClientOptions', () => {
+  const def = (apiKey: string): APIDefinition => ({
+    id: 'd',
+    apiType: 'anthropic',
+    name: 'Bedrock Claude',
+    baseUrl: 'bedrock:us-west-2',
+    apiKey,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  it('passes the key via the native apiKey option and never sets skipAuth', () => {
+    const opts = buildBedrockClientOptions(
+      def('bedrock-key'),
+      parseBedrockEndpoint('bedrock:us-west-2')
+    );
+    expect(opts.apiKey).toBe('bedrock-key');
+    expect(opts.awsRegion).toBe('us-west-2');
+    // Regression guard: skipAuth deletes the Authorization header → 403 "Authorization header is missing".
+    expect('skipAuth' in opts).toBe(false);
+    expect('defaultHeaders' in opts).toBe(false);
+  });
+
+  it('omits apiKey when no key is set so the SDK can fall back to SigV4', () => {
+    const opts = buildBedrockClientOptions(def(''), parseBedrockEndpoint('bedrock:us-west-2'));
+    expect('apiKey' in opts).toBe(false);
+  });
+
+  it('forwards a full bedrock-runtime URL as baseURL', () => {
+    const url = 'https://bedrock-runtime.eu-central-1.amazonaws.com';
+    const opts = buildBedrockClientOptions(def('k'), parseBedrockEndpoint(url));
+    expect(opts.baseURL).toBe(url);
   });
 });

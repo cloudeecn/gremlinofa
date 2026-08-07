@@ -101,6 +101,12 @@ export const dummyTool: ClientSideTool = {
   displayName: 'DUMMY System',
   displaySubtitle: 'Register JS hooks to intercept the agentic loop',
   internal: false,
+  // Bridged to claude-agent: register/unregister activate the chat's outer-loop
+  // hook (the hook runs before the SDK turn, in the QuickJS sandbox), and
+  // template just writes example files to the VFS. The activeHook side-effect
+  // can't apply mid-turn (the SDK owns it), so it rides the onActiveHook
+  // side-channel — see claudeAgentToolBridge.ts.
+  claudeAgentBridgeable: true,
 
   description:
     'Dynamic Un-inferencing Mock-Message Yielding System. ' +

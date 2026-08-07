@@ -13,7 +13,12 @@ import type {
 import { mapReasoningEffort } from '../../engine/lib/reasoningEffort';
 import type { APIClient, StreamChunk, StreamResult } from './baseClient';
 import type { APIServiceDeps } from './apiService';
-import { effectiveInjectionMode } from './fileInjectionHelper';
+import {
+  effectiveInjectionMode,
+  buildSeparateBlockText,
+  wrapInjectedFile,
+  type InjectedFile,
+} from './fileInjectionHelper';
 import {
   CompletionFullContentAccumulator,
   createFullContentFromMessage,
@@ -230,6 +235,7 @@ export class OpenAIClient implements APIClient {
       reasoningBudgetTokens: number;
       reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
+      verbosity?: 'low' | 'medium' | 'high';
       systemPrompt?: string;
       preFillResponse?: string;
       webSearchEnabled?: boolean;
@@ -304,12 +310,21 @@ export class OpenAIClient implements APIClient {
 
           // Build user message content — may need array form for attachments or injected files
           const hasAttachments = msg.attachments && msg.attachments.length > 0;
-          const hasInjectedFiles = msg.content.injectedFiles?.length && msg.content.injectionMode;
+          const injectedCount =
+            (msg.content.injectedFiles?.length ?? 0) +
+            (msg.content.injectedFilesAfter?.length ?? 0);
+          const hasInjectedFiles = injectedCount > 0 && Boolean(msg.content.injectionMode);
           const injMode = hasInjectedFiles
             ? effectiveInjectionMode(msg.content.injectionMode!, 'chatgpt')
             : undefined;
 
-          if (hasAttachments || (hasInjectedFiles && injMode !== 'inline')) {
+          // mock-tool-call messages carry the fields for retry-restore only —
+          // their content rides the synthetic tool pair messages, so keep the
+          // plain string form.
+          if (
+            hasAttachments ||
+            (hasInjectedFiles && injMode !== 'inline' && injMode !== 'mock-tool-call')
+          ) {
             const contentParts: OpenAI.ChatCompletionContentPart[] = [];
 
             // Add images first
@@ -324,31 +339,38 @@ export class OpenAIClient implements APIClient {
               }
             }
 
-            // Add injected file blocks
-            if (hasInjectedFiles && injMode === 'as-file') {
-              for (const file of msg.content.injectedFiles!) {
-                contentParts.push({
-                  type: 'file',
-                  file: {
-                    file_data: `data:text/plain;base64,${btoa(unescape(encodeURIComponent(file.content)))}`,
-                    filename: file.path,
-                  },
-                } as OpenAI.ChatCompletionContentPart);
+            // Add injected file blocks. `injectedFiles` goes before the text
+            // part, `injectedFilesAfter` after it.
+            const pushInjectedFiles = (files?: InjectedFile[]) => {
+              if (!files?.length) return;
+              if (injMode === 'as-file') {
+                for (const file of files) {
+                  contentParts.push({
+                    type: 'file',
+                    file: {
+                      file_data: `data:text/plain;base64,${btoa(unescape(encodeURIComponent(wrapInjectedFile(file))))}`,
+                      filename: file.path,
+                    },
+                  } as OpenAI.ChatCompletionContentPart);
+                }
+              } else if (injMode === 'separate-block') {
+                for (const file of files) {
+                  contentParts.push({
+                    type: 'text',
+                    text: buildSeparateBlockText(file),
+                  });
+                }
               }
-            } else if (hasInjectedFiles && injMode === 'separate-block') {
-              for (const file of msg.content.injectedFiles!) {
-                contentParts.push({
-                  type: 'text',
-                  text: `=== ${file.path} ===\n${file.content}`,
-                });
-              }
-            }
+            };
+            pushInjectedFiles(msg.content.injectedFiles);
 
             // Add text content
             contentParts.push({
               type: 'text',
               text: msg.content.content,
             });
+
+            pushInjectedFiles(msg.content.injectedFilesAfter);
 
             openaiMessages.push({
               role: 'user',
@@ -458,6 +480,13 @@ export class OpenAIClient implements APIClient {
       // Get model metadata for reasoning configuration
       const model = await this.deps.storage.getModel(apiDefinition.id, modelId);
       this.applyReasoning(requestParams, options, model, apiDefinition);
+
+      // Verbosity is GPT-5-era only — older models reject the param, so it
+      // rides on the per-model flag rather than the project setting alone.
+      // Chat Completions takes it top-level; Responses nests it under `text`.
+      if (options.verbosity && model?.supportsVerbosity) {
+        requestParams.verbosity = options.verbosity;
+      }
 
       // Track token usage and finish reason
       let inputTokens = 0;

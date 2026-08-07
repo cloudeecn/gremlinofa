@@ -88,6 +88,10 @@ vi.mock('../../client', () => {
       deleteMessageAndAfter: vi.fn(),
       cloneChat: vi.fn(),
     },
+    // useChat seeds its soft-stop indicator from the shared active-loops
+    // snapshot on loop_started; default to an empty snapshot so unrelated
+    // tests see the pre-existing "reset to false" behavior.
+    activeLoopsStore: { getSnapshot: vi.fn(() => []) },
     GremlinSession: MockGremlinSession,
   };
 });
@@ -95,7 +99,7 @@ vi.mock('../../client', () => {
 vi.mock('../../../shared/protocol/idGenerator');
 vi.mock('../../lib/alerts');
 
-import { gremlinClient } from '../../client';
+import { gremlinClient, activeLoopsStore } from '../../client';
 
 describe('useChat', () => {
   const mockProject: Project = {
@@ -201,6 +205,9 @@ describe('useChat', () => {
     });
     vi.mocked(generateUniqueId).mockReturnValue('msg_new_123');
     vi.mocked(alerts.showAlert).mockResolvedValue();
+    // Empty active-loops snapshot by default; loop_started then seeds
+    // softStopRequested to false. Individual tests override as needed.
+    vi.mocked(activeLoopsStore.getSnapshot).mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -305,6 +312,46 @@ describe('useChat', () => {
       });
       expect(result.current.loopPhase).toBe('idle');
       expect(mockCallbacks.onStreamingEnd).toHaveBeenCalledWith('chat_123');
+    });
+
+    it('seeds softStopRequested from the active-loops snapshot on loop_started (survives re-attach)', async () => {
+      // Simulate the backend already holding a soft-stop request for this
+      // chat's running loop — the case that happens on chat re-attach.
+      vi.mocked(activeLoopsStore.getSnapshot).mockReturnValue([
+        {
+          loopId: 'loop_1',
+          chatId: 'chat_123',
+          startedAt: 1000,
+          status: 'running',
+          apiDefinitionId: 'api_1',
+          modelId: 'm1',
+          softStopRequested: true,
+        },
+      ]);
+
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      act(() => {
+        activeSession!.fireEvent({ type: 'loop_started', loopId: 'loop_1' });
+      });
+      expect(result.current.softStopRequested).toBe(true);
+    });
+
+    it('leaves softStopRequested false on loop_started when no request is pending', async () => {
+      vi.mocked(activeLoopsStore.getSnapshot).mockReturnValue([]);
+
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      act(() => {
+        activeSession!.fireEvent({ type: 'loop_started', loopId: 'loop_1' });
+      });
+      expect(result.current.softStopRequested).toBe(false);
     });
 
     it('appends messages from message_created events', async () => {
@@ -1517,6 +1564,104 @@ describe('useChat', () => {
             text: 'Hi, world!',
           });
           expect(result.current.loopPhase).toBe('streaming');
+        },
+        { timeout: 1000 }
+      );
+    });
+
+    it('keeps a completed tool block complete when a trailing groups delta flushes at loop end', async () => {
+      // Repro for the hidden-minion-result-box bug: the minion emits a final
+      // `tool_groups_delta` right before returning, so the groups dirty-set
+      // is still populated at `loop_ended`. `flushThrottledBuffers` applies
+      // the buffered `tool_block_update` (status: 'complete') first, then
+      // the groups flush — which used to hard-code status: 'running' and
+      // clobber the finished block, hiding the green result box until the
+      // chat was reloaded from storage.
+      const pendingToolMsg: Message<unknown> = {
+        id: 'msg_pending_tool_4',
+        role: 'user',
+        content: {
+          type: 'text',
+          content: '',
+          renderingContent: [
+            {
+              category: 'backstage',
+              blocks: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'tu_minion_4',
+                  content: '',
+                  name: 'minion',
+                  status: 'running',
+                },
+              ],
+            },
+          ],
+        },
+        timestamp: new Date('2024-01-01'),
+      };
+
+      const infoGroup = {
+        category: 'backstage' as const,
+        blocks: [{ type: 'tool_info' as const, input: 'go' }],
+      };
+
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      act(() => {
+        emitInitialSnapshot([]);
+      });
+
+      act(() => {
+        activeSession!.fireEvent({ type: 'loop_started', loopId: 'loop_1' });
+        activeSession!.fireEvent({ type: 'pending_tool_result', message: pendingToolMsg });
+        activeSession!.fireEvent({
+          type: 'tool_groups_delta',
+          toolUseId: 'tu_minion_4',
+          delta: {
+            kind: 'init',
+            infoGroup,
+            accumulatedGroups: [],
+            streamingGroups: [
+              { category: 'text' as const, blocks: [{ type: 'text' as const, text: 'working' }] },
+            ],
+          },
+        });
+        // Final delta lands in the groups buffer, then the tool completes,
+        // then the loop ends — all before any throttle timer fires.
+        activeSession!.fireEvent({
+          type: 'tool_groups_delta',
+          toolUseId: 'tu_minion_4',
+          delta: { kind: 'append', target: 'last_text', text: '... done' },
+        });
+        activeSession!.fireEvent({
+          type: 'tool_block_update',
+          toolUseId: 'tu_minion_4',
+          block: { status: 'complete', content: 'minion final answer' },
+        });
+        activeSession!.fireEvent({ type: 'loop_ended', loopId: 'loop_1', status: 'complete' });
+      });
+
+      await waitFor(
+        () => {
+          const placeholder = result.current.messages.find(m => m.id === 'msg_pending_tool_4');
+          expect(placeholder).toBeDefined();
+          const block = (placeholder!.content.renderingContent ?? [])[0]?.blocks[0] as {
+            status?: string;
+            content?: string;
+            renderingGroups?: { blocks: { type: string; text?: string }[] }[];
+          };
+          expect(block.status).toBe('complete');
+          expect(block.content).toBe('minion final answer');
+          // The trailing delta's groups still land — only status is protected.
+          expect(block.renderingGroups).toBeDefined();
+          expect(block.renderingGroups![1].blocks[0]).toMatchObject({
+            type: 'text',
+            text: 'working... done',
+          });
         },
         { timeout: 1000 }
       );

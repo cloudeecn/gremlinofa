@@ -32,6 +32,7 @@ import { Tables, type StorageAdapter } from '../services/storage/StorageAdapter'
 import type { StorageConfig } from '../protocol/types/storageConfig';
 import { ClientSideToolRegistry } from '../services/tools/clientSideTools';
 import { registerAllTools } from '../services/tools';
+import { applyClaudeAgentRewindOnRollback } from '../services/tools/minionTool';
 import type { VfsAdapter } from '../services/vfs/vfsAdapter';
 import { generateUniqueId } from '../protocol/idGenerator';
 import { bytesToBase32, convertCEKToBase32 } from './lib/cekFormat';
@@ -366,10 +367,25 @@ export class GremlinServer {
         // resolution banner appropriately.
         await this.broadcastChatLockState(params.chatId);
         return { ok: true };
-      case 'deleteMessageAndAfter':
+      case 'deleteMessageAndAfter': {
+        // Minion-chat rollback (overlay UI) must keep a claude-agent SDK session
+        // in sync with the trimmed history — set its resumeAt before the delete.
+        // getMinionChat returns null for regular chats, whose rewind the frontend
+        // already patched via patchChat before calling here.
+        const minionChat = await this.storage.getMinionChat(params.chatId);
+        if (minionChat?.claudeAgentSessionId) {
+          const minionMessages = await this.storage.getMinionMessages(params.chatId);
+          await applyClaudeAgentRewindOnRollback(
+            this.storage,
+            minionChat,
+            minionMessages,
+            params.messageId
+          );
+        }
         await this.storage.deleteMessageAndAfter(params.chatId, params.messageId);
         await this.broadcastChatLockState(params.chatId);
         return { ok: true };
+      }
       case 'deleteSingleMessage':
         await this.storage.deleteSingleMessage(params.messageId);
         // Single-message delete is the minion-chat trim path; the message id

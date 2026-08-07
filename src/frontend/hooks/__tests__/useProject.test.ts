@@ -374,6 +374,49 @@ describe('useProject', () => {
       });
     });
 
+    it('should route cleared fields through unset so they cross the wire', async () => {
+      const { result } = renderHook(() => useProject({ projectId: 'proj_123' }));
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      await result.current.updateProject({
+        name: 'x',
+        thinkingKeepTurns: undefined,
+        pruneThinkingBeforeApiCall: undefined,
+      });
+
+      await waitFor(() => {
+        expect(mockPatchProject).toHaveBeenCalledWith(
+          'proj_123',
+          expect.objectContaining({ name: 'x' }),
+          {
+            touch: true,
+            unset: expect.arrayContaining(['thinkingKeepTurns', 'pruneThinkingBeforeApiCall']),
+          }
+        );
+      });
+    });
+
+    it('should omit unset when no fields are cleared', async () => {
+      const { result } = renderHook(() => useProject({ projectId: 'proj_123' }));
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      await result.current.updateProject({ name: 'Defined Only' });
+
+      await waitFor(() => {
+        expect(mockPatchProject).toHaveBeenCalledWith(
+          'proj_123',
+          expect.objectContaining({ name: 'Defined Only' }),
+          { touch: true }
+        );
+      });
+    });
+
     it('should update lastUsedAt timestamp', async () => {
       const { result } = renderHook(() => useProject({ projectId: 'proj_123' }));
 

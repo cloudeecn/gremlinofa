@@ -9,6 +9,7 @@
  */
 
 import { loadServerConfig } from './config';
+import { parseCliOptions, applyEnvFile, USAGE, type CliOptions } from './envFile';
 import { makeCreateStorageAdapter } from './adapters/createStorageAdapter';
 import { makeCreateVfsAdapter } from './adapters/createVfsAdapter';
 import { WebSocketTransportServer } from './websocketTransport';
@@ -24,25 +25,45 @@ import path from 'node:path';
 // interleaved request/turn lines be correlated. Server-only; worker untouched.
 installLogTimestamps();
 
-// Load .env file if present (no external dependency needed).
-// Only sets vars that aren't already in the environment so explicit
-// env vars or systemd EnvironmentFile entries take precedence.
-const envPath = path.resolve(process.cwd(), '.env');
-if (fs.existsSync(envPath)) {
-  for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx === -1) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    const value = trimmed.slice(eqIdx + 1).trim();
-    if (!(key in process.env)) {
-      process.env[key] = value;
-    }
+let cli: CliOptions;
+try {
+  cli = parseCliOptions(process.argv.slice(2));
+} catch (e) {
+  console.error(`[server] ${e instanceof Error ? e.message : String(e)}\n`);
+  console.error(USAGE);
+  process.exit(1);
+}
+if (cli.help) {
+  console.log(USAGE);
+  process.exit(0);
+}
+
+// Env-file loading only sets vars that aren't already in the environment,
+// so explicit env vars or systemd EnvironmentFile entries take precedence.
+// With --instance-env the explicit file replaces the implicit ./.env, and
+// relative data paths in it resolve against the file's directory (via the
+// baseDir passed to loadServerConfig) — one env file per instance lets the
+// same build serve several instances on different ports/data roots.
+let loadedEnvFile: string | undefined;
+let configBaseDir: string | undefined;
+if (cli.envFile !== undefined) {
+  const resolved = path.resolve(cli.envFile);
+  try {
+    applyEnvFile(resolved, process.env, { required: true });
+  } catch (e) {
+    console.error(`[server] ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+  loadedEnvFile = resolved;
+  configBaseDir = path.dirname(resolved);
+} else {
+  const implicit = path.resolve(process.cwd(), '.env');
+  if (applyEnvFile(implicit, process.env, { required: false })) {
+    loadedEnvFile = implicit;
   }
 }
 
-const config = loadServerConfig();
+const config = loadServerConfig(process.env, configBaseDir);
 
 // Ensure the data directory exists
 const dataDir = path.dirname(config.storagePath);
@@ -124,6 +145,7 @@ console.debug('GremlinOFA server listening', {
   storage: config.storagePath,
   vfsMode: config.vfsMode,
   vfsBasePath: config.vfsBasePath,
+  envFile: loadedEnvFile ?? '(none)',
 });
 
 // --------------------------------------------------------------------------

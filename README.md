@@ -118,6 +118,14 @@ The server listens on `ws://127.0.0.1:3100` by default. Configure via environmen
 
 Then open the frontend (either `npm run dev` or a production build), pick "Remote Backend" in the setup wizard, and point it at `ws://your-server:3100` (or `wss://` behind a reverse proxy).
 
+**Multiple instances from one build:** pass `--instance-env` to give each instance its own config:
+
+```bash
+node dist/server/server.js --instance-env /var/lib/gremlinofa/alice/.env
+```
+
+Relative paths in that file resolve against the file's directory, so each env file fully describes one instance — its port, its data, its user. A `gremlinofa-server@.service` systemd template unit ships in `dist/server/`; see [src/server/README.md](src/server/README.md) for the full recipe.
+
 Note: `better-sqlite3` has native bindings — `npm install` on the target machine before running.
 
 **Reverse proxy for the WebSocket server:**

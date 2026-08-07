@@ -75,4 +75,42 @@ describe('loadServerConfig', () => {
     process.env.VFS_MODE = 'memory';
     expect(() => loadServerConfig()).toThrow('Invalid VFS_MODE');
   });
+
+  // These pass explicit env objects instead of mutating process.env —
+  // loadServerConfig(env, baseDir) makes that possible now.
+  describe('baseDir resolution (--instance-env)', () => {
+    it('resolves relative paths against baseDir', () => {
+      const config = loadServerConfig(
+        { STORAGE_PATH: './data/gremlin.db', VFS_BASE_PATH: './data/vfs' },
+        '/srv/inst1'
+      );
+      expect(config.storagePath).toBe('/srv/inst1/data/gremlin.db');
+      expect(config.vfsBasePath).toBe('/srv/inst1/data/vfs');
+    });
+
+    it('resolves defaults against baseDir, including the derived session dir', () => {
+      const config = loadServerConfig({}, '/srv/inst1');
+      expect(config.storagePath).toBe('/srv/inst1/data/gremlin.db');
+      expect(config.vfsBasePath).toBe('/srv/inst1/data/vfs');
+      expect(config.claudeAgentSessionDir).toBe('/srv/inst1/data/claude-agent-sessions');
+    });
+
+    it('leaves absolute paths untouched and derives the session dir from them', () => {
+      const config = loadServerConfig({ STORAGE_PATH: '/var/db/gremlin.db' }, '/srv/inst1');
+      expect(config.storagePath).toBe('/var/db/gremlin.db');
+      expect(config.claudeAgentSessionDir).toBe('/var/db/claude-agent-sessions');
+    });
+
+    it('resolves a relative explicit CLAUDE_AGENT_SESSION_DIR against baseDir', () => {
+      const config = loadServerConfig({ CLAUDE_AGENT_SESSION_DIR: './sessions' }, '/srv/inst1');
+      expect(config.claudeAgentSessionDir).toBe('/srv/inst1/sessions');
+    });
+
+    it('passes relative paths through verbatim without baseDir', () => {
+      const config = loadServerConfig({});
+      expect(config.storagePath).toBe('./data/gremlin.db');
+      expect(config.vfsBasePath).toBe('./data/vfs');
+      expect(config.claudeAgentSessionDir).toBe('./data/claude-agent-sessions');
+    });
+  });
 });

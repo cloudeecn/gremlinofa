@@ -1,0 +1,34 @@
+[Unit]
+Description=GremlinOFA WebSocket Server (instance %i)
+Documentation=https://github.com/cloudeecn/gremlinofa
+After=network.target
+
+[Service]
+Type=simple
+# Convention: one system user per instance, named gremlinofa-<instance>.
+# Different scheme? `systemctl edit gremlinofa-server@<instance>` and
+# override User=/Group= in a drop-in.
+User=gremlinofa-%i
+Group=gremlinofa-%i
+WorkingDirectory=/var/lib/gremlinofa/%i
+# Relative STORAGE_PATH / VFS_BASE_PATH in the env file resolve against
+# the env file's directory, so each instance keeps its data under
+# /var/lib/gremlinofa/<instance>/. Give every instance a distinct PORT.
+ExecStart=/usr/bin/node /opt/gremlinofa-server/server.js --instance-env /var/lib/gremlinofa/%i/.env
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/gremlinofa/%i
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gremlinofa-server-%i
+
+[Install]
+WantedBy=multi-user.target

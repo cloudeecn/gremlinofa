@@ -119,6 +119,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Cache pricing fallback (cache tokens priced at inputPrice when no cache-specific price)
 - [x] Cache pricing display
 - [ ] Script to automatically parse pricing data from api provider's pricing page
+- [ ] Context-length-tiered pricing — higher tiers are recorded in `unsupportedHighContextPricing` (e.g. Qwen ≥256K) but `calculateCost` always bills the base (sub-threshold) tier
 
 **Statistics & Display**
 

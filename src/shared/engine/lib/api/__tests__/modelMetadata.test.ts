@@ -91,6 +91,18 @@ describe('modelMetadata', () => {
         expect(result.reasoningMode).toBe('always');
       });
 
+      it('matches gemini-3.6-flash via prefix without hitting the 3.5 entry', () => {
+        const apiDef = createApiDef({ apiType: 'google' });
+        const result = getModelMetadataFor(apiDef, 'gemini-3.6-flash');
+
+        expect(result.matchedMode).toBe('fuzz');
+        expect(result.inputPrice).toBe(1.5);
+        expect(result.outputPrice).toBe(7.5);
+        expect(result.cacheReadPrice).toBe(0.15);
+        expect(result.contextWindow).toBe(1048576);
+        expect(result.maxOutputTokens).toBe(65536);
+      });
+
       it('matches AWS Bedrock model via anthropic. prefix', () => {
         const apiDef = createApiDef({ apiType: 'anthropic' });
         const result = getModelMetadataFor(apiDef, 'anthropic.claude-sonnet-4-20250514');
@@ -144,6 +156,212 @@ describe('modelMetadata', () => {
         expect(result.matchedMode).toBe('exact');
         expect(result.reasoningMode).toBe('always');
         expect(result.supportedReasoningEfforts).toEqual(['low', 'high']);
+      });
+
+      it('routes the gpt-5.6 alias to Sol pricing', () => {
+        const apiDef = createApiDef({ apiType: 'responses_api' });
+        const result = getModelMetadataFor(apiDef, 'gpt-5.6');
+
+        expect(result.matchedMode).toBe('exact');
+        expect(result.inputPrice).toBe(5.0);
+        expect(result.cacheReadPrice).toBe(0.5);
+        expect(result.outputPrice).toBe(30.0);
+        expect(result.supportedReasoningEfforts).toContain('max');
+      });
+
+      it('disambiguates gpt-5.6 Terra/Luna from the bare gpt-5.6 prefix', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+
+        const terra = getModelMetadataFor(apiDef, 'gpt-5.6-terra');
+        expect(terra.inputPrice).toBe(2.5);
+        expect(terra.outputPrice).toBe(15.0);
+
+        const luna = getModelMetadataFor(apiDef, 'gpt-5.6-luna-2026-07-01');
+        expect(luna.matchedMode).toBe('fuzz');
+        expect(luna.inputPrice).toBe(1.0);
+        expect(luna.outputPrice).toBe(6.0);
+
+        // Dated bare snapshot still routes to Sol via prefix fuzz
+        const datedSol = getModelMetadataFor(apiDef, 'gpt-5.6-2026-06-25');
+        expect(datedSol.inputPrice).toBe(5.0);
+      });
+
+      it('matches grok-4.5 over the shorter grok-4 prefix', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+
+        const exact = getModelMetadataFor(apiDef, 'grok-4.5');
+        expect(exact.matchedMode).toBe('exact');
+        expect(exact.inputPrice).toBe(2.0);
+        expect(exact.cacheReadPrice).toBe(0.5);
+        expect(exact.outputPrice).toBe(6.0);
+        expect(exact.contextWindow).toBe(500000);
+
+        const dated = getModelMetadataFor(apiDef, 'grok-4.5-0715');
+        expect(dated.matchedMode).toBe('fuzz');
+        expect(dated.inputPrice).toBe(2.0);
+      });
+
+      it('matches doubao-seed-2-1-pro with cache pricing', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'doubao-seed-2-1-pro-20260615');
+
+        expect(result.matchedMode).toBe('fuzz');
+        expect(result.inputPrice).toBe(0.93);
+        expect(result.cacheReadPrice).toBe(0.186);
+        expect(result.outputPrice).toBe(4.65);
+        expect(result.deFactoThinking).toBe(true);
+      });
+    });
+
+    describe('Chinese open models (Qwen / Kimi / GLM)', () => {
+      it('matches Qwen 3.8 Max with input/cache/output pricing', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'qwen3.8-max');
+
+        expect(result.matchedMode).toBe('fuzz');
+        expect(result.inputPrice).toBe(2.0);
+        expect(result.cacheReadPrice).toBe(0.25);
+        expect(result.outputPrice).toBe(6.0);
+        expect(result.deFactoThinking).toBe(true);
+      });
+
+      it('matches Qwen 3.7 Max with input/cache/output pricing', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'qwen3.7-max');
+
+        expect(result.matchedMode).toBe('fuzz');
+        expect(result.inputPrice).toBe(2.5);
+        expect(result.cacheReadPrice).toBe(0.5);
+        expect(result.outputPrice).toBe(7.5);
+        expect(result.deFactoThinking).toBe(true);
+      });
+
+      it('matches Qwen 3.6 Plus with no cache price (falls back to input)', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'qwen3.6-plus');
+
+        expect(result.inputPrice).toBe(0.5);
+        expect(result.outputPrice).toBe(3.0);
+        expect(result.cacheReadPrice).toBeUndefined();
+      });
+
+      it('bills Qwen 3.7 Plus at the base (<256K) tier, records the >=256K tier as unsupported', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'qwen3.7-plus');
+
+        // Base tier applied by calculateCost
+        expect(result.inputPrice).toBe(0.4);
+        expect(result.cacheReadPrice).toBe(0.08);
+        expect(result.outputPrice).toBe(1.6);
+
+        // High tier recorded but not applied
+        expect(result.unsupportedHighContextPricing).toEqual({
+          thresholdTokens: 262144,
+          inputPrice: 1.2,
+          cacheReadPrice: 0.24,
+          outputPrice: 4.8,
+        });
+
+        // calculateCost uses the base price, not the high tier
+        const cost = calculateCost(result, 1_000_000, 0);
+        expect(cost).toBeCloseTo(0.4);
+      });
+
+      it('disambiguates kimi-k2.7-code from kimi-k2.7-code-highspeed by specificity', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+
+        const code = getModelMetadataFor(apiDef, 'kimi-k2.7-code');
+        expect(code.inputPrice).toBe(0.95);
+        expect(code.outputPrice).toBe(4.0);
+
+        const highspeed = getModelMetadataFor(apiDef, 'kimi-k2.7-code-highspeed');
+        expect(highspeed.inputPrice).toBe(1.9);
+        expect(highspeed.outputPrice).toBe(8.0);
+        expect(highspeed.contextWindow).toBe(262144);
+      });
+
+      it('matches kimi-k3 via prefix and the bare k3 alias exactly', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+
+        const k3 = getModelMetadataFor(apiDef, 'kimi-k3');
+        expect(k3.inputPrice).toBe(3.0);
+        expect(k3.cacheReadPrice).toBe(0.3);
+        expect(k3.outputPrice).toBe(15.0);
+        expect(k3.contextWindow).toBe(1048576);
+        expect(k3.reasoningMode).toBe('always');
+        expect(k3.supportedReasoningEfforts).toEqual(['low', 'high', 'max']);
+
+        const alias = getModelMetadataFor(apiDef, 'k3');
+        expect(alias.matchedMode).toBe('exact');
+        expect(alias.inputPrice).toBe(3.0);
+      });
+
+      it('matches kimi-k2.5 and a dated kimi snapshot via prefix', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'kimi-k2.5-20260101');
+
+        expect(result.matchedMode).toBe('fuzz');
+        expect(result.inputPrice).toBe(0.6);
+        expect(result.cacheReadPrice).toBe(0.1);
+        expect(result.outputPrice).toBe(3.0);
+      });
+
+      it('matches GLM-5.2 and disambiguates from glm-5 base', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+
+        const glm52 = getModelMetadataFor(apiDef, 'glm-5.2');
+        expect(glm52.inputPrice).toBe(1.4);
+        expect(glm52.outputPrice).toBe(4.4);
+
+        const glm5 = getModelMetadataFor(apiDef, 'glm-5');
+        expect(glm5.inputPrice).toBe(1.0);
+        expect(glm5.outputPrice).toBe(3.2);
+      });
+
+      it('disambiguates GLM-4.5 air/airx/x/flash/base via specificity', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+
+        expect(getModelMetadataFor(apiDef, 'glm-4.5').inputPrice).toBe(0.6);
+        expect(getModelMetadataFor(apiDef, 'glm-4.5-air').inputPrice).toBe(0.2);
+        expect(getModelMetadataFor(apiDef, 'glm-4.5-airx').inputPrice).toBe(1.1);
+        expect(getModelMetadataFor(apiDef, 'glm-4.5-x').inputPrice).toBe(2.2);
+
+        const flash = getModelMetadataFor(apiDef, 'glm-4.5-flash');
+        expect(flash.inputPrice).toBe(0);
+        expect(flash.outputPrice).toBe(0);
+      });
+
+      it('disambiguates GLM-4.7 flash/flashx/base (flash is free, flashx is not)', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+
+        const flash = getModelMetadataFor(apiDef, 'glm-4.7-flash');
+        expect(flash.inputPrice).toBe(0);
+        expect(flash.outputPrice).toBe(0);
+
+        const flashx = getModelMetadataFor(apiDef, 'glm-4.7-flashx');
+        expect(flashx.inputPrice).toBe(0.07);
+        expect(flashx.outputPrice).toBe(0.4);
+
+        expect(getModelMetadataFor(apiDef, 'glm-4.7').inputPrice).toBe(0.6);
+      });
+
+      it('matches GLM-4-32B-0414 as a non-thinking model with 128K context', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'glm-4-32b-0414-128k');
+
+        expect(result.inputPrice).toBe(0.1);
+        expect(result.outputPrice).toBe(0.1);
+        expect(result.cacheReadPrice).toBeUndefined();
+        expect(result.contextWindow).toBe(131072);
+        expect(result.reasoningMode).toBe('none');
+        expect(result.deFactoThinking).toBe(false);
+      });
+
+      it('does not match these models for the google api type', () => {
+        const apiDef = createApiDef({ apiType: 'google' });
+        expect(getModelMetadataFor(apiDef, 'qwen3.7-max').matchedMode).toBe('default');
+        expect(getModelMetadataFor(apiDef, 'kimi-k2.5').matchedMode).toBe('default');
+        expect(getModelMetadataFor(apiDef, 'glm-5').matchedMode).toBe('default');
       });
     });
 

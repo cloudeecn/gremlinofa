@@ -1,6 +1,25 @@
 import type { ModelKnowledge } from '../../../../protocol/types';
 
 export const GOOGLE_MODELS: ModelKnowledge[] = [
+  // Gemini 3.6 Flash
+  {
+    matches: [
+      {
+        apiType: ['google'],
+        modelIdFuzz: [{ modelIdPrefix: 'gemini-3.6-flash' }],
+      },
+    ],
+    inputPrice: 1.5,
+    outputPrice: 7.5,
+    reasoningPrice: 7.5,
+    cacheReadPrice: 0.15,
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
+    reasoningMode: 'optional',
+    supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high'],
+    supportsTemperature: true,
+    supportsTools: true,
+  },
   // Gemini 3.5 Flash
   {
     matches: [

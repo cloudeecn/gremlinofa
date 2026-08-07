@@ -1,6 +1,21 @@
 import type { ModelKnowledge } from '../../../../protocol/types';
 
 export const XAI_MODELS: ModelKnowledge[] = [
+  // === Grok-4.5 ===
+  {
+    matches: [
+      { apiType: ['chatgpt', 'responses_api'], modelIdExact: ['grok-4.5'] },
+      { apiType: ['chatgpt', 'responses_api'], modelIdFuzz: [{ modelIdPrefix: 'grok-4.5' }] },
+    ],
+    inputPrice: 2.0,
+    outputPrice: 6.0,
+    cacheReadPrice: 0.5,
+    contextWindow: 500000,
+    reasoningMode: 'always',
+    supportedReasoningEfforts: [],
+    webSearchPrice: 0.01,
+  },
+
   // === Grok-4 series ===
   {
     matches: [

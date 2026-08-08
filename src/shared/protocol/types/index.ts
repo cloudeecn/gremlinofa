@@ -59,6 +59,8 @@ export interface APIDefinition {
   proxyUrl?: string; // CORS proxy URL — when set, SDK traffic routes through this proxy
   proxyAuthToken?: string; // Shared secret sent as X-Proxy-Auth to the CORS proxy (its own auth, not the provider key)
   extraModelIds?: string[]; // Manually-added model IDs not returned by provider discovery
+  binaryPath?: string; // claude-agent: full path to the claude executable (empty = SDK bundled)
+  extraArgs?: string; // claude-agent: extra CLI flags, e.g. "--strict-mcp-config --settings /path"
   advancedSettings?: {
     pruneThinking?: boolean; // Strip thinking/reasoning blocks from messages before latest user message
     pruneEmptyText?: boolean; // Strip empty text blocks from messages before latest user message
@@ -438,6 +440,14 @@ export interface MessageMetadata {
   costUnreliable?: boolean; // True if cost calculation may be inaccurate
   /** Claude Agent SDK message UUID — target for resumeSessionAt rewinds. */
   claudeAgentMessageUuid?: string;
+  /**
+   * Claude Agent SDK session that owns `claudeAgentMessageUuid` — the session
+   * the turn ended in. Rewinds set the chat's `{claudeAgentSessionId,
+   * claudeAgentResumeAt}` pair from this so the anchor is always sought in the
+   * session that actually contains it. Absent on messages written before this
+   * field existed; the client's send-time fallback resolves those.
+   */
+  claudeAgentSessionId?: string;
 }
 
 export interface Message<T> {
@@ -907,7 +917,12 @@ export interface ClientSideTool {
   displaySubtitle?: string;
   /** Internal tools are not shown in ProjectSettings UI (e.g., 'return' for minions) */
   internal?: boolean;
-  /** Complex tools run in a later phase after simple tools complete (e.g., minion sub-agents) */
+  /**
+   * Complex tools run in a later phase after simple tools complete (e.g., minion
+   * sub-agents). Honored by the agentic loop only — the claude-agent bridge runs
+   * every call in one flat parallel batch (see development.md, "Phased tool
+   * execution for claude-agent").
+   */
   complex?: boolean;
   /** Delay (ms) between launching parallel calls of this same tool. First call starts immediately. */
   parallelThrottleMs?: number;

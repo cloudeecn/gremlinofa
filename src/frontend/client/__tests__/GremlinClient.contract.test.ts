@@ -14,6 +14,7 @@ import { GremlinServer } from '../../../shared/engine/GremlinServer';
 import { LoopRegistry } from '../../../shared/engine/LoopRegistry';
 import type { BackendDeps } from '../../../shared/engine/backendDeps';
 import { InProcessTransport } from '../../../shared/engine/transports/inProcess';
+import type { Transport } from '../../../shared/protocol/protocol';
 import type { APIService } from '../../../shared/services/api/apiService';
 import type { EncryptionCore } from '../../../shared/services/encryption/encryptionCore';
 import type { UnifiedStorage } from '../../../shared/services/storage/unifiedStorage';
@@ -37,6 +38,11 @@ function makeBackendDepsStub(storage: UnifiedStorage): BackendDeps {
       { id: 'm1', name: 'M1', apiType: 'chatgpt' },
       { id: 'm2', name: 'M2', apiType: 'chatgpt' },
     ]),
+    inspectProviderMessage: vi.fn(async () => ({
+      entry: '{"uuid":"u1"}',
+      sessionId: 'sess-1',
+      foundVia: 'stated' as const,
+    })),
   } as unknown as APIService;
   return {
     storage,
@@ -134,6 +140,12 @@ function makeStorageStub(): UnifiedStorage {
     deleteModels: vi.fn(async () => {}),
     getStorageQuota: vi.fn(async () => ({ usage: 100, quota: 1000 })),
     purgeAllData: vi.fn(async () => {}),
+    adminGetRecord: vi.fn(async () => ({
+      json: '{"name":"x"}',
+      compressed: false,
+      encrypted: true,
+    })),
+    adminSaveRecord: vi.fn(async () => {}),
     compressAllMessages: vi.fn(async () => ({
       total: 5,
       compressed: 3,
@@ -328,6 +340,24 @@ describe('GremlinClient (in-process contract)', () => {
     });
   });
 
+  describe('admin / diagnostics', () => {
+    it('adminGetRecord returns the decrypted record view', async () => {
+      const view = await client.adminGetRecord('chats', 'chat_1');
+      expect(view).toEqual({ json: '{"name":"x"}', compressed: false, encrypted: true });
+      expect(storage.adminGetRecord).toHaveBeenCalledWith('chats', 'chat_1');
+    });
+
+    it('adminSaveRecord delegates table/id/json to storage', async () => {
+      await client.adminSaveRecord('messages', 'msg_1', '{"a":1}');
+      expect(storage.adminSaveRecord).toHaveBeenCalledWith('messages', 'msg_1', '{"a":1}');
+    });
+
+    it('claudeAgentInspectMessage returns the provider entry', async () => {
+      const found = await client.claudeAgentInspectMessage('sess-1', 'u1');
+      expect(found).toEqual({ entry: '{"uuid":"u1"}', sessionId: 'sess-1', foundVia: 'stated' });
+    });
+  });
+
   describe('active loops', () => {
     it('listActiveLoops returns the registry contents', async () => {
       const loops = await client.listActiveLoops();
@@ -337,5 +367,98 @@ describe('GremlinClient (in-process contract)', () => {
     it('abortLoop throws LOOP_NOT_FOUND for unknown id', async () => {
       await expect(client.abortLoop('nope')).rejects.toMatchObject({ code: 'LOOP_NOT_FOUND' });
     });
+  });
+});
+
+describe('GremlinClient transport lifecycle', () => {
+  it('registering callbacks or reading connectionState never constructs the transport', () => {
+    const factory = vi.fn(() => {
+      throw new Error('transport must not be constructed');
+    });
+    const client = new GremlinClient(factory as unknown as () => Transport);
+
+    client.onReconnect(() => {});
+    client.onConnectionStateChange(() => {});
+    expect(client.connectionState).toBeUndefined();
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('rebindTransport disposes the old transport and keeps subscribers wired', async () => {
+    const reconnectFired = vi.fn();
+    const makeFakeTransport = () => {
+      let reconnectCb: (() => void) | null = null;
+      return {
+        dispose: vi.fn(),
+        request: vi.fn(async () => []),
+        stream: vi.fn(),
+        onReconnect: (cb: () => void) => {
+          reconnectCb = cb;
+          return () => {
+            reconnectCb = null;
+          };
+        },
+        fireReconnect: () => reconnectCb?.(),
+      };
+    };
+    const first = makeFakeTransport();
+    const second = makeFakeTransport();
+    const client = new GremlinClient(first as unknown as Transport);
+    client.onReconnect(reconnectFired);
+
+    client.rebindTransport(() => second as unknown as Transport);
+    expect(first.dispose).toHaveBeenCalled();
+
+    // The subscriber registered before the rebind fires on the NEW
+    // transport's reconnect.
+    second.fireReconnect();
+    expect(reconnectFired).toHaveBeenCalledTimes(1);
+    // The old transport's callback was unsubscribed.
+    first.fireReconnect();
+    expect(reconnectFired).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GremlinClient streamed-RPC error propagation', () => {
+  const streamOf = (envelopes: unknown[]): Transport =>
+    ({
+      request: vi.fn(),
+      stream: () =>
+        (async function* () {
+          for (const env of envelopes) yield env;
+        })(),
+    }) as unknown as Transport;
+
+  it('importFromBytes throws when the stream ends with an error status', async () => {
+    const client = new GremlinClient(
+      streamOf([
+        {
+          kind: 'stream_event',
+          requestId: 'r1',
+          event: { type: 'progress', processed: 1, imported: 1, skipped: 0, errors: 0 },
+        },
+        { kind: 'stream_end', requestId: 'r1', status: 'error', detail: 'transport disconnected' },
+      ])
+    );
+    // Before the fix this resolved with {imported: 0, ...} — a disconnect
+    // mid-import looked like a successful empty import.
+    await expect(client.importFromBytes(new Uint8Array([1, 2, 3]), 'cek', 'merge')).rejects.toThrow(
+      /transport disconnected/
+    );
+  });
+
+  it('importFromBytes throws when the stream completes without a done event', async () => {
+    const client = new GremlinClient(
+      streamOf([{ kind: 'stream_end', requestId: 'r1', status: 'complete' }])
+    );
+    await expect(client.importFromBytes(new Uint8Array([1]), 'cek', 'merge')).rejects.toThrow(
+      /without a done event/
+    );
+  });
+
+  it('exportToBlob throws when the stream ends with an error status', async () => {
+    const client = new GremlinClient(
+      streamOf([{ kind: 'stream_end', requestId: 'r1', status: 'error', detail: 'boom' }])
+    );
+    await expect(client.exportToBlob()).rejects.toThrow(/boom/);
   });
 });

@@ -9,10 +9,10 @@
  * the result plus the synthetic tool_use/tool_result StreamChunks and token
  * totals on the side channel.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { buildGremlinMcpServer } from '../claudeAgentToolBridge';
+import { buildGremlinMcpServer, LaunchStagger } from '../claudeAgentToolBridge';
 import { ClientSideToolRegistry } from '../../shared/services/tools/clientSideTools';
 import type { ClientSideTool, TokenTotals, ToolContext } from '../../shared/protocol/types';
 import type { StreamChunk } from '../../shared/services/api/baseClient';
@@ -175,10 +175,14 @@ describe('claudeAgentToolBridge', () => {
     const client = new Client({ name: 'test', version: '1.0.0' });
     await client.connect(clientTransport);
 
-    // (1) Schema fidelity — the model sees our exact JSON Schema.
+    // (1) Schema fidelity — the model sees our exact JSON Schema. Every tool
+    // also carries readOnlyHint, the CLI's only switch for parallel MCP calls.
     const list = await client.listTools();
     const echoDef = list.tools.find(t => t.name === 'echo');
     expect(echoDef?.inputSchema).toEqual(ECHO_SCHEMA);
+    for (const def of list.tools) {
+      expect(def.annotations?.readOnlyHint, `${def.name} readOnlyHint`).toBe(true);
+    }
 
     // (2) A successful call dispatches to our tool and surfaces chunks + tokens.
     const ok = await client.callTool({ name: 'echo', arguments: { message: 'hi' } });
@@ -234,5 +238,146 @@ describe('claudeAgentToolBridge', () => {
     expect(activeHooks).toEqual(['my-hook', null]);
 
     await client.close();
+  });
+
+  describe('parallel dispatch', () => {
+    /** Tool whose execute blocks until the test releases it; records entries. */
+    function makeGate() {
+      let release!: () => void;
+      const released = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      const entered: string[] = [];
+      const tool: ClientSideTool = {
+        name: 'gate',
+        claudeAgentBridgeable: true,
+        description: 'blocks until released',
+        inputSchema: {
+          type: 'object',
+          properties: { tag: { type: 'string' } },
+          required: ['tag'],
+        },
+        execute: async input => {
+          entered.push(String(input.tag));
+          await released;
+          return { content: `done:${String(input.tag)}` };
+        },
+      };
+      return { tool, entered, release };
+    }
+
+    /** Throttled tool mirroring minion: 40ms stagger, group taken from input. */
+    function makeThrottled() {
+      const launches: Array<{ group: string; at: number }> = [];
+      const tool: ClientSideTool = {
+        name: 'slowpoke',
+        claudeAgentBridgeable: true,
+        parallelThrottleMs: 40,
+        getParallelThrottleGroup: input => String(input.group),
+        description: 'staggered',
+        inputSchema: {
+          type: 'object',
+          properties: { group: { type: 'string' } },
+          required: ['group'],
+        },
+        execute: async input => {
+          launches.push({ group: String(input.group), at: Date.now() });
+          return { content: 'ok' };
+        },
+      };
+      return { tool, launches };
+    }
+
+    async function connect(tools: ClientSideTool[], signal?: AbortSignal) {
+      const registry = new ClientSideToolRegistry();
+      registry.registerAll(tools);
+      const chunks: StreamChunk[] = [];
+      const bridge = buildGremlinMcpServer({
+        toolContext: { toolRegistry: registry } as unknown as ToolContext,
+        enabledTools: tools.map(t => t.name),
+        toolOptions: {},
+        signal: signal ?? new AbortController().signal,
+        pushChunk: c => chunks.push(c),
+        onToolTokens: noop,
+        onChatMetadata: noop,
+        onReturnValue: noop,
+        onActiveHook: noop,
+      })!;
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await bridge.server.instance.connect(serverTransport);
+      const client = new Client({ name: 'test', version: '1.0.0' });
+      await client.connect(clientTransport);
+      return { client, chunks };
+    }
+
+    it('runs concurrent calls concurrently (no serialization in the bridge)', async () => {
+      const gate = makeGate();
+      const { client } = await connect([gate.tool]);
+
+      const first = client.callTool({ name: 'gate', arguments: { tag: 'a' } });
+      const second = client.callTool({ name: 'gate', arguments: { tag: 'b' } });
+      await vi.waitFor(() => expect(gate.entered).toEqual(['a', 'b']));
+
+      gate.release();
+      const [ra, rb] = await Promise.all([first, second]);
+      expect(ra.content).toEqual([{ type: 'text', text: 'done:a' }]);
+      expect(rb.content).toEqual([{ type: 'text', text: 'done:b' }]);
+      await client.close();
+    });
+
+    it('staggers same-group throttled launches, not cross-group ones', async () => {
+      const throttled = makeThrottled();
+      const { client } = await connect([throttled.tool]);
+
+      const start = Date.now();
+      await Promise.all([
+        client.callTool({ name: 'slowpoke', arguments: { group: 'x' } }),
+        client.callTool({ name: 'slowpoke', arguments: { group: 'x' } }),
+        client.callTool({ name: 'slowpoke', arguments: { group: 'y' } }),
+      ]);
+
+      const xs = throttled.launches.filter(l => l.group === 'x').map(l => l.at - start);
+      const ys = throttled.launches.filter(l => l.group === 'y').map(l => l.at - start);
+      expect(xs).toHaveLength(2);
+      expect(ys).toHaveLength(1);
+      // Second x waits ~40ms behind the first; y launches with the first x,
+      // well before the staggered x. Relative bounds keep this load-tolerant.
+      const [x1, x2] = [...xs].sort((a, b) => a - b);
+      expect(x2 - x1).toBeGreaterThanOrEqual(35);
+      expect(ys[0]).toBeLessThan(x2 - 20);
+      await client.close();
+    });
+
+    it('aborting during the stagger wait skips the tool and errors the call', async () => {
+      const throttled = makeThrottled();
+      const abort = new AbortController();
+      const { client, chunks } = await connect([throttled.tool], abort.signal);
+
+      const first = client.callTool({ name: 'slowpoke', arguments: { group: 'x' } });
+      const second = client.callTool({ name: 'slowpoke', arguments: { group: 'x' } });
+      await first;
+      abort.abort();
+      const aborted = await second;
+
+      expect(aborted.isError).toBe(true);
+      expect(throttled.launches).toHaveLength(1);
+      const results = chunks.filter(c => c.type === 'tool_result');
+      expect(results).toHaveLength(2);
+      expect(results[1]).toMatchObject({ isError: true });
+      await client.close();
+    });
+  });
+});
+
+describe('LaunchStagger', () => {
+  it('spaces a burst by the throttle and charges nothing to spaced-out calls', () => {
+    const stagger = new LaunchStagger();
+    expect(stagger.reserve('g', 100, 1000)).toBe(0);
+    expect(stagger.reserve('g', 100, 1000)).toBe(100);
+    expect(stagger.reserve('g', 100, 1000)).toBe(200);
+    // Another group runs on its own timeline.
+    expect(stagger.reserve('h', 100, 1000)).toBe(0);
+    // Well past the last reserved slot → free launch.
+    expect(stagger.reserve('g', 100, 5000)).toBe(0);
   });
 });

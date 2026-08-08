@@ -4,6 +4,7 @@ import type {
   TextRenderBlock,
   ErrorRenderBlock,
   FallbackRenderBlock,
+  NotifyRenderBlock,
 } from '../../../shared/protocol/types/content';
 import { renderMarkdownSafe } from '../../lib/markdownRenderer';
 
@@ -43,6 +44,8 @@ function TextBlock({ block, disableMath }: TextBlockProps) {
       return <ErrorSegment block={block} />;
     case 'fallback':
       return <FallbackSegment block={block} />;
+    case 'notify':
+      return <NotifySegment block={block} />;
     case 'thinking':
     case 'web_search':
     case 'web_fetch':
@@ -98,6 +101,23 @@ function ErrorSegment({ block }: ErrorSegmentProps) {
     <div className="error-block my-2 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
       <span className="mr-2">⚠️</span>
       {block.message}
+    </div>
+  );
+}
+
+interface NotifySegmentProps {
+  block: NotifyRenderBlock;
+}
+
+function NotifySegment({ block }: NotifySegmentProps) {
+  const isWarning = block.color === 'error' || block.priority === 'immediate';
+  const tone = isWarning
+    ? 'border-red-300 bg-red-50 text-red-700'
+    : 'border-gray-300 bg-gray-50 text-gray-600';
+  return (
+    <div className={`notify-block my-2 rounded border-l-4 p-3 text-sm ${tone}`}>
+      <span className="mr-2">🔔</span>
+      {block.text}
     </div>
   );
 }

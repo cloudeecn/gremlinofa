@@ -12,7 +12,7 @@ import type { EncryptionCore } from '../encryption/encryptionCore';
 import type { UnifiedStorage } from '../storage/unifiedStorage';
 import type { ClientSideToolRegistry } from '../tools/clientSideTools';
 import { AnthropicClient } from './anthropicClient';
-import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import type { APIClient, ProviderMessageInspection, StreamChunk, StreamResult } from './baseClient';
 import { BedrockClient } from './bedrockClient';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
 import {
@@ -371,5 +371,23 @@ export class APIService {
    */
   async deleteProviderSession(apiType: APIType, sessionId: string): Promise<void> {
     await this.getClient(apiType)?.deleteProviderSession?.(sessionId);
+  }
+
+  /**
+   * Look up the raw provider-side entry for a message (claude-agent: the
+   * session JSONL line). Throws when the provider doesn't support inspection
+   * (worker mode's claude-agent stub); returns undefined when supported but
+   * not found.
+   */
+  async inspectProviderMessage(
+    apiType: APIType,
+    sessionId: string | undefined,
+    messageUuid: string
+  ): Promise<ProviderMessageInspection | undefined> {
+    const client = this.getClient(apiType);
+    if (!client?.inspectProviderMessage) {
+      throw new Error(`${apiType}: message inspection requires server mode`);
+    }
+    return client.inspectProviderMessage(sessionId, messageUuid);
   }
 }

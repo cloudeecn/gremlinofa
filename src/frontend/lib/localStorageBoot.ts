@@ -54,6 +54,15 @@ export function clearCachedCEK(): void {
   }
 }
 
+/** Whether a storage config has been persisted (vs. the implicit local default). */
+export function hasStorageConfig(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_CONFIG_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /** Read the storage config JSON. Defaults to `{ type: 'local' }` on error/missing. */
 export function getStorageConfig(): StorageConfig {
   try {

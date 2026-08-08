@@ -24,6 +24,35 @@ import { detectRemoteVfsTasks, detectTableToFilesystemTasks } from './vfsMigrati
 import { LocalVfsAdapter } from '../services/vfs/localVfsAdapter';
 import { createVfsService } from '../services/vfs/vfsService';
 
+/**
+ * Clear every project's VFS backend ahead of a destructive wipe.
+ *
+ * `adapter.clearAll()` only clears the vfs_* tables — filesystem and remote
+ * VFS backends hold the actual files elsewhere, and they would resurface
+ * under any re-imported project that reuses the same id. Failures (e.g. an
+ * unreachable remote VFS server) are reported through `onWarning`, not
+ * thrown: the wipe itself must proceed.
+ */
+export async function clearAllVfsBackends(
+  storage: UnifiedStorage,
+  encryption: EncryptionCore,
+  deps: BackendDeps | undefined,
+  onWarning: (message: string) => void
+): Promise<void> {
+  if (!deps?.createVfsAdapter) return;
+  const projects = await storage.getProjects();
+  if (projects.length === 0) return;
+  const userId = await encryption.deriveUserId();
+  for (const project of projects) {
+    try {
+      await deps.createVfsAdapter(deps, project, userId).clearVfs();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      onWarning(`Failed to clear VFS backend for "${project.name}": ${msg}`);
+    }
+  }
+}
+
 export async function* runImport(
   storage: UnifiedStorage,
   encryption: EncryptionCore,
@@ -71,6 +100,15 @@ export async function* runImport(
       estimatedTotal: p.estimatedTotal,
     });
   };
+
+  // Replace mode: clear the VFS backends BEFORE the table wipe, while the
+  // project list is still readable — otherwise filesystem / remote VFS
+  // files of the old projects survive the "replace".
+  if (params.mode === 'replace') {
+    await clearAllVfsBackends(storage, encryption, deps, message =>
+      push({ type: 'warning', message })
+    );
+  }
 
   const runner =
     params.mode === 'replace'
@@ -343,8 +381,8 @@ async function migrateTableToFilesystem(
   );
 
   // Bulk read: single tree load, batch DB fetch, parallel decrypt
-  const files = await vfsService.readAllForMigration(task.projectId);
-  if (files.length === 0) {
+  const { files, errors: readErrors } = await vfsService.readAllForMigration(task.projectId);
+  if (files.length === 0 && readErrors.length === 0) {
     throw new Error('No files were found — VFS table records preserved for retry');
   }
 
@@ -370,24 +408,28 @@ async function migrateTableToFilesystem(
     });
   });
 
-  if (result.errors.length > 0) {
+  const errorCount = readErrors.length + result.errors.length;
+  if (errorCount > 0) {
     push({
       type: 'warning',
-      message: `Partial VFS table→filesystem migration for "${task.projectName}": ${result.errors.length} errors`,
+      message: `Partial VFS table→filesystem migration for "${task.projectName}": ${errorCount} errors`,
     });
+    for (const readError of readErrors) {
+      push({ type: 'warning', message: `  ${task.projectName}: ${readError}` });
+    }
   }
 
   // Only clean up VFS table records if migration was fully successful.
-  // If there were errors or nothing was copied, keep the table data so
-  // the user doesn't lose files permanently.
-  if (result.errors.length > 0 || result.filesCopied === 0) {
+  // Read failures count too — a file that couldn't be decrypted never
+  // reached the target, so clearing the tables would destroy it.
+  if (errorCount > 0 || result.filesCopied === 0) {
     console.debug(
       '[importRunner] VFS table→filesystem for',
       task.projectName,
       '— skipping clearVfs:',
       result.filesCopied,
       'files,',
-      result.errors.length,
+      errorCount,
       'errors'
     );
     if (result.filesCopied === 0) {

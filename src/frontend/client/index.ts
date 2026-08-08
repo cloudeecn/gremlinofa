@@ -26,7 +26,7 @@
  */
 
 import type { Transport } from '../../shared/protocol/protocol';
-import { getStorageConfig } from '../lib/localStorageBoot';
+import { getStorageConfig, type StorageConfig } from '../lib/localStorageBoot';
 import { ActiveLoopsStore } from './ActiveLoopsStore';
 import { GremlinClient } from './GremlinClient';
 import { WebSocketTransport } from './transports/websocket';
@@ -38,16 +38,14 @@ export type { SessionEventHandler, SessionEndHandler } from './GremlinSession';
 export { ActiveLoopsStore } from './ActiveLoopsStore';
 
 /**
- * Create the right transport for the current storage config.
+ * Create the right transport for the given storage config.
  *
  * - `server` → `WebSocketTransport` pointing at the Node backend.
  * - `local` / `remote` → `WorkerTransport` hosting the engine in-browser.
  *
  * Throws if `Worker` is unavailable and the config isn't `server`.
  */
-function createDefaultTransport(): Transport {
-  const config = getStorageConfig();
-
+function createTransportFromConfig(config: StorageConfig): Transport {
   if (config.type === 'server') {
     return new WebSocketTransport(config.wsUrl);
   }
@@ -71,28 +69,32 @@ function createDefaultTransport(): Transport {
   }
 }
 
-let _gremlinClient: GremlinClient | undefined;
-
-/** Lazy accessor — constructs the worker transport on first touch. */
-function getGremlinClient(): GremlinClient {
-  if (!_gremlinClient) {
-    _gremlinClient = new GremlinClient(createDefaultTransport());
-  }
-  return _gremlinClient;
-}
-
 /**
- * Singleton — use this everywhere on the frontend. Backed by a `Proxy` so
- * the underlying `GremlinClient` is constructed on first method access
- * rather than at module-import time. This keeps jsdom-only component tests
- * (e.g. `MessageBubble.test.tsx`) working without forcing them to mock the
- * client just because they transitively import a component that does.
+ * Singleton — use this everywhere on the frontend. Constructed with a lazy
+ * transport factory: importing this module (including the
+ * `ActiveLoopsStore` construction below, which only registers callbacks)
+ * has no side effects; the transport is built from the persisted storage
+ * config on the first actual RPC. Flows that change the config at runtime
+ * call `rebindGremlinTransport` instead of relying on construction timing.
  */
-export const gremlinClient: GremlinClient = new Proxy({} as GremlinClient, {
-  get(_target, prop, receiver) {
-    return Reflect.get(getGremlinClient(), prop, receiver);
-  },
-});
+export const gremlinClient: GremlinClient = new GremlinClient(() =>
+  createTransportFromConfig(getStorageConfig())
+);
 
 /** Singleton store backing the sidebar's Running Loops section. */
 export const activeLoopsStore = new ActiveLoopsStore(gremlinClient);
+
+/**
+ * Swap the singleton's transport for one matching `config` (or re-derive
+ * from the persisted storage config when omitted). OOBE calls this after
+ * persisting the user's storage choice so the very first attempt talks to
+ * the chosen backend — and so a retry starts from a fresh transport
+ * instead of a poisoned worker or a wedged socket.
+ */
+export function rebindGremlinTransport(config?: StorageConfig): void {
+  gremlinClient.rebindTransport(
+    config
+      ? () => createTransportFromConfig(config)
+      : () => createTransportFromConfig(getStorageConfig())
+  );
+}

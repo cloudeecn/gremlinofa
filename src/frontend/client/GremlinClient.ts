@@ -48,6 +48,7 @@ import type {
   VfsAdapter,
   VfsStat,
 } from '../../shared/protocol/types/vfs';
+import type { AdminRecordView, TableName } from '../../shared/protocol/methods';
 import type {
   ActiveLoop,
   ConnectionState,
@@ -64,12 +65,91 @@ import type {
   ToolInventoryEntry,
 } from '../../shared/protocol/protocol';
 import type { StorageConfig } from '../lib/localStorageBoot';
+import { ProtocolError } from '../../shared/protocol/protocolError';
 
 export class GremlinClient {
-  private readonly transport: Transport;
+  private transportFactory: () => Transport;
+  private _transport: Transport | null = null;
 
-  constructor(transport: Transport) {
-    this.transport = transport;
+  // Client-owned callback registries. They survive transport rebinds, and
+  // registering NEVER constructs a transport — that trap is what used to
+  // freeze the transport choice at module-eval time (ActiveLoopsStore's
+  // constructor subscription built a WorkerTransport before OOBE could
+  // persist a server config).
+  private readonly reconnectCallbacks = new Set<() => void>();
+  private readonly stateCallbacks = new Set<(state: ConnectionState) => void>();
+  private transportUnsubs: Array<() => void> = [];
+
+  constructor(transport: Transport | (() => Transport)) {
+    if (typeof transport === 'function') {
+      this.transportFactory = transport;
+    } else {
+      // Pre-built transport (tests, in-process staging): attach immediately.
+      this.transportFactory = () => transport;
+      this.attachTransport(transport);
+    }
+  }
+
+  /** Lazily construct the transport on first RPC. */
+  private get transport(): Transport {
+    if (!this._transport) {
+      this.attachTransport(this.transportFactory());
+    }
+    return this._transport!;
+  }
+
+  private attachTransport(transport: Transport): void {
+    this._transport = transport;
+    if (transport.onReconnect) {
+      this.transportUnsubs.push(
+        transport.onReconnect(() => {
+          for (const cb of this.reconnectCallbacks) {
+            try {
+              cb();
+            } catch {
+              // reconnect handlers should not throw
+            }
+          }
+        })
+      );
+    }
+    if (transport.onConnectionStateChange) {
+      this.transportUnsubs.push(
+        transport.onConnectionStateChange(state => {
+          for (const cb of this.stateCallbacks) {
+            try {
+              cb(state);
+            } catch {
+              // state callbacks should not throw
+            }
+          }
+        })
+      );
+    }
+  }
+
+  /**
+   * Dispose the current transport and construct a replacement from the
+   * factory (the stored one, or `factory` if given — which also becomes
+   * the stored factory). Registered `onReconnect` /
+   * `onConnectionStateChange` subscribers keep working across the swap.
+   *
+   * This is the explicit lifecycle API for flows that change the storage
+   * config at runtime (OOBE picking a server backend, Data Manager
+   * detaching one): persist the config, then rebind so the next RPC talks
+   * to the right backend — no reload, no import-order luck.
+   */
+  rebindTransport(factory?: () => Transport): void {
+    if (factory) {
+      this.transportFactory = factory;
+    }
+    for (const unsub of this.transportUnsubs) {
+      unsub();
+    }
+    this.transportUnsubs = [];
+    this._transport?.dispose?.();
+    this._transport = null;
+    this.attachTransport(this.transportFactory());
   }
 
   // ==========================================================================
@@ -96,6 +176,32 @@ export class GremlinClient {
     return this.transport.stream(method, params);
   }
 
+  /**
+   * Iterate a streaming RPC's events, throwing when the stream terminates
+   * abnormally. A `stream_end` with status `error` / `aborted` becomes a
+   * thrown `ProtocolError` — without this, consumers that skip non-event
+   * envelopes silently return partial results (e.g. an import reporting
+   * "0 records, success" after a mid-stream disconnect).
+   */
+  private async *streamEvents<M extends keyof GremlinMethods>(
+    method: M,
+    params: MethodParams<M>
+  ): AsyncGenerator<StreamEventEnvelope<M>['event'], void, void> {
+    for await (const envelope of this.stream(method, params)) {
+      if (envelope.kind === 'stream_event') {
+        yield envelope.event;
+        continue;
+      }
+      if (envelope.status !== 'complete') {
+        throw new ProtocolError(
+          'STREAM_FAILED',
+          `${method} stream ended with status '${envelope.status}'${envelope.detail ? `: ${envelope.detail}` : ''}`
+        );
+      }
+      return;
+    }
+  }
+
   // ==========================================================================
   // Lifecycle
   // ==========================================================================
@@ -120,30 +226,36 @@ export class GremlinClient {
 
   /**
    * Register a callback fired after the transport reconnects (WebSocket
-   * only). `GremlinSession` uses this to re-attach chats. No-op on
-   * transports that don't support reconnect (worker).
+   * only). `GremlinSession` uses this to re-attach chats. Registers into a
+   * client-owned registry — never constructs a transport, and survives
+   * `rebindTransport`. Never fires on transports without reconnect
+   * (worker).
    */
   onReconnect(callback: () => void): () => void {
-    if (this.transport.onReconnect) {
-      return this.transport.onReconnect(callback);
-    }
-    return () => {};
-  }
-
-  /** Current connection state. `undefined` for non-WebSocket transports. */
-  get connectionState(): ConnectionState | undefined {
-    return this.transport.connectionState;
+    this.reconnectCallbacks.add(callback);
+    return () => {
+      this.reconnectCallbacks.delete(callback);
+    };
   }
 
   /**
-   * Subscribe to connection state changes. Returns an unsubscribe function.
-   * On non-WebSocket transports (worker), returns a no-op unsubscribe.
+   * Current connection state. `undefined` for non-WebSocket transports and
+   * before the transport has been constructed by the first RPC.
+   */
+  get connectionState(): ConnectionState | undefined {
+    return this._transport?.connectionState;
+  }
+
+  /**
+   * Subscribe to connection state changes. Returns an unsubscribe
+   * function. Same registry semantics as `onReconnect`; never fires on
+   * non-WebSocket transports (worker).
    */
   onConnectionStateChange(callback: (state: ConnectionState) => void): () => void {
-    if (this.transport.onConnectionStateChange) {
-      return this.transport.onConnectionStateChange(callback);
-    }
-    return () => {};
+    this.stateCallbacks.add(callback);
+    return () => {
+      this.stateCallbacks.delete(callback);
+    };
   }
 
   // ==========================================================================
@@ -330,6 +442,25 @@ export class GremlinClient {
   async isStorageEmpty(): Promise<boolean> {
     const { empty } = await this.request('isStorageEmpty', {});
     return empty;
+  }
+
+  // ==========================================================================
+  // Admin / diagnostics
+  // ==========================================================================
+
+  adminGetRecord(table: TableName, id: string): Promise<AdminRecordView> {
+    return this.request('adminGetRecord', { table, id });
+  }
+
+  async adminSaveRecord(table: TableName, id: string, json: string): Promise<void> {
+    await this.request('adminSaveRecord', { table, id, json });
+  }
+
+  claudeAgentInspectMessage(
+    sessionId: string | undefined,
+    messageUuid: string
+  ): Promise<{ entry: string; sessionId: string; foundVia: 'stated' | 'scan' }> {
+    return this.request('claudeAgentInspectMessage', { sessionId, messageUuid });
   }
 
   // ==========================================================================
@@ -627,9 +758,7 @@ export class GremlinClient {
   ): Promise<CompactResult> {
     let result: CompactResult | null = null;
 
-    for await (const envelope of this.stream('vfsCompactProject', { projectId, options })) {
-      if (envelope.kind !== 'stream_event') continue;
-      const event = envelope.event;
+    for await (const event of this.streamEvents('vfsCompactProject', { projectId, options })) {
       switch (event.type) {
         case 'progress':
           onProgress?.(event.progress);
@@ -769,9 +898,8 @@ export class GremlinClient {
     let suggestedName = 'gremlinofa-backup.csv';
     let mimeType = 'text/csv;charset=utf-8;';
 
-    for await (const envelope of this.stream('exportData', {})) {
-      if (envelope.kind !== 'stream_event') continue;
-      const event = envelope.event;
+    let done = false;
+    for await (const event of this.streamEvents('exportData', {})) {
       switch (event.type) {
         case 'progress':
           onProgress?.(event.processed);
@@ -794,8 +922,12 @@ export class GremlinClient {
         case 'done':
           suggestedName = event.suggestedName;
           mimeType = event.mimeType;
+          done = true;
           break;
       }
+    }
+    if (!done) {
+      throw new ProtocolError('STREAM_FAILED', 'exportData stream ended without a done event');
     }
 
     return { blob: new Blob(chunks, { type: mimeType }), suggestedName, mimeType };
@@ -807,8 +939,8 @@ export class GremlinClient {
    * cross a `File` reference). Returns the final import counts.
    *
    * `mode: 'merge'` keeps existing records; `mode: 'replace'` clears the
-   * database first and re-encrypts everything with `sourceCEK`, which then
-   * becomes the active CEK on the backend.
+   * database first. In both modes `sourceCEK` only decrypts the backup —
+   * every row is (re-)encrypted under the backend's active CEK.
    */
   async importFromBytes(
     data: Uint8Array,
@@ -869,9 +1001,8 @@ export class GremlinClient {
       importParams = { data, sourceCEK, mode, skipVfsMigration: options?.skipVfsMigration };
     }
 
-    for await (const envelope of this.stream('importData', importParams)) {
-      if (envelope.kind !== 'stream_event') continue;
-      const event = envelope.event;
+    let done = false;
+    for await (const event of this.streamEvents('importData', importParams)) {
       switch (event.type) {
         case 'progress':
           onProgress?.({
@@ -906,8 +1037,12 @@ export class GremlinClient {
           imported = event.imported;
           skipped = event.skipped;
           errors = event.errors;
+          done = true;
           break;
       }
+    }
+    if (!done) {
+      throw new ProtocolError('STREAM_FAILED', 'importData stream ended without a done event');
     }
 
     return { imported, skipped, errors };
@@ -932,9 +1067,8 @@ export class GremlinClient {
     let dirCount = 0;
     let projectName = '';
 
-    for await (const envelope of this.stream('exportProject', { projectId })) {
-      if (envelope.kind !== 'stream_event') continue;
-      const event = envelope.event;
+    let done = false;
+    for await (const event of this.streamEvents('exportProject', { projectId })) {
       switch (event.type) {
         case 'progress':
           onProgress?.(event.loaded, event.total);
@@ -944,8 +1078,12 @@ export class GremlinClient {
           fileCount = event.fileCount;
           dirCount = event.dirCount;
           projectName = event.projectName;
+          done = true;
           break;
       }
+    }
+    if (!done) {
+      throw new ProtocolError('STREAM_FAILED', 'exportProject stream ended without a done event');
     }
 
     return { bundleJson, fileCount, dirCount, projectName };

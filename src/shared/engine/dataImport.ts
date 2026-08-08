@@ -16,6 +16,8 @@ import type { StorageAdapter, BatchSaveRow } from '../services/storage/StorageAd
 import { Tables } from '../services/storage/StorageAdapter';
 import { streamCSVRows } from './lib/csvHelper';
 import type { ImportProgressCallback } from '../protocol/types/data';
+import { isConfiguredApiDefinition } from '../protocol/apiDefinition';
+import type { APIDefinition } from '../protocol/types';
 
 interface ImportRecord {
   tableName: string;
@@ -165,10 +167,13 @@ export async function importDataFromFile(
         const existing = await adapter.get(record.tableName, record.id);
         if (existing) {
           try {
-            const existingDef = JSON.parse(await appEncryption.decrypt(existing.encryptedData));
-            const localHasEmptyCredentials = !existingDef.apiKey && !existingDef.baseUrl;
-
-            if (!localHasEmptyCredentials) {
+            const existingDef = JSON.parse(
+              await appEncryption.decryptWithDecompression(existing.encryptedData)
+            ) as APIDefinition;
+            // Factory-seeded defaults (even those shipping with a baseUrl,
+            // like xAI) count as unconfigured and may be overwritten by the
+            // imported definition.
+            if (isConfiguredApiDefinition(existingDef)) {
               console.debug(
                 `[DataImport] Skipping api_definition (local has credentials): ${record.id}`
               );
@@ -199,9 +204,11 @@ export async function importDataFromFile(
           // CEKs match - use encrypted data as-is (optimization for sync/migration)
           finalEncryptedData = record.encryptedData;
         } else {
-          // CEKs differ - decrypt and re-encrypt
-          const decryptedJson = await sourceEncryption.decrypt(record.encryptedData);
-          finalEncryptedData = await appEncryption.encrypt(decryptedJson);
+          // CEKs differ - decrypt and re-encrypt. Raw-bytes round-trip:
+          // compressed rows ("GZ"+gzip — VFS, messages, models_cache) are
+          // binary and a text decode/encode pair destroys them.
+          const plaintextBytes = await sourceEncryption.decryptToBytes(record.encryptedData);
+          finalEncryptedData = await appEncryption.encryptBytes(plaintextBytes);
         }
       }
 

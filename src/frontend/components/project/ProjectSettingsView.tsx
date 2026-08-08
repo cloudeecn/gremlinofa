@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
 import { getApiDefinitionIcon } from '../../lib/apiTypeUtils';
+import { apiKeyOptional } from '../../../shared/protocol/apiDefinition';
 import { getStorageConfig } from '../../lib/localStorageBoot';
 import type {
   Project,
@@ -195,7 +196,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   const flexSupported = !!apiDef?.advancedSettings?.flexTierSupported;
 
   // Check if any API has credentials configured (or is marked as local)
-  const hasConfiguredApis = apiDefinitions.some(def => def.isLocal || def.apiKey?.trim());
+  const hasConfiguredApis = apiDefinitions.some(def => apiKeyOptional(def) || def.apiKey?.trim());
 
   // Detect if current model is an o-series reasoning model
   const isOSeriesModel =

@@ -35,7 +35,14 @@ export type ConnectionState =
   | 'connected'
   | 'stale'
   | 'disconnected'
-  | 'reconnecting';
+  | 'reconnecting'
+  /**
+   * Terminal: the server rejected the transport's credentials
+   * (CEK_MISMATCH / CEK_REQUIRED on init). No further reconnect attempts —
+   * the stored key is wrong and retrying cannot fix it. Recovery requires
+   * a new transport (rebind or reload) with corrected credentials.
+   */
+  | 'auth_failed';
 
 export interface Transport {
   request<M extends keyof GremlinMethods>(
@@ -53,6 +60,8 @@ export interface Transport {
    * active chats after a connection drop.
    */
   onReconnect?(callback: () => void): () => void;
+  /** Tear down the transport (terminate worker / close socket, settle pendings). */
+  dispose?(): void;
   /** Current connection state. Only meaningful for WebSocket transport. */
   connectionState?: ConnectionState;
   /** Subscribe to connection state changes. Returns unsubscribe function. */

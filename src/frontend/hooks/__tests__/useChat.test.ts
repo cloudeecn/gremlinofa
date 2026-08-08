@@ -1,6 +1,10 @@
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { useChat } from '../useChat';
+import {
+  useChat,
+  computeClaudeAgentRewindBefore,
+  computeClaudeAgentRewindKeeping,
+} from '../useChat';
 import { generateUniqueId } from '../../../shared/protocol/idGenerator';
 import * as alerts from '../../lib/alerts';
 import type {
@@ -1852,6 +1856,71 @@ describe('useChat', () => {
       rerender({ chatId: 'chat_456' });
 
       expect(result.current.snapshotLoading).toBe(true);
+    });
+  });
+});
+
+describe('claude-agent rewind helpers', () => {
+  const agentChat = { claudeAgentSessionId: 'sess-cur' } as unknown as Chat;
+  const asst = (id: string, uuid?: string, sessionId?: string): Message<unknown> =>
+    ({
+      id,
+      role: 'assistant',
+      ...(uuid
+        ? {
+            metadata: {
+              claudeAgentMessageUuid: uuid,
+              ...(sessionId ? { claudeAgentSessionId: sessionId } : {}),
+            },
+          }
+        : {}),
+    }) as unknown as Message<unknown>;
+  const user = (id: string): Message<unknown> =>
+    ({ id, role: 'user' }) as unknown as Message<unknown>;
+
+  describe('computeClaudeAgentRewindBefore', () => {
+    it('returns {} for non-claude-agent chats', () => {
+      expect(computeClaudeAgentRewindBefore({} as Chat, [asst('m0', 'u0')], 1)).toEqual({});
+    });
+
+    it('anchors to the prior assistant, keeping the session for unstamped anchors', () => {
+      const messages = [asst('m0', 'uuid-0'), user('m1')];
+      expect(computeClaudeAgentRewindBefore(agentChat, messages, 1)).toEqual({
+        claudeAgentResumeAt: 'uuid-0',
+      });
+    });
+
+    it('repoints the session to the anchor stamp when present', () => {
+      const messages = [asst('m0', 'uuid-0', 'sess-old'), user('m1')];
+      expect(computeClaudeAgentRewindBefore(agentChat, messages, 1)).toEqual({
+        claudeAgentResumeAt: 'uuid-0',
+        claudeAgentSessionId: 'sess-old',
+      });
+    });
+
+    it('drops the session when no prior assistant carries a uuid', () => {
+      expect(computeClaudeAgentRewindBefore(agentChat, [user('m0'), user('m1')], 1)).toEqual({
+        claudeAgentSessionId: undefined,
+        claudeAgentResumeAt: undefined,
+      });
+    });
+  });
+
+  describe('computeClaudeAgentRewindKeeping', () => {
+    it('anchors to the kept assistant and repoints to its stamp', () => {
+      const messages = [user('m0'), asst('m1', 'uuid-1', 'sess-old'), user('m2')];
+      expect(computeClaudeAgentRewindKeeping(agentChat, messages, 1)).toEqual({
+        claudeAgentResumeAt: 'uuid-1',
+        claudeAgentSessionId: 'sess-old',
+      });
+    });
+
+    it('falls back to rewind-before semantics when the target has no uuid', () => {
+      const messages = [asst('m0', 'uuid-0', 'sess-old'), asst('m1'), user('m2')];
+      expect(computeClaudeAgentRewindKeeping(agentChat, messages, 1)).toEqual({
+        claudeAgentResumeAt: 'uuid-0',
+        claudeAgentSessionId: 'sess-old',
+      });
     });
   });
 });

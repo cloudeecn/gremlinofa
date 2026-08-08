@@ -80,10 +80,21 @@ export class WorkerTransport implements Transport {
       this.worker.addEventListener('message', onReady);
     });
 
-    this.initPromise = new Promise<void>((resolve, reject) => {
+    this.initPromise = this.createInitGate();
+  }
+
+  /**
+   * Build a fresh init gate. The detached `.catch` keeps a failed init from
+   * surfacing as an unhandled promise rejection when no non-exempt RPC
+   * happens to be awaiting the gate at that moment.
+   */
+  private createInitGate(): Promise<void> {
+    const gate = new Promise<void>((resolve, reject) => {
       this.resolveInit = resolve;
       this.rejectInit = reject;
     });
+    gate.catch(() => {});
+    return gate;
   }
 
   // ==========================================================================
@@ -132,6 +143,10 @@ export class WorkerTransport implements Transport {
             this.rejectInit = null;
             this.resolveInit = null;
             r(err);
+            // Re-arm the gate so a retried `init` (e.g. the user fixing
+            // their OOBE input) isn't poisoned by this failure — without
+            // this, every later stream()/request() replays the stale error.
+            this.initPromise = this.createInitGate();
           }
         },
       });
@@ -253,9 +268,18 @@ export class WorkerTransport implements Transport {
     this.worker.postMessage(msg);
   }
 
-  /** Tear down the worker; useful in tests. */
+  /** Tear down the worker; used by transport rebind and tests. */
   dispose(): void {
     this.worker.removeEventListener('message', this.handleMessage);
     this.worker.terminate();
+    const err = new Error('transport disposed');
+    for (const pending of this.pendingRequests.values()) {
+      pending.reject(err);
+    }
+    this.pendingRequests.clear();
+    for (const stream of this.pendingStreams.values()) {
+      stream.reject(err);
+    }
+    this.pendingStreams.clear();
   }
 }

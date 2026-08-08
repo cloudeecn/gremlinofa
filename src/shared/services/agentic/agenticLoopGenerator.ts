@@ -718,6 +718,7 @@ function buildAssistantMessage(
     stopReason?: string;
     error?: { message: string; status?: number; stack?: string };
     providerExtra?: Record<string, unknown>;
+    contextWindowUsage?: number;
   },
   assembler: StreamingContentAssembler,
   apiType: APIType,
@@ -728,6 +729,10 @@ function buildAssistantMessage(
   const providerUuid =
     typeof result.providerExtra?.claudeAgentMessageUuid === 'string'
       ? (result.providerExtra.claudeAgentMessageUuid as string)
+      : undefined;
+  const providerSessionId =
+    typeof result.providerExtra?.claudeAgentSessionId === 'string'
+      ? (result.providerExtra.claudeAgentSessionId as string)
       : undefined;
   const { renderingContent, stopReason } = result.error
     ? {
@@ -745,11 +750,16 @@ function buildAssistantMessage(
   }
   populateToolRenderFields(renderingContent, registry);
 
+  // Context fill: iterTokens is billing usage, which equals the context fill
+  // only when the whole result was one API call. Providers whose result spans
+  // multiple calls (claude-agent) report a last-call snapshot instead — summing
+  // their billing usage would count the prefix once per call.
   const contextWindowUsage =
+    result.contextWindowUsage ??
     iterTokens.inputTokens +
-    iterTokens.outputTokens +
-    iterTokens.cacheCreationTokens +
-    iterTokens.cacheReadTokens;
+      iterTokens.outputTokens +
+      iterTokens.cacheCreationTokens +
+      iterTokens.cacheReadTokens;
 
   // Extract model-agnostic tool_use blocks for cross-model reconstruction
   const extractedToolCalls = extractToolUseBlocks(apiType, result.fullContent);
@@ -780,6 +790,7 @@ function buildAssistantMessage(
       contextWindowUsage,
       costUnreliable: iterTokens.costUnreliable || undefined,
       ...(providerUuid ? { claudeAgentMessageUuid: providerUuid } : {}),
+      ...(providerUuid && providerSessionId ? { claudeAgentSessionId: providerSessionId } : {}),
     },
   };
 }

@@ -66,6 +66,28 @@ export interface APIClient {
    * lives in the app's own message store.
    */
   deleteProviderSession?(sessionId: string): Promise<void>;
+
+  /**
+   * Look up the raw provider-side entry for a message (claude-agent: the
+   * JSONL line whose `uuid` matches). `sessionId` is the stamped owning
+   * session when known; implementations fall back to scanning their session
+   * store. Returns undefined when the entry can't be found. Omitted by
+   * providers without server-side sessions.
+   */
+  inspectProviderMessage?(
+    sessionId: string | undefined,
+    messageUuid: string
+  ): Promise<ProviderMessageInspection | undefined>;
+}
+
+/** Result of `inspectProviderMessage` — one raw provider session entry. */
+export interface ProviderMessageInspection {
+  /** The raw JSONL line for the message (a JSON document). */
+  entry: string;
+  /** Session the entry was found in. */
+  sessionId: string;
+  /** Whether the stated session had it, or a scan located it. */
+  foundVia: 'stated' | 'scan';
 }
 
 // Stream chunk types
@@ -83,6 +105,16 @@ export type StreamChunk =
   | { type: 'web_fetch'; id: string; url: string } // Emitted when URL is known
   | { type: 'web_fetch.result'; tool_use_id: string; url: string; title?: string }
   | { type: 'fallback'; fromModel?: string; toModel?: string } // claude-agent: request handed to a different model
+  | {
+      // claude-agent: loop-side SDK notification (compaction error, quota/credit
+      // warning, stop-hook error, …). Rendered inline, never folded into the
+      // backstage accordion.
+      type: 'notify';
+      text: string;
+      key?: string;
+      priority?: 'low' | 'medium' | 'high' | 'immediate';
+      color?: string;
+    }
   | {
       // claude-agent block we have no dedicated renderer for (unrecognized
       // server_tool_use name, non-bridged tool_use, or a brand-new block type).
@@ -144,6 +176,13 @@ export interface StreamResult<T> {
   cacheCreationTokens?: number;
   cacheReadTokens?: number;
   webSearchCount?: number;
+  /**
+   * Context-fill snapshot after the last API call of this result, in tokens.
+   * Only set by providers whose one StreamResult spans multiple API calls
+   * (claude-agent); when absent, consumers fall back to summing the token
+   * fields above (correct for single-call providers).
+   */
+  contextWindowUsage?: number;
   /**
    * Provider-specific payload surfaced to ChatRunner for persistence on
    * the chat/message row. claude-agent populates this with

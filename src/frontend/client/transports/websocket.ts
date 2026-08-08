@@ -38,12 +38,19 @@ interface PendingStream {
 
 type ServerMessage = ResponseEnvelope | StreamEventEnvelope | StreamEndEnvelope | ErrorEnvelope;
 
+/** Init failures that are terminal for this transport's credentials. */
+function isAuthFailure(err: ProtocolError): boolean {
+  return err.code === 'CEK_MISMATCH' || err.code === 'CEK_REQUIRED';
+}
+
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 2_000;
-const HEARTBEAT_TIMEOUT_MS = 5_000;
+// Generous timeouts: the server runs synchronous better-sqlite3 work during
+// imports and can legitimately stall past 5s without the socket being dead.
+const HEARTBEAT_TIMEOUT_MS = 15_000;
 /** Show "stale" banner when no pong for this long — warns user before full disconnect. */
-const STALE_THRESHOLD_MS = 4_000;
+const STALE_THRESHOLD_MS = 8_000;
 
 export class WebSocketTransport implements Transport {
   private readonly url: string;
@@ -56,9 +63,16 @@ export class WebSocketTransport implements Transport {
   /** Resolves when the current WebSocket connection is open. */
   private connectPromise: Promise<void>;
   private resolveConnect!: () => void;
+  private rejectConnect!: (err: Error) => void;
 
   /** Whether `dispose()` was called — suppresses reconnect. */
   private disposed = false;
+
+  /**
+   * Terminal auth failure (CEK_MISMATCH / CEK_REQUIRED): the stored key is
+   * wrong, reconnecting cannot help. Suppresses reconnect like `disposed`.
+   */
+  private authFailed = false;
 
   /** Current backoff delay for reconnect. */
   private backoffMs = INITIAL_BACKOFF_MS;
@@ -71,10 +85,14 @@ export class WebSocketTransport implements Transport {
   private firstConnected = false;
   private initPromise: Promise<void>;
   private resolveInit: (() => void) | null = null;
+  private rejectInit: ((err: Error) => void) | null = null;
 
-  /** One-shot requests queued for retry after reconnect. */
-  private retryQueue: RequestEnvelope[] = [];
-  /** Maps requestId → original envelope so we can re-send on reconnect. */
+  /**
+   * Maps requestId → original envelope so in-flight one-shots can be
+   * re-sent after a reconnect. An entry lives here until its
+   * `pendingRequests` promise settles — never dropped on disconnect, so a
+   * request survives any number of connection drops.
+   */
   private readonly inflightEnvelopes = new Map<string, RequestEnvelope>();
   /** Saved init params — replayed on reconnect to unblock the init gate. */
   private lastInitParams: Record<string, unknown> | null = null;
@@ -90,12 +108,8 @@ export class WebSocketTransport implements Transport {
 
   constructor(url: string) {
     this.url = url;
-    this.connectPromise = new Promise<void>(r => {
-      this.resolveConnect = r;
-    });
-    this.initPromise = new Promise<void>(r => {
-      this.resolveInit = r;
-    });
+    this.connectPromise = this.createConnectGate();
+    this.initPromise = this.createInitGate();
     this.connect();
 
     if (typeof document !== 'undefined') {
@@ -123,6 +137,30 @@ export class WebSocketTransport implements Transport {
       };
       document.addEventListener('visibilitychange', this.handleVisibilityChange);
     }
+  }
+
+  /**
+   * Build a fresh connect gate. The detached `.catch` keeps a failed
+   * connection (e.g. malformed URL) from surfacing as an unhandled promise
+   * rejection when no RPC is awaiting it.
+   */
+  private createConnectGate(): Promise<void> {
+    const gate = new Promise<void>((resolve, reject) => {
+      this.resolveConnect = resolve;
+      this.rejectConnect = reject;
+    });
+    gate.catch(() => {});
+    return gate;
+  }
+
+  /** Build a fresh init gate; same unhandled-rejection note as above. */
+  private createInitGate(): Promise<void> {
+    const gate = new Promise<void>((resolve, reject) => {
+      this.resolveInit = resolve;
+      this.rejectInit = reject;
+    });
+    gate.catch(() => {});
+    return gate;
   }
 
   // ==========================================================================
@@ -161,6 +199,19 @@ export class WebSocketTransport implements Transport {
         reject: err => {
           this.inflightEnvelopes.delete(requestId);
           reject(err);
+          if (method === 'init') {
+            if (err instanceof ProtocolError && isAuthFailure(err)) {
+              this.enterAuthFailed(err);
+            } else if (this.rejectInit) {
+              // Fail queued waiters fast, then re-arm the gate so a
+              // retried `init` in the same session isn't poisoned.
+              const r = this.rejectInit;
+              this.rejectInit = null;
+              this.resolveInit = null;
+              r(err);
+              this.initPromise = this.createInitGate();
+            }
+          }
         },
       });
       this.inflightEnvelopes.set(requestId, envelope);
@@ -269,7 +320,21 @@ export class WebSocketTransport implements Transport {
       this.setConnectionState('reconnecting');
     }
 
-    const ws = new WebSocket(this.url);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(this.url);
+    } catch (err) {
+      // Malformed URL — permanent, reconnecting can't fix it. Reject the
+      // connect gate so every RPC fails with a real error instead of the
+      // constructor throw blanking the page.
+      this.setConnectionState('disconnected');
+      this.rejectConnect(
+        new Error(
+          `Invalid WebSocket URL '${this.url}': ${err instanceof Error ? err.message : String(err)}`
+        )
+      );
+      return;
+    }
     this.ws = ws;
 
     ws.addEventListener('open', () => {
@@ -277,56 +342,28 @@ export class WebSocketTransport implements Transport {
       this.setConnectionState('connected');
 
       const isReconnect = this.firstConnected;
-      if (!this.firstConnected) {
-        this.firstConnected = true;
-      }
+      this.firstConnected = true;
 
       this.resolveConnect();
       this.startHeartbeat();
 
-      if (isReconnect) {
-        // Reset the init gate so non-init RPCs block until init completes.
-        this.initPromise = new Promise<void>(r => {
-          this.resolveInit = r;
-        });
-        // Re-issue init before anything else — the server is idempotent
-        // with the same CEK. Without this, every RPC blocks on the init
-        // gate forever and the page goes blank.
-        if (this.lastInitParams) {
-          const initEnvelope: RequestEnvelope = {
-            kind: 'request',
-            requestId: `req_${++this.requestCounter}`,
-            method: 'init',
-            params: this.lastInitParams,
-          };
-          this.pendingRequests.set(initEnvelope.requestId, {
-            resolve: () => {
-              if (this.resolveInit) {
-                const r = this.resolveInit;
-                this.resolveInit = null;
-                r();
-              }
-            },
-            reject: () => {
-              // init failed on reconnect — not much we can do
-            },
-          });
-          this.send(initEnvelope);
-        }
-        for (const cb of this.reconnectCallbacks) {
-          try {
-            cb();
-          } catch {
-            // reconnect handlers should not throw
-          }
-        }
-        // Replay queued one-shot requests that were in-flight when the
-        // connection dropped. Their resolve/reject callbacks are still in
-        // pendingRequests, so responses will reach the original callers.
-        const queued = this.retryQueue.splice(0);
-        for (const envelope of queued) {
-          this.send(envelope);
-        }
+      if (!isReconnect) return;
+
+      // Close the init gate so RPCs issued from reconnect callbacks block
+      // until this socket has re-authenticated.
+      this.initPromise = this.createInitGate();
+
+      if (this.lastInitParams) {
+        // Re-issue init strictly BEFORE anything else — the server's
+        // per-connection auth gate rejects (and closes 4001) any
+        // non-exempt frame arriving before this socket's own successful
+        // init. Callbacks and replays run from its resolve handler.
+        this.sendReplayInit(this.lastInitParams);
+      } else {
+        // Never successfully inited (e.g. dropped mid-OOBE). Only exempt
+        // requests and a user-driven `init` can be in flight — non-exempt
+        // calls are still parked on the init gate. Replay them directly.
+        this.replayPending();
       }
     });
 
@@ -346,6 +383,7 @@ export class WebSocketTransport implements Transport {
 
     ws.addEventListener('close', () => {
       this.stopHeartbeat();
+      if (this.authFailed) return; // enterAuthFailed already settled everything
       this.setConnectionState('disconnected');
       this.rejectInflight();
       this.scheduleReconnect();
@@ -357,12 +395,10 @@ export class WebSocketTransport implements Transport {
   }
 
   private scheduleReconnect(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.authFailed) return;
 
     // Reset the connect promise for the next connection attempt
-    this.connectPromise = new Promise<void>(r => {
-      this.resolveConnect = r;
-    });
+    this.connectPromise = this.createConnectGate();
 
     this.setConnectionState('reconnecting');
 
@@ -372,23 +408,20 @@ export class WebSocketTransport implements Transport {
   }
 
   /**
-   * Handle in-flight RPCs on disconnect. One-shot requests are queued for
-   * retry after reconnect (the caller's promise stays pending). Streams
-   * are terminated — they can't be transparently restarted.
+   * Handle in-flight RPCs on disconnect. One-shot requests stay in both
+   * `pendingRequests` and `inflightEnvelopes` — `replayPending()` re-sends
+   * them after re-auth, however many disconnects it takes. Streams are
+   * terminated — they can't be transparently restarted.
    */
   private rejectInflight(): void {
-    // Re-queue pending one-shot requests for retry after reconnect.
-    // The pendingRequests map keeps the resolve/reject callbacks alive so
-    // the caller's promise resolves once the retried request completes.
-    for (const [id] of this.pendingRequests) {
-      const envelope = this.inflightEnvelopes.get(id);
-      if (envelope) {
-        this.retryQueue.push(envelope);
-        this.inflightEnvelopes.delete(id);
+    // Drop internal replay-init entries (they're not in inflightEnvelopes
+    // and nobody holds their promise) — the next reconnect sends a fresh
+    // one from lastInitParams.
+    for (const id of this.pendingRequests.keys()) {
+      if (!this.inflightEnvelopes.has(id)) {
+        this.pendingRequests.delete(id);
       }
     }
-    // Don't delete from pendingRequests — the callbacks stay until the
-    // retried response arrives.
 
     for (const [id, stream] of this.pendingStreams) {
       this.pendingStreams.delete(id);
@@ -399,6 +432,91 @@ export class WebSocketTransport implements Transport {
         detail: 'transport disconnected',
       });
     }
+  }
+
+  /**
+   * Re-send every registered in-flight envelope on the fresh socket. The
+   * original callers' resolve/reject callbacks are still in
+   * `pendingRequests`, so the responses settle the original promises.
+   */
+  private replayPending(): void {
+    for (const envelope of this.inflightEnvelopes.values()) {
+      this.send(envelope);
+    }
+  }
+
+  /**
+   * Re-authenticate a reconnected socket with the saved init params. The
+   * envelope is internal — deliberately NOT in `inflightEnvelopes`, since
+   * it is derived state, not an original caller's request.
+   */
+  private sendReplayInit(params: Record<string, unknown>): void {
+    const requestId = `req_${++this.requestCounter}`;
+    this.pendingRequests.set(requestId, {
+      resolve: () => {
+        // Order matters: open the gate, let sessions re-attach, then
+        // replay one-shots — all strictly after the server marked this
+        // socket authenticated.
+        if (this.resolveInit) {
+          const r = this.resolveInit;
+          this.resolveInit = null;
+          this.rejectInit = null;
+          r();
+        }
+        for (const cb of this.reconnectCallbacks) {
+          try {
+            cb();
+          } catch {
+            // reconnect handlers should not throw
+          }
+        }
+        this.replayPending();
+      },
+      reject: err => {
+        if (err instanceof ProtocolError && isAuthFailure(err)) {
+          this.enterAuthFailed(err);
+          return;
+        }
+        // Transient (e.g. server restarting mid-handshake) — close and let
+        // the normal backoff retry; pendings stay registered.
+        this.ws?.close();
+      },
+    });
+    this.send({ kind: 'request', requestId, method: 'init', params });
+  }
+
+  /**
+   * Terminal auth failure: the server rejected our CEK. Fail everything
+   * fast and stop reconnecting — a retry with the same key can only 4001
+   * again. Recovery is a transport rebind (or reload) with a new key.
+   */
+  private enterAuthFailed(err: Error): void {
+    if (this.authFailed) return;
+    this.authFailed = true;
+    this.setConnectionState('auth_failed');
+
+    if (this.rejectInit) {
+      const r = this.rejectInit;
+      this.rejectInit = null;
+      this.resolveInit = null;
+      r(err);
+    }
+    // Leave the gate rejected so later non-exempt RPCs fail fast instead
+    // of hanging (the detached .catch suppresses unhandled-rejection).
+    const rejected = Promise.reject(err);
+    rejected.catch(() => {});
+    this.initPromise = rejected;
+
+    for (const pending of this.pendingRequests.values()) {
+      pending.reject(err);
+    }
+    this.pendingRequests.clear();
+    this.inflightEnvelopes.clear();
+    for (const [id, stream] of this.pendingStreams) {
+      this.pendingStreams.delete(id);
+      stream.reject(err);
+    }
+    this.ws?.close();
   }
 
   // ==========================================================================
@@ -496,7 +614,7 @@ export class WebSocketTransport implements Transport {
     }
   }
 
-  /** Tear down the transport; suppresses reconnect. */
+  /** Tear down the transport; suppresses reconnect and settles pendings. */
   dispose(): void {
     this.disposed = true;
     this.stopHeartbeat();
@@ -507,6 +625,16 @@ export class WebSocketTransport implements Transport {
     if (this.handleVisibilityChange) {
       document.removeEventListener('visibilitychange', this.handleVisibilityChange);
       this.handleVisibilityChange = null;
+    }
+    const err = new Error('transport disposed');
+    for (const pending of this.pendingRequests.values()) {
+      pending.reject(err);
+    }
+    this.pendingRequests.clear();
+    this.inflightEnvelopes.clear();
+    for (const [id, stream] of this.pendingStreams) {
+      this.pendingStreams.delete(id);
+      stream.reject(err);
     }
   }
 }

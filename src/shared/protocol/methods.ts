@@ -21,6 +21,10 @@ import type {
   ToolOptionDefinition,
   ToolUseBlock,
 } from './types';
+import type { TableName } from '../services/storage/StorageAdapter';
+// Re-exported so the frontend (restricted to `shared/protocol/**` imports)
+// can type the admin record editor's table parameter.
+export type { TableName };
 import type {
   CompactOptions,
   DirEntry,
@@ -199,6 +203,18 @@ export interface ImportDataParams {
   skipVfsMigration?: boolean;
 }
 
+/** One decrypted storage row as served to the Data Manager's record editor. */
+export interface AdminRecordView {
+  /** Decrypted (and decompressed) payload — always a JSON document. */
+  json: string;
+  /** True when the stored blob carried the gzip ("GZ") marker. */
+  compressed: boolean;
+  /** False for `app_metadata` rows, whose payload lives in `unencryptedData`. */
+  encrypted: boolean;
+  timestamp?: string;
+  parentId?: string;
+}
+
 // ============================================================================
 // Method registry
 // ============================================================================
@@ -365,6 +381,36 @@ export interface GremlinMethods {
   isStorageEmpty: {
     params: Record<string, never>;
     result: { empty: boolean };
+    streams: never;
+  };
+
+  // ---- admin / diagnostics ----
+  /**
+   * Decrypt (and decompress) one storage row for the Data Manager's record
+   * editor. Refuses rows whose payload isn't JSON (`RECORD_NOT_EDITABLE`).
+   */
+  adminGetRecord: {
+    params: { table: TableName; id: string };
+    result: AdminRecordView;
+    streams: never;
+  };
+  /**
+   * Validate, re-encrypt (preserving the row's compression), and write back an
+   * edited record. The previous ciphertext blob is backed up to `app_metadata`
+   * under `admin_edit_backup:<table>:<id>` so the edit is reversible.
+   */
+  adminSaveRecord: {
+    params: { table: TableName; id: string; json: string };
+    result: { ok: true };
+    streams: never;
+  };
+  /**
+   * Debug lookup of the raw provider-side session entry behind an assistant
+   * message (claude-agent JSONL line). Server mode only.
+   */
+  claudeAgentInspectMessage: {
+    params: { sessionId?: string; messageUuid: string };
+    result: { entry: string; sessionId: string; foundVia: 'stated' | 'scan' };
     streams: never;
   };
 

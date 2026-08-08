@@ -15,10 +15,12 @@ import type {
   Project,
 } from '../../protocol/types';
 import { generateUniqueId } from '../../protocol/idGenerator';
+import type { AdminRecordView } from '../../protocol/methods';
 import { ProtocolError } from '../../protocol/protocolError';
+import { decompressString } from '../compression/compressionService';
 import type { EncryptionCore } from '../encryption/encryptionCore';
 import { withKeyedLock } from './recordLock';
-import { type StorageAdapter, Tables } from './StorageAdapter';
+import { type StorageAdapter, type TableName, Tables } from './StorageAdapter';
 
 export class CekOracleMismatchError extends Error {
   constructor() {
@@ -29,6 +31,11 @@ export class CekOracleMismatchError extends Error {
 
 export const CEK_ORACLE_KEY = 'cek_oracle';
 const CEK_ORACLE_STATIC = 'GREMLIN_OK';
+/**
+ * Placeholder for `app_metadata` rows' NOT NULL `encryptedData` column — the
+ * real payload lives in plaintext `unencryptedData`.
+ */
+const METADATA_SENTINEL = '__METADATA__';
 
 export class UnifiedStorage {
   private adapter: StorageAdapter;
@@ -161,7 +168,10 @@ export class UnifiedStorage {
    * Decrypt data
    */
   async decrypt<T>(encrypted: string): Promise<T> {
-    const json = await this.encryption.decrypt(encrypted);
+    // Compression-aware: auto-detects the "GZ" prefix so rows that were
+    // (re-)encrypted with compression — e.g. by an older CEK rotation —
+    // stay readable. Plain rows pass through unchanged.
+    const json = await this.encryption.decryptWithDecompression(encrypted);
     return JSON.parse(json);
   }
 
@@ -1295,10 +1305,123 @@ export class UnifiedStorage {
   async setMetadata(key: string, value: string): Promise<void> {
     // Store metadata in unencryptedData field (plaintext, not encrypted)
     const data = JSON.stringify({ value });
-    // Use placeholder for encryptedData since SQLite requires NOT NULL
-    await this.adapter.save(Tables.METADATA, key, '__METADATA__', {
+    // Placeholder for encryptedData since SQLite requires NOT NULL
+    await this.adapter.save(Tables.METADATA, key, METADATA_SENTINEL, {
       unencryptedData: data,
     });
+  }
+
+  // ===== Admin record editor =====
+
+  /**
+   * Decrypt (and decompress) one raw row for the Data Manager's record
+   * editor. Compression is sniffed per-row from the "GZ" marker rather than
+   * assumed per-table — CEK rotation round-trips bytes exactly, so compressed
+   * rows can exist in nominally-plain tables. Rows whose payload isn't a JSON
+   * document (binary VFS content) are refused with `RECORD_NOT_EDITABLE`.
+   */
+  async adminGetRecord(table: TableName, id: string): Promise<AdminRecordView> {
+    const row = await this.readRawRecord(table, id);
+    if (row.encryptedData === METADATA_SENTINEL) {
+      if (!row.unencryptedData) {
+        throw new ProtocolError('RECORD_NOT_EDITABLE', 'Metadata row has no payload');
+      }
+      return {
+        json: row.unencryptedData,
+        compressed: false,
+        encrypted: false,
+        timestamp: row.timestamp,
+        parentId: row.parentId,
+      };
+    }
+    const { json, compressed } = await this.decodeRecordPayload(row.encryptedData);
+    return { json, compressed, encrypted: true, timestamp: row.timestamp, parentId: row.parentId };
+  }
+
+  /**
+   * Write back an edited record, preserving the row's compression shape and
+   * unencrypted columns. The previous blob (ciphertext for encrypted rows,
+   * raw `unencryptedData` for metadata rows — never decrypted content, since
+   * `app_metadata` is stored in plaintext) is backed up under
+   * `admin_edit_backup:<table>:<id>` so the edit is reversible by hand.
+   */
+  async adminSaveRecord(table: TableName, id: string, json: string): Promise<void> {
+    try {
+      JSON.parse(json);
+    } catch {
+      throw new ProtocolError('INVALID_PARAMS', 'Edited payload is not valid JSON');
+    }
+    await withKeyedLock(`${table}:${id}`, async () => {
+      const row = await this.readRawRecord(table, id);
+      const backupKey = `admin_edit_backup:${table}:${id}`;
+      if (row.encryptedData === METADATA_SENTINEL) {
+        await this.setMetadata(backupKey, row.unencryptedData ?? '');
+        await this.adapter.save(table, id, METADATA_SENTINEL, {
+          timestamp: row.timestamp,
+          parentId: row.parentId,
+          unencryptedData: json,
+        });
+        return;
+      }
+      const { compressed } = await this.decodeRecordPayload(row.encryptedData);
+      const newBlob = compressed
+        ? await this.encryption.encryptWithCompression(json, true)
+        : await this.encryption.encrypt(json);
+      await this.setMetadata(backupKey, row.encryptedData);
+      await this.adapter.save(table, id, newBlob, {
+        timestamp: row.timestamp,
+        parentId: row.parentId,
+        unencryptedData: row.unencryptedData,
+      });
+    });
+  }
+
+  /** Fetch one raw row with its metadata columns, or throw `RECORD_NOT_FOUND`. */
+  private async readRawRecord(
+    table: TableName,
+    id: string
+  ): Promise<{
+    encryptedData: string;
+    timestamp?: string;
+    parentId?: string;
+    unencryptedData?: string;
+  }> {
+    // batchGet is the one single-row read that returns parentId + timestamp,
+    // and it bypasses the adapter's get-cache.
+    const { rows } = await this.adapter.batchGet(table, [id]);
+    const row = rows[0];
+    if (!row || typeof row.encryptedData !== 'string') {
+      throw new ProtocolError('RECORD_NOT_FOUND', `No record ${table}/${id}`);
+    }
+    return {
+      encryptedData: row.encryptedData,
+      timestamp: row.timestamp,
+      parentId: row.parentId,
+      unencryptedData: row.unencryptedData,
+    };
+  }
+
+  /** Decrypt a blob, sniff the "GZ" marker, and require a JSON payload. */
+  private async decodeRecordPayload(
+    encryptedData: string
+  ): Promise<{ json: string; compressed: boolean }> {
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.encryption.decryptToBytes(encryptedData);
+    } catch {
+      throw new ProtocolError('RECORD_NOT_EDITABLE', 'Record failed to decrypt');
+    }
+    const compressed = bytes.length >= 2 && bytes[0] === 71 && bytes[1] === 90;
+    let json: string;
+    try {
+      json = compressed
+        ? await decompressString(bytes.subarray(2))
+        : new TextDecoder().decode(bytes);
+      JSON.parse(json);
+    } catch {
+      throw new ProtocolError('RECORD_NOT_EDITABLE', 'Record payload is not a JSON document');
+    }
+    return { json, compressed };
   }
 
   // ===== CEK Oracle =====

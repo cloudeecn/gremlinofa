@@ -477,4 +477,24 @@ describe('IndexedDBAdapter', () => {
       }
     });
   });
+
+  describe('clearAll', () => {
+    it('clears every table, including minion_chats and the vfs_* stores', async () => {
+      // A partial clear used to leave minion_chats + vfs_* behind — the
+      // stale vfs_meta tree then shadowed a subsequently imported one.
+      const allTables = Object.values(Tables);
+      for (const table of allTables) {
+        await adapter.save(table, `row_${table}`, 'payload', {
+          timestamp: '2024-01-01T00:00:00Z',
+        });
+      }
+
+      await adapter.clearAll();
+
+      for (const table of allTables) {
+        const page = await adapter.exportPaginated(table);
+        expect(page.rows, `table ${table} should be empty`).toEqual([]);
+      }
+    });
+  });
 });

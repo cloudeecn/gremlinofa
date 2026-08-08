@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { RenderingBlockGroup } from '../../../shared/protocol/types/content';
 import {
   stripMetadata,
@@ -9,6 +10,7 @@ import { showAlert } from '../../lib/alerts';
 import { coerceToString } from '../../../shared/lib/coerceToString';
 import type { AssistantMessageBubbleProps } from './types';
 import BackstageView from './BackstageView';
+import ClaudeAgentDebugModal from './ClaudeAgentDebugModal';
 import ErrorBlockView from './ErrorBlockView';
 import TextGroupView from './TextGroupView';
 import StopReasonBadge from './StopReasonBadge';
@@ -23,6 +25,8 @@ export default function AssistantMessageBubble({
   isLastMessage,
 }: AssistantMessageBubbleProps) {
   const renderingContent = (message.content.renderingContent ?? []) as RenderingBlockGroup[];
+  const [showAgentDebug, setShowAgentDebug] = useState(false);
+  const claudeAgentUuid = message.metadata?.claudeAgentMessageUuid;
 
   const handleCopy = async () => {
     try {
@@ -111,6 +115,15 @@ export default function AssistantMessageBubble({
           >
             🔍
           </button>
+          {claudeAgentUuid && (
+            <button
+              onClick={() => setShowAgentDebug(true)}
+              className="transition-colors hover:text-gray-700"
+              title="View SDK session entry"
+            >
+              🔬
+            </button>
+          )}
           {onAction && !isLastMessage && (
             <button
               onClick={() => onAction('rollback', message.id)}
@@ -173,6 +186,14 @@ export default function AssistantMessageBubble({
             </>
           )}
         </div>
+      )}
+
+      {claudeAgentUuid && showAgentDebug && (
+        <ClaudeAgentDebugModal
+          onClose={() => setShowAgentDebug(false)}
+          sessionId={message.metadata?.claudeAgentSessionId}
+          messageUuid={claudeAgentUuid}
+        />
       )}
     </>
   );

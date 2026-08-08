@@ -2243,14 +2243,19 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
    * Loads the tree once, batch-fetches all file and version records,
    * then decrypts in parallel via Promise.all. Used by the migration
    * path to avoid per-file tree lock / duplicate decrypt overhead.
+   *
+   * A file or version record that is missing or fails to decrypt lands in
+   * `errors` instead of being dropped silently — the migration caller uses
+   * that to keep the source records instead of clearing them.
    */
-  async function readAllForMigration(projectId: string): Promise<MigrationFileData[]> {
+  async function readAllForMigration(projectId: string): Promise<MigrationReadResult> {
     const adapter = storage.getAdapter();
     const tree = await loadTree(projectId);
+    const errors: string[] = [];
 
     const fileEntries: { path: string; fileId: string; isBinary: boolean; mime: string }[] = [];
     collectFileNodes(tree.children, '/', fileEntries);
-    if (fileEntries.length === 0) return [];
+    if (fileEntries.length === 0) return { files: [], errors };
 
     // Batch-fetch all file records in one SQL query
     const fileIds = fileEntries.map(e => e.fileId);
@@ -2261,11 +2266,17 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     const decryptedFiles = await Promise.all(
       fileEntries.map(async entry => {
         const encrypted = fileRowMap.get(entry.fileId);
-        if (!encrypted) return null;
+        if (!encrypted) {
+          errors.push(`${entry.path}: file record missing`);
+          return null;
+        }
         try {
           const json = await encryptionService.decryptWithDecompression(encrypted);
           return JSON.parse(json) as VfsFile;
-        } catch {
+        } catch (err) {
+          errors.push(
+            `${entry.path}: failed to decrypt file record: ${err instanceof Error ? err.message : String(err)}`
+          );
           return null;
         }
       })
@@ -2299,12 +2310,17 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     const decryptedVersions = await Promise.all(
       versionLookups.map(async vl => {
         const encrypted = versionRowMap.get(vl.id);
+        // Missing version rows are normal (pruned history) — only an
+        // undecryptable row is an error.
         if (!encrypted) return null;
         try {
           const json = await encryptionService.decryptWithDecompression(encrypted);
           const ver = JSON.parse(json) as VfsVersion;
           return { entryIdx: vl.entryIdx, ...ver };
-        } catch {
+        } catch (err) {
+          errors.push(
+            `${fileEntries[vl.entryIdx].path} (v${vl.version}): failed to decrypt version record: ${err instanceof Error ? err.message : String(err)}`
+          );
           return null;
         }
       })
@@ -2340,7 +2356,7 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
       });
     }
 
-    return result;
+    return { files: result, errors };
   }
 
   // ==========================================================================
@@ -2393,4 +2409,10 @@ export interface MigrationFileData {
   isBinary: boolean;
   mime: string;
   versions: { version: number; content: string; createdAt: number }[];
+}
+
+/** Result of `readAllForMigration`: readable files + per-record read failures. */
+export interface MigrationReadResult {
+  files: MigrationFileData[];
+  errors: string[];
 }

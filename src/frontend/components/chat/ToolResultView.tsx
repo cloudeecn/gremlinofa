@@ -114,6 +114,8 @@ function getBlockIcon(block: RenderingContentBlock): string {
       return block.icon ?? (block.is_error ? '❌' : '✅');
     case 'unknown_block':
       return '🧩';
+    case 'notify':
+      return '🔔';
     case 'error':
       return '❌';
     case 'injected_file':
@@ -170,6 +172,8 @@ function getLastActivityPreview(groups: RenderingBlockGroup[]): string {
           return `Fetched: ${block.title || block.url}`;
         case 'unknown_block':
           return block.name ?? block.blockType;
+        case 'notify':
+          return block.text;
         case 'injected_file':
         case 'tool_info':
         case 'error':

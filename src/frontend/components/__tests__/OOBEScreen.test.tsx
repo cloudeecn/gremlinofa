@@ -24,6 +24,7 @@ const mockNormalizeCEK = vi.fn(async (input: string) => input);
 const mockDeriveUserIdFromCEK = vi
   .fn()
   .mockResolvedValue('mock_user_id_64_chars_abcdef1234567890abcdef1234567890abcdef12');
+const mockRebindGremlinTransport = vi.fn();
 vi.mock('../../client', () => ({
   gremlinClient: {
     init: (...args: unknown[]) => mockInit(...args),
@@ -38,7 +39,18 @@ vi.mock('../../client', () => ({
     normalizeCEK: (input: string) => mockNormalizeCEK(input),
     deriveUserIdFromCEK: (cek: string) => mockDeriveUserIdFromCEK(cek),
   },
+  rebindGremlinTransport: (...args: unknown[]) => mockRebindGremlinTransport(...args),
 }));
+
+// Mock the WebSocket probe — jsdom has no real server to ping.
+const mockProbeGremlinServer = vi.fn().mockResolvedValue({ ok: true });
+vi.mock('../../lib/wsProbe', async () => {
+  const actual = await vi.importActual<typeof import('../../lib/wsProbe')>('../../lib/wsProbe');
+  return {
+    normalizeWsUrl: actual.normalizeWsUrl,
+    probeGremlinServer: (...args: unknown[]) => mockProbeGremlinServer(...args),
+  };
+});
 
 // Mock the localStorage / hashing helpers so tests can assert against the
 // values OOBEScreen would persist + send over the wire.
@@ -48,10 +60,16 @@ const mockSetStorageConfig = vi.fn();
 const mockHashPassword = vi.fn((password: string) =>
   Promise.resolve(password ? `hashed_${password}` : '')
 );
+const mockClearStorageConfig = vi.fn();
+const mockGetStorageConfig = vi.fn().mockReturnValue({ type: 'local' });
+const mockHasStorageConfig = vi.fn().mockReturnValue(false);
 vi.mock('../../lib/localStorageBoot', () => ({
   setCachedCEKString: (cek: string) => mockSetCachedCEKString(cek),
   clearCachedCEK: () => mockClearCachedCEK(),
   setStorageConfig: (config: unknown) => mockSetStorageConfig(config),
+  clearStorageConfig: () => mockClearStorageConfig(),
+  getStorageConfig: () => mockGetStorageConfig(),
+  hasStorageConfig: () => mockHasStorageConfig(),
   hashPassword: (password: string) => mockHashPassword(password),
 }));
 
@@ -79,6 +97,9 @@ describe('OOBEScreen', () => {
     mockGetProjects.mockResolvedValue([]);
     mockGetAPIDefinitions.mockResolvedValue([]);
     mockImportFromBytes.mockResolvedValue({ imported: 10, skipped: 2, errors: [] });
+    mockProbeGremlinServer.mockResolvedValue({ ok: true });
+    mockGetStorageConfig.mockReturnValue({ type: 'local' });
+    mockHasStorageConfig.mockReturnValue(false);
   });
 
   describe('rendering', () => {
@@ -565,7 +586,11 @@ describe('OOBEScreen', () => {
       await waitFor(() => {
         expect(mockSetStorageConfig).toHaveBeenCalledWith({
           type: 'server',
-          wsUrl: 'ws://localhost:3100',
+          wsUrl: 'ws://localhost:3100/',
+        });
+        expect(mockRebindGremlinTransport).toHaveBeenCalledWith({
+          type: 'server',
+          wsUrl: 'ws://localhost:3100/',
         });
         expect(mockConfigureWorker).not.toHaveBeenCalled();
         expect(mockInit).toHaveBeenCalledWith({ cek: 'generated_test_cek_base32' });

@@ -72,6 +72,66 @@ describe('StreamingContentAssembler', () => {
     });
   });
 
+  describe('notify blocks', () => {
+    it('creates a text-category notify block carrying all fields', () => {
+      assembler.pushChunk({
+        type: 'notify',
+        text: 'Error compacting conversation',
+        key: 'error-compacting-conversation',
+        priority: 'immediate',
+        color: 'error',
+      });
+
+      const groups = assembler.getGroups();
+      expect(groups).toHaveLength(1);
+      expect(groups[0].category).toBe('text');
+      expect(groups[0].blocks).toEqual([
+        {
+          type: 'notify',
+          text: 'Error compacting conversation',
+          key: 'error-compacting-conversation',
+          priority: 'immediate',
+          color: 'error',
+        },
+      ]);
+    });
+
+    it('splits a thinking group instead of collapsing into the accordion', () => {
+      assembler.pushChunk({ type: 'thinking.start' });
+      assembler.pushChunk({ type: 'thinking', content: 'pondering' });
+      assembler.pushChunk({ type: 'thinking.end' });
+      assembler.pushChunk({ type: 'notify', text: 'Fable 5 is drawing from usage credits' });
+      assembler.pushChunk({ type: 'thinking.start' });
+      assembler.pushChunk({ type: 'thinking', content: 'more pondering' });
+      assembler.pushChunk({ type: 'thinking.end' });
+
+      const groups = assembler.finalize();
+      expect(groups.map(g => g.category)).toEqual(['backstage', 'text', 'backstage']);
+      expect(groups[1].blocks).toEqual([
+        { type: 'notify', text: 'Fable 5 is drawing from usage credits' },
+      ]);
+    });
+
+    it('is not merged into an adjacent text block by consolidation', () => {
+      assembler.pushChunk({ type: 'content.start' });
+      assembler.pushChunk({ type: 'content', content: 'partial answer' });
+      assembler.pushChunk({ type: 'content.end' });
+      assembler.pushChunk({ type: 'notify', text: 'quota warning' });
+      assembler.pushChunk({ type: 'content.start' });
+      assembler.pushChunk({ type: 'content', content: ' continued' });
+      assembler.pushChunk({ type: 'content.end' });
+
+      const groups = assembler.finalize();
+      expect(groups).toHaveLength(1);
+      expect(groups[0].category).toBe('text');
+      expect(groups[0].blocks).toEqual([
+        { type: 'text', text: 'partial answer' },
+        { type: 'notify', text: 'quota warning' },
+        { type: 'text', text: ' continued' },
+      ]);
+    });
+  });
+
   describe('unknown_block blocks', () => {
     it('creates a backstage unknown_block carrying all fields', () => {
       assembler.pushChunk({

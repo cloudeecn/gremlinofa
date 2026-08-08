@@ -119,13 +119,16 @@ function extractToolResultIdsFromMessage(message: Message<unknown>): Set<string>
  * message strictly before cutoffIndex.
  *
  * - If a prior assistant message with `claudeAgentMessageUuid` exists →
- *   set `claudeAgentResumeAt = thatUuid` (sessionId preserved).
+ *   set `claudeAgentResumeAt = thatUuid`, and when the message also stamps
+ *   its owning `claudeAgentSessionId`, repoint the chat's sessionId to it
+ *   (the anchor may predate a session drop/fork; unstamped legacy anchors
+ *   keep the current sessionId and rely on the server-side fallback).
  * - Otherwise → drop the session entirely so the next send starts a
  *   fresh SDK session.
  *
  * Returns `{}` for non-claude-agent chats — nothing to plumb.
  */
-function computeClaudeAgentRewindBefore(
+export function computeClaudeAgentRewindBefore(
   chat: Chat,
   messages: Message<unknown>[],
   cutoffIndex: number
@@ -135,11 +138,20 @@ function computeClaudeAgentRewindBefore(
     const m = messages[i];
     if (m.role === 'assistant' && m.metadata?.claudeAgentMessageUuid) {
       console.debug(
-        '[useChat] claude-agent rewind: resumeAt=%s (assistant msg %d)',
+        '[useChat] claude-agent rewind: resumeAt=%s sessionId=%s (assistant msg %d)',
         m.metadata.claudeAgentMessageUuid,
+        m.metadata.claudeAgentSessionId ?? '(unstamped)',
         i
       );
-      return { claudeAgentResumeAt: m.metadata.claudeAgentMessageUuid };
+      return {
+        claudeAgentResumeAt: m.metadata.claudeAgentMessageUuid,
+        // Anchor's stamped owning session wins — the anchor may predate a
+        // session drop/fork. Unstamped (legacy) anchors keep the current
+        // session; the server's send-time fallback resolves those.
+        ...(m.metadata.claudeAgentSessionId
+          ? { claudeAgentSessionId: m.metadata.claudeAgentSessionId }
+          : {}),
+      };
     }
   }
   console.debug('[useChat] claude-agent rewind: no prior assistant — fresh session');
@@ -151,7 +163,7 @@ function computeClaudeAgentRewindBefore(
  * (which the UI guarantees is an assistant message) and discards
  * everything after. SDK should resume "up to and including" the target.
  */
-function computeClaudeAgentRewindKeeping(
+export function computeClaudeAgentRewindKeeping(
   chat: Chat,
   messages: Message<unknown>[],
   targetIndex: number
@@ -160,11 +172,17 @@ function computeClaudeAgentRewindKeeping(
   const target = messages[targetIndex];
   if (target?.role === 'assistant' && target.metadata?.claudeAgentMessageUuid) {
     console.debug(
-      '[useChat] claude-agent rollback: resumeAt=%s (kept assistant msg %d)',
+      '[useChat] claude-agent rollback: resumeAt=%s sessionId=%s (kept assistant msg %d)',
       target.metadata.claudeAgentMessageUuid,
+      target.metadata.claudeAgentSessionId ?? '(unstamped)',
       targetIndex
     );
-    return { claudeAgentResumeAt: target.metadata.claudeAgentMessageUuid };
+    return {
+      claudeAgentResumeAt: target.metadata.claudeAgentMessageUuid,
+      ...(target.metadata.claudeAgentSessionId
+        ? { claudeAgentSessionId: target.metadata.claudeAgentSessionId }
+        : {}),
+    };
   }
   // Target isn't an assistant with a stored UUID — fall back to the
   // "rewind to before" semantics so the SDK at least lands on a sane

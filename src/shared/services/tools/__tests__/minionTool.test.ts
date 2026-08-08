@@ -1399,11 +1399,18 @@ describe('minionTool', () => {
 
 describe('claude-agent SDK rewind on failure', () => {
   // Minimal message factories — the rewind scan only reads id/role/metadata.
-  const asst = (id: string, uuid?: string): Message<unknown> =>
+  const asst = (id: string, uuid?: string, sessionId?: string): Message<unknown> =>
     ({
       id,
       role: 'assistant',
-      ...(uuid ? { metadata: { claudeAgentMessageUuid: uuid } } : {}),
+      ...(uuid
+        ? {
+            metadata: {
+              claudeAgentMessageUuid: uuid,
+              ...(sessionId ? { claudeAgentSessionId: sessionId } : {}),
+            },
+          }
+        : {}),
     }) as unknown as Message<unknown>;
   const user = (id: string): Message<unknown> =>
     ({ id, role: 'user' }) as unknown as Message<unknown>;
@@ -1424,14 +1431,23 @@ describe('claude-agent SDK rewind on failure', () => {
     it('returns the assistant uuid sitting at the savepoint', () => {
       expect(
         findPriorAssistantClaudeAgentUuid([user('msg_u'), asst('msg_a', 'uuid-a')], 'msg_a')
-      ).toBe('uuid-a');
+      ).toEqual({ uuid: 'uuid-a', sessionId: undefined });
     });
 
     it('walks back past uuid-less / non-assistant messages to the prior assistant', () => {
       const messages = [asst('msg_a1', 'uuid-1'), user('msg_u'), asst('msg_a2'), user('msg_tr')];
       // savepoint is the trailing tool-result message; the scan lands on the
       // most recent assistant that carries a uuid.
-      expect(findPriorAssistantClaudeAgentUuid(messages, 'msg_tr')).toBe('uuid-1');
+      expect(findPriorAssistantClaudeAgentUuid(messages, 'msg_tr')).toEqual({
+        uuid: 'uuid-1',
+        sessionId: undefined,
+      });
+    });
+
+    it('returns the stamped owning session alongside the uuid', () => {
+      expect(
+        findPriorAssistantClaudeAgentUuid([asst('msg_a', 'uuid-a', 'sess-old')], 'msg_a')
+      ).toEqual({ uuid: 'uuid-a', sessionId: 'sess-old' });
     });
   });
 
@@ -1478,6 +1494,22 @@ describe('claude-agent SDK rewind on failure', () => {
       );
       expect(chat.claudeAgentResumeAt).toBe('uuid-a');
       expect(chat.claudeAgentSessionId).toBe('sess-1');
+      expect(saveMinionChat).toHaveBeenCalledOnce();
+    });
+
+    it('repoints the session to the anchor message stamp when present', async () => {
+      const { storage, saveMinionChat } = makeStorage();
+      const chat = makeChat({ savepoint: 'msg_a' });
+      await applyClaudeAgentRewindOnFailure(
+        storage,
+        chat,
+        true,
+        [user('msg_u'), asst('msg_a', 'uuid-a', 'sess-old')],
+        [asst('msg_failed', 'uuid-failed', 'sess-1')],
+        'turn error'
+      );
+      expect(chat.claudeAgentResumeAt).toBe('uuid-a');
+      expect(chat.claudeAgentSessionId).toBe('sess-old');
       expect(saveMinionChat).toHaveBeenCalledOnce();
     });
 
@@ -1550,6 +1582,16 @@ describe('claude-agent SDK rewind on failure', () => {
       await applyClaudeAgentRewindOnRollback(storage, chat, convo(), 'm2');
       expect(chat.claudeAgentResumeAt).toBe('uuid-1');
       expect(chat.claudeAgentSessionId).toBe('sess-1');
+      expect(saveMinionChat).toHaveBeenCalledOnce();
+    });
+
+    it('repoints the session to the kept anchor message stamp when present', async () => {
+      const { storage, saveMinionChat } = makeStorage();
+      const chat = makeChat();
+      const messages = [user('m0'), asst('m1', 'uuid-1', 'sess-old'), user('m2')];
+      await applyClaudeAgentRewindOnRollback(storage, chat, messages, 'm2');
+      expect(chat.claudeAgentResumeAt).toBe('uuid-1');
+      expect(chat.claudeAgentSessionId).toBe('sess-old');
       expect(saveMinionChat).toHaveBeenCalledOnce();
     });
 

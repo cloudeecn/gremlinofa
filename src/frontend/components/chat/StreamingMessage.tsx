@@ -1,5 +1,8 @@
 import { useIsMobile } from '../../hooks/useIsMobile';
-import type { RenderingBlockGroup } from '../../../shared/protocol/types/content';
+import type {
+  NotifyRenderBlock,
+  RenderingBlockGroup,
+} from '../../../shared/protocol/types/content';
 import type { StreamingMessageProps } from './types';
 import BackstageView from './BackstageView';
 import BouncingDots from './BouncingDots';
@@ -60,6 +63,8 @@ export default function StreamingMessage({
 /**
  * Render text blocks with raw text (no markdown during streaming).
  * Uses whitespace-pre-wrap for proper formatting.
+ * Notify blocks render as inline banners in block order so mid-turn
+ * notifications (compaction errors, quota warnings) are visible live.
  */
 function StreamingTextView({
   blocks,
@@ -68,25 +73,58 @@ function StreamingTextView({
   blocks: RenderingBlockGroup['blocks'];
   isMobile: boolean;
 }) {
-  // Concatenate all text from text blocks
-  const text = blocks
-    .filter(block => block.type === 'text')
-    .map(block => (block as { type: 'text'; text: string }).text)
-    .join('');
+  // Coalesce consecutive text blocks into runs, keeping notify banners in order
+  const segments: Array<
+    { kind: 'text'; text: string } | { kind: 'notify'; block: NotifyRenderBlock }
+  > = [];
+  for (const block of blocks) {
+    if (block.type === 'text') {
+      const last = segments[segments.length - 1];
+      if (last?.kind === 'text') {
+        last.text += block.text;
+      } else {
+        segments.push({ kind: 'text', text: block.text });
+      }
+    } else if (block.type === 'notify') {
+      segments.push({ kind: 'notify', block });
+    }
+  }
 
-  if (!text) return null;
+  if (segments.length === 0) return null;
 
   return (
-    <div
-      className={
-        isMobile
-          ? 'w-full bg-transparent py-2 text-gray-900'
-          : 'rounded-2xl bg-gray-100 px-4 py-3 text-gray-900 shadow-sm'
-      }
-    >
-      <div className="prose prose-sm max-w-none text-[15px] leading-relaxed whitespace-pre-wrap">
-        {text}
-      </div>
+    <>
+      {segments.map((segment, index) =>
+        segment.kind === 'notify' ? (
+          <StreamingNotifyBanner key={index} block={segment.block} />
+        ) : segment.text ? (
+          <div
+            key={index}
+            className={
+              isMobile
+                ? 'w-full bg-transparent py-2 text-gray-900'
+                : 'rounded-2xl bg-gray-100 px-4 py-3 text-gray-900 shadow-sm'
+            }
+          >
+            <div className="prose prose-sm max-w-none text-[15px] leading-relaxed whitespace-pre-wrap">
+              {segment.text}
+            </div>
+          </div>
+        ) : null
+      )}
+    </>
+  );
+}
+
+function StreamingNotifyBanner({ block }: { block: NotifyRenderBlock }) {
+  const isWarning = block.color === 'error' || block.priority === 'immediate';
+  const tone = isWarning
+    ? 'border-red-300 bg-red-50 text-red-700'
+    : 'border-gray-300 bg-gray-50 text-gray-600';
+  return (
+    <div className={`notify-block my-2 rounded border-l-4 p-3 text-sm ${tone}`}>
+      <span className="mr-2">🔔</span>
+      {block.text}
     </div>
   );
 }

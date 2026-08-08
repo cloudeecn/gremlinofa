@@ -98,9 +98,8 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
         '⚠️ MIGRATION MODE WARNING',
         'This will:\n' +
           '• DELETE all current projects, chats, and messages\n' +
-          '• DELETE your current encryption key\n' +
           '• RESTORE the complete backup from the CSV file\n' +
-          '• SET your encryption key to match the backup\n\n' +
+          '• RE-ENCRYPT the restored data under your current key\n\n' +
           'This action is IRREVERSIBLE!\n\n' +
           'Are you absolutely sure you want to proceed?',
         'Proceed'
@@ -152,7 +151,7 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
       if (importResult.errors.length === 0) {
         const title = isMigrationMode ? 'Migration Successful' : 'Import Successful';
         const message = isMigrationMode
-          ? `Restored: ${importResult.imported} records\n\nYour encryption key has been updated to match the backup.`
+          ? `Restored: ${importResult.imported} records\n\nThe restored data was re-encrypted under your current key — your key is unchanged.`
           : `Imported: ${importResult.imported} records\nSkipped: ${importResult.skipped} duplicates`;
 
         await showAlert(title, message);
@@ -286,8 +285,8 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
                     Migration Mode (Full Restore)
                   </p>
                   <p className="mt-1 text-xs text-blue-700">
-                    Restore complete backup with original encryption key. Recommended when setting
-                    up a new device from backup.
+                    Wipe current data and restore the complete backup, re-encrypted under your
+                    current key. Recommended when setting up a new device from backup.
                   </p>
                 </div>
               </label>
@@ -320,8 +319,9 @@ export function ImportDataModal({ isOpen, onClose, onImport, onMigrate }: Import
           {isMigrationMode ? (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3">
               <p className="text-xs text-red-800">
-                <strong>⚠️ MIGRATION MODE:</strong> This will DELETE all current data and encryption
-                key, then restore the complete backup. You will be prompted for confirmation.
+                <strong>⚠️ MIGRATION MODE:</strong> This will DELETE all current data, then restore
+                the complete backup under your current encryption key. You will be prompted for
+                confirmation.
               </p>
             </div>
           ) : (

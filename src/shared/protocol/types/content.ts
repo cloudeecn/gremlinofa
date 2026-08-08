@@ -34,6 +34,7 @@ export type RenderingContentBlock =
   | ToolInfoRenderBlock
   | InjectedFileRenderBlock
   | FallbackRenderBlock
+  | NotifyRenderBlock
   | UnknownBlockRenderBlock
   | ErrorRenderBlock;
 
@@ -174,6 +175,21 @@ export interface FallbackRenderBlock {
 }
 
 /**
+ * Notify block — a loop-side notification from the claude-agent SDK (compaction
+ * error, quota/credit warning, stop-hook error, …). Categorized as `text` so it
+ * renders inline and never folds into the backstage accordion.
+ */
+export interface NotifyRenderBlock {
+  type: 'notify';
+  text: string;
+  /** Stable notification id from the SDK, e.g. 'error-compacting-conversation' */
+  key?: string;
+  priority?: 'low' | 'medium' | 'high' | 'immediate';
+  /** SDK display hint; 'error' tints the banner as a warning */
+  color?: string;
+}
+
+/**
  * Unknown block — a claude-agent SDK block we have no dedicated renderer for
  * (e.g. a server_tool_use with an unrecognized name, or a block type the SDK
  * added after us). Carries the raw block as trimmed pretty-printed JSON so the
@@ -214,6 +230,7 @@ export function categorizeBlock(block: RenderingContentBlock): BlockCategory {
       return 'backstage';
     case 'text':
     case 'fallback':
+    case 'notify':
       return 'text';
     case 'error':
       return 'error';

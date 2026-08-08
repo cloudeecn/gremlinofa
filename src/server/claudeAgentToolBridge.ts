@@ -34,6 +34,40 @@ import { executeToolSimple } from '../shared/services/tools/clientSideTools';
 /** MCP server name; tools surface to the model as `mcp__gremlin__<tool>`. */
 export const MCP_SERVER_NAME = 'gremlin';
 
+/**
+ * Per-group launch spacing for tools that set `parallelThrottleMs`. The loop
+ * staggers the Nth launch of a batch by N×throttle; the bridge never sees batch
+ * boundaries, so this is the rate-limiter equivalent: each reservation claims
+ * the next free slot, `throttleMs` after the previous one in the same group. A
+ * burst gets the loop's 0/T/2T spacing; calls already spaced wider pay nothing.
+ */
+export class LaunchStagger {
+  private nextSlotAt = new Map<string, number>();
+
+  /** Reserve the next slot for `group`; returns how long to wait before launching. */
+  reserve(group: string, throttleMs: number, now = Date.now()): number {
+    const launchAt = Math.max(now, this.nextSlotAt.get(group) ?? 0);
+    this.nextSlotAt.set(group, launchAt + throttleMs);
+    return launchAt - now;
+  }
+}
+
+/** Resolves after `ms`, or immediately once `signal` aborts. */
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export interface GremlinMcpBridge {
   /** Ready to drop into the SDK's `mcpServers` map. */
   server: McpSdkServerConfigWithInstance;
@@ -115,12 +149,19 @@ export function buildGremlinMcpServer(
       description: d.description,
       // Our exact JSON Schema, passed through verbatim (no Zod round-trip).
       inputSchema: d.input_schema as { type: 'object'; [k: string]: unknown },
+      // The CLI decides MCP-tool concurrency solely from `readOnlyHint`: without
+      // it every call in a turn runs one at a time. Our agentic loop already
+      // runs a phase's tools in parallel (`executeToolsParallel`), so bridged
+      // tools tolerate concurrency; and with `permissionMode: 'bypassPermissions'`
+      // the read-only claim has no other effect. Not forwarded to the model.
+      annotations: { readOnlyHint: true },
     })),
   }));
 
   // Mints a stable id per call so the tool_use chunk pairs with its tool_result
   // chunk — MCP doesn't surface the model's own tool_use block id to the server.
   let callSeq = 0;
+  const launchStagger = new LaunchStagger();
 
   mcp.server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
     const name = request.params.name;
@@ -128,6 +169,25 @@ export function buildGremlinMcpServer(
     const toolUseId = `mcp_${MCP_SERVER_NAME}_${++callSeq}`;
 
     pushChunk({ type: 'tool_use', id: toolUseId, name, input });
+
+    // The CLI fires every concurrency-safe call at once; re-create the loop's
+    // per-group launch stagger (`parallelThrottleMs`) here.
+    const tool = toolContext.toolRegistry.get(name);
+    if (tool?.parallelThrottleMs) {
+      const group = tool.getParallelThrottleGroup
+        ? await tool.getParallelThrottleGroup(input, toolOptions[name], ctx)
+        : name;
+      const delayMs = launchStagger.reserve(group, tool.parallelThrottleMs);
+      if (delayMs > 0) {
+        console.debug('[claudeAgentBridge] staggering %s group=%s by %dms', name, group, delayMs);
+        await abortableDelay(delayMs, signal);
+      }
+    }
+    if (signal.aborted) {
+      const content = 'Tool call aborted';
+      pushChunk({ type: 'tool_result', tool_use_id: toolUseId, name, content, isError: true });
+      return { content: [{ type: 'text', text: content }], isError: true };
+    }
 
     const result = await executeToolSimple(name, input, enabledTools, toolOptions, ctx);
 

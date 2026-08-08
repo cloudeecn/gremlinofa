@@ -619,6 +619,7 @@ export class OpenAIClient implements APIClient {
           const completionTokensDetails = usage.completion_tokens_details;
           if (completionTokensDetails?.reasoning_tokens) {
             reasoningTokens = completionTokensDetails.reasoning_tokens;
+            outputTokens -= reasoningTokens;
           }
           const promptTokensDetails = usage.prompt_tokens_details;
           if (promptTokensDetails?.cached_tokens) {

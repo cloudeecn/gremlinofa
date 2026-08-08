@@ -10,7 +10,13 @@ const RECONNECTED_FLASH_MS = 1_500;
 /** States that mean "something is wrong with the connection". */
 const BAD_STATES = new Set<ConnectionState>(['stale', 'disconnected', 'reconnecting']);
 
-type BannerMode = 'hidden' | 'stale' | 'disconnected' | 'reconnecting' | 'reconnected';
+type BannerMode =
+  | 'hidden'
+  | 'stale'
+  | 'disconnected'
+  | 'reconnecting'
+  | 'reconnected'
+  | 'auth_failed';
 
 /**
  * App-wide banner that surfaces WebSocket connection problems.
@@ -44,7 +50,15 @@ export function ConnectionStatusBanner() {
     const prev = prevStateRef.current;
     prevStateRef.current = state;
 
-    if (state === 'stale') {
+    if (state === 'auth_failed') {
+      // Terminal — show immediately and never clear; the transport has
+      // stopped reconnecting.
+      clearTimers();
+      showTimerRef.current = setTimeout(() => {
+        showTimerRef.current = null;
+        setMode('auth_failed');
+      }, 0);
+    } else if (state === 'stale') {
       // Stale shows immediately — the whole point is to warn before the user
       // clicks send, so debouncing would defeat the purpose.
       if (flashTimerRef.current) {
@@ -124,6 +138,15 @@ export function ConnectionStatusBanner() {
   useEffect(() => clearTimers, [clearTimers]);
 
   if (mode === 'hidden') return null;
+
+  if (mode === 'auth_failed') {
+    return (
+      <div className="border-b border-red-300 bg-red-50 px-4 py-2 text-center text-sm text-red-800">
+        <span className="mr-2 inline-block h-2 w-2 rounded-full bg-red-500" />
+        The server rejected the stored encryption key — reload the page to re-authenticate.
+      </div>
+    );
+  }
 
   if (mode === 'reconnected') {
     return (

@@ -353,6 +353,51 @@ describe('WebSocketTransportServer', () => {
       expect(mockServer.handleStream).not.toHaveBeenCalled();
     });
 
+    it('rejects a data frame racing ahead of the init ack — the ordering contract the client transport honors', async () => {
+      // The reconnecting client MUST await the init response before
+      // replaying anything: `authenticated` flips only after the init
+      // handler resolves, so a data frame that arrives while init is
+      // still in flight gets NOT_INITIALIZED + close 4001.
+      let resolveInit!: (value: unknown) => void;
+      (mockServer.handleRequest as ReturnType<typeof vi.fn>).mockImplementation(
+        (method: string) => {
+          if (method === 'init') {
+            return new Promise(resolve => {
+              resolveInit = resolve;
+            });
+          }
+          return Promise.resolve([]);
+        }
+      );
+
+      const ws = await connectClient(port);
+      const closePromise = nextClose(ws);
+      const received: ServerMessage[] = [];
+      ws.on('message', (data: Buffer) => {
+        received.push(JSON.parse(data.toString()) as ServerMessage);
+      });
+
+      ws.send(
+        JSON.stringify({ kind: 'request', requestId: 'init_slow', method: 'init', params: {} })
+      );
+      ws.send(
+        JSON.stringify({
+          kind: 'request',
+          requestId: 'req_racing',
+          method: 'listProjects',
+          params: {},
+        })
+      );
+
+      expect(await closePromise).toBe(4001);
+      const racingError = received.find(m => m.kind === 'error' && m.requestId === 'req_racing') as
+        | ErrorEnvelope
+        | undefined;
+      expect(racingError?.code).toBe('NOT_INITIALIZED');
+
+      resolveInit({ ok: true });
+    });
+
     it('allows a data RPC after a successful init', async () => {
       (mockServer.handleRequest as ReturnType<typeof vi.fn>).mockResolvedValue({ projects: [] });
 

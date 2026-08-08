@@ -125,8 +125,8 @@ describe('rotateCek (Phase 1.5)', () => {
     await verifyAdapter.initialize();
     const rotatedRow = await verifyAdapter.get(Tables.API_DEFINITIONS, 'api_rotation_test');
     expect(rotatedRow).not.toBeNull();
-    // `rotateTable` re-encrypts with `encryptWithCompression`, so the
-    // verification path needs the matching decompressing decrypt.
+    // `rotateTable` preserves each row's payload byte-for-byte, so a row
+    // written plain stays plain; `decryptWithDecompression` handles both.
     const decrypted = JSON.parse(
       await verifyCore.decryptWithDecompression(rotatedRow!.encryptedData)
     );
@@ -149,6 +149,82 @@ describe('rotateCek (Phase 1.5)', () => {
     // Server is still initialized — listProjects works.
     const projects = await server.handleRequest('listProjects', {});
     expect(Array.isArray(projects)).toBe(true);
+  });
+
+  it('preserves per-row storage format and rows stay readable after re-init', async () => {
+    const { server, deps } = await buildServer();
+
+    // Plain-encrypted row (api_definitions never compress)...
+    await deps.storage.saveAPIDefinition({
+      id: 'api_format_test',
+      name: 'Format Test',
+      apiType: 'chatgpt' as const,
+      apiKey: 'sk-format-test',
+      baseUrl: '',
+      isLocal: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // ...and a compressed row (messages always compress).
+    await deps.storage.saveMessage('chat_format_test', {
+      id: 'msg_format_test',
+      role: 'user',
+      content: 'compressed payload '.repeat(50),
+      timestamp: new Date(),
+    } as never);
+
+    await server.handleRequest('rotateCek', { newCek: ROTATED_CEK_STRING });
+
+    const verifyCore = new EncryptionCore();
+    await verifyCore.initializeWithCEK(ROTATED_CEK_STRING);
+    const verifyAdapter = new IndexedDBAdapter();
+    await verifyAdapter.initialize();
+
+    const isGz = (bytes: Uint8Array) => bytes[0] === 71 && bytes[1] === 90;
+    const apiRow = await verifyAdapter.get(Tables.API_DEFINITIONS, 'api_format_test');
+    expect(isGz(await verifyCore.decryptToBytes(apiRow!.encryptedData))).toBe(false);
+    const msgRow = await verifyAdapter.get(Tables.MESSAGES, 'msg_format_test');
+    expect(isGz(await verifyCore.decryptToBytes(msgRow!.encryptedData))).toBe(true);
+
+    // Both rows read back through the normal storage paths under the new key.
+    const verifyStorage = new UnifiedStorage(verifyAdapter, verifyCore);
+    const defs = await verifyStorage.getAPIDefinitions();
+    expect(defs.find(d => d.id === 'api_format_test')?.apiKey).toBe('sk-format-test');
+    const messages = await verifyStorage.getMessages('chat_format_test');
+    expect(messages.map(m => m.id)).toContain('msg_format_test');
+  });
+
+  it('aborts before rewriting anything when a row fails to decrypt', async () => {
+    const { server, deps, encryption } = await buildServer();
+
+    await deps.storage.saveAPIDefinition({
+      id: 'api_survivor',
+      name: 'Survivor',
+      apiType: 'chatgpt' as const,
+      apiKey: 'sk-survivor',
+      baseUrl: '',
+      isLocal: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // Plant a corrupt row in a table the walk reaches AFTER api_definitions.
+    await deps.storage
+      .getAdapter()
+      .save(Tables.PROJECTS, 'corrupt_project', 'definitely-not-ciphertext', {
+        timestamp: new Date().toISOString(),
+      });
+
+    await expect(server.handleRequest('rotateCek', { newCek: ROTATED_CEK_STRING })).rejects.toThrow(
+      /failed to decrypt under the active key/
+    );
+
+    // Validation pass runs before any write — the survivor row is still
+    // encrypted under the ACTIVE key, and the server stays initialized.
+    const row = await deps.storage.getAdapter().get(Tables.API_DEFINITIONS, 'api_survivor');
+    const stillReadable = JSON.parse(await encryption.decryptWithDecompression(row!.encryptedData));
+    expect(stillReadable.apiKey).toBe('sk-survivor');
+    const defs = await server.handleRequest('listAPIDefinitions', {});
+    expect(Array.isArray(defs)).toBe(true);
   });
 
   it('refuses to rotate while a loop is active (LOOPS_RUNNING)', async () => {

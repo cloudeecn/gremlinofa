@@ -21,4 +21,6 @@ export type ProtocolErrorCode =
   | 'METHOD_NOT_FOUND'
   | 'INVALID_PARAMS'
   | 'INTERNAL_ERROR'
+  | 'RECORD_NOT_FOUND'
+  | 'RECORD_NOT_EDITABLE'
   | (string & {});

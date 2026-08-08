@@ -656,7 +656,7 @@ describe('UnifiedStorage', () => {
 
       await storage.getAPIDefinition(apiDef.id);
 
-      expect(mockEncryption.decrypt).toHaveBeenCalled();
+      expect(mockEncryption.decryptWithDecompression).toHaveBeenCalled();
     });
 
     it('should handle decryption errors gracefully', async () => {

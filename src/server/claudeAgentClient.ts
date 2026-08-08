@@ -19,12 +19,14 @@ import {
   deleteSession,
   type Options,
   type SDKMessage,
+  type Settings,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import type Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import type {
   APIDefinition,
   Message,
@@ -34,7 +36,12 @@ import type {
   ToolOptions,
   ToolUseBlock,
 } from '../shared/protocol/types';
-import type { APIClient, StreamChunk, StreamResult } from '../shared/services/api/baseClient';
+import type {
+  APIClient,
+  ProviderMessageInspection,
+  StreamChunk,
+  StreamResult,
+} from '../shared/services/api/baseClient';
 import type { APIServiceDeps } from '../shared/services/api/apiService';
 import {
   createMapperState,
@@ -73,6 +80,86 @@ function defaultSessionDir(): string {
   const base = path.resolve(process.cwd(), 'data', 'claude-agent-sessions');
   fs.mkdirSync(base, { recursive: true });
   return base;
+}
+
+/**
+ * Where the CLI actually writes the session JSONLs for our `sessionDir` cwd:
+ * `$HOME/.claude/projects/<cwd with non-alphanumerics dashed>/`. This is
+ * CLI-internal layout, so everything built on it (resume verification, the
+ * message inspector) is best-effort and fail-open — the persisted
+ * `{claudeAgentSessionId, claudeAgentMessageUuid}` pair on message metadata
+ * is the primary ownership record.
+ */
+function defaultSessionJsonlDir(sessionDir: string): string {
+  const dashified = path.resolve(sessionDir).replace(/[^a-zA-Z0-9]/g, '-');
+  return path.join(os.homedir(), '.claude', 'projects', dashified);
+}
+
+/**
+ * Parse the per-definition `extraArgs` string into the SDK's
+ * `Options.extraArgs` record (keys without `--`, `null` for boolean flags).
+ * Accepts `--key value`, `--key=value` and `--flag`; single/double quotes
+ * group values with spaces. The SDK record can't express positional
+ * arguments, so stray tokens are dropped with a debug note. Exported for
+ * unit tests.
+ */
+export function parseExtraArgs(raw: string | undefined): Record<string, string | null> | undefined {
+  if (!raw?.trim()) return undefined;
+
+  // Quoted-ness is tracked per token so a quoted value like "--literal"
+  // stays a value instead of being promoted to a flag.
+  const tokens: { text: string; quoted: boolean }[] = [];
+  let text = '';
+  let quoted = false;
+  let inToken = false;
+  let quote: '"' | "'" | null = null;
+  for (const ch of raw) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else text += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      quoted = true;
+      inToken = true;
+    } else if (/\s/.test(ch)) {
+      if (inToken) {
+        tokens.push({ text, quoted });
+        text = '';
+        quoted = false;
+        inToken = false;
+      }
+    } else {
+      text += ch;
+      inToken = true;
+    }
+  }
+  if (inToken) tokens.push({ text, quoted });
+
+  const parsed: Record<string, string | null> = {};
+  let pendingFlag: string | null = null;
+  for (const token of tokens) {
+    if (!token.quoted && token.text.startsWith('--') && token.text.length > 2) {
+      if (pendingFlag) parsed[pendingFlag] = null;
+      const eq = token.text.indexOf('=');
+      if (eq !== -1) {
+        parsed[token.text.slice(2, eq)] = token.text.slice(eq + 1);
+        pendingFlag = null;
+      } else {
+        pendingFlag = token.text.slice(2);
+      }
+    } else if (pendingFlag) {
+      parsed[pendingFlag] = token.text;
+      pendingFlag = null;
+    } else {
+      console.debug(
+        '[claudeAgent] extraArgs: ignoring positional token %s (only --flag / --key value / --key=value supported)',
+        token.text
+      );
+    }
+  }
+  if (pendingFlag) parsed[pendingFlag] = null;
+
+  return Object.keys(parsed).length ? parsed : undefined;
 }
 
 /** Extract the latest user message from the thread. */
@@ -133,22 +220,29 @@ export function buildUserContentBlocks(
  * normalized fields GremlinOFA tracks at the StreamResult level.
  */
 interface SdkUsageShape {
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_creation_input_tokens?: number;
-  cache_read_input_tokens?: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+  output_tokens_details?: { thinking_tokens?: number | null } | null;
 }
 
-function mapSdkUsage(usage: SdkUsageShape | undefined): {
+export function mapSdkUsage(usage: SdkUsageShape | undefined): {
   inputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   cacheCreationTokens?: number;
   cacheReadTokens?: number;
 } {
   const u = usage ?? {};
+  // thinking_tokens is inclusive in output_tokens on the wire; app-internal
+  // outputTokens is text-only with reasoningTokens as the disjoint sibling
+  // (same derivation as every OpenAI adapter path).
+  const thinkingTokens = u.output_tokens_details?.thinking_tokens ?? 0;
   return {
     inputTokens: u.input_tokens ?? 0,
-    outputTokens: u.output_tokens ?? 0,
+    outputTokens: (u.output_tokens ?? 0) - thinkingTokens,
+    reasoningTokens: thinkingTokens,
     cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
     cacheReadTokens: u.cache_read_input_tokens ?? 0,
   };
@@ -405,6 +499,12 @@ export interface ClaudeAgentClientOptions {
   sessionDir?: () => string;
   /** Override UUID generator (tests assert a deterministic ID). */
   generateSessionId?: () => string;
+  /**
+   * Override the resolver for the CLI's session JSONL directory (tests inject
+   * a tmp dir seeded with fake JSONLs). Defaults to the dashified-cwd
+   * convention under `$HOME/.claude/projects/`.
+   */
+  sessionJsonlDir?: () => string;
 }
 
 export class ClaudeAgentClient implements APIClient {
@@ -413,6 +513,7 @@ export class ClaudeAgentClient implements APIClient {
   private readonly deleteSessionFn: typeof deleteSession;
   private readonly sessionDir: () => string;
   private readonly generateSessionId: () => string;
+  private readonly sessionJsonlDir: () => string;
 
   constructor(deps: APIServiceDeps, options: ClaudeAgentClientOptions = {}) {
     this.deps = deps;
@@ -420,6 +521,8 @@ export class ClaudeAgentClient implements APIClient {
     this.deleteSessionFn = options.deleteSession ?? deleteSession;
     this.sessionDir = options.sessionDir ?? defaultSessionDir;
     this.generateSessionId = options.generateSessionId ?? (() => randomUUID());
+    this.sessionJsonlDir =
+      options.sessionJsonlDir ?? (() => defaultSessionJsonlDir(this.sessionDir()));
   }
 
   /**
@@ -434,6 +537,177 @@ export class ClaudeAgentClient implements APIClient {
       console.debug('[claudeAgent] deleted superseded session %s', sessionId);
     } catch (err) {
       console.debug('[claudeAgent] session GC failed for %s:', sessionId, err);
+    }
+  }
+
+  // --- Session JSONL introspection (best-effort, fail-open) ---------------
+  // The persisted {claudeAgentSessionId, claudeAgentMessageUuid} pair on
+  // message metadata is the primary ownership record; these file probes only
+  // heal legacy unstamped anchors and stamps whose session was fork-GC'd.
+
+  private sessionFilePath(sessionId: string): string {
+    return path.join(this.sessionJsonlDir(), `${sessionId}.jsonl`);
+  }
+
+  /**
+   * Whether `<sessionId>.jsonl` contains an entry with this message uuid.
+   * The needle only matches an entry's own `uuid` field — `parentUuid` /
+   * `leafUuid` have a capital U, and the search is case-sensitive.
+   */
+  private sessionFileHasUuid(sessionId: string, uuid: string): boolean {
+    const filePath = this.sessionFilePath(sessionId);
+    if (!fs.existsSync(filePath)) return false;
+    return fs.readFileSync(filePath, 'utf8').includes(`"uuid":"${uuid}"`);
+  }
+
+  /**
+   * Scan every session JSONL (newest mtime first) for the message uuid and
+   * return the owning session id. Multiple hits are interchangeable — a fork
+   * copies history up to the anchor, so any file containing it has identical
+   * history up to that point.
+   */
+  private findSessionContainingUuid(uuid: string, excludeSessionId?: string): string | undefined {
+    const dir = this.sessionJsonlDir();
+    const needle = `"uuid":"${uuid}"`;
+    const candidates = fs
+      .readdirSync(dir)
+      .filter(name => name.endsWith('.jsonl'))
+      .map(name => ({
+        sessionId: name.slice(0, -'.jsonl'.length),
+        mtime: fs.statSync(path.join(dir, name)).mtimeMs,
+      }))
+      .filter(c => c.sessionId !== excludeSessionId)
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const candidate of candidates) {
+      try {
+        if (fs.readFileSync(this.sessionFilePath(candidate.sessionId), 'utf8').includes(needle)) {
+          return candidate.sessionId;
+        }
+      } catch {
+        // File vanished mid-scan (concurrent GC) — keep looking.
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Walk stored assistant messages newest-first for an anchor uuid that still
+   * exists in some session file — the stamped owning session is checked
+   * first, then the full scan. `excludeUuid` skips the anchor that already
+   * failed resolution.
+   */
+  private findRecoverableAnchor(
+    messages: Message<unknown>[],
+    excludeUuid?: string
+  ): { uuid: string; sessionId: string } | undefined {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      const uuid = m.metadata?.claudeAgentMessageUuid;
+      if (m.role !== 'assistant' || !uuid || uuid === excludeUuid) continue;
+      const stamped = m.metadata?.claudeAgentSessionId;
+      if (stamped && this.sessionFileHasUuid(stamped, uuid)) {
+        return { uuid, sessionId: stamped };
+      }
+      const owner = this.findSessionContainingUuid(uuid, stamped);
+      if (owner) return { uuid, sessionId: owner };
+    }
+    return undefined;
+  }
+
+  /**
+   * Debug lookup: the raw JSONL entry behind a stored assistant message. The
+   * stamped session is tried first, then the scan (legacy unstamped messages,
+   * fork-GC'd stamps). Undefined when no surviving file has the uuid.
+   */
+  async inspectProviderMessage(
+    sessionId: string | undefined,
+    messageUuid: string
+  ): Promise<ProviderMessageInspection | undefined> {
+    const needle = `"uuid":"${messageUuid}"`;
+    const readEntry = (sid: string): string | undefined =>
+      fs
+        .readFileSync(this.sessionFilePath(sid), 'utf8')
+        .split('\n')
+        .find(line => line.includes(needle));
+    try {
+      if (sessionId && fs.existsSync(this.sessionFilePath(sessionId))) {
+        const entry = readEntry(sessionId);
+        if (entry) return { entry, sessionId, foundVia: 'stated' };
+      }
+      const owner = this.findSessionContainingUuid(messageUuid, sessionId);
+      if (owner) {
+        const entry = readEntry(owner);
+        if (entry) return { entry, sessionId: owner, foundVia: 'scan' };
+      }
+    } catch (err) {
+      console.debug('[claudeAgent] message inspection failed:', err);
+    }
+    return undefined;
+  }
+
+  /**
+   * Verify the resume target against the on-disk session files and repair it
+   * when stale, so a bad {sessionId, resumeAt} pair degrades gracefully
+   * instead of hard-failing the turn with the CLI's "No message found with
+   * message.uuid" error (the self-perpetuating context-loss loop from the
+   * 2026-08-22 incident). Fallback order per anchor: stated session → scan →
+   * earlier anchors from stored messages → plain resume → fresh session.
+   * Fail-open: if the projects dir doesn't exist or any FS probe throws, the
+   * target is passed through unchanged.
+   */
+  private resolveResumeTarget(
+    sessionId: string,
+    resumeAt: string | undefined,
+    messages: Message<unknown>[]
+  ): { sessionId: string; resumeAt?: string; fresh: boolean; outcome: string } {
+    try {
+      if (!fs.existsSync(this.sessionJsonlDir())) {
+        return { sessionId, resumeAt, fresh: false, outcome: 'unverified' };
+      }
+      const currentExists = fs.existsSync(this.sessionFilePath(sessionId));
+      if (resumeAt) {
+        if (currentExists && this.sessionFileHasUuid(sessionId, resumeAt)) {
+          return { sessionId, resumeAt, fresh: false, outcome: 'verified' };
+        }
+        const owner = this.findSessionContainingUuid(resumeAt, sessionId);
+        if (owner) {
+          return { sessionId: owner, resumeAt, fresh: false, outcome: 'repointed' };
+        }
+        const downgraded = this.findRecoverableAnchor(messages, resumeAt);
+        if (downgraded) {
+          return {
+            sessionId: downgraded.sessionId,
+            resumeAt: downgraded.uuid,
+            fresh: false,
+            outcome: 'anchor-downgraded',
+          };
+        }
+        if (currentExists) {
+          return { sessionId, resumeAt: undefined, fresh: false, outcome: 'resumeAt-stripped' };
+        }
+      } else {
+        if (currentExists) {
+          return { sessionId, resumeAt: undefined, fresh: false, outcome: 'verified' };
+        }
+        const recovered = this.findRecoverableAnchor(messages);
+        if (recovered) {
+          return {
+            sessionId: recovered.sessionId,
+            resumeAt: recovered.uuid,
+            fresh: false,
+            outcome: 'anchor-recovered',
+          };
+        }
+      }
+      return {
+        sessionId: this.generateSessionId(),
+        resumeAt: undefined,
+        fresh: true,
+        outcome: 'degraded-fresh',
+      };
+    } catch (err) {
+      console.debug('[claudeAgent] resume resolution skipped:', err);
+      return { sessionId, resumeAt, fresh: false, outcome: 'unverified' };
     }
   }
 
@@ -494,9 +768,25 @@ export class ClaudeAgentClient implements APIClient {
         ? contentBlocks[0].text
         : undefined;
 
-    const sessionId = options.claudeAgentSessionId ?? this.generateSessionId();
-    const isFirstTurn = !options.claudeAgentSessionId;
-    const resumeAt = options.claudeAgentResumeAt;
+    let sessionId = options.claudeAgentSessionId ?? this.generateSessionId();
+    let isFirstTurn = !options.claudeAgentSessionId;
+    let resumeAt = options.claudeAgentResumeAt;
+    if (!isFirstTurn) {
+      const resolved = this.resolveResumeTarget(sessionId, resumeAt, messages);
+      if (resolved.outcome !== 'verified' && resolved.outcome !== 'unverified') {
+        console.debug(
+          '[claudeAgent] resume resolution: %s sessionId=%s->%s resumeAt=%s->%s',
+          resolved.outcome,
+          sessionId,
+          resolved.sessionId,
+          resumeAt ?? '(none)',
+          resolved.resumeAt ?? '(none)'
+        );
+      }
+      sessionId = resolved.sessionId;
+      resumeAt = resolved.resumeAt;
+      isFirstTurn = resolved.fresh;
+    }
 
     // Auth fallback chain: explicit OAuth token > explicit API key >
     // host CLI credentials (apiKeySource: 'none').
@@ -714,6 +1004,42 @@ export class ClaudeAgentClient implements APIClient {
       console.debug('[claudeAgent] 1M context enabled, model=%s', sdkModelId);
     }
 
+    // Per-definition CLI overrides: empty binaryPath keeps the SDK's bundled
+    // executable; extraArgs ride the SDK's own record form.
+    const binaryPath = apiDefinition.binaryPath?.trim();
+    const extraArgs = parseExtraArgs(apiDefinition.extraArgs);
+    if (binaryPath) {
+      console.debug('[claudeAgent] custom binary path: %s', binaryPath);
+    }
+    if (extraArgs) {
+      console.debug('[claudeAgent] extra CLI args: %o', extraArgs);
+    }
+
+    // Two pieces of ambient CLI behaviour `settingSources: []` does NOT cover —
+    // that option only gates the filesystem settings layers, so both need the
+    // flag layer (`Options.settings`, highest of the user-controlled layers).
+    //
+    // 1. claude.ai cloud MCP connectors (Google Docs, Gmail, Drive, …) are
+    //    fetched from whatever claude.ai account the host credentials belong to
+    //    and connected on startup. Our `allowedTools` whitelist means the model
+    //    can never call one, so all they contribute is startup latency and
+    //    "please authenticate" nags in the middle of a chat.
+    // 2. The skills and workflows bundled with the CLI load by default (omitting
+    //    `Options.skills` is not "skills off"). They describe Claude Code's own
+    //    workflows, not ours, and only spend context here.
+    //
+    // The SDK folds `Options.settings` into the extraArgs record under the same
+    // `settings` key, so a caller who points `--settings` at their own file
+    // takes over completely rather than being silently overwritten.
+    const settingsOverridden = extraArgs?.settings !== undefined;
+    if (settingsOverridden) {
+      console.debug('[claudeAgent] extraArgs --settings supplied; inline settings skipped');
+    }
+    const isolationSettings: Settings = {
+      disableClaudeAiConnectors: true,
+      disableBundledSkills: true,
+    };
+
     const sdkOptions: Options = {
       model: sdkModelId,
       // Emit raw token-by-token stream events (SDKPartialAssistantMessage) on top
@@ -733,6 +1059,10 @@ export class ClaudeAgentClient implements APIClient {
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: [],
+      // The in-process `gremlin` bridge is the only MCP server we ever want:
+      // ignore project `.mcp.json`, user settings, plugins and agent frontmatter.
+      strictMcpConfig: true,
+      ...(settingsOverridden ? {} : { settings: isolationSettings }),
       cwd: this.sessionDir(),
       env,
       abortController,
@@ -793,6 +1123,8 @@ export class ClaudeAgentClient implements APIClient {
           },
         ],
       },
+      ...(binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {}),
+      ...(extraArgs ? { extraArgs } : {}),
       ...(thinking ? { thinking } : {}),
       ...(effortLevel ? { effort: effortLevel } : {}),
       // A rewound send (resumeAt set) FORKS into a fresh session containing
@@ -863,9 +1195,16 @@ export class ClaudeAgentClient implements APIClient {
     let usage: ReturnType<typeof mapSdkUsage> = {
       inputTokens: 0,
       outputTokens: 0,
+      reasoningTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
     };
+    // Usage of the LAST internal API call of the turn. The aggregate `usage`
+    // above sums every call the CLI made (correct for billing), which makes
+    // input/cache-read count the conversation prefix once per call — useless as
+    // a context-fill number. This snapshot is what actually sat in the model's
+    // context at the end of the turn (mid-turn auto-compaction included).
+    let lastStepUsage: ReturnType<typeof mapSdkUsage> | undefined;
     let resultError: { message: string; status?: number } | undefined;
     // Latest subscription rate-limit status + assistant-message error, captured
     // from the rate_limit_event / assistant SDK messages. Used to turn a turn
@@ -1010,7 +1349,8 @@ export class ClaudeAgentClient implements APIClient {
         }
         // Route through the shared Anthropic mapper, then drop the chunk types we
         // don't own here: `tool_use` (the MCP side-channel emits bridged tools),
-        // `token_usage` (the result message is the authoritative usage source),
+        // `token_usage` (the result message is the authoritative billing source —
+        // but its per-call values are captured as the context-fill snapshot),
         // and `web_*.result` (the coalesced branch is the single emitter of
         // results — the assembler's result handler appends, so it must run once).
         const mapped = mapAnthropicEventToStreamChunks(
@@ -1019,9 +1359,21 @@ export class ClaudeAgentClient implements APIClient {
         );
         mapperState = mapped.state;
         for (const chunk of mapped.chunks) {
+          if (chunk.type === 'token_usage') {
+            // Not yielded (the result message is the authoritative billing
+            // source), but the mapper state resets per message_start, so this
+            // chunk is per-API-call — the last one is the context-fill snapshot.
+            lastStepUsage = {
+              inputTokens: chunk.inputTokens ?? 0,
+              outputTokens: chunk.outputTokens ?? 0,
+              reasoningTokens: chunk.reasoningTokens ?? 0,
+              cacheCreationTokens: chunk.cacheCreationTokens ?? 0,
+              cacheReadTokens: chunk.cacheReadTokens ?? 0,
+            };
+            continue;
+          }
           if (
             chunk.type === 'tool_use' ||
-            chunk.type === 'token_usage' ||
             chunk.type === 'web_search.result' ||
             chunk.type === 'web_fetch.result'
           ) {
@@ -1077,6 +1429,13 @@ export class ClaudeAgentClient implements APIClient {
         if (msg.error) {
           lastAssistantError = msg.error;
           console.debug('[claudeAgent] assistant error=%s uuid=%s', msg.error, msg.uuid);
+        }
+        // No-partials degradation: the mapper never runs, so the per-call
+        // context-fill snapshot comes from the coalesced BetaMessage's own usage
+        // instead. Per-block assistants of one call overwrite each other; the
+        // last block of the last call wins, which is the snapshot we want.
+        if (!partialsActive && msg.message?.usage) {
+          lastStepUsage = mapSdkUsage(msg.message.usage);
         }
         // The BetaMessage's own stop_reason — the truthful API signal. Captured
         // separately from the result message's session-level stop_reason.
@@ -1347,6 +1706,20 @@ export class ClaudeAgentClient implements APIClient {
           msg.error_status ?? '(none)',
           msg.error
         );
+      } else if (msg.type === 'system' && 'subtype' in msg && msg.subtype === 'notification') {
+        // Loop-side notification (compaction error, quota/credit warning,
+        // stop-hook error, …) — mirrors the CLI's own REPL notification line.
+        // Surfaced as an inline notify block; the text is user-relevant
+        // operational signal, not conversation content.
+        console.debug('[claudeAgent] notification key=%s priority=%s', msg.key, msg.priority);
+        dbg('[claudeAgent] notification text=%s', msg.text);
+        yield {
+          type: 'notify',
+          text: msg.text,
+          key: msg.key,
+          priority: msg.priority,
+          ...(msg.color ? { color: msg.color } : {}),
+        };
       } else if (msg.type === 'system' && 'subtype' in msg) {
         // Untyped system telemetry beyond `init` (handled above) — keep it
         // to a one-liner, surfacing the thinking-token estimate when present.
@@ -1442,7 +1815,7 @@ export class ClaudeAgentClient implements APIClient {
         rateLimitStatus: lastRateLimitStatus,
         refusalExplanation: lastRefusalExplanation,
         refusalCategory: lastRefusalCategory,
-        outputTokens: usage.outputTokens,
+        outputTokens: usage.outputTokens + usage.reasoningTokens,
         sawFallback,
         treatEmptyOutputAsError: apiDefinition.advancedSettings?.treatEmptyOutputAsError === true,
       });
@@ -1488,6 +1861,20 @@ export class ClaudeAgentClient implements APIClient {
       fullContent,
       stopReason: surfacedStopReason,
       ...usage,
+      // Context fill after the last internal API call (gross output — thinking
+      // included). The spread `usage` above stays the whole-turn billing
+      // aggregate; without this snapshot the loop would sum that aggregate and
+      // overcount the prefix once per internal call.
+      ...(lastStepUsage
+        ? {
+            contextWindowUsage:
+              lastStepUsage.inputTokens +
+              lastStepUsage.outputTokens +
+              lastStepUsage.reasoningTokens +
+              (lastStepUsage.cacheCreationTokens ?? 0) +
+              (lastStepUsage.cacheReadTokens ?? 0),
+          }
+        : {}),
       ...(webSearchCount > 0 ? { webSearchCount } : {}),
       ...(resultError ? { error: resultError } : {}),
       // Sub-agent (minion) costs the SDK incurred via our bridged tools. The

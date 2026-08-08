@@ -5,6 +5,7 @@ import { useAlert } from '../hooks/useAlert';
 import { useIsMobile } from '../hooks/useIsMobile';
 import type { APIDefinition, APIType } from '../../shared/protocol/types';
 import { generateUniqueId } from '../../shared/protocol/idGenerator';
+import { apiKeyOptional } from '../../shared/protocol/apiDefinition';
 import {
   getApiTypeDisplayName,
   getApiTypeDefaultIcon,
@@ -13,6 +14,77 @@ import {
 
 interface SettingsPageProps {
   onMenuPress?: () => void;
+}
+
+// claude-agent's knobs (CLI overrides + custom model list), shared by the
+// edit and add-new forms (the rest of the form is duplicated per historical
+// convention; no need to add more).
+function ClaudeAgentFields(props: {
+  binaryPath: string;
+  extraArgs: string;
+  extraModelIds: string;
+  modelListReplaced: boolean;
+  onBinaryPathChange: (value: string) => void;
+  onExtraArgsChange: (value: string) => void;
+  onExtraModelIdsChange: (value: string) => void;
+  onModelListReplacedChange: (value: boolean) => void;
+}) {
+  return (
+    <>
+      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+        Claude Binary Path (Optional)
+      </label>
+      <input
+        type="text"
+        className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+        placeholder="Bundled executable"
+        value={props.binaryPath}
+        onChange={e => props.onBinaryPathChange(e.target.value)}
+      />
+      <p className="mb-4 text-xs text-gray-500">
+        Full path to a <code className="rounded bg-gray-100 px-1">claude</code> executable. Leave
+        empty to use the SDK's bundled one.
+      </p>
+      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+        Extra CLI Args (Optional)
+      </label>
+      <input
+        type="text"
+        className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+        placeholder="--strict-mcp-config --settings /path/to.json"
+        value={props.extraArgs}
+        onChange={e => props.onExtraArgsChange(e.target.value)}
+      />
+      <p className="mb-4 text-xs text-gray-500">
+        Appended to the claude invocation. Only{' '}
+        <code className="rounded bg-gray-100 px-1">--flag</code> /{' '}
+        <code className="rounded bg-gray-100 px-1">--key value</code> /{' '}
+        <code className="rounded bg-gray-100 px-1">--key=value</code> forms are supported.
+      </p>
+      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+        Extra Model IDs (Optional)
+      </label>
+      <textarea
+        className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+        placeholder="one-model-id-per-line"
+        rows={3}
+        value={props.extraModelIds}
+        onChange={e => props.onExtraModelIdsChange(e.target.value)}
+      />
+      <p className="mb-1 text-xs text-gray-500">
+        Model IDs added to the built-in claude-agent list (one per line)
+      </p>
+      <label className="mb-4 flex items-center gap-2 text-sm text-gray-600">
+        <input
+          type="checkbox"
+          checked={props.modelListReplaced}
+          onChange={e => props.onModelListReplacedChange(e.target.checked)}
+          className="rounded border-gray-300"
+        />
+        Use only my model list (replace the built-in list)
+      </label>
+    </>
+  );
 }
 
 export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
@@ -33,6 +105,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formProxyUrl, setFormProxyUrl] = useState('');
   const [formProxyAuthToken, setFormProxyAuthToken] = useState('');
   const [formExtraModelIds, setFormExtraModelIds] = useState('');
+  const [formBinaryPath, setFormBinaryPath] = useState('');
+  const [formExtraArgs, setFormExtraArgs] = useState('');
   const [formPruneThinking, setFormPruneThinking] = useState(false);
   const [formPruneEmptyText, setFormPruneEmptyText] = useState(false);
   const [formIsSubscription, setFormIsSubscription] = useState(false);
@@ -61,6 +135,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormProxyUrl('');
     setFormProxyAuthToken('');
     setFormExtraModelIds('');
+    setFormBinaryPath('');
+    setFormExtraArgs('');
     setFormPruneThinking(false);
     setFormPruneEmptyText(false);
     setFormIsSubscription(false);
@@ -84,9 +160,12 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     { id: 'claude-agent', name: 'Claude Agent (subscription)', icon: '🅒' },
   ] as const;
 
-  // The Claude Agent SDK ignores the entire advancedSettings surface and
-  // discovers no models — hide both UI sections to avoid promising knobs
-  // that don't apply. Sender already drops anything that leaked through.
+  // The Claude Agent SDK never reads baseUrl / CORS proxy / models endpoint /
+  // advancedSettings — hide those to avoid promising knobs that don't apply,
+  // leaving API Key, the CLI overrides (binary path, extra args), and the
+  // custom model list (extraModelIds appended to the built-in list;
+  // modelsEndpointDisabled replaces it). Sender already drops anything that
+  // leaked through.
   const isClaudeAgentForm = formApiType === 'claude-agent';
 
   const handleStartEdit = (def: APIDefinition) => {
@@ -103,6 +182,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormProxyUrl(def.proxyUrl || '');
     setFormProxyAuthToken(def.proxyAuthToken || '');
     setFormExtraModelIds((def.extraModelIds || []).join('\n'));
+    setFormBinaryPath(def.binaryPath || '');
+    setFormExtraArgs(def.extraArgs || '');
     setFormPruneThinking(def.advancedSettings?.pruneThinking || false);
     setFormPruneEmptyText(def.advancedSettings?.pruneEmptyText || false);
     setFormIsSubscription(def.advancedSettings?.isSubscription || false);
@@ -149,6 +230,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormProxyUrl('');
     setFormProxyAuthToken('');
     setFormExtraModelIds('');
+    setFormBinaryPath('');
+    setFormExtraArgs('');
     setFormPruneThinking(false);
     setFormPruneEmptyText(false);
     setFormIsSubscription(false);
@@ -170,10 +253,11 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
       return;
     }
 
-    // API key is required unless the provider is marked as local (Ollama, LM Studio, etc.)
-    // claude-agent is exempt — empty key falls back to the host `claude` CLI's
-    // OAuth credentials (the whole point of the subscription path).
-    if (!formIsLocal && formApiType !== 'claude-agent' && !formApiKey.trim()) {
+    // API key is required unless the provider can run keyless: local providers
+    // (Ollama, LM Studio) or claude-agent, where an empty key falls back to the
+    // host `claude` CLI's OAuth credentials (the whole point of the
+    // subscription path).
+    if (!apiKeyOptional({ isLocal: formIsLocal, apiType: formApiType }) && !formApiKey.trim()) {
       await showAlert('Error', 'API Key is required for this provider (or mark as Local)');
       return;
     }
@@ -188,7 +272,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
         baseUrl: formBaseUrl.trim(),
         apiKey: formApiKey.trim(),
         isDefault: editingId ? apiDefinitions.find(d => d.id === editingId)?.isDefault : false,
-        isLocal: formIsLocal,
+        // claude-agent has no Local checkbox anymore — scrub stale values so
+        // the Host CLI badge (not Local) wins for keyless definitions.
+        isLocal: formApiType === 'claude-agent' ? false : formIsLocal,
         modelsEndpoint: formModelsEndpoint.trim() || undefined,
         modelsEndpointDisabled: formModelsEndpointDisabled || undefined,
         proxyUrl: formProxyUrl.trim() || undefined,
@@ -199,6 +285,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
               .map(s => s.trim())
               .filter(Boolean)
           : undefined,
+        binaryPath: formBinaryPath.trim() || undefined,
+        extraArgs: formExtraArgs.trim() || undefined,
         advancedSettings:
           formPruneThinking ||
           formPruneEmptyText ||
@@ -252,6 +340,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formProxyUrl,
     formProxyAuthToken,
     formExtraModelIds,
+    formBinaryPath,
+    formExtraArgs,
     formPruneThinking,
     formPruneEmptyText,
     formIsSubscription,
@@ -376,17 +466,20 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
               {apiDefinitions.map(def => {
                 const hasApiKey = def.apiKey && def.apiKey.trim() !== '';
                 const isEditing = editingId === def.id;
-                const needsApiKey = !def.isLocal;
 
                 // Determine status badge
                 let statusBadgeClass = '';
                 let statusText = '';
-                if (!needsApiKey) {
+                if (def.isLocal) {
                   statusBadgeClass = 'bg-blue-100 text-blue-800';
                   statusText = 'Local';
                 } else if (hasApiKey) {
                   statusBadgeClass = 'bg-green-100 text-green-800';
                   statusText = 'Configured';
+                } else if (def.apiType === 'claude-agent') {
+                  // Empty key = host `claude` CLI credentials — configured, not missing.
+                  statusBadgeClass = 'bg-blue-100 text-blue-800';
+                  statusText = 'Host CLI';
                 } else {
                   statusBadgeClass = 'bg-red-100 text-red-800';
                   statusText = 'Not Set';
@@ -676,91 +769,129 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           maxLength={2}
                         />
 
-                        <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                          Base URL (Optional)
-                        </label>
-                        <input
-                          type="text"
-                          className={`w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${def.apiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
-                          placeholder="Leave empty for provider default"
-                          value={formBaseUrl}
-                          onChange={e => setFormBaseUrl(e.target.value)}
-                        />
-                        {def.apiType === 'anthropic' && (
-                          <p className="mb-3 text-xs text-gray-500">
-                            You can enter{' '}
-                            <code className="rounded bg-gray-100 px-1">bedrock:&lt;region&gt;</code>{' '}
-                            to use Claude models in Bedrock
-                          </p>
-                        )}
-                        {def.apiType === 'bedrock' && (
-                          <p className="mb-3 text-xs text-gray-500">
-                            You can enter just a region (e.g.,{' '}
-                            <code className="rounded bg-gray-100 px-1">us-west-2</code>) instead of
-                            the full URL
-                          </p>
+                        {!isClaudeAgentForm && (
+                          <>
+                            <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                              Base URL (Optional)
+                            </label>
+                            <input
+                              type="text"
+                              className={`w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${def.apiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
+                              placeholder="Leave empty for provider default"
+                              value={formBaseUrl}
+                              onChange={e => setFormBaseUrl(e.target.value)}
+                            />
+                            {def.apiType === 'anthropic' && (
+                              <p className="mb-3 text-xs text-gray-500">
+                                You can enter{' '}
+                                <code className="rounded bg-gray-100 px-1">
+                                  bedrock:&lt;region&gt;
+                                </code>{' '}
+                                to use Claude models in Bedrock
+                              </p>
+                            )}
+                            {def.apiType === 'bedrock' && (
+                              <p className="mb-3 text-xs text-gray-500">
+                                You can enter just a region (e.g.,{' '}
+                                <code className="rounded bg-gray-100 px-1">us-west-2</code>) instead
+                                of the full URL
+                              </p>
+                            )}
+
+                            {/* Local provider checkbox */}
+                            <label className="mb-3 flex cursor-pointer items-center">
+                              <input
+                                type="checkbox"
+                                checked={formIsLocal}
+                                onChange={e => setFormIsLocal(e.target.checked)}
+                                className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              <span className="text-sm text-gray-700">
+                                🏠 Local provider (API key optional)
+                              </span>
+                            </label>
+                          </>
                         )}
 
-                        {/* Local provider checkbox */}
-                        <label className="mb-3 flex cursor-pointer items-center">
-                          <input
-                            type="checkbox"
-                            checked={formIsLocal}
-                            onChange={e => setFormIsLocal(e.target.checked)}
-                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          />
-                          <span className="text-sm text-gray-700">
-                            🏠 Local provider (API key optional)
-                          </span>
-                        </label>
-
                         <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                          API Key {formIsLocal ? '(Optional)' : '*'}
+                          API Key {formIsLocal || isClaudeAgentForm ? '(Optional)' : '*'}
                         </label>
                         <input
                           type="password"
-                          className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                          placeholder="Enter your API key"
+                          className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                          placeholder={
+                            isClaudeAgentForm
+                              ? 'Leave blank to use host `claude` CLI credentials'
+                              : 'Enter your API key'
+                          }
                           value={formApiKey}
                           onChange={e => setFormApiKey(e.target.value)}
                         />
+                        {isClaudeAgentForm ? (
+                          <p className="mb-4 text-xs text-gray-500">
+                            Empty → host CLI OAuth (subscription billed). Paste an{' '}
+                            <code className="rounded bg-gray-100 px-1">sk-ant-oat01-…</code> OAuth
+                            token for explicit subscription auth, or an{' '}
+                            <code className="rounded bg-gray-100 px-1">sk-ant-api03-…</code> key for
+                            pay-per-token (defeats the purpose).
+                          </p>
+                        ) : (
+                          <div className="mb-4" />
+                        )}
 
-                        <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                          Models Endpoint (Optional)
-                        </label>
-                        <input
-                          type="text"
-                          className={`mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formModelsEndpointDisabled ? 'cursor-not-allowed bg-gray-100 text-gray-400' : ''}`}
-                          placeholder="SDK default"
-                          value={formModelsEndpoint}
-                          onChange={e => setFormModelsEndpoint(e.target.value)}
-                          disabled={formModelsEndpointDisabled}
-                        />
-                        <label className="mb-4 flex items-center gap-2 text-sm text-gray-600">
-                          <input
-                            type="checkbox"
-                            checked={formModelsEndpointDisabled}
-                            onChange={e => setFormModelsEndpointDisabled(e.target.checked)}
-                            className="rounded border-gray-300"
+                        {isClaudeAgentForm && (
+                          <ClaudeAgentFields
+                            binaryPath={formBinaryPath}
+                            extraArgs={formExtraArgs}
+                            extraModelIds={formExtraModelIds}
+                            modelListReplaced={formModelsEndpointDisabled}
+                            onBinaryPathChange={setFormBinaryPath}
+                            onExtraArgsChange={setFormExtraArgs}
+                            onExtraModelIdsChange={setFormExtraModelIds}
+                            onModelListReplacedChange={setFormModelsEndpointDisabled}
                           />
-                          Models endpoint not supported
-                        </label>
+                        )}
 
-                        <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                          Extra Model IDs (Optional)
-                        </label>
-                        <textarea
-                          className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                          placeholder="one-model-id-per-line"
-                          rows={3}
-                          value={formExtraModelIds}
-                          onChange={e => setFormExtraModelIds(e.target.value)}
-                        />
-                        <p className="mb-4 text-xs text-gray-500">
-                          Add model IDs not listed by the provider (one per line)
-                        </p>
+                        {!isClaudeAgentForm && (
+                          <>
+                            <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                              Models Endpoint (Optional)
+                            </label>
+                            <input
+                              type="text"
+                              className={`mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formModelsEndpointDisabled ? 'cursor-not-allowed bg-gray-100 text-gray-400' : ''}`}
+                              placeholder="SDK default"
+                              value={formModelsEndpoint}
+                              onChange={e => setFormModelsEndpoint(e.target.value)}
+                              disabled={formModelsEndpointDisabled}
+                            />
+                            <label className="mb-4 flex items-center gap-2 text-sm text-gray-600">
+                              <input
+                                type="checkbox"
+                                checked={formModelsEndpointDisabled}
+                                onChange={e => setFormModelsEndpointDisabled(e.target.checked)}
+                                className="rounded border-gray-300"
+                              />
+                              Models endpoint not supported
+                            </label>
 
-                        {def.apiType !== 'bedrock' && (
+                            <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                              Extra Model IDs (Optional)
+                            </label>
+                            <textarea
+                              className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                              placeholder="one-model-id-per-line"
+                              rows={3}
+                              value={formExtraModelIds}
+                              onChange={e => setFormExtraModelIds(e.target.value)}
+                            />
+                            <p className="mb-4 text-xs text-gray-500">
+                              Add model IDs not listed by the provider (one per line)
+                            </p>
+                          </>
+                        )}
+
+                        {def.apiType !== 'bedrock' && !isClaudeAgentForm && (
                           <>
                             <label className="mb-1.5 block text-sm font-medium text-gray-700">
                               CORS Proxy URL (Optional)
@@ -1032,43 +1163,49 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         maxLength={2}
                       />
 
-                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                        Base URL (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        className={`w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formApiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
-                        placeholder="Leave empty for provider default"
-                        value={formBaseUrl}
-                        onChange={e => setFormBaseUrl(e.target.value)}
-                      />
-                      {formApiType === 'anthropic' && (
-                        <p className="mb-3 text-xs text-gray-500">
-                          You can enter{' '}
-                          <code className="rounded bg-gray-100 px-1">bedrock:&lt;region&gt;</code>{' '}
-                          to use Claude models in Bedrock
-                        </p>
-                      )}
-                      {formApiType === 'bedrock' && (
-                        <p className="mb-3 text-xs text-gray-500">
-                          You can enter just a region (e.g.,{' '}
-                          <code className="rounded bg-gray-100 px-1">us-west-2</code>) instead of
-                          the full URL
-                        </p>
-                      )}
+                      {!isClaudeAgentForm && (
+                        <>
+                          <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                            Base URL (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            className={`w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500 ${formApiType === 'anthropic' ? 'mb-1' : 'mb-3'}`}
+                            placeholder="Leave empty for provider default"
+                            value={formBaseUrl}
+                            onChange={e => setFormBaseUrl(e.target.value)}
+                          />
+                          {formApiType === 'anthropic' && (
+                            <p className="mb-3 text-xs text-gray-500">
+                              You can enter{' '}
+                              <code className="rounded bg-gray-100 px-1">
+                                bedrock:&lt;region&gt;
+                              </code>{' '}
+                              to use Claude models in Bedrock
+                            </p>
+                          )}
+                          {formApiType === 'bedrock' && (
+                            <p className="mb-3 text-xs text-gray-500">
+                              You can enter just a region (e.g.,{' '}
+                              <code className="rounded bg-gray-100 px-1">us-west-2</code>) instead
+                              of the full URL
+                            </p>
+                          )}
 
-                      {/* Local provider checkbox */}
-                      <label className="mb-3 flex cursor-pointer items-center">
-                        <input
-                          type="checkbox"
-                          checked={formIsLocal}
-                          onChange={e => setFormIsLocal(e.target.checked)}
-                          className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-sm text-gray-700">
-                          🏠 Local provider (API key optional)
-                        </span>
-                      </label>
+                          {/* Local provider checkbox */}
+                          <label className="mb-3 flex cursor-pointer items-center">
+                            <input
+                              type="checkbox"
+                              checked={formIsLocal}
+                              onChange={e => setFormIsLocal(e.target.checked)}
+                              className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span className="text-sm text-gray-700">
+                              🏠 Local provider (API key optional)
+                            </span>
+                          </label>
+                        </>
+                      )}
 
                       <label className="mb-1.5 block text-sm font-medium text-gray-700">
                         API Key {formIsLocal || isClaudeAgentForm ? '(Optional)' : '*'}
@@ -1094,6 +1231,19 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         </p>
                       )}
                       {!isClaudeAgentForm && <div className="mb-3" />}
+
+                      {isClaudeAgentForm && (
+                        <ClaudeAgentFields
+                          binaryPath={formBinaryPath}
+                          extraArgs={formExtraArgs}
+                          extraModelIds={formExtraModelIds}
+                          modelListReplaced={formModelsEndpointDisabled}
+                          onBinaryPathChange={setFormBinaryPath}
+                          onExtraArgsChange={setFormExtraArgs}
+                          onExtraModelIdsChange={setFormExtraModelIds}
+                          onModelListReplacedChange={setFormModelsEndpointDisabled}
+                        />
+                      )}
 
                       {!isClaudeAgentForm && (
                         <>

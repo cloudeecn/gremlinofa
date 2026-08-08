@@ -16,6 +16,7 @@ import {
 import { gremlinClient, activeLoopsStore } from '../client';
 import { clearAllDrafts } from '../hooks/useDraftPersistence';
 import { ImportDataModal } from './ImportDataModal';
+import AdminRecordEditorModal from './AdminRecordEditorModal';
 import { formatStorageDisplay } from '../lib/formatBytes';
 
 interface DataManagerPageProps {
@@ -57,6 +58,7 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
   const [isPurging, setIsPurging] = useState(false);
   const [isCompressing, setIsCompressing] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
+  const [showRecordEditor, setShowRecordEditor] = useState(false);
   const [localCEK, setLocalCEK] = useState(cek);
   const [storageConfig] = useState<StorageConfig | null>(() => getStorageConfig());
   const [showImportData, setShowImportData] = useState(false);
@@ -380,6 +382,22 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
             )}
           </section>
 
+          {/* Record Editor Section */}
+          <section className="rounded-lg border border-gray-200 bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold text-gray-900">Record Editor</h3>
+            <p className="mb-3 text-xs text-gray-600">
+              Decrypt, hand-edit, and rewrite any raw storage row by table + id. A repair tool for
+              state desync — the previous blob is backed up, but you can still write nonsense the
+              app chokes on. Know what you&apos;re editing.
+            </p>
+            <button
+              onClick={() => setShowRecordEditor(true)}
+              className="w-full rounded-lg bg-slate-600 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
+            >
+              🔧 Open Record Editor
+            </button>
+          </section>
+
           {/* Clear Model Cache Section */}
           <section className="rounded-lg border border-gray-200 bg-white p-4">
             <h3 className="mb-2 text-sm font-semibold text-gray-900">Model Cache</h3>
@@ -499,6 +517,11 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
         onClose={() => setShowImportData(false)}
         onImport={handleImport}
         onMigrate={handleMigrate}
+      />
+      <AdminRecordEditorModal
+        isOpen={showRecordEditor}
+        onClose={() => setShowRecordEditor(false)}
+        hasRunningLoops={hasRunningLoops}
       />
     </div>
   );

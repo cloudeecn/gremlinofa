@@ -99,18 +99,17 @@ describe('dataImport', () => {
     // Create mock encryption services
     mockSourceEncryption = {
       initializeWithCEK: vi.fn().mockResolvedValue(undefined),
-      decrypt: vi.fn().mockImplementation(async (data: string) => {
-        return `decrypted:${data}`;
+      decryptToBytes: vi.fn().mockImplementation(async (data: string) => {
+        return new TextEncoder().encode(`decrypted:${data}`);
       }),
-      encrypt: vi.fn(),
       hasSameKeyAs: vi.fn().mockReturnValue(false), // Different keys = re-encrypt
     };
 
     mockAppEncryption = {
       initializeWithCEK: vi.fn(),
-      decrypt: vi.fn(),
-      encrypt: vi.fn().mockImplementation(async (data: string) => {
-        return `re-encrypted:${data}`;
+      decryptWithDecompression: vi.fn(),
+      encryptBytes: vi.fn().mockImplementation(async (bytes: Uint8Array) => {
+        return `re-encrypted:${new TextDecoder().decode(bytes)}`;
       }),
     };
 
@@ -174,11 +173,11 @@ describe('dataImport', () => {
         mockAppEncryption
       );
 
-      // Should decrypt with source encryption
-      expect(mockSourceEncryption.decrypt).toHaveBeenCalledWith('encrypted-project-data');
+      // Should decrypt with source encryption (raw bytes, format-preserving)
+      expect(mockSourceEncryption.decryptToBytes).toHaveBeenCalledWith('encrypted-project-data');
 
       // Should re-encrypt with app encryption
-      expect(mockAppEncryption.encrypt).toHaveBeenCalledWith('decrypted:encrypted-project-data');
+      expect(mockAppEncryption.encryptBytes).toHaveBeenCalled();
 
       // Should save via batchSave
       expect(batchSaveTracker.length).toBe(1);
@@ -259,8 +258,8 @@ describe('dataImport', () => {
       await importDataFromFile(mockAdapter, csvToFile(csv), 'source-cek', mockAppEncryption);
 
       // Should not decrypt/re-encrypt __METADATA__ placeholder
-      expect(mockSourceEncryption.decrypt).not.toHaveBeenCalled();
-      expect(mockAppEncryption.encrypt).not.toHaveBeenCalled();
+      expect(mockSourceEncryption.decryptToBytes).not.toHaveBeenCalled();
+      expect(mockAppEncryption.encryptBytes).not.toHaveBeenCalled();
 
       // Should save with original encryptedData via batchSave
       expect(batchSaveTracker.length).toBe(1);
@@ -293,11 +292,11 @@ describe('dataImport', () => {
       vi.mocked(mockAdapter.get).mockResolvedValue(null);
 
       // Mock decrypt to fail for proj-2
-      vi.mocked(mockSourceEncryption.decrypt).mockImplementation(async (data: string) => {
+      vi.mocked(mockSourceEncryption.decryptToBytes).mockImplementation(async (data: string) => {
         if (data === 'invalid-data') {
           throw new Error('Decryption failed');
         }
-        return `decrypted:${data}`;
+        return new TextEncoder().encode(`decrypted:${data}`);
       });
 
       const result = await importDataFromFile(
@@ -389,7 +388,7 @@ describe('dataImport', () => {
       });
 
       // Mock app encryption to decrypt local record with empty credentials
-      vi.mocked(mockAppEncryption.decrypt).mockResolvedValue(
+      vi.mocked(mockAppEncryption.decryptWithDecompression).mockResolvedValue(
         JSON.stringify({ id: 'api-default-1', apiKey: '', baseUrl: '' })
       );
 
@@ -424,7 +423,7 @@ describe('dataImport', () => {
       });
 
       // Mock app encryption to decrypt local record with filled credentials
-      vi.mocked(mockAppEncryption.decrypt).mockResolvedValue(
+      vi.mocked(mockAppEncryption.decryptWithDecompression).mockResolvedValue(
         JSON.stringify({ id: 'api-with-key', apiKey: 'sk-xxx', baseUrl: '' })
       );
 
@@ -458,7 +457,7 @@ describe('dataImport', () => {
       });
 
       // Mock app encryption to decrypt local record with baseUrl only
-      vi.mocked(mockAppEncryption.decrypt).mockResolvedValue(
+      vi.mocked(mockAppEncryption.decryptWithDecompression).mockResolvedValue(
         JSON.stringify({ id: 'api-with-url', apiKey: '', baseUrl: 'https://custom.api.com' })
       );
 

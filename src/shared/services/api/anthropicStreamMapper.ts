@@ -36,6 +36,7 @@ export interface MapperState {
   currentToolUseId: string | null;
   inputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
 }
@@ -51,6 +52,7 @@ export function createMapperState(): MapperState {
     currentToolUseId: null,
     inputTokens: 0,
     outputTokens: 0,
+    reasoningTokens: 0,
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
   };
@@ -274,10 +276,15 @@ export function mapAnthropicEventToStreamChunks(
 
     case 'message_delta': {
       // Accumulate token usage from message delta
-      const usage = data.usage as Record<string, number> | undefined;
+      const usage = data.usage as
+        | (Record<string, number> & {
+            output_tokens_details?: { thinking_tokens?: number } | null;
+          })
+        | undefined;
       if (usage) {
         newState.inputTokens += usage.input_tokens ?? 0;
         newState.outputTokens += usage.output_tokens ?? 0;
+        newState.reasoningTokens += usage.output_tokens_details?.thinking_tokens ?? 0;
         newState.cacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
         newState.cacheReadTokens += usage.cache_read_input_tokens ?? 0;
       }
@@ -285,11 +292,13 @@ export function mapAnthropicEventToStreamChunks(
     }
 
     case 'message_stop': {
-      // Yield complete token usage at end
+      // Yield complete token usage at end. thinking_tokens arrives inclusive
+      // in output_tokens; report text-only output + disjoint reasoningTokens.
       chunks.push({
         type: 'token_usage',
         inputTokens: newState.inputTokens,
-        outputTokens: newState.outputTokens,
+        outputTokens: newState.outputTokens - newState.reasoningTokens,
+        reasoningTokens: newState.reasoningTokens > 0 ? newState.reasoningTokens : undefined,
         cacheCreationTokens: newState.cacheCreationTokens,
         cacheReadTokens: newState.cacheReadTokens,
       });

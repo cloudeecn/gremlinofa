@@ -445,12 +445,19 @@ async function rollbackToSavepoint(
  * Walk back through stored minion messages to find the most recent assistant
  * message at-or-before `savepoint` that carries a `claudeAgentMessageUuid`.
  * Used to compute the `resumeSessionAt` target when a minion turn fails and the
- * SDK session has to rewind on the next (retry / autoRollback) call.
+ * SDK session has to rewind on the next (retry / autoRollback) call. Returns
+ * the anchor uuid together with the stamped owning session id (absent on
+ * messages written before the stamp existed — the client's send-time fallback
+ * resolves those).
  */
 export function findPriorAssistantClaudeAgentUuid(
-  messages: { id: string; role: string; metadata?: { claudeAgentMessageUuid?: string } }[],
+  messages: {
+    id: string;
+    role: string;
+    metadata?: { claudeAgentMessageUuid?: string; claudeAgentSessionId?: string };
+  }[],
   savepoint: string | undefined
-): string | undefined {
+): { uuid: string; sessionId?: string } | undefined {
   if (!savepoint || savepoint === SAVEPOINT_START) {
     return undefined;
   }
@@ -459,7 +466,10 @@ export function findPriorAssistantClaudeAgentUuid(
   for (let i = savepointIdx; i >= 0; i--) {
     const m = messages[i];
     if (m.role === 'assistant' && m.metadata?.claudeAgentMessageUuid) {
-      return m.metadata.claudeAgentMessageUuid;
+      return {
+        uuid: m.metadata.claudeAgentMessageUuid,
+        sessionId: m.metadata.claudeAgentSessionId,
+      };
     }
   }
   return undefined;
@@ -483,16 +493,24 @@ export async function applyClaudeAgentRewindOnFailure(
   reason: string
 ): Promise<void> {
   if (!isClaudeAgent) return;
-  const priorUuid = findPriorAssistantClaudeAgentUuid(
+  const anchor = findPriorAssistantClaudeAgentUuid(
     [...existingMessages, ...newMessages],
     minionChat.savepoint
   );
-  if (priorUuid) {
-    minionChat.claudeAgentResumeAt = priorUuid;
+  if (anchor) {
+    minionChat.claudeAgentResumeAt = anchor.uuid;
+    // Repoint the session to the anchor's stamped owner — the anchor may
+    // predate a session drop/fork, in which case the current session's file
+    // doesn't contain it. Legacy messages without the stamp keep the current
+    // session (the client's send-time fallback resolves those).
+    if (anchor.sessionId) {
+      minionChat.claudeAgentSessionId = anchor.sessionId;
+    }
     console.debug(
-      '[minionTool] claude-agent %s: resumeAt=%s (savepoint=%s)',
+      '[minionTool] claude-agent %s: resumeAt=%s sessionId=%s (savepoint=%s)',
       reason,
-      priorUuid,
+      anchor.uuid,
+      anchor.sessionId ?? minionChat.claudeAgentSessionId,
       minionChat.savepoint
     );
   } else {
@@ -524,12 +542,17 @@ export async function applyClaudeAgentRewindOnRollback(
   const cutoffIdx = messages.findIndex(m => m.id === firstDeletedMessageId);
   if (cutoffIdx === -1) return;
   const keptTailId = cutoffIdx > 0 ? messages[cutoffIdx - 1].id : undefined;
-  const priorUuid = findPriorAssistantClaudeAgentUuid(messages, keptTailId);
-  if (priorUuid) {
-    minionChat.claudeAgentResumeAt = priorUuid;
+  const anchor = findPriorAssistantClaudeAgentUuid(messages, keptTailId);
+  if (anchor) {
+    minionChat.claudeAgentResumeAt = anchor.uuid;
+    // See applyClaudeAgentRewindOnFailure — anchor's stamped session wins.
+    if (anchor.sessionId) {
+      minionChat.claudeAgentSessionId = anchor.sessionId;
+    }
     console.debug(
-      '[minionTool] claude-agent rollback: resumeAt=%s (keptTail=%s)',
-      priorUuid,
+      '[minionTool] claude-agent rollback: resumeAt=%s sessionId=%s (keptTail=%s)',
+      anchor.uuid,
+      anchor.sessionId ?? minionChat.claudeAgentSessionId,
       keptTailId
     );
   } else {

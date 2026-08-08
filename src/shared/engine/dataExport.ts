@@ -13,6 +13,8 @@ import type { StorageAdapter } from '../services/storage/StorageAdapter';
 import { Tables } from '../services/storage/StorageAdapter';
 import { CEK_ORACLE_KEY } from '../services/storage/unifiedStorage';
 import { buildCSVLine } from './lib/csvHelper';
+import { isConfiguredApiDefinition } from '../protocol/apiDefinition';
+import type { APIDefinition } from '../protocol/types';
 import type { ExportProgressCallback } from '../protocol/types/data';
 
 /**
@@ -32,23 +34,23 @@ const EXPORT_TABLES = [
 ];
 
 /**
- * Check if a default API definition has credentials filled
+ * Check if a default API definition has been configured by the user
+ * (credentials, proxy, custom model list, CLI settings, ...). Unconfigured
+ * factory defaults are noise in a backup; configured ones are user data.
  */
 async function hasDefaultApiCredentials(
   encryptedData: string,
   encryptionService: EncryptionCore
 ): Promise<boolean> {
   try {
-    const decrypted = await encryptionService.decrypt(encryptedData);
-    const apiDef = JSON.parse(decrypted);
-    // Include if apiKey OR baseUrl has a non-default value
-    // xAI default baseUrl is 'https://api.x.ai/v1', others are empty
-    const hasApiKey = !!apiDef.apiKey;
-    const hasCustomBaseUrl =
-      !!apiDef.baseUrl && apiDef.baseUrl !== '' && apiDef.baseUrl !== 'https://api.x.ai/v1';
-    return hasApiKey || hasCustomBaseUrl;
-  } catch {
-    // If decryption fails, skip the record
+    const decrypted = await encryptionService.decryptWithDecompression(encryptedData);
+    const apiDef = JSON.parse(decrypted) as APIDefinition;
+    return isConfiguredApiDefinition(apiDef);
+  } catch (err) {
+    console.warn(
+      '[DataExport] Failed to decrypt default API definition while checking configuration — excluding it from the export:',
+      err
+    );
     return false;
   }
 }

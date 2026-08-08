@@ -11,6 +11,7 @@ import type { StreamChunk } from '../api/baseClient';
 import type {
   ErrorRenderBlock,
   FallbackRenderBlock,
+  NotifyRenderBlock,
   RenderingBlockGroup,
   RenderingContentBlock,
   TextRenderBlock,
@@ -112,6 +113,10 @@ export class StreamingContentAssembler {
 
       case 'fallback':
         this.handleFallback(chunk.fromModel, chunk.toModel);
+        break;
+
+      case 'notify':
+        this.handleNotify(chunk);
         break;
 
       case 'unknown_block':
@@ -376,6 +381,21 @@ export class StreamingContentAssembler {
       ...(toModel ? { toModel } : {}),
     };
     this.addBlockToGroups(fallbackBlock);
+    this.lastEndedBlockType = null;
+  }
+
+  private handleNotify(chunk: Extract<StreamChunk, { type: 'notify' }>): void {
+    // Loop-side SDK notification (claude-agent). Categorized as 'text', so it
+    // renders inline and splits any surrounding backstage (thinking) group
+    // instead of disappearing into the accordion.
+    const notifyBlock: NotifyRenderBlock = {
+      type: 'notify',
+      text: chunk.text,
+      ...(chunk.key ? { key: chunk.key } : {}),
+      ...(chunk.priority ? { priority: chunk.priority } : {}),
+      ...(chunk.color ? { color: chunk.color } : {}),
+    };
+    this.addBlockToGroups(notifyBlock);
     this.lastEndedBlockType = null;
   }
 

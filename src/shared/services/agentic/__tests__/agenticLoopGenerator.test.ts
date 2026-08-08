@@ -381,6 +381,57 @@ describe('agenticLoopGenerator', () => {
       expect(result.value.tokens.outputTokens).toBe(50);
     });
 
+    it('prefers the provider context-fill snapshot over the billing-usage sum', async () => {
+      // claude-agent shape: billing usage aggregates N internal calls, the
+      // snapshot reflects only the last one.
+      const mockResult = {
+        textContent: 'Hello!',
+        fullContent: [{ type: 'text', text: 'Hello!' }],
+        stopReason: 'end_turn',
+        inputTokens: 105,
+        outputTokens: 30,
+        cacheCreationTokens: 900,
+        cacheReadTokens: 1000,
+        contextWindowUsage: 1025,
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([{ type: 'content', content: 'Hello!' }], mockResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const result = await collectAgenticLoop(
+        runAgenticLoop(createMockOptions(), [createMockUserMessage('Hi')])
+      );
+
+      const assistant = result.messages[1];
+      expect(assistant?.metadata?.contextWindowUsage).toBe(1025);
+      // Billing metadata still carries the aggregate.
+      expect(assistant?.metadata?.inputTokens).toBe(105);
+      expect(assistant?.metadata?.cacheReadTokens).toBe(1000);
+    });
+
+    it('falls back to summing billing usage when no snapshot is reported', async () => {
+      const mockResult = {
+        textContent: 'Hello!',
+        fullContent: [{ type: 'text', text: 'Hello!' }],
+        stopReason: 'end_turn',
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheCreationTokens: 10,
+        cacheReadTokens: 5,
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([{ type: 'content', content: 'Hello!' }], mockResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const result = await collectAgenticLoop(
+        runAgenticLoop(createMockOptions(), [createMockUserMessage('Hi')])
+      );
+
+      expect(result.messages[1]?.metadata?.contextWindowUsage).toBe(165);
+    });
+
     it('executes tools when stopReason is tool_use', async () => {
       const toolUseBlocks = [
         {

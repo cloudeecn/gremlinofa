@@ -3,6 +3,7 @@ import Modal from '../ui/Modal';
 import { useApp } from '../../hooks/useApp';
 import { getApiTypeDisplayName, getApiDefinitionIcon } from '../../lib/apiTypeUtils';
 import type { Model, APIDefinition } from '../../../shared/protocol/types';
+import { apiKeyOptional } from '../../../shared/protocol/apiDefinition';
 
 interface ModelSelectorProps {
   isOpen: boolean;
@@ -24,6 +25,9 @@ function getStatusBadge(apiDef: APIDefinition): { className: string; text: strin
     return { className: 'bg-blue-100 text-blue-800', text: 'Local' };
   } else if (hasApiKey) {
     return { className: 'bg-green-100 text-green-800', text: 'Configured' };
+  } else if (apiDef.apiType === 'claude-agent') {
+    // Empty key = host `claude` CLI credentials — configured, not missing.
+    return { className: 'bg-blue-100 text-blue-800', text: 'Host CLI' };
   } else {
     return { className: 'bg-red-100 text-red-800', text: 'Not Set' };
   }
@@ -95,12 +99,12 @@ function ModelSelectorContent({
   // Get available models for selected API
   const availableModels: Model[] = selectedApiDefId ? models.get(selectedApiDefId) || [] : [];
 
-  // Check if selected API has an API key configured or is local
+  // Check if selected API has an API key configured or can run keyless
   const selectedApiDef = selectedApiDefId
     ? apiDefinitions.find(def => def.id === selectedApiDefId)
     : null;
   const hasApiKey = selectedApiDef?.apiKey && selectedApiDef.apiKey.trim() !== '';
-  const isLocalProvider = selectedApiDef?.isLocal === true;
+  const keyOptional = selectedApiDef ? apiKeyOptional(selectedApiDef) : false;
 
   return (
     <div className="flex max-h-[75dvh] flex-col rounded-t-2xl bg-white md:max-h-[90dvh] md:rounded-2xl">
@@ -211,7 +215,7 @@ function ModelSelectorContent({
               Please select an API provider above to view available models.
             </p>
           ) : availableModels.length === 0 ? (
-            !hasApiKey && !isLocalProvider ? (
+            !hasApiKey && !keyOptional ? (
               <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
                 <p className="mb-2 text-sm text-yellow-900">
                   ⚠️ Please configure an API key for this API provider in Settings before selecting

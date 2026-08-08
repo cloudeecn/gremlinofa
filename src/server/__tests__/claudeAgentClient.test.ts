@@ -8,15 +8,20 @@
  * GremlinOFA-side knobs (reasoning, auth, resume).
  */
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as nodePath from 'node:path';
 import {
   ClaudeAgentClient,
   classifyTurnError,
   describeFallback,
+  parseExtraArgs,
   bridgedToolName,
   toolInputKey,
   extractToolResponseText,
   detectTruncation,
   trimBlockJson,
+  mapSdkUsage,
   type TurnOutcomeSignals,
 } from '../claudeAgentClient';
 import type {
@@ -114,6 +119,7 @@ function makeFakeQuery(
           output_tokens: 20,
           cache_creation_input_tokens: 0,
           cache_read_input_tokens: 0,
+          output_tokens_details: { thinking_tokens: 8 },
         },
       };
     })();
@@ -338,6 +344,249 @@ describe('ClaudeAgentClient', () => {
     expect(r.providerExtra?.claudeAgentMessageUuid).toBe('asst-uuid-1');
   });
 
+  it('splits result usage into text-only outputTokens + reasoningTokens on StreamResult and the token_usage chunk', async () => {
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFakeQuery({ thinking: 'hmm', text: 'hi' }) as never,
+      sessionDir: () => '/tmp/sessions',
+      generateSessionId: () => 'fixed-uuid',
+    });
+
+    const { chunks, result } = await consume(client, [userMessage('hello')], makeApiDef());
+
+    // Fixture result usage: output_tokens 20 inclusive of thinking_tokens 8.
+    const usageChunk = chunks.find(c => c.type === 'token_usage');
+    expect(usageChunk).toMatchObject({ inputTokens: 10, outputTokens: 12, reasoningTokens: 8 });
+    expect(result).toMatchObject({ inputTokens: 10, outputTokens: 12, reasoningTokens: 8 });
+  });
+
+  describe('context window snapshot', () => {
+    /**
+     * Two internal API calls streamed via partials: a tool-use round trip that
+     * cache-writes the prompt, then the final call that cache-reads it. The
+     * result message carries the whole-turn aggregate.
+     */
+    function makeTwoStepStreamingQuery() {
+      const ev = (event: Record<string, unknown>) => ({
+        type: 'stream_event' as const,
+        uuid: 'p',
+        session_id: 's',
+        event,
+      });
+      const textCycle = function* (text: string, usage: Record<string, number>, stop: string) {
+        yield ev({ type: 'message_start', message: {} });
+        yield ev({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        });
+        yield ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } });
+        yield ev({ type: 'content_block_stop', index: 0 });
+        yield ev({
+          type: 'message_delta',
+          delta: { stop_reason: stop, stop_details: null, stop_sequence: null, container: null },
+          usage,
+          context_management: null,
+        });
+        yield ev({ type: 'message_stop' });
+      };
+      return vi.fn(
+        () =>
+          (async function* () {
+            yield { type: 'system' as const, subtype: 'init' as const, session_id: 's' };
+            yield* textCycle(
+              'step one ',
+              {
+                input_tokens: 100,
+                output_tokens: 10,
+                cache_creation_input_tokens: 900,
+                cache_read_input_tokens: 0,
+              },
+              'tool_use'
+            );
+            yield* textCycle(
+              'step two',
+              {
+                input_tokens: 5,
+                output_tokens: 20,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 1000,
+              },
+              'end_turn'
+            );
+            yield {
+              type: 'assistant' as const,
+              uuid: 'a1',
+              session_id: 's',
+              message: { content: [{ type: 'text', text: 'step one step two' }] },
+            };
+            yield {
+              type: 'result' as const,
+              subtype: 'success' as const,
+              stop_reason: 'end_turn',
+              usage: {
+                input_tokens: 105,
+                output_tokens: 30,
+                cache_creation_input_tokens: 900,
+                cache_read_input_tokens: 1000,
+              },
+            };
+          })() as unknown
+      );
+    }
+
+    it('reports the LAST internal call as contextWindowUsage, keeping billing on the aggregate', async () => {
+      const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      const client = new ClaudeAgentClient(makeDeps(), {
+        query: makeTwoStepStreamingQuery() as never,
+        sessionDir: () => '/tmp',
+        generateSessionId: () => 'u',
+      });
+
+      const { result } = await consume(client, [userMessage('go')], makeApiDef());
+
+      // Billing fields: whole-turn aggregate from the result message.
+      expect(result).toMatchObject({
+        inputTokens: 105,
+        outputTokens: 30,
+        cacheCreationTokens: 900,
+        cacheReadTokens: 1000,
+      });
+      // Context fill: last call only — 5 + 20 + 0 + 1000, NOT the 2035 aggregate.
+      expect((result as { contextWindowUsage?: number }).contextWindowUsage).toBe(1025);
+      debugSpy.mockRestore();
+    });
+
+    it('degradation (no partials): snapshot comes from the last coalesced assistant usage', async () => {
+      const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      const query = vi.fn(
+        () =>
+          (async function* () {
+            yield { type: 'system' as const, subtype: 'init' as const, session_id: 's' };
+            yield {
+              type: 'assistant' as const,
+              uuid: 'a1',
+              session_id: 's',
+              message: {
+                content: [{ type: 'text', text: 'step one ' }],
+                usage: { input_tokens: 100, output_tokens: 10 },
+              },
+            };
+            yield {
+              type: 'assistant' as const,
+              uuid: 'a2',
+              session_id: 's',
+              message: {
+                content: [{ type: 'text', text: 'step two' }],
+                usage: { input_tokens: 5, output_tokens: 20, cache_read_input_tokens: 1000 },
+              },
+            };
+            yield {
+              type: 'result' as const,
+              subtype: 'success' as const,
+              stop_reason: 'end_turn',
+              usage: { input_tokens: 105, output_tokens: 30, cache_read_input_tokens: 1000 },
+            };
+          })() as unknown
+      );
+      const client = new ClaudeAgentClient(makeDeps(), {
+        query: query as never,
+        sessionDir: () => '/tmp',
+        generateSessionId: () => 'u',
+      });
+
+      const { result } = await consume(client, [userMessage('go')], makeApiDef());
+
+      expect(result).toMatchObject({ inputTokens: 105, outputTokens: 30 });
+      expect((result as { contextWindowUsage?: number }).contextWindowUsage).toBe(1025);
+      debugSpy.mockRestore();
+    });
+
+    it('leaves contextWindowUsage undefined when no per-call usage was seen', async () => {
+      // makeFakeQuery's assistant message carries no usage and streams no partials.
+      const client = new ClaudeAgentClient(makeDeps(), {
+        query: makeFakeQuery({ text: 'hi' }) as never,
+        sessionDir: () => '/tmp/sessions',
+        generateSessionId: () => 'fixed-uuid',
+      });
+
+      const { result } = await consume(client, [userMessage('hello')], makeApiDef());
+
+      expect((result as { contextWindowUsage?: number }).contextWindowUsage).toBeUndefined();
+    });
+  });
+
+  describe('notification messages', () => {
+    it('emits a notify chunk per system/notification, color omitted when absent', async () => {
+      const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      const query = vi.fn(
+        () =>
+          (async function* () {
+            yield { type: 'system' as const, subtype: 'init' as const, session_id: 's' };
+            yield {
+              type: 'system' as const,
+              subtype: 'notification' as const,
+              uuid: 'n1',
+              session_id: 's',
+              key: 'error-compacting-conversation',
+              text: 'Error compacting conversation',
+              priority: 'immediate' as const,
+              color: 'error',
+            };
+            yield {
+              type: 'system' as const,
+              subtype: 'notification' as const,
+              uuid: 'n2',
+              session_id: 's',
+              key: 'fable-usage-credits',
+              text: 'Fable 5 is now using usage credits',
+              priority: 'medium' as const,
+            };
+            yield {
+              type: 'assistant' as const,
+              uuid: 'a1',
+              session_id: 's',
+              message: { content: [{ type: 'text', text: 'hi' }] },
+            };
+            yield {
+              type: 'result' as const,
+              subtype: 'success' as const,
+              stop_reason: 'end_turn',
+              usage: { input_tokens: 2, output_tokens: 3 },
+            };
+          })() as unknown
+      );
+      const client = new ClaudeAgentClient(makeDeps(), {
+        query: query as never,
+        sessionDir: () => '/tmp',
+        generateSessionId: () => 'u',
+      });
+
+      const { chunks, result } = await consume(client, [userMessage('hello')], makeApiDef());
+
+      const notifies = chunks.filter(c => c.type === 'notify');
+      expect(notifies).toEqual([
+        {
+          type: 'notify',
+          text: 'Error compacting conversation',
+          key: 'error-compacting-conversation',
+          priority: 'immediate',
+          color: 'error',
+        },
+        {
+          type: 'notify',
+          text: 'Fable 5 is now using usage credits',
+          key: 'fable-usage-credits',
+          priority: 'medium',
+        },
+      ]);
+      // Not misread as an unknown block, and the turn itself is unaffected.
+      expect(chunks.some(c => c.type === 'unknown_block')).toBe(false);
+      expect((result as { error?: unknown; textContent: string }).error).toBeUndefined();
+      expect((result as { textContent: string }).textContent).toBe('hi');
+      debugSpy.mockRestore();
+    });
+  });
+
   describe('fallback block', () => {
     it('treatFallbackAsError on: surfaces a neutral model-handoff error, no fallback chunk', async () => {
       const client = new ClaudeAgentClient(makeDeps(), {
@@ -452,6 +701,8 @@ describe('ClaudeAgentClient', () => {
       query: fakeQuery as never,
       sessionDir: () => '/tmp',
       generateSessionId: () => 'new-uuid',
+      // Nonexistent dir → the resume resolver passes targets through unchanged.
+      sessionJsonlDir: () => '/nonexistent-claude-jsonl-dir',
     });
 
     await consume(client, [userMessage('first')], makeApiDef());
@@ -740,6 +991,89 @@ describe('ClaudeAgentClient', () => {
     // unless the host had them already.
     if (!process.env.ANTHROPIC_API_KEY) expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it('passes binaryPath as pathToClaudeCodeExecutable, omits it when blank', async () => {
+    const optsSink: { value?: unknown } = {};
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFakeQuery({ text: 'ok' }, optsSink) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    await consume(client, [userMessage('hey')], makeApiDef({ binaryPath: '/opt/claude/claude' }));
+    let opts = optsSink.value as Record<string, unknown>;
+    expect(opts.pathToClaudeCodeExecutable).toBe('/opt/claude/claude');
+
+    optsSink.value = undefined;
+    await consume(client, [userMessage('hey')], makeApiDef({ binaryPath: '   ' }));
+    opts = optsSink.value as Record<string, unknown>;
+    expect('pathToClaudeCodeExecutable' in opts).toBe(false);
+
+    optsSink.value = undefined;
+    await consume(client, [userMessage('hey')], makeApiDef());
+    opts = optsSink.value as Record<string, unknown>;
+    expect('pathToClaudeCodeExecutable' in opts).toBe(false);
+  });
+
+  it('suppresses cloud connectors, bundled skills and foreign MCP config', async () => {
+    const optsSink: { value?: unknown } = {};
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFakeQuery({ text: 'ok' }, optsSink) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    await consume(client, [userMessage('hey')], makeApiDef());
+    const opts = optsSink.value as Record<string, unknown>;
+    expect(opts.strictMcpConfig).toBe(true);
+    expect(opts.settings).toEqual({
+      disableClaudeAiConnectors: true,
+      disableBundledSkills: true,
+    });
+  });
+
+  it('leaves the settings layer to the caller when extraArgs supplies --settings', async () => {
+    const optsSink: { value?: unknown } = {};
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFakeQuery({ text: 'ok' }, optsSink) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    // The SDK folds `Options.settings` into the extraArgs record under the same
+    // key, so shipping ours would silently replace the caller's file.
+    await consume(
+      client,
+      [userMessage('hey')],
+      makeApiDef({ extraArgs: '--settings /path/to.json' })
+    );
+    const opts = optsSink.value as Record<string, unknown>;
+    expect('settings' in opts).toBe(false);
+    expect(opts.extraArgs).toEqual({ settings: '/path/to.json' });
+    expect(opts.strictMcpConfig).toBe(true);
+  });
+
+  it('parses the extraArgs string into the SDK extraArgs record, omits it when blank', async () => {
+    const optsSink: { value?: unknown } = {};
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFakeQuery({ text: 'ok' }, optsSink) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    await consume(
+      client,
+      [userMessage('hey')],
+      makeApiDef({ extraArgs: '--strict-mcp-config --settings /path/to.json' })
+    );
+    let opts = optsSink.value as Record<string, unknown>;
+    expect(opts.extraArgs).toEqual({ 'strict-mcp-config': null, settings: '/path/to.json' });
+
+    optsSink.value = undefined;
+    await consume(client, [userMessage('hey')], makeApiDef({ extraArgs: '  ' }));
+    opts = optsSink.value as Record<string, unknown>;
+    expect('extraArgs' in opts).toBe(false);
   });
 
   it('discoverModels returns the hard-coded model set', async () => {
@@ -2480,6 +2814,84 @@ describe('classifyTurnError', () => {
   });
 });
 
+describe('mapSdkUsage', () => {
+  it('splits thinking_tokens out of output_tokens (disjoint sibling convention)', () => {
+    expect(
+      mapSdkUsage({
+        input_tokens: 10,
+        output_tokens: 100,
+        cache_creation_input_tokens: 3,
+        cache_read_input_tokens: 4,
+        output_tokens_details: { thinking_tokens: 60 },
+      })
+    ).toEqual({
+      inputTokens: 10,
+      outputTokens: 40,
+      reasoningTokens: 60,
+      cacheCreationTokens: 3,
+      cacheReadTokens: 4,
+    });
+  });
+
+  it('reports zero reasoning when output_tokens_details is absent or null', () => {
+    expect(mapSdkUsage({ input_tokens: 1, output_tokens: 2 })).toMatchObject({
+      outputTokens: 2,
+      reasoningTokens: 0,
+    });
+    expect(
+      mapSdkUsage({ input_tokens: 1, output_tokens: 2, output_tokens_details: null })
+    ).toMatchObject({ outputTokens: 2, reasoningTokens: 0 });
+  });
+
+  it('zero-fills on undefined usage', () => {
+    expect(mapSdkUsage(undefined)).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    });
+  });
+});
+
+describe('parseExtraArgs', () => {
+  it('returns undefined for empty or whitespace-only input', () => {
+    expect(parseExtraArgs(undefined)).toBeUndefined();
+    expect(parseExtraArgs('')).toBeUndefined();
+    expect(parseExtraArgs('   ')).toBeUndefined();
+  });
+
+  it('parses --key value, --key=value and boolean --flag forms', () => {
+    expect(parseExtraArgs('--max-turns 10 --verbose --output-format=json')).toEqual({
+      'max-turns': '10',
+      verbose: null,
+      'output-format': 'json',
+    });
+  });
+
+  it('groups quoted values with spaces', () => {
+    expect(
+      parseExtraArgs('--settings "/my path/settings.json" --append-system-prompt \'be nice\'')
+    ).toEqual({
+      settings: '/my path/settings.json',
+      'append-system-prompt': 'be nice',
+    });
+  });
+
+  it('keeps a quoted value starting with -- as a value, not a flag', () => {
+    expect(parseExtraArgs('--msg "--literal"')).toEqual({ msg: '--literal' });
+  });
+
+  it('drops positional tokens that follow no flag', () => {
+    expect(parseExtraArgs('stray --flag')).toEqual({ flag: null });
+    expect(parseExtraArgs('only positional tokens')).toBeUndefined();
+  });
+
+  it('treats a trailing valueless flag as boolean', () => {
+    expect(parseExtraArgs('--a 1 --b')).toEqual({ a: '1', b: null });
+  });
+});
+
 describe('describeFallback', () => {
   it('names both models when known', () => {
     expect(describeFallback('claude-fable-5', 'claude-opus-4-8')).toBe(
@@ -2584,5 +2996,186 @@ describe('model-delivery detection helpers', () => {
     it('returns null when received is longer (not a truncation)', () => {
       expect(detectTruncation('short', 'short plus more')).toBeNull();
     });
+  });
+});
+
+describe('resume resolution (session JSONL verification)', () => {
+  const makeJsonlDir = () => fs.mkdtempSync(nodePath.join(os.tmpdir(), 'ca-jsonl-'));
+  /** One JSONL line per uuid, with a parentUuid chain like real session files. */
+  const writeSession = (dir: string, sessionId: string, uuids: string[], extra = '') =>
+    fs.writeFileSync(
+      nodePath.join(dir, `${sessionId}.jsonl`),
+      uuids.map(u => JSON.stringify({ uuid: u, parentUuid: `parent-of-${u}` })).join('\n') + extra
+    );
+  const makeClient = (dir: string, optsSink: { value?: unknown }) =>
+    new ClaudeAgentClient(makeDeps(), {
+      query: makeFakeQuery({ text: 'x' }, optsSink) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'fresh-uuid',
+      sessionJsonlDir: () => dir,
+    });
+  const assistantMessage = (uuid: string, sessionId?: string): Message<unknown> =>
+    ({
+      id: `m-${uuid}`,
+      role: 'assistant',
+      content: { type: 'text', content: 'x' },
+      timestamp: new Date(),
+      metadata: {
+        claudeAgentMessageUuid: uuid,
+        ...(sessionId ? { claudeAgentSessionId: sessionId } : {}),
+      },
+    }) as unknown as Message<unknown>;
+  const sdkOpts = (sink: { value?: unknown }) => sink.value as Record<string, unknown>;
+
+  it('passes the target through when the stated session contains the anchor', async () => {
+    const dir = makeJsonlDir();
+    writeSession(dir, 'sess-cur', ['uuid-anchor']);
+    const optsSink: { value?: unknown } = {};
+    await consume(makeClient(dir, optsSink), [userMessage('go')], makeApiDef(), {
+      claudeAgentSessionId: 'sess-cur',
+      claudeAgentResumeAt: 'uuid-anchor',
+    });
+    expect(sdkOpts(optsSink).resume).toBe('sess-cur');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-anchor');
+    expect(sdkOpts(optsSink).forkSession).toBe(true);
+  });
+
+  it('repoints resume to the session file that owns the anchor', async () => {
+    const dir = makeJsonlDir();
+    writeSession(dir, 'sess-cur', ['uuid-unrelated']);
+    writeSession(dir, 'sess-old', ['uuid-anchor']);
+    const optsSink: { value?: unknown } = {};
+    await consume(makeClient(dir, optsSink), [userMessage('go')], makeApiDef(), {
+      claudeAgentSessionId: 'sess-cur',
+      claudeAgentResumeAt: 'uuid-anchor',
+    });
+    expect(sdkOpts(optsSink).resume).toBe('sess-old');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-anchor');
+    expect(sdkOpts(optsSink).forkSession).toBe(true);
+  });
+
+  it('ignores parentUuid references when matching the anchor', async () => {
+    const dir = makeJsonlDir();
+    // sess-cur only references the anchor as a parentUuid — not a real entry.
+    fs.writeFileSync(
+      nodePath.join(dir, 'sess-cur.jsonl'),
+      JSON.stringify({ uuid: 'uuid-other', parentUuid: 'uuid-anchor' })
+    );
+    const optsSink: { value?: unknown } = {};
+    await consume(makeClient(dir, optsSink), [userMessage('go')], makeApiDef(), {
+      claudeAgentSessionId: 'sess-cur',
+      claudeAgentResumeAt: 'uuid-anchor',
+    });
+    // Anchor not recoverable anywhere → plain resume of the existing session.
+    expect(sdkOpts(optsSink).resume).toBe('sess-cur');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBeUndefined();
+    expect(sdkOpts(optsSink).forkSession).toBeUndefined();
+  });
+
+  it('downgrades to an earlier stored anchor when the requested one is gone', async () => {
+    const dir = makeJsonlDir();
+    writeSession(dir, 'sess-cur', ['uuid-unrelated']);
+    writeSession(dir, 'sess-old', ['uuid-early']);
+    const optsSink: { value?: unknown } = {};
+    await consume(
+      makeClient(dir, optsSink),
+      [assistantMessage('uuid-early', 'sess-old'), userMessage('go')],
+      makeApiDef(),
+      { claudeAgentSessionId: 'sess-cur', claudeAgentResumeAt: 'uuid-lost' }
+    );
+    expect(sdkOpts(optsSink).resume).toBe('sess-old');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-early');
+    expect(sdkOpts(optsSink).forkSession).toBe(true);
+  });
+
+  it('degrades to a fresh session when nothing is recoverable', async () => {
+    const dir = makeJsonlDir(); // exists, but holds no session files
+    const optsSink: { value?: unknown } = {};
+    await consume(makeClient(dir, optsSink), [userMessage('go')], makeApiDef(), {
+      claudeAgentSessionId: 'sess-gone',
+      claudeAgentResumeAt: 'uuid-lost',
+    });
+    expect(sdkOpts(optsSink).sessionId).toBe('fresh-uuid');
+    expect(sdkOpts(optsSink).resume).toBeUndefined();
+    expect(sdkOpts(optsSink).resumeSessionAt).toBeUndefined();
+  });
+
+  it('recovers a plain resume whose session file is missing via message anchors', async () => {
+    const dir = makeJsonlDir();
+    writeSession(dir, 'sess-old', ['uuid-a']);
+    const optsSink: { value?: unknown } = {};
+    await consume(
+      makeClient(dir, optsSink),
+      [assistantMessage('uuid-a', 'sess-old'), userMessage('go')],
+      makeApiDef(),
+      { claudeAgentSessionId: 'sess-gone' }
+    );
+    expect(sdkOpts(optsSink).resume).toBe('sess-old');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-a');
+    expect(sdkOpts(optsSink).forkSession).toBe(true);
+  });
+
+  it('leaves the target untouched when the projects dir does not exist', async () => {
+    const optsSink: { value?: unknown } = {};
+    await consume(
+      makeClient('/nonexistent-claude-jsonl-dir', optsSink),
+      [userMessage('go')],
+      makeApiDef(),
+      { claudeAgentSessionId: 'sess-cur', claudeAgentResumeAt: 'uuid-anchor' }
+    );
+    expect(sdkOpts(optsSink).resume).toBe('sess-cur');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-anchor');
+  });
+});
+
+describe('inspectProviderMessage', () => {
+  const makeJsonlDir = () => fs.mkdtempSync(nodePath.join(os.tmpdir(), 'ca-inspect-'));
+  const makeClient = (dir: string) =>
+    new ClaudeAgentClient(makeDeps(), {
+      query: vi.fn() as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+      sessionJsonlDir: () => dir,
+    });
+
+  it('returns the entry from the stated session', async () => {
+    const dir = makeJsonlDir();
+    const entry = JSON.stringify({ uuid: 'uuid-a', message: { role: 'assistant' } });
+    fs.writeFileSync(nodePath.join(dir, 'sess-1.jsonl'), `${entry}\n`);
+    await expect(makeClient(dir).inspectProviderMessage('sess-1', 'uuid-a')).resolves.toEqual({
+      entry,
+      sessionId: 'sess-1',
+      foundVia: 'stated',
+    });
+  });
+
+  it('scans other sessions when the stated one lacks the uuid', async () => {
+    const dir = makeJsonlDir();
+    const entry = JSON.stringify({ uuid: 'uuid-a' });
+    fs.writeFileSync(nodePath.join(dir, 'sess-1.jsonl'), JSON.stringify({ uuid: 'uuid-b' }));
+    fs.writeFileSync(nodePath.join(dir, 'sess-2.jsonl'), entry);
+    await expect(makeClient(dir).inspectProviderMessage('sess-1', 'uuid-a')).resolves.toEqual({
+      entry,
+      sessionId: 'sess-2',
+      foundVia: 'scan',
+    });
+  });
+
+  it('scans without a stated session (legacy unstamped messages)', async () => {
+    const dir = makeJsonlDir();
+    const entry = JSON.stringify({ uuid: 'uuid-a' });
+    fs.writeFileSync(nodePath.join(dir, 'sess-2.jsonl'), entry);
+    await expect(makeClient(dir).inspectProviderMessage(undefined, 'uuid-a')).resolves.toEqual({
+      entry,
+      sessionId: 'sess-2',
+      foundVia: 'scan',
+    });
+  });
+
+  it('returns undefined when no session file contains the uuid', async () => {
+    const dir = makeJsonlDir();
+    await expect(
+      makeClient(dir).inspectProviderMessage('sess-1', 'uuid-a')
+    ).resolves.toBeUndefined();
   });
 });

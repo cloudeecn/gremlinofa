@@ -35,6 +35,7 @@ import { registerAllTools } from '../services/tools';
 import { applyClaudeAgentRewindOnRollback } from '../services/tools/minionTool';
 import type { VfsAdapter } from '../services/vfs/vfsAdapter';
 import { generateUniqueId } from '../protocol/idGenerator';
+import { apiKeyOptional } from '../protocol/apiDefinition';
 import { bytesToBase32, convertCEKToBase32 } from './lib/cekFormat';
 import { mergeExtraModels } from './lib/api/mergeExtraModels';
 import { assertNoLoopsRunning } from './lib/assertNoLoopsRunning';
@@ -49,7 +50,7 @@ import type {
 import { ChatRunner } from './ChatRunner';
 import { LoopRegistry } from './LoopRegistry';
 import { runExport } from './exportRunner';
-import { runImport } from './importRunner';
+import { clearAllVfsBackends, runImport } from './importRunner';
 import { prepareMessageForWire } from './messageWire';
 import { runProjectExport, runProjectImport } from './projectBundle';
 import {
@@ -462,6 +463,11 @@ export class GremlinServer {
       }
       case 'purgeAllData':
         assertNoLoopsRunning(this.registry, 'purgeAllData');
+        // Filesystem / remote VFS backends live outside the tables that
+        // purgeAllData clears — wipe them while projects are still listable.
+        await clearAllVfsBackends(this.storage, this.deps.encryption, this.deps, message =>
+          console.warn('[GremlinServer] purgeAllData:', message)
+        );
         await this.storage.purgeAllData();
         // Drop the deps bundle so subsequent RPCs return NOT_INITIALIZED
         // until the frontend reconnects with a fresh `init`. The
@@ -476,6 +482,30 @@ export class GremlinServer {
       }
       case 'isStorageEmpty':
         return { empty: await this.storage.isStorageEmpty() };
+
+      // ----- admin / diagnostics -----
+      case 'adminGetRecord':
+        return this.storage.adminGetRecord(params.table, params.id);
+      case 'adminSaveRecord':
+        // An edit racing a live loop's read-merge-write patch would clobber
+        // one side — same guard as the other whole-record mutations.
+        assertNoLoopsRunning(this.registry, 'adminSaveRecord');
+        await this.storage.adminSaveRecord(params.table, params.id, params.json);
+        return { ok: true };
+      case 'claudeAgentInspectMessage': {
+        const inspection = await this.deps.apiService.inspectProviderMessage(
+          'claude-agent',
+          params.sessionId,
+          params.messageUuid
+        );
+        if (!inspection) {
+          throw new ProtocolError(
+            'RECORD_NOT_FOUND',
+            `No session entry found for message uuid ${params.messageUuid}`
+          );
+        }
+        return inspection;
+      }
 
       // ----- attachments -----
       case 'getAttachments':
@@ -1182,7 +1212,7 @@ export class GremlinServer {
    * here so the frontend can collapse to a single
    * `gremlinClient.discoverModels` call with no `mergeExtraModels` import.
    *
-   *   - **No API key**: providers that need a key (`isLocal: false`) skip
+   *   - **No API key**: providers that need a key (`apiKeyOptional` false) skip
    *     the network round-trip and return only the user-configured
    *     `extraModelIds`. Cache is written with the extras so subsequent
    *     `getModelsCache` calls see the same shape.
@@ -1194,7 +1224,7 @@ export class GremlinServer {
   private async discoverModelsWithFallback(
     apiDef: import('../protocol/types').APIDefinition
   ): Promise<import('../protocol/types').Model[]> {
-    const needsApiKey = !apiDef.isLocal;
+    const needsApiKey = !apiKeyOptional(apiDef);
     const noKey = needsApiKey && (!apiDef.apiKey || apiDef.apiKey.trim() === '');
     if (noKey) {
       const extras = mergeExtraModels([], apiDef);
@@ -1319,6 +1349,13 @@ export class GremlinServer {
       Tables.VFS_VERSIONS,
     ];
 
+    // Validation pass: every row must decrypt under the active key before
+    // anything is rewritten. Without it, a mid-walk failure leaves the
+    // database half under the old key and half under the new one.
+    for (const table of tablesToRotate) {
+      await this.rotateTable(adapter, table, null);
+    }
+
     let rotated = 0;
     for (const table of tablesToRotate) {
       rotated += await this.rotateTable(adapter, table, tempCore);
@@ -1343,11 +1380,19 @@ export class GremlinServer {
    * per-server encryption key, re-encrypt under the supplied `newCore`,
    * and write back via `batchSave`. Uses the same `exportPaginated` cursor
    * as `dataExport`.
+   *
+   * The raw-bytes round-trip preserves each row's exact payload —
+   * compressed rows stay compressed, plain rows stay plain — so the
+   * per-table read paths keep working after rotation.
+   *
+   * `newCore === null` runs a validation pass: decrypt every row, write
+   * nothing. `rotateCek` runs this over all tables first so a corrupt row
+   * aborts the rotation before any data is rewritten.
    */
   private async rotateTable(
     adapter: StorageAdapter,
     table: string,
-    newCore: EncryptionCore
+    newCore: EncryptionCore | null
   ): Promise<number> {
     const activeEncryption = this.deps.encryption;
     let cursor: string | undefined = undefined;
@@ -1359,8 +1404,18 @@ export class GremlinServer {
 
       const rotatedRows: typeof page.rows = [];
       for (const row of page.rows) {
-        const plaintext = await activeEncryption.decryptWithDecompression(row.encryptedData);
-        const reencrypted = await newCore.encryptWithCompression(plaintext, true);
+        let plaintextBytes: Uint8Array;
+        try {
+          plaintextBytes = await activeEncryption.decryptToBytes(row.encryptedData);
+        } catch (err) {
+          throw new Error(
+            `rotateCek: row '${row.id}' in table '${table}' failed to decrypt under the active key` +
+              (newCore === null ? ' — aborting before rewriting anything' : '') +
+              `: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        if (newCore === null) continue;
+        const reencrypted = await newCore.encryptBytes(plaintextBytes);
 
         rotatedRows.push({
           id: row.id,
@@ -1371,8 +1426,10 @@ export class GremlinServer {
         });
       }
 
-      await adapter.batchSave(table, rotatedRows, false);
-      rotated += rotatedRows.length;
+      if (newCore !== null) {
+        await adapter.batchSave(table, rotatedRows, false);
+        rotated += rotatedRows.length;
+      }
 
       if (!page.hasMore) break;
       cursor = page.rows[page.rows.length - 1].id;

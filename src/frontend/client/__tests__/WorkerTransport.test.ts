@@ -299,6 +299,75 @@ describe('WorkerTransport', () => {
     expect(queued).toBeUndefined();
   });
 
+  it('a failed init re-arms the gate so a retried init unblocks later RPCs', async () => {
+    const freshWorker = new FakeWorker();
+    const freshTransport = new WorkerTransport(freshWorker as unknown as Worker);
+    freshWorker.simulateMessage({ kind: 'worker_ready' });
+
+    // First init fails (e.g. OOBE posted before worker_config).
+    const firstInit = freshTransport.request('init', {});
+    await Promise.resolve();
+    await Promise.resolve();
+    const firstEnvelope = freshWorker.posted.find(
+      m => (m as { method?: string }).method === 'init'
+    ) as { requestId: string };
+    freshWorker.simulateMessage({
+      kind: 'error',
+      requestId: firstEnvelope.requestId,
+      code: 'NOT_INITIALIZED',
+      message: 'worker storage config has not been posted',
+    });
+    await expect(firstInit).rejects.toMatchObject({ code: 'NOT_INITIALIZED' });
+
+    // A non-exempt RPC issued now must BLOCK on the fresh gate — the old
+    // behavior replayed the stale rejection forever, so a retry in the
+    // same page session (OOBE fixing its input) could never work.
+    const queued = freshTransport.request('listProjects', {});
+    let queuedSettled = false;
+    void queued.finally(() => {
+      queuedSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(queuedSettled).toBe(false);
+
+    // Retry init — success unblocks the queued request.
+    const secondInit = freshTransport.request('init', {});
+    await Promise.resolve();
+    await Promise.resolve();
+    const initEnvelopes = freshWorker.posted.filter(
+      m => (m as { method?: string }).method === 'init'
+    ) as { requestId: string }[];
+    freshWorker.simulateMessage({
+      kind: 'response',
+      requestId: initEnvelopes[initEnvelopes.length - 1].requestId,
+      result: { ok: true, subscriberId: 'sub_test', serverVersion: '1.0.0-phase1' },
+    });
+    await secondInit;
+
+    await Promise.resolve();
+    await Promise.resolve();
+    const listEnvelope = freshWorker.posted.find(
+      m => (m as { method?: string }).method === 'listProjects'
+    ) as { requestId: string };
+    expect(listEnvelope).toBeDefined();
+    freshWorker.simulateMessage({
+      kind: 'response',
+      requestId: listEnvelope.requestId,
+      result: [],
+    });
+    await expect(queued).resolves.toEqual([]);
+  });
+
+  it('dispose() rejects in-flight requests', async () => {
+    const promise = transport.request('listProjects', {});
+    // Drain microtasks so the envelope is actually posted before dispose.
+    await Promise.resolve();
+    await Promise.resolve();
+    transport.dispose();
+    await expect(promise).rejects.toThrow('transport disposed');
+  });
+
   it('dispose() terminates the worker', () => {
     const terminate = vi.spyOn(worker, 'terminate');
     transport.dispose();

@@ -294,21 +294,46 @@ describe('WebSocketTransport', () => {
   // --------------------------------------------------------------------------
 
   describe('onReconnect', () => {
-    it('should fire reconnect callbacks after disconnect and reconnect', async () => {
+    it('should fire reconnect callbacks only after the replayed init is acknowledged', async () => {
       transport = new WebSocketTransport(`ws://127.0.0.1:${port}`);
-      const ws = await waitForServerConnection();
+      let ws = await waitForServerConnection();
 
       const reconnectFired = vi.fn();
       transport.onReconnect(reconnectFired);
+
+      // init first — reconnect re-auth replays the last successful init.
+      const initPromise = transport.request('init', { cek: 'test' });
+      const initMsg = (await nextServerMessage(ws)) as RequestEnvelope;
+      serverSend(ws, {
+        kind: 'response',
+        requestId: initMsg.requestId,
+        result: { status: 'fresh' },
+      });
+      await initPromise;
 
       // Disconnect
       ws.close();
       serverSocket = null;
 
       // Wait for reconnect (backoff is 1s)
-      await new Promise(r => setTimeout(r, 2000));
+      ws = await waitForServerConnection();
+      const msgs = bufferMessages(ws);
+      const replayedInit = (await msgs.next()) as RequestEnvelope;
+      expect(replayedInit.method).toBe('init');
 
-      expect(reconnectFired).toHaveBeenCalledTimes(1);
+      // Callbacks must NOT fire before the server acknowledges the
+      // replayed init — the server's per-connection auth gate would 4001
+      // any request they issue.
+      expect(reconnectFired).not.toHaveBeenCalled();
+
+      serverSend(ws, {
+        kind: 'response',
+        requestId: replayedInit.requestId,
+        result: { status: 'fresh' },
+      });
+      await vi.waitFor(() => {
+        expect(reconnectFired).toHaveBeenCalledTimes(1);
+      });
     }, 10000);
   });
 
@@ -340,23 +365,24 @@ describe('WebSocketTransport', () => {
       serverSocket = null;
       ws.close();
 
-      // Wait for reconnect. Use a buffered reader because the transport
-      // sends init + retried request back-to-back in the same tick —
-      // ws.once listeners miss the second message.
+      // Wait for reconnect.
       ws = await waitForServerConnection();
       const msgs = bufferMessages(ws);
 
-      // The transport replays init first, then the retried request
+      // The transport replays init FIRST and waits for the ack before
+      // re-sending anything else — the server's auth gate rejects
+      // non-exempt frames on a not-yet-authenticated socket.
       const replayedInit = (await msgs.next()) as RequestEnvelope;
       expect(replayedInit.method).toBe('init');
-      const retriedMsg = (await msgs.next()) as RequestEnvelope;
-      expect(retriedMsg.requestId).toBe(origMsg.requestId);
-
       serverSend(ws, {
         kind: 'response',
         requestId: replayedInit.requestId,
         result: { status: 'fresh' },
       });
+
+      const retriedMsg = (await msgs.next()) as RequestEnvelope;
+      expect(retriedMsg.requestId).toBe(origMsg.requestId);
+
       serverSend(ws, {
         kind: 'response',
         requestId: retriedMsg.requestId,
@@ -366,6 +392,113 @@ describe('WebSocketTransport', () => {
       const result = await reqPromise;
       expect(result).toEqual([]);
     }, 10000);
+  });
+
+  // --------------------------------------------------------------------------
+  // Repeated disconnects + auth failure
+  // --------------------------------------------------------------------------
+
+  describe('resilience', () => {
+    it('replays a pending request across TWO disconnects', async () => {
+      transport = new WebSocketTransport(`ws://127.0.0.1:${port}`);
+      let ws = await waitForServerConnection();
+
+      const initPromise = transport.request('init', { cek: 'test' });
+      const initMsg = (await nextServerMessage(ws)) as RequestEnvelope;
+      serverSend(ws, {
+        kind: 'response',
+        requestId: initMsg.requestId,
+        result: { status: 'fresh' },
+      });
+      await initPromise;
+
+      const reqPromise = transport.request('listProjects', {});
+      const origMsg = (await nextServerMessage(ws)) as RequestEnvelope;
+
+      // First drop: ack the replayed init, then drop again before
+      // answering the replayed request.
+      serverSocket = null;
+      ws.close();
+      ws = await waitForServerConnection();
+      let msgs = bufferMessages(ws);
+      const replay1 = (await msgs.next()) as RequestEnvelope;
+      expect(replay1.method).toBe('init');
+      serverSend(ws, {
+        kind: 'response',
+        requestId: replay1.requestId,
+        result: { status: 'fresh' },
+      });
+      const retried1 = (await msgs.next()) as RequestEnvelope;
+      expect(retried1.requestId).toBe(origMsg.requestId);
+
+      // Second drop — the envelope used to be de-registered after the
+      // first replay, hanging the caller's promise forever.
+      serverSocket = null;
+      ws.close();
+      ws = await waitForServerConnection();
+      msgs = bufferMessages(ws);
+      const replay2 = (await msgs.next()) as RequestEnvelope;
+      expect(replay2.method).toBe('init');
+      serverSend(ws, {
+        kind: 'response',
+        requestId: replay2.requestId,
+        result: { status: 'fresh' },
+      });
+      const retried2 = (await msgs.next()) as RequestEnvelope;
+      expect(retried2.requestId).toBe(origMsg.requestId);
+
+      serverSend(ws, { kind: 'response', requestId: retried2.requestId, result: [] });
+      await expect(reqPromise).resolves.toEqual([]);
+    }, 15000);
+
+    it('enters terminal auth_failed when the replayed init is rejected with CEK_MISMATCH', async () => {
+      transport = new WebSocketTransport(`ws://127.0.0.1:${port}`);
+      let ws = await waitForServerConnection();
+
+      const states: string[] = [];
+      transport.onConnectionStateChange(state => states.push(state));
+
+      const initPromise = transport.request('init', { cek: 'test' });
+      const initMsg = (await nextServerMessage(ws)) as RequestEnvelope;
+      serverSend(ws, {
+        kind: 'response',
+        requestId: initMsg.requestId,
+        result: { status: 'fresh' },
+      });
+      await initPromise;
+
+      const pendingReq = transport.request('listProjects', {});
+      // Swallow the rejection until the assertion below attaches — the
+      // reject fires mid-waitFor, long before `expect(...).rejects` runs.
+      pendingReq.catch(() => {});
+
+      serverSocket = null;
+      ws.close();
+      ws = await waitForServerConnection();
+      const msgs = bufferMessages(ws);
+      const replayedInit = (await msgs.next()) as RequestEnvelope;
+      serverSend(ws, {
+        kind: 'error',
+        requestId: replayedInit.requestId,
+        code: 'CEK_MISMATCH',
+        message: 'oracle verification failed',
+      });
+
+      await vi.waitFor(() => {
+        expect(transport.connectionState).toBe('auth_failed');
+      });
+      // The pending caller fails fast instead of hanging...
+      await expect(pendingReq).rejects.toMatchObject({ code: 'CEK_MISMATCH' });
+      // ...new RPCs fail fast too...
+      await expect(transport.request('listProjects', {})).rejects.toMatchObject({
+        code: 'CEK_MISMATCH',
+      });
+      // ...and the transport stays put (no reconnect loop hammering 4001).
+      const connectionsBefore = wss.clients.size;
+      await new Promise(r => setTimeout(r, 1500));
+      expect(wss.clients.size).toBeLessThanOrEqual(connectionsBefore);
+      expect(states).toContain('auth_failed');
+    }, 15000);
   });
 
   // --------------------------------------------------------------------------

@@ -326,15 +326,9 @@ export class IndexedDBAdapter implements StorageAdapter {
       throw new Error('IndexedDB not initialized');
     }
 
-    const tables = [
-      Tables.API_DEFINITIONS,
-      Tables.MODELS_CACHE,
-      Tables.PROJECTS,
-      Tables.CHATS,
-      Tables.MESSAGES,
-      Tables.ATTACHMENTS,
-      Tables.METADATA,
-    ];
+    // Every table, including minion_chats and the vfs_* stores — a partial
+    // clear lets a stale VFS tree shadow a subsequently imported one.
+    const tables = Object.values(Tables);
 
     const promises = tables.map(
       table =>
@@ -456,10 +450,15 @@ export class IndexedDBAdapter implements StorageAdapter {
       let saved = 0;
       let skipped = 0;
       let pending = rows.length;
+      let failed: string | null = null;
 
       const checkComplete = () => {
         if (pending === 0) {
-          resolve({ saved, skipped });
+          if (failed) {
+            reject(new Error(`Failed to batch save to ${table}: row '${failed}' write failed`));
+          } else {
+            resolve({ saved, skipped });
+          }
         }
       };
 
@@ -488,12 +487,14 @@ export class IndexedDBAdapter implements StorageAdapter {
                 checkComplete();
               };
               putRequest.onerror = () => {
+                failed ??= row.id;
                 pending--;
                 checkComplete();
               };
             }
           };
           getRequest.onerror = () => {
+            failed ??= row.id;
             pending--;
             checkComplete();
           };
@@ -512,6 +513,7 @@ export class IndexedDBAdapter implements StorageAdapter {
             checkComplete();
           };
           putRequest.onerror = () => {
+            failed ??= row.id;
             pending--;
             checkComplete();
           };

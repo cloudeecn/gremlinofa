@@ -1498,6 +1498,7 @@ The process",
     "cacheReadTokens": 14518,
     "inputTokens": 3480,
     "outputTokens": 1049,
+    "reasoningTokens": undefined,
     "type": "token_usage",
   },
 ]

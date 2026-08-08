@@ -5,14 +5,19 @@
  */
 
 import { useState, useRef } from 'react';
-import { gremlinClient } from '../client';
+import { gremlinClient, rebindGremlinTransport } from '../client';
 import {
   setStorageConfig,
+  clearStorageConfig,
+  getStorageConfig,
+  hasStorageConfig,
   setCachedCEKString,
   clearCachedCEK,
   hashPassword,
   type StorageConfig,
 } from '../lib/localStorageBoot';
+import { normalizeWsUrl, probeGremlinServer } from '../lib/wsProbe';
+import { ProtocolError } from '../../shared/protocol/protocolError';
 
 type StorageType = 'indexeddb' | 'remote' | 'server';
 type InitMode = 'fresh' | 'import' | 'existing';
@@ -61,6 +66,10 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
 
   // Server (WebSocket) options
   const [wsUrl, setWsUrl] = useState('');
+  const [isTestingWs, setIsTestingWs] = useState(false);
+  const [wsConnectionStatus, setWsConnectionStatus] = useState<'idle' | 'success' | 'error'>(
+    'idle'
+  );
 
   // Section 2: Init mode
   const [initMode, setInitMode] = useState<InitMode>('fresh');
@@ -111,9 +120,33 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
     }
   };
 
+  const handleTestWsConnection = async () => {
+    setIsTestingWs(true);
+    setWsConnectionStatus('idle');
+    setError(null);
+
+    try {
+      const probe = await probeGremlinServer(normalizeWsUrl(wsUrl));
+      setWsConnectionStatus(probe.ok ? 'success' : 'error');
+      if (!probe.ok) {
+        setError(`Could not connect to the server: ${probe.error}`);
+      }
+    } catch (err) {
+      setWsConnectionStatus('error');
+      setError(err instanceof Error ? err.message : 'Connection test failed');
+    } finally {
+      setIsTestingWs(false);
+    }
+  };
+
   const handleGetStarted = async () => {
     setError(null);
     setIsProcessing(true);
+
+    // Snapshot the persisted storage config so a failed attempt can put it
+    // back — a half-written config used to be the only reason "refresh and
+    // retry" worked, and it also made a bad server URL sticky.
+    const prevConfig = hasStorageConfig() ? getStorageConfig() : null;
 
     try {
       const hashedPassword = storageType === 'remote' ? await hashPassword(remotePassword) : '';
@@ -130,17 +163,31 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
         }
       }
 
-      // Server mode: persist the storage config BEFORE calling any
-      // gremlinClient method so the lazy singleton creates a
-      // WebSocketTransport (which reads the config on first access).
+      // Bind a fresh transport for this attempt. Server mode validates the
+      // URL and probes the server first, then persists the config and
+      // rebinds so every subsequent call goes over the WebSocket. Worker
+      // modes rebind to a fresh worker so a retry never talks to a
+      // poisoned transport from an earlier failed attempt.
+      let serverConfig: StorageConfig | null = null;
       if (storageType === 'server') {
-        setStorageConfig({ type: 'server', wsUrl });
+        const normalizedWsUrl = normalizeWsUrl(wsUrl);
+        if (wsConnectionStatus !== 'success') {
+          const probe = await probeGremlinServer(normalizedWsUrl);
+          if (!probe.ok) {
+            throw new Error(`Could not connect to the server: ${probe.error}`);
+          }
+        }
+        serverConfig = { type: 'server', wsUrl: normalizedWsUrl };
+        setStorageConfig(serverConfig);
+        rebindGremlinTransport(serverConfig);
+      } else {
+        rebindGremlinTransport({ type: 'local' });
       }
 
       // Build the storage config + CEK pair we'll persist + post through init.
       const buildStorageConfig = async (cek: string): Promise<StorageConfig> => {
-        if (storageType === 'server') {
-          return { type: 'server', wsUrl };
+        if (serverConfig) {
+          return serverConfig;
         }
         if (storageType === 'remote') {
           const userId = await gremlinClient.deriveUserIdFromCEK(cek);
@@ -282,8 +329,8 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
       setCachedCEKString(normalizedCek);
 
       // Read the backup file and stream it through the import RPC. The
-      // 'replace' mode clears the database first and re-encrypts everything
-      // with `sourceCEK`, which then becomes the active CEK on the backend.
+      // 'replace' mode clears the database first; since we just inited with
+      // the backup's own CEK, the data imports without re-encryption.
       const fileBytes = new Uint8Array(await importFile.arrayBuffer());
       setUploadProgress(null);
       setImportProgress(0);
@@ -315,16 +362,34 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
 
       onComplete({
         mode: 'import',
-        cek: sourceCekString,
+        cek: normalizedCek,
         storageType,
         importStats: result,
       });
     } catch (err) {
       console.error('[OOBE] Error:', err);
       // Defense-in-depth: clear any CEK that may have been persisted
-      // before the failure (e.g. by a code path added later).
+      // before the failure (e.g. by a code path added later), and put the
+      // storage config back to its pre-attempt state so nothing
+      // half-configured survives.
       clearCachedCEK();
-      setError(err instanceof Error ? err.message : 'An unexpected error occurred');
+      if (prevConfig) {
+        setStorageConfig(prevConfig);
+      } else {
+        clearStorageConfig();
+      }
+      if (
+        err instanceof ProtocolError &&
+        (err.code === 'CEK_MISMATCH' || err.code === 'CEK_REQUIRED')
+      ) {
+        setError(
+          storageType === 'server'
+            ? 'This server already holds data encrypted with a different key. To use that data, pick "Use Existing Data" and enter the server\'s key. To restore this backup instead, reset the server\'s data directory first, then retry.'
+            : 'The existing data was encrypted with a different key. Please verify your encryption key.'
+        );
+      } else {
+        setError(err instanceof Error ? err.message : 'An unexpected error occurred');
+      }
       setIsProcessing(false);
     }
   };
@@ -447,7 +512,10 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
                 <input
                   type="text"
                   value={wsUrl}
-                  onChange={e => setWsUrl(e.target.value)}
+                  onChange={e => {
+                    setWsUrl(e.target.value);
+                    setWsConnectionStatus('idle');
+                  }}
                   disabled={isProcessing}
                   placeholder="ws://localhost:3100 or wss://gremlin.example.com"
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100"
@@ -455,6 +523,23 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
                 <p className="mt-1 text-xs text-gray-500">
                   The server owns storage and runs the backend — your browser handles the UI
                 </p>
+              </div>
+
+              {/* Test Connection button */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleTestWsConnection}
+                  disabled={!wsUrl.trim() || isTestingWs || isProcessing}
+                  className="rounded-lg bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isTestingWs ? 'Testing...' : 'Test Connection'}
+                </button>
+                {wsConnectionStatus === 'success' && (
+                  <span className="text-sm text-green-600">✓ Connected</span>
+                )}
+                {wsConnectionStatus === 'error' && (
+                  <span className="text-sm text-red-600">✗ Failed</span>
+                )}
               </div>
             </div>
           )}

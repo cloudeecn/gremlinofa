@@ -225,3 +225,73 @@ describe('OpenAIClient verbosity', () => {
     expect(request.verbosity).toBeUndefined();
   });
 });
+
+describe('OpenAIClient non-streaming token usage', () => {
+  const mockGetModel = vi.fn();
+  const client = new OpenAIClient({
+    ...stubApiDeps,
+    storage: { getModel: mockGetModel } as unknown as UnifiedStorage,
+  });
+
+  const apiDefinition: APIDefinition = {
+    id: 'test-api-def',
+    apiType: 'chatgpt',
+    name: 'Test OpenAI',
+    baseUrl: '',
+    apiKey: 'test-key',
+    isDefault: false,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  it('subtracts reasoning_tokens out of completion_tokens (disjoint split, no double count)', async () => {
+    vi.clearAllMocks();
+    mockGetModel.mockResolvedValue({ id: 'o3', apiType: 'chatgpt' });
+
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 80,
+        completion_tokens_details: { reasoning_tokens: 30 },
+        prompt_tokens_details: { cached_tokens: 40 },
+      },
+    });
+    (OpenAI as MockedClass<typeof OpenAI>).mockImplementation(function (this: unknown) {
+      return { chat: { completions: { create } } } as unknown as OpenAI;
+    });
+
+    const messages: Message<unknown>[] = [
+      {
+        id: 'msg1',
+        role: 'user',
+        content: { type: 'text', content: 'Hi' },
+        timestamp: new Date(),
+      },
+    ];
+
+    const generator = client.sendMessageStream(messages, 'o3', apiDefinition, {
+      temperature: 1,
+      maxTokens: 2048,
+      enableReasoning: true,
+      reasoningBudgetTokens: 2048,
+      signal: new AbortController().signal,
+      disableStream: true,
+    });
+    let result: unknown;
+    while (true) {
+      const next = await generator.next();
+      if (next.done) {
+        result = next.value;
+        break;
+      }
+    }
+
+    expect(result).toMatchObject({
+      inputTokens: 60,
+      outputTokens: 50,
+      reasoningTokens: 30,
+      cacheReadTokens: 40,
+    });
+  });
+});

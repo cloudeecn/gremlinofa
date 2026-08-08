@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { gremlinClient } from '../client';
 import type { APIDefinition, Model, Project } from '../../shared/protocol/types';
+import { apiKeyOptional } from '../../shared/protocol/apiDefinition';
 import { AppContext, type AppContextType, type ImportOptions } from './createAppContext';
 import type {
   ExportProgressCallback,
@@ -277,7 +278,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // Reload models for all API definitions
         const defs = await gremlinClient.getAPIDefinitions();
         for (const def of defs) {
-          if ((def.apiKey && def.apiKey.trim() !== '') || def.isLocal) {
+          if ((def.apiKey && def.apiKey.trim() !== '') || apiKeyOptional(def)) {
             await refreshModels(def.id);
           }
         }
@@ -327,12 +328,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           `[AppContext] Migration complete: ${result.imported} imported, ${result.skipped} skipped, ${result.errors.length} errors`
         );
 
-        // After 'replace' migration the worker's active CEK is the source
-        // CEK from the bundle. Persist it to localStorage so the next page
-        // load can bootstrap with the new key.
-        setCachedCEKString(sourceCEK);
-        setCek(sourceCEK);
-        setIsCEKBase32(looksLikeBase32CEK(sourceCEK));
+        // The active CEK is unchanged: `migrateDataFromFile` re-encrypts
+        // every imported row (and the oracle) under the CURRENT app key.
+        // The source CEK was only needed to decrypt the backup — persisting
+        // it here would brick the next boot with CEK_MISMATCH.
 
         // Refresh all data (migration already loaded everything, but refresh for React state)
         await refreshAPIDefinitions();
@@ -341,7 +340,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // Reload models for all API definitions
         const defs = await gremlinClient.getAPIDefinitions();
         for (const def of defs) {
-          if ((def.apiKey && def.apiKey.trim() !== '') || def.isLocal) {
+          if ((def.apiKey && def.apiKey.trim() !== '') || apiKeyOptional(def)) {
             await refreshModels(def.id);
           }
         }
@@ -409,7 +408,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Load models for all API definitions with credentials
       const defs = await gremlinClient.getAPIDefinitions();
       const defsWithCredentials = defs.filter(
-        d => d.isLocal || (d.apiKey && d.apiKey.trim() !== '')
+        d => apiKeyOptional(d) || (d.apiKey && d.apiKey.trim() !== '')
       );
       console.debug(
         `[AppContext] Loading models for ${defsWithCredentials.length} configured providers...`

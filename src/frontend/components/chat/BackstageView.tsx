@@ -74,6 +74,7 @@ export default function BackstageView({
       case 'tool_info':
       case 'text':
       case 'fallback':
+      case 'notify':
       default:
         return '💬';
     }
@@ -104,6 +105,7 @@ export default function BackstageView({
       case 'text':
       case 'error':
       case 'fallback':
+      case 'notify':
       default:
         return '';
     }
@@ -217,6 +219,7 @@ function BackstageBlock({ block }: BackstageBlockProps) {
     case 'text':
     case 'error':
     case 'fallback':
+    case 'notify':
     default:
       return null;
   }

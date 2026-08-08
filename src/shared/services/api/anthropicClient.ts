@@ -945,6 +945,10 @@ export class AnthropicClient implements APIClient {
         validateAnthropicResponse(usage, finalMessage.content);
       }
 
+      // thinking_tokens is inclusive in output_tokens on the wire; app-internal
+      // outputTokens is text-only with reasoningTokens as the disjoint sibling.
+      const thinkingTokens = usage.output_tokens_details?.thinking_tokens ?? 0;
+
       return {
         thinkingContent,
         textContent,
@@ -952,7 +956,8 @@ export class AnthropicClient implements APIClient {
         fullContent,
         stopReason: finalMessage.stop_reason ?? undefined,
         inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
+        outputTokens: usage.output_tokens - thinkingTokens,
+        reasoningTokens: thinkingTokens > 0 ? thinkingTokens : undefined,
         cacheCreationTokens: usage.cache_creation_input_tokens ?? undefined,
         cacheReadTokens: usage.cache_read_input_tokens ?? undefined,
         webSearchCount: usage.server_tool_use?.web_search_requests ?? undefined,

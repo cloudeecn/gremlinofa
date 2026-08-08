@@ -5,6 +5,7 @@ import type {
   TextRenderBlock,
   ErrorRenderBlock,
   FallbackRenderBlock,
+  NotifyRenderBlock,
   RenderingContentBlock,
 } from '../../../../shared/protocol/types/content';
 
@@ -99,6 +100,53 @@ describe('TextGroupView', () => {
       expect(
         screen.getByText('This request was handled by a different model.')
       ).toBeInTheDocument();
+    });
+  });
+
+  describe('notify blocks', () => {
+    it('renders the notification text with a bell and neutral styling', () => {
+      const blocks: RenderingContentBlock[] = [
+        {
+          type: 'notify',
+          text: 'Fable 5 is now using usage credits',
+          key: 'fable-usage-credits',
+          priority: 'medium',
+        } as NotifyRenderBlock,
+      ];
+      const { container } = render(<TextGroupView blocks={blocks} />);
+
+      expect(screen.getByText('🔔')).toBeInTheDocument();
+      expect(screen.getByText('Fable 5 is now using usage credits')).toBeInTheDocument();
+      const banner = container.querySelector('.notify-block');
+      expect(banner).toHaveClass('border-gray-300', 'bg-gray-50', 'text-gray-600');
+    });
+
+    it('tints the banner red for color=error', () => {
+      const blocks: RenderingContentBlock[] = [
+        {
+          type: 'notify',
+          text: 'Error compacting conversation',
+          color: 'error',
+        } as NotifyRenderBlock,
+      ];
+      const { container } = render(<TextGroupView blocks={blocks} />);
+
+      const banner = container.querySelector('.notify-block');
+      expect(banner).toHaveClass('border-red-300', 'bg-red-50', 'text-red-700');
+    });
+
+    it('tints the banner red for priority=immediate', () => {
+      const blocks: RenderingContentBlock[] = [
+        {
+          type: 'notify',
+          text: 'Fast mode request rejected',
+          priority: 'immediate',
+        } as NotifyRenderBlock,
+      ];
+      const { container } = render(<TextGroupView blocks={blocks} />);
+
+      const banner = container.querySelector('.notify-block');
+      expect(banner).toHaveClass('border-red-300', 'bg-red-50', 'text-red-700');
     });
   });
 

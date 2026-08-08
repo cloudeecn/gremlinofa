@@ -184,8 +184,13 @@ export class EncryptionCore {
     }
   }
 
-  /** Encrypt raw bytes (used by the compression path). */
-  protected async encryptBytes(plaintextBytes: Uint8Array): Promise<string> {
+  /**
+   * Encrypt raw bytes. Used by the compression path and by re-encryption
+   * flows (import across CEKs, CEK rotation) that must preserve the exact
+   * payload — including the "GZ" compression prefix — without a lossy
+   * text round-trip.
+   */
+  async encryptBytes(plaintextBytes: Uint8Array): Promise<string> {
     if (!this.derivedKey) {
       throw new Error('Encryption not initialized. Call initializeWithCEK() first.');
     }
@@ -216,8 +221,11 @@ export class EncryptionCore {
     }
   }
 
-  /** Decrypt to raw bytes (used by the compression path). */
-  protected async decryptToBytes(ciphertext: string): Promise<Uint8Array> {
+  /**
+   * Decrypt to raw bytes. Counterpart of `encryptBytes` — see its note on
+   * format-preserving re-encryption.
+   */
+  async decryptToBytes(ciphertext: string): Promise<Uint8Array> {
     if (!this.derivedKey) {
       throw new Error('Encryption not initialized. Call initializeWithCEK() first.');
     }

@@ -294,6 +294,45 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"text","te
         cacheReadTokens: 10,
       });
     });
+
+    it('accumulates thinking_tokens from message_delta output_tokens_details', () => {
+      const sseEvent = {
+        event: 'message_delta',
+        data: {
+          usage: {
+            output_tokens: 80,
+            output_tokens_details: { thinking_tokens: 30 },
+          },
+        },
+      };
+      const state = createMapperState();
+
+      const result = mapAnthropicEventToStreamChunks(sseEvent, state);
+
+      expect(result.state.outputTokens).toBe(80);
+      expect(result.state.reasoningTokens).toBe(30);
+    });
+
+    it('splits reasoning out of output on the message_stop token_usage chunk', () => {
+      const sseEvent = { event: 'message_stop', data: {} };
+      const state = {
+        ...createMapperState(),
+        inputTokens: 100,
+        outputTokens: 80,
+        reasoningTokens: 30,
+      };
+
+      const result = mapAnthropicEventToStreamChunks(sseEvent, state);
+
+      expect(result.chunks).toContainEqual({
+        type: 'token_usage',
+        inputTokens: 100,
+        outputTokens: 50,
+        reasoningTokens: 30,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      });
+    });
   });
 
   describe('real-world data snapshot', () => {

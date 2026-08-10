@@ -2,7 +2,6 @@ import type {
   APIDefinition,
   APIType,
   Message,
-  MessageStopReason,
   Model,
   ToolUseBlock,
   ToolOptions,
@@ -24,6 +23,8 @@ import { OpenAIClient } from './openaiClient';
 import { ResponsesClient } from './responsesClient';
 import { GoogleClient } from './googleClient';
 import { ClaudeAgentStubClient } from './claudeAgentStubClient';
+import { ChatgptSubscriptionClient } from './chatgptSubscriptionClient';
+import { logCacheUsage } from './promptCacheDebug';
 
 /**
  * Fetch models from a custom endpoint using plain fetch (no auth).
@@ -167,6 +168,9 @@ export class APIService {
     this.clients.set('chatgpt', new OpenAIClient(deps));
     this.clients.set('bedrock', new BedrockClient(deps));
     this.clients.set('google', new GoogleClient(deps));
+    // Pure fetch + openai SDK, so it runs in both modes (worker mode needs
+    // the CORS proxy configured on the definition).
+    this.clients.set('chatgpt-subscription', new ChatgptSubscriptionClient(deps));
     // Worker-safe default. Server entry replaces this with the real
     // ClaudeAgentClient via `setClient` during GremlinServer.init().
     this.clients.set('claude-agent', new ClaudeAgentStubClient());
@@ -296,60 +300,13 @@ export class APIService {
     }
 
     // Use the real client
-    return yield* client.sendMessageStream(messages, modelId, apiDefinition, options);
-  }
-
-  /**
-   * Map provider-specific stop reason to MessageStopReason.
-   * Used when saving messages after streaming completes.
-   *
-   * @param apiType - The API type (modelFamily)
-   * @param stopReason - Raw stop reason from API
-   * @returns Normalized stop reason
-   */
-  mapStopReason(apiType: APIType | undefined, stopReason: string | null): MessageStopReason {
-    if (!stopReason) return 'end_turn';
-
-    // Provider-specific mappings
-    if (apiType === 'google') {
-      switch (stopReason) {
-        case 'STOP':
-        case 'tool_use':
-          return 'end_turn';
-        case 'MAX_TOKENS':
-          return 'max_tokens';
-        default:
-          return stopReason;
-      }
+    const result = yield* client.sendMessageStream(messages, modelId, apiDefinition, options);
+    // A failed call has no usage to report, and logging it would read as a
+    // cache miss rather than a call that never happened.
+    if (!result.error) {
+      logCacheUsage(apiDefinition.apiType, options.cacheRoutingKey, result);
     }
-
-    if (apiType === 'anthropic') {
-      // Anthropic uses: end_turn, max_tokens, stop_sequence, tool_use
-      switch (stopReason) {
-        case 'end_turn':
-        case 'max_tokens':
-        case 'stop_sequence':
-          return stopReason;
-        case 'tool_use':
-          return 'end_turn';
-        default:
-          return stopReason;
-      }
-    }
-
-    // OpenAI/Responses API uses: stop, length, content_filter, tool_calls
-    switch (stopReason) {
-      case 'stop':
-        return 'end_turn';
-      case 'length':
-        return 'max_tokens';
-      case 'content_filter':
-        return stopReason;
-      case 'tool_calls':
-        return 'end_turn';
-      default:
-        return stopReason;
-    }
+    return result;
   }
 
   /**

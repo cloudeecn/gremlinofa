@@ -12,10 +12,16 @@ vi.mock('../../../hooks/useIsMobile', () => ({
   useIsMobile: mockUseIsMobile,
 }));
 
-vi.mock('../../../lib/messageFormatters', () => ({
+vi.mock('../../../lib/messageFormatters', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../../lib/messageFormatters')>()),
   stripMetadata: (content: string) => content.replace(/<metadata>.*?<\/metadata>/gs, ''),
   formatTimestamp: (date: Date) => date.toISOString().split('T')[0],
 }));
+
+/** The info bar hides its action buttons until the trigger row is clicked. */
+async function expandInfoBar() {
+  await userEvent.click(screen.getByRole('button', { name: 'Message details' }));
+}
 
 vi.mock('../../../lib/alerts', () => ({
   showAlert: vi.fn(),
@@ -137,18 +143,28 @@ describe('UserMessageBubble', () => {
   });
 
   describe('Action Buttons', () => {
-    it('shows Edit button', () => {
+    it('hides action buttons until the trigger row is clicked', async () => {
       render(<UserMessageBubble {...createProps()} />);
+      expect(screen.queryByTitle('Edit message')).not.toBeInTheDocument();
+      await expandInfoBar();
       expect(screen.getByTitle('Edit message')).toBeInTheDocument();
     });
 
-    it('shows Fork button', () => {
+    it('shows Edit button', async () => {
       render(<UserMessageBubble {...createProps()} />);
+      await expandInfoBar();
+      expect(screen.getByTitle('Edit message')).toBeInTheDocument();
+    });
+
+    it('shows Fork button', async () => {
+      render(<UserMessageBubble {...createProps()} />);
+      await expandInfoBar();
       expect(screen.getByTitle('Fork chat from here')).toBeInTheDocument();
     });
 
-    it('shows Copy button', () => {
+    it('shows Copy button', async () => {
       render(<UserMessageBubble {...createProps()} />);
+      await expandInfoBar();
       expect(screen.getByTitle('Copy message')).toBeInTheDocument();
     });
 
@@ -159,6 +175,7 @@ describe('UserMessageBubble', () => {
         onAction,
       });
       render(<UserMessageBubble {...props} />);
+      await expandInfoBar();
 
       await userEvent.click(screen.getByTitle('Edit message'));
 
@@ -172,6 +189,7 @@ describe('UserMessageBubble', () => {
         onAction,
       });
       render(<UserMessageBubble {...props} />);
+      await expandInfoBar();
 
       await userEvent.click(screen.getByTitle('Fork chat from here'));
 
@@ -186,6 +204,7 @@ describe('UserMessageBubble', () => {
         }),
       });
       render(<UserMessageBubble {...props} />);
+      await expandInfoBar();
 
       await userEvent.click(screen.getByTitle('Copy message'));
 

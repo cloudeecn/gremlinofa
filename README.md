@@ -26,7 +26,8 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 - OpenAI (both chat completions and responses APIs, with reasoning/web search and attachments)
 - Google Gemini (native thinking, Google Search grounding, function calling)
 - AWS Bedrock (Converse API plus Claude via Anthropic SDK)
-- Any ChatGPT-compatible API (xAI, OpenRouter, local models, whatever)
+- Any ChatGPT-compatible API (xAI, OpenRouter, local models, whatever). Everyone invented their own reasoning parameter, so pick the dialect per provider — `reasoning_effort`, DeepSeek's `thinking: {type}`, Qwen's `enable_thinking`, or OpenRouter's unified object. The OpenRouter one also feeds signed reasoning blocks back turn over turn, which is what keeps Claude-behind-OpenRouter alive through a tool loop
+- Subscriptions instead of API keys: Claude Max via the Claude Agent SDK (server mode), and ChatGPT Plus/Pro via the Codex sign-in — device code or paste-the-redirect-URL, tokens refresh themselves. Costs still show at API-list prices so you can see what you _would_ have paid; flip "Subscription service" in Advanced to track $0 instead. Worker mode needs the CORS proxy for the ChatGPT one. OpenAI tolerates third-party apps on subscription sign-in but doesn't promise it, so keep it personal.
 
 > **Limitation:** I should be direct: Anthropic is on the first-class seat here — it's what the developer uses daily and I wrote all of them, so it gets the most love. Other providers work fine, but if something's janky, that's probably why. PRs to level the playing field are very welcome. -- Claude Opus 4.5
 

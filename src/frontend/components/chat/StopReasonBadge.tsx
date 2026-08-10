@@ -43,6 +43,12 @@ function getStopReasonDisplay(stopReason: MessageStopReason): {
         label: 'Stop Sequence',
         className: 'text-orange-800',
       };
+    case 'content_filter':
+      return {
+        icon: '🚫',
+        label: 'Filtered',
+        className: 'text-orange-800',
+      };
     case 'error':
       return {
         icon: '❌',

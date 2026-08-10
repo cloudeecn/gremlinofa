@@ -1529,7 +1529,11 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       <p className="text-xs text-gray-500">
                         Opaque ID sent as <code>prompt_cache_key</code> (OpenAI) or{' '}
                         <code>metadata.user_id</code> (Anthropic). Steers the provider's shard so
-                        the same prefix lands on the same backend.
+                        the same prefix lands on the same backend. On the ChatGPT subscription
+                        provider it also rides as the <code>session_id</code> /{' '}
+                        <code>conversation_id</code> headers, which is what that backend actually
+                        keys its prompt cache on — <span className="font-medium">Per chat</span>{' '}
+                        matches how the Codex CLI does it.
                       </p>
                     </div>
                     <div className="space-y-2">

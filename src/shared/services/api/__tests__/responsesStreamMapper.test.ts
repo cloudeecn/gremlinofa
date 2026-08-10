@@ -10,6 +10,8 @@ import {
   convertOutputToStreamChunks,
   createTokenUsageChunk,
   parseResponsesStreamEvent,
+  responsesStopReason,
+  STREAM_CUT_MESSAGE,
 } from '../responsesStreamMapper';
 
 describe('responsesStreamMapper', () => {
@@ -365,6 +367,119 @@ data: {"valid":true}
         expect(chunks).toContainEqual({ type: 'content.end' });
         expect(chunks).toContainEqual({ type: 'thinking.end' });
       });
+    });
+
+    describe('terminal events', () => {
+      it.each(['response.incomplete', 'response.failed'])(
+        'closes open blocks and emits token_usage on %s',
+        type => {
+          const state = createMapperState();
+          state.inReasoningBlock = true;
+          const { chunks } = mapResponsesEventToStreamChunks(
+            { type, data: { response: { usage: { input_tokens: 10, output_tokens: 5 } } } },
+            state
+          );
+          expect(chunks).toContainEqual({ type: 'thinking.end' });
+          expect(chunks).toContainEqual(expect.objectContaining({ type: 'token_usage' }));
+        }
+      );
+
+      it('records the terminal response, filling status from the event name', () => {
+        const { state } = mapResponsesEventToStreamChunks(
+          {
+            type: 'response.incomplete',
+            data: { response: { incomplete_details: { reason: 'max_output_tokens' } } },
+          },
+          createMapperState()
+        );
+        expect(state.terminalResponse).toEqual({
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+        });
+      });
+
+      it('keeps the status the provider sent', () => {
+        const { state } = mapResponsesEventToStreamChunks(
+          { type: 'response.completed', data: { response: { status: 'incomplete' } } },
+          createMapperState()
+        );
+        expect(state.terminalResponse?.status).toBe('incomplete');
+      });
+
+      it('records a spec error event as a failed response', () => {
+        const { chunks, state } = mapResponsesEventToStreamChunks(
+          { type: 'error', data: { type: 'error', code: 'server_error', message: 'boom' } },
+          createMapperState()
+        );
+        expect(chunks).toEqual([]);
+        expect(state.terminalResponse).toEqual({
+          status: 'failed',
+          error: { code: 'server_error', message: 'boom' },
+        });
+      });
+
+      it('leaves terminalResponse null for non-terminal events', () => {
+        const { state } = mapResponsesEventToStreamChunks(
+          { type: 'response.in_progress', data: { response: { status: 'in_progress' } } },
+          createMapperState()
+        );
+        expect(state.terminalResponse).toBeNull();
+      });
+    });
+  });
+
+  describe('responsesStopReason', () => {
+    it('throws when there was no terminal response', () => {
+      expect(() => responsesStopReason(undefined, false)).toThrow(STREAM_CUT_MESSAGE);
+      expect(() => responsesStopReason(null, false)).toThrow(STREAM_CUT_MESSAGE);
+    });
+
+    it.each(['in_progress', 'queued'])('throws for a response still %s', status => {
+      expect(() => responsesStopReason({ status }, false)).toThrow(`status: ${status}`);
+    });
+
+    it('returns tool_use or undefined for a completed response', () => {
+      expect(responsesStopReason({ status: 'completed' }, true)).toBe('tool_use');
+      expect(responsesStopReason({ status: 'completed' }, false)).toBeUndefined();
+    });
+
+    it('treats a missing status as completed', () => {
+      expect(responsesStopReason({}, false)).toBeUndefined();
+      expect(responsesStopReason({}, true)).toBe('tool_use');
+    });
+
+    it('maps max_output_tokens to max_tokens, even with a function call', () => {
+      const response = {
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+      };
+      expect(responsesStopReason(response, true)).toBe('max_tokens');
+    });
+
+    it('passes other incomplete reasons through', () => {
+      expect(
+        responsesStopReason(
+          { status: 'incomplete', incomplete_details: { reason: 'content_filter' } },
+          false
+        )
+      ).toBe('content_filter');
+      expect(responsesStopReason({ status: 'incomplete' }, false)).toBe('incomplete');
+    });
+
+    it('returns cancelled for a cancelled response', () => {
+      expect(responsesStopReason({ status: 'cancelled' }, true)).toBe('cancelled');
+    });
+
+    it('throws with the error code and message for a failed response', () => {
+      expect(() =>
+        responsesStopReason(
+          { status: 'failed', error: { code: 'server_error', message: 'boom' } },
+          false
+        )
+      ).toThrow('Response failed: server_error: boom');
+      expect(() => responsesStopReason({ status: 'failed', error: null }, false)).toThrow(
+        'Response failed: no error details'
+      );
     });
   });
 

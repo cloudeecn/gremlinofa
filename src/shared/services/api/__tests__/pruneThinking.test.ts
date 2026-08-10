@@ -6,6 +6,7 @@ import {
   findThinkingBoundaryN,
   tidyAgnosticMessage,
 } from '../contextTidy';
+import { tidyMessages as tidyCompletionMessages } from '../openaiClient';
 
 function msg(
   id: string,
@@ -970,3 +971,268 @@ function tidyAnthropicMessagesN(
 
   return result;
 }
+
+describe('tidyMessages (Chat Completions reasoning pruning)', () => {
+  const assistant = (id: string, reasoning?: string, extra?: Record<string, unknown>) =>
+    msg(id, 'assistant', {
+      modelFamily: 'chatgpt',
+      fullContent: {
+        role: 'assistant',
+        content: `said-${id}`,
+        ...(reasoning ? { reasoning_content: reasoning } : {}),
+        ...extra,
+      },
+    });
+
+  const reasoningOf = (m: Message<unknown>) =>
+    (m.content.fullContent as { reasoning_content?: string }).reasoning_content;
+
+  it('strips reasoning_content before the boundary, keeps it in the current run', () => {
+    const messages = [
+      msg('u1', 'user'),
+      assistant('a1', 'old thinking'),
+      msg('u2', 'user'),
+      assistant('a2', 'fresh thinking'),
+    ];
+
+    const result = tidyCompletionMessages(messages, undefined, undefined, false, 1);
+
+    expect(result).toHaveLength(4);
+    expect(reasoningOf(result[1])).toBeUndefined();
+    expect(reasoningOf(result[3])).toBe('fresh thinking');
+  });
+
+  it('strips the OpenRouter `reasoning` key too', () => {
+    const messages = [
+      msg('u1', 'user'),
+      msg('a1', 'assistant', {
+        modelFamily: 'chatgpt',
+        fullContent: { role: 'assistant', content: 'said', reasoning: 'old' },
+      }),
+      msg('u2', 'user'),
+    ];
+
+    const result = tidyCompletionMessages(messages, undefined, undefined, false, 1);
+
+    expect((result[1].content.fullContent as { reasoning?: string }).reasoning).toBeUndefined();
+  });
+
+  it('strips reasoning_details wherever it strips the other reasoning keys', () => {
+    const messages = [
+      msg('u1', 'user'),
+      assistant('a1', 'old thinking', {
+        reasoning_details: [{ type: 'reasoning.text', index: 0, text: 'old', signature: 'sig' }],
+      }),
+      msg('u2', 'user'),
+      assistant('a2', 'fresh thinking', {
+        reasoning_details: [{ type: 'reasoning.text', index: 0, text: 'fresh', signature: 'sig2' }],
+      }),
+    ];
+
+    const result = tidyCompletionMessages(messages, undefined, undefined, false, 1);
+
+    const detailsOf = (m: Message<unknown>) =>
+      (m.content.fullContent as { reasoning_details?: unknown[] }).reasoning_details;
+    expect(detailsOf(result[1])).toBeUndefined();
+    expect(detailsOf(result[3])).toHaveLength(1);
+  });
+
+  it('drops a message whose reasoning_details were its only payload', () => {
+    const reasoningOnly: Message<unknown> = {
+      id: 'a1',
+      role: 'assistant',
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: 'chatgpt',
+        fullContent: {
+          role: 'assistant',
+          content: '',
+          reasoning_details: [{ type: 'reasoning.encrypted', index: 0, data: 'AAAA' }],
+        },
+      },
+      timestamp: new Date(),
+    };
+    const messages = [msg('u1', 'user'), reasoningOnly, msg('u2', 'user')];
+
+    const result = tidyCompletionMessages(messages, undefined, undefined, false, 1);
+
+    expect(result.map(m => m.id)).toEqual(['u1', 'u2']);
+  });
+
+  it('keep=0 strips every turn including the live one — that is what 0 means', () => {
+    // Sparing the in-flight turn would make 0 indistinguishable from 1. The
+    // tradeoff is documented: 0 is incompatible with tool loops on providers
+    // that sign their reasoning.
+    const messages = [
+      msg('u1', 'user'),
+      assistant('a1', 'old'),
+      msg('u2', 'user'),
+      assistant('a2', 'live'),
+    ];
+
+    const keepNone = tidyCompletionMessages(messages, undefined, undefined, false, 0);
+    expect(reasoningOf(keepNone[1])).toBeUndefined();
+    expect(reasoningOf(keepNone[3])).toBeUndefined();
+
+    const keepOne = tidyCompletionMessages(messages, undefined, undefined, false, 1);
+    expect(reasoningOf(keepOne[1])).toBeUndefined();
+    expect(reasoningOf(keepOne[3])).toBe('live');
+  });
+
+  it('N=2 keeps reasoning from the prior user-text turn onward', () => {
+    const messages = [
+      msg('u1', 'user'),
+      assistant('a1', 'oldest'),
+      msg('u2', 'user'),
+      assistant('a2', 'middle'),
+      msg('u3', 'user'),
+      assistant('a3', 'newest'),
+    ];
+
+    const result = tidyCompletionMessages(messages, undefined, undefined, false, 2);
+
+    expect(reasoningOf(result[1])).toBeUndefined();
+    expect(reasoningOf(result[3])).toBe('middle');
+    expect(reasoningOf(result[5])).toBe('newest');
+  });
+
+  it('provider pruneThinking flag prunes with keep=1 when no project setting is set', () => {
+    const messages = [msg('u1', 'user'), assistant('a1', 'old'), msg('u2', 'user')];
+
+    const result = tidyCompletionMessages(messages, undefined, undefined, true, undefined);
+
+    expect(reasoningOf(result[1])).toBeUndefined();
+  });
+
+  it('returns messages untouched when neither prune source is active', () => {
+    const messages = [msg('u1', 'user'), assistant('a1', 'old'), msg('u2', 'user')];
+
+    expect(tidyCompletionMessages(messages, undefined, undefined, false, undefined)).toBe(messages);
+  });
+
+  it('ignores messages from other model families', () => {
+    const messages = [
+      msg('u1', 'user'),
+      msg('a1', 'assistant', {
+        modelFamily: 'anthropic',
+        fullContent: [{ type: 'thinking', thinking: 'anthropic thinking' }],
+      }),
+      msg('u2', 'user'),
+    ];
+
+    const result = tidyCompletionMessages(messages, undefined, undefined, false, 1);
+
+    expect(result[1].content.fullContent).toEqual([
+      { type: 'thinking', thinking: 'anthropic thinking' },
+    ]);
+  });
+
+  it('strips reasoning in the checkpoint range regardless of the prune setting', () => {
+    const messages = [assistant('a1', 'old'), msg('cp', 'user'), assistant('a2', 'fresh')];
+
+    const result = tidyCompletionMessages(messages, 'cp', undefined, false, undefined);
+
+    expect(reasoningOf(result[0])).toBeUndefined();
+    expect(reasoningOf(result[2])).toBe('fresh');
+  });
+
+  it('keeps checkpoint tool filtering working alongside reasoning stripping', () => {
+    const messages = [
+      assistant('a1', 'old', {
+        tool_calls: [
+          { id: 'call_1', type: 'function', function: { name: 'grep', arguments: '{}' } },
+        ],
+      }),
+      msg('cp', 'user'),
+    ];
+
+    const result = tidyCompletionMessages(messages, 'cp', new Set(['grep']), false, undefined);
+
+    const tidied = result[0].content.fullContent as {
+      reasoning_content?: string;
+      tool_calls?: unknown[];
+    };
+    expect(tidied.reasoning_content).toBeUndefined();
+    expect(tidied.tool_calls).toBeUndefined();
+  });
+
+  describe('keepToolTurnReasoning (mandated replay)', () => {
+    const toolTurn = (id: string, toolName: string) =>
+      assistant(id, `thought-${id}`, {
+        tool_calls: [
+          { id: `call_${id}`, type: 'function', function: { name: toolName, arguments: '{}' } },
+        ],
+      });
+
+    it('keeps reasoning on a tool-call turn in the checkpoint range', () => {
+      const messages = [toolTurn('a1', 'ping'), assistant('a2', 'chat'), msg('cp', 'user')];
+
+      const result = tidyCompletionMessages(messages, 'cp', undefined, false, undefined, true);
+
+      expect(reasoningOf(result[0])).toBe('thought-a1');
+      expect(reasoningOf(result[1])).toBeUndefined();
+    });
+
+    it('strips it once checkpoint tidy removed every call', () => {
+      const messages = [toolTurn('a1', 'grep'), msg('cp', 'user')];
+
+      const result = tidyCompletionMessages(
+        messages,
+        'cp',
+        new Set(['grep']),
+        false,
+        undefined,
+        true
+      );
+
+      expect(reasoningOf(result[0])).toBeUndefined();
+    });
+
+    it('keeps reasoning on a tool-call turn behind the prune boundary', () => {
+      const messages = [msg('u1', 'user'), toolTurn('a1', 'ping'), msg('u2', 'user')];
+
+      const result = tidyCompletionMessages(messages, undefined, undefined, true, 0, true);
+
+      expect(reasoningOf(result[1])).toBe('thought-a1');
+    });
+  });
+
+  it('drops another provider’s thinking-only message from the pruned range', () => {
+    const anthropicThinkingOnly: Message<unknown> = {
+      id: 'a1',
+      role: 'assistant',
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: 'anthropic',
+        fullContent: [{ type: 'thinking', thinking: 'silent' }],
+      },
+      timestamp: new Date(),
+    };
+    const messages = [msg('u1', 'user'), anthropicThinkingOnly, msg('u2', 'user')];
+
+    const result = tidyCompletionMessages(messages, undefined, undefined, false, 1);
+
+    expect(result.map(m => m.id)).toEqual(['u1', 'u2']);
+  });
+
+  it('drops an assistant message that pruning leaves with nothing to say', () => {
+    const reasoningOnly: Message<unknown> = {
+      id: 'a1',
+      role: 'assistant',
+      content: {
+        type: 'text',
+        content: '',
+        modelFamily: 'chatgpt',
+        fullContent: { role: 'assistant', content: null, reasoning_content: 'only thinking' },
+      },
+      timestamp: new Date(),
+    };
+    const messages = [msg('u1', 'user'), reasoningOnly, msg('u2', 'user')];
+
+    const result = tidyCompletionMessages(messages, undefined, undefined, false, 1);
+
+    expect(result.map(m => m.id)).toEqual(['u1', 'u2']);
+  });
+});

@@ -29,6 +29,7 @@ import type {
   APIDefinition,
   Message,
   Model,
+  ModelReasoningMode,
   ReasoningEffort,
   ToolUseBlock,
   ToolOptions,
@@ -211,10 +212,24 @@ export function buildReasoningConfig(
     supportsAdaptiveReasoning?: boolean;
     onlyAdaptiveReasoning?: boolean;
     supportedReasoningEfforts?: readonly ReasoningEffort[];
+    reasoningMode?: ModelReasoningMode;
+    thinkingOffType?: 'disabled';
   }
 ): DocumentType | undefined {
-  if (!options.enableReasoning || modelType === 'none') {
-    return undefined;
+  if (modelType === 'none') return undefined;
+
+  if (!options.enableReasoning) {
+    // Claude 4+ that thinks by default: switch it off, or, where it can't be,
+    // ask for the least effort. Everything else is off when the field is omitted.
+    if (modelType !== 'claude-4') return undefined;
+    if (options.thinkingOffType) {
+      return { reasoning_config: { type: options.thinkingOffType } } as DocumentType;
+    }
+    const offEffort =
+      options.reasoningMode === 'always'
+        ? mapAnthropicEffort('none', options.supportedReasoningEfforts)
+        : undefined;
+    return offEffort ? ({ output_config: { effort: offEffort } } as DocumentType) : undefined;
   }
 
   // Adaptive mode: reasoning on + model supports it + (budget falsy OR model is adaptive-only)
@@ -223,9 +238,11 @@ export function buildReasoningConfig(
     (options.onlyAdaptiveReasoning || !options.reasoningBudgetTokens);
 
   // Effort clamped to what the model accepts; absent when it advertises none.
-  const effortLevel = useAdaptive
-    ? mapAnthropicEffort(options.reasoningEffort, options.supportedReasoningEfforts)
-    : undefined;
+  // Budget mode carries it only on a model without adaptive (Opus 4.5).
+  const effortLevel =
+    useAdaptive || !options.supportsAdaptiveReasoning
+      ? mapAnthropicEffort(options.reasoningEffort, options.supportedReasoningEfforts)
+      : undefined;
   const outputConfigField = effortLevel ? { output_config: { effort: effortLevel } } : {};
 
   // Claude thinking.display: opus 4.7 defaults server-side to 'omitted'. When the user has
@@ -737,6 +754,8 @@ export class BedrockClient implements APIClient {
         supportsAdaptiveReasoning: modelMeta.supportsAdaptiveReasoning,
         onlyAdaptiveReasoning: modelMeta.onlyAdaptiveReasoning,
         supportedReasoningEfforts: modelMeta.supportedReasoningEfforts,
+        reasoningMode: modelMeta.reasoningMode,
+        thinkingOffType: modelMeta.thinkingOffType,
       });
 
       // Use non-streaming if requested
@@ -807,12 +826,17 @@ export class BedrockClient implements APIClient {
       // Finalize and return accumulated content
       const fullContent = accumulator.finalize();
 
+      // No messageStop: the stream was cut off, however much it rendered. Its
+      // tool calls never ran; replaying them without results would 400.
+      const cutOff = !stopReason;
+
       return {
         textContent: accumulator.getTextContent(),
         thinkingContent: accumulator.getThinkingContent(),
         hasCoT: accumulator.hasReasoning(),
-        fullContent,
+        fullContent: cutOff ? fullContent.filter(block => !('toolUse' in block)) : fullContent,
         stopReason,
+        ...(cutOff && { error: { message: 'Stream ended before messageStop' } }),
         inputTokens,
         outputTokens,
         cacheReadTokens,

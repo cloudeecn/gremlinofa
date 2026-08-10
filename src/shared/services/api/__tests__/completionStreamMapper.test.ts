@@ -103,6 +103,66 @@ describe('completionStreamMapper', () => {
         expect(newState.inReasoningBlock).toBe(false);
         expect(newState.inContentBlock).toBe(true);
       });
+
+      it('renders from reasoning_details when no plain reasoning key is present', () => {
+        const { chunks } = mapCompletionChunkToStreamChunks(
+          {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  reasoning_details: [{ type: 'reasoning.text', index: 0, text: 'Structured.' }],
+                },
+                finish_reason: null,
+              },
+            ],
+          },
+          createMapperState()
+        );
+        expect(chunks).toContainEqual({ type: 'thinking', content: 'Structured.' });
+      });
+
+      it('does not double-render when reasoning and reasoning_details carry the same text', () => {
+        const { chunks } = mapCompletionChunkToStreamChunks(
+          {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  reasoning: 'Thinking.',
+                  reasoning_details: [{ type: 'reasoning.text', index: 0, text: 'Thinking.' }],
+                },
+                finish_reason: null,
+              },
+            ],
+          },
+          createMapperState()
+        );
+        expect(chunks.filter(c => c.type === 'thinking')).toEqual([
+          { type: 'thinking', content: 'Thinking.' },
+        ]);
+      });
+
+      it('latches hadReasoning on an encrypted-only delta with nothing renderable', () => {
+        // Anthropic behind OpenRouter can return only encrypted blocks. Without
+        // the latch, hasCoT reads false and mandateCoT rejects the whole run.
+        const { chunks, state: newState } = mapCompletionChunkToStreamChunks(
+          {
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  reasoning_details: [{ type: 'reasoning.encrypted', index: 0, data: 'AAAA' }],
+                },
+                finish_reason: null,
+              },
+            ],
+          },
+          createMapperState()
+        );
+        expect(newState.hadReasoning).toBe(true);
+        expect(chunks).toEqual([]);
+      });
     });
 
     describe('tool call handling', () => {
@@ -275,6 +335,60 @@ describe('completionStreamMapper', () => {
         input: { code: '1+1' },
       });
     });
+
+    it('converts reasoning_content to thinking chunks ahead of the content', () => {
+      const chunks = convertMessageToStreamChunks({
+        role: 'assistant',
+        content: 'Answer',
+        reasoning_content: 'Let me think...',
+        refusal: null,
+      });
+
+      expect(chunks).toEqual([
+        { type: 'thinking.start' },
+        { type: 'thinking', content: 'Let me think...' },
+        { type: 'thinking.end' },
+        { type: 'content.start' },
+        { type: 'content', content: 'Answer' },
+        { type: 'content.end' },
+      ]);
+    });
+
+    it('converts reasoning (OpenRouter key) to thinking chunks too', () => {
+      const chunks = convertMessageToStreamChunks({
+        role: 'assistant',
+        content: null,
+        reasoning: 'Weighing options',
+        tool_calls: [
+          {
+            id: 'call_789',
+            type: 'function',
+            function: { name: 'ping', arguments: '{}' },
+          },
+        ],
+        refusal: null,
+      });
+
+      expect(chunks[0]).toEqual({ type: 'thinking.start' });
+      expect(chunks[1]).toEqual({ type: 'thinking', content: 'Weighing options' });
+      expect(chunks[2]).toEqual({ type: 'thinking.end' });
+      expect(chunks).toContainEqual({
+        type: 'tool_use',
+        id: 'call_789',
+        name: 'ping',
+        input: {},
+      });
+    });
+
+    it('emits no thinking chunks when the message carries no reasoning', () => {
+      const chunks = convertMessageToStreamChunks({
+        role: 'assistant',
+        content: 'Plain',
+        refusal: null,
+      });
+
+      expect(chunks.some(c => c.type.startsWith('thinking'))).toBe(false);
+    });
   });
 
   describe('parseSSEToStreamChunks (full stream parsing)', () => {
@@ -299,6 +413,22 @@ describe('completionStreamMapper', () => {
       const expectedChunks = JSON.parse(
         fs.readFileSync(
           path.join(__dirname, 'completion-reason-toolcall-streamChunks.json'),
+          'utf8'
+        )
+      );
+
+      const chunks = parseSSEToStreamChunks(sseText);
+      expect(chunks).toEqual(expectedChunks);
+    });
+
+    it('parses an OpenRouter reasoning_details stream without double-rendering', () => {
+      const sseText = fs.readFileSync(
+        path.join(__dirname, 'completion-openrouter-reasoning-stream.txt'),
+        'utf8'
+      );
+      const expectedChunks = JSON.parse(
+        fs.readFileSync(
+          path.join(__dirname, 'completion-openrouter-reasoning-streamChunks.json'),
           'utf8'
         )
       );

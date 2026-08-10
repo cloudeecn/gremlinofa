@@ -4,11 +4,19 @@
  * Accumulates streaming chunks to build the fullContent message object.
  * The fullContent is what gets stored and sent back to the API in future turns.
  *
- * IMPORTANT: Reasoning is NOT included in fullContent - it cannot be sent back
- * to the API. Reasoning is only used for renderingContent (display).
+ * Reasoning is kept under the key the provider used (`reasoning_content`,
+ * `reasoning`, or OpenRouter's structured `reasoning_details`). DeepSeek-lineage
+ * models want their own `reasoning_content` fed back inside an agentic run for
+ * accurate follow-up tool calls, and an Anthropic upstream behind OpenRouter
+ * needs its signed `reasoning_details` back or it rejects the turn; the request
+ * builder decides what actually goes on the wire.
  */
 
-import type { CompletionChunk, CompletionMessage } from './completionStreamMapper';
+import type { CompletionChunk, CompletionMessage, ReasoningDetail } from './completionStreamMapper';
+import { reasoningTextFromDetails } from './completionStreamMapper';
+
+/** Fields that arrive in fragments and are concatenated; everything else is last-write-wins. */
+const CONCATENATED_DETAIL_FIELDS = ['text', 'summary', 'data'] as const;
 
 /**
  * Accumulator for building fullContent from streaming chunks.
@@ -18,6 +26,8 @@ import type { CompletionChunk, CompletionMessage } from './completionStreamMappe
  * {
  *   role: 'assistant',
  *   content: string | null,
+ *   reasoning_content?: string,
+ *   reasoning?: string,
  *   tool_calls?: Array<{ id, type: 'function', function: { name, arguments } }>,
  *   refusal: string | null
  * }
@@ -25,6 +35,10 @@ import type { CompletionChunk, CompletionMessage } from './completionStreamMappe
  */
 export class CompletionFullContentAccumulator {
   private content: string = '';
+  private reasoningContent: string = '';
+  private reasoning: string = '';
+  private reasoningDetails: Map<string, ReasoningDetail> = new Map();
+  private reasoningDetailOrder: string[] = [];
   private toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map();
   private refusal: string | null = null;
 
@@ -42,8 +56,19 @@ export class CompletionFullContentAccumulator {
       this.content += delta.content;
     }
 
-    // NOTE: We intentionally ignore delta.reasoning here.
-    // Reasoning cannot be sent back to the API, so it's not part of fullContent.
+    // Accumulate reasoning under the key the provider streams it on
+    if (delta?.reasoning_content) {
+      this.reasoningContent += delta.reasoning_content;
+    }
+    if (delta?.reasoning) {
+      this.reasoning += delta.reasoning;
+    }
+
+    if (delta?.reasoning_details) {
+      delta.reasoning_details.forEach((detail, position) =>
+        this.mergeReasoningDetail(detail, position)
+      );
+    }
 
     // Accumulate tool calls by index
     if (delta?.tool_calls) {
@@ -69,6 +94,44 @@ export class CompletionFullContentAccumulator {
   }
 
   /**
+   * Fold one streamed `reasoning_details` entry into the accumulated set.
+   *
+   * Keyed on `index` when present, on the entry's position within the delta array
+   * otherwise (a provider that streams a single block tends to omit `index`, and
+   * position still merges its fragments correctly). The key carries `type` too, so
+   * an index reused across types opens a second block rather than fusing a text
+   * block into an encrypted one — which would produce a structurally invalid entry
+   * and break the signature the whole round-trip depends on.
+   */
+  private mergeReasoningDetail(detail: ReasoningDetail, position: number): void {
+    const slot = detail.index !== undefined ? `i:${detail.index}` : `p:${position}`;
+    const key = `${slot}:${detail.type ?? ''}`;
+
+    const existing = this.reasoningDetails.get(key);
+    if (!existing) {
+      this.reasoningDetails.set(key, { ...detail });
+      this.reasoningDetailOrder.push(key);
+      return;
+    }
+
+    for (const [field, value] of Object.entries(detail)) {
+      if (value === undefined || value === null) {
+        // Continuation fragments carry `id: null`; that must not erase the id the
+        // opening fragment established.
+        continue;
+      }
+      if (
+        typeof value === 'string' &&
+        (CONCATENATED_DETAIL_FIELDS as readonly string[]).includes(field)
+      ) {
+        existing[field] = `${(existing[field] as string | null | undefined) ?? ''}${value}`;
+      } else {
+        existing[field] = value;
+      }
+    }
+  }
+
+  /**
    * Finalize and return the fullContent message object.
    * Call this after all chunks have been processed.
    */
@@ -78,6 +141,21 @@ export class CompletionFullContentAccumulator {
       content: this.content || null,
       refusal: this.refusal,
     };
+
+    // Omit reasoning keys entirely for non-thinking models
+    if (this.reasoningContent) {
+      message.reasoning_content = this.reasoningContent;
+    }
+    if (this.reasoning) {
+      message.reasoning = this.reasoning;
+    }
+    // First-seen order, never re-sorted by `index`: SSE arrival order is generation
+    // order, and reordering is the one thing OpenRouter's round-trip forbids.
+    if (this.reasoningDetailOrder.length > 0) {
+      message.reasoning_details = this.reasoningDetailOrder.map(
+        key => this.reasoningDetails.get(key) as ReasoningDetail
+      );
+    }
 
     // Add tool_calls if any were accumulated
     if (this.toolCalls.size > 0) {
@@ -102,6 +180,19 @@ export class CompletionFullContentAccumulator {
   }
 }
 
+/** Reasoning text a non-streaming response carried, under any of the provider keys. */
+export function reasoningTextOf(message: {
+  reasoning_content?: string | null;
+  reasoning?: string | null;
+  reasoning_details?: ReasoningDetail[];
+}): string {
+  return (
+    message.reasoning_content ||
+    message.reasoning ||
+    reasoningTextFromDetails(message.reasoning_details)
+  );
+}
+
 /**
  * Create fullContent from a non-streaming message response.
  * Used when disableStream is true.
@@ -111,6 +202,9 @@ export class CompletionFullContentAccumulator {
 export function createFullContentFromMessage(message: {
   role?: string;
   content?: string | null;
+  reasoning_content?: string | null;
+  reasoning?: string | null;
+  reasoning_details?: ReasoningDetail[];
   tool_calls?: Array<{
     id: string;
     type: string;
@@ -121,6 +215,10 @@ export function createFullContentFromMessage(message: {
   return {
     role: message.role || 'assistant',
     content: message.content ?? null,
+    ...(message.reasoning_content && { reasoning_content: message.reasoning_content }),
+    ...(message.reasoning && { reasoning: message.reasoning }),
+    // By reference, unmerged and unnormalized — the echo has to be verbatim.
+    ...(message.reasoning_details?.length && { reasoning_details: message.reasoning_details }),
     tool_calls: message.tool_calls,
     refusal: message.refusal ?? null,
   };

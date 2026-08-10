@@ -33,6 +33,7 @@ export type APIType =
   | 'bedrock'
   | 'google'
   | 'claude-agent'
+  | 'chatgpt-subscription'
   | 'ds01-dummy-system';
 
 /** Type-safe tool definition overrides for each API type */
@@ -43,6 +44,24 @@ export interface APIToolOverrides {
   bedrock?: BedrockTool;
   google?: unknown;
   'claude-agent'?: Anthropic.Beta.BetaToolUnion;
+  'chatgpt-subscription'?: OpenAI.Responses.Tool;
+}
+
+/**
+ * OAuth credential set for the `chatgpt-subscription` provider (Codex login).
+ * Backend-owned: only the sign-in RPCs and the token refresher write it —
+ * `saveAPIDefinition` preserves the stored value regardless of what the
+ * frontend sends, because refresh tokens rotate and a stale copy written back
+ * would lock the account out (`refresh_token_reused`).
+ */
+export interface ChatgptOAuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  idToken?: string;
+  expiresAt: number; // epoch ms
+  accountId: string; // `chatgpt_account_id` claim, sent as the `chatgpt-account-id` header
+  planType?: string; // `chatgpt_plan_type` claim: free / plus / pro / business / enterprise / edu
+  email?: string;
 }
 
 export interface APIDefinition {
@@ -61,12 +80,16 @@ export interface APIDefinition {
   extraModelIds?: string[]; // Manually-added model IDs not returned by provider discovery
   binaryPath?: string; // claude-agent: full path to the claude executable (empty = SDK bundled)
   extraArgs?: string; // claude-agent: extra CLI flags, e.g. "--strict-mcp-config --settings /path"
+  oauth?: ChatgptOAuthTokens; // chatgpt-subscription: Codex login tokens (see ChatgptOAuthTokens)
   advancedSettings?: {
     pruneThinking?: boolean; // Strip thinking/reasoning blocks from messages before latest user message
     pruneEmptyText?: boolean; // Strip empty text blocks from messages before latest user message
     isSubscription?: boolean; // Flat-rate subscription — all cost tracked as $0
     enforceGenuineAnthropic?: boolean; // Reject responses with zero cache activity or unsigned thinking blocks
-    deFactoThinking?: boolean; // Send { thinking: { type: "enabled" | "disabled" } } in request body (DeepSeek, Kimi, MiMo, etc.)
+    reasoningDialect?: ReasoningDialect; // Reasoning wire shape for models this definition serves; per-model metadata wins unless overridden
+    reasoningDialectOverride?: boolean; // Beat per-model metadata with the definition's dialect — for gateways that normalize every model they serve. Implied by the `openrouter` dialect.
+    /** @deprecated Superseded by `reasoningDialect`; `true` still resolves to `'thinking-object'`. */
+    deFactoThinking?: boolean;
     nudgeThinking?: boolean; // Append "<<WITH THINKING STEPS>>" to last user message
     mandateCoT?: boolean; // Reject responses without chain-of-thought reasoning tokens
     treatEmptyOutputAsError?: boolean; // Reject turns that produce empty text and no tool calls
@@ -100,6 +123,36 @@ export type ReasoningEffort =
   | 'max'
   | undefined;
 export type ReasoningSummary = 'auto' | 'concise' | 'detailed' | undefined;
+
+/**
+ * Reasoning wire shapes on the OpenAI-compatible Chat Completions transport.
+ * Every OpenAI-compatible vendor invented its own; the shapes are mutually
+ * exclusive and several providers reject a request carrying two of them.
+ *
+ * - `openai` — `reasoning_effort: 'high'`. OpenAI, xAI, Kimi K3.
+ * - `thinking-object` — `thinking: { type: 'enabled' | 'disabled' }`. DeepSeek,
+ *   GLM/Zhipu, MiMo, Doubao, Ernie. (Doubao's `budget_tokens` is not sent.)
+ * - `enable-thinking` — `enable_thinking: boolean`. Qwen/DashScope, Kimi K2.x.
+ *   (Qwen's `thinking_budget` is not sent.) Moonshot 400s if `reasoning_effort`
+ *   rides along, so this shape is always emitted alone.
+ * - `openrouter` — `reasoning: { effort | max_tokens, enabled }`, plus the
+ *   `reasoning_details` round-trip. Chat Completions only; the Responses API has
+ *   its own native `reasoning` field and ignores this value.
+ */
+export type ReasoningDialect = 'openai' | 'thinking-object' | 'enable-thinking' | 'openrouter';
+
+/**
+ * Vendor switches that keep earlier turns' reasoning in context:
+ * - `clear_thinking`: GLM 4.7+, `thinking.clear_thinking: false`
+ * - `thinking_keep`: Kimi K2.6, `thinking.keep: "all"`
+ * - `preserve_thinking`: Qwen, `preserve_thinking: true`
+ * - `reasoning_context`: OpenAI Responses, `reasoning.context: "all_turns"`
+ */
+export type ReasoningHistoryParam =
+  | 'clear_thinking'
+  | 'thinking_keep'
+  | 'preserve_thinking'
+  | 'reasoning_context';
 
 /**
  * OpenAI response-length control. Responses API nests it under `text.verbosity`,
@@ -183,14 +236,44 @@ export interface ModelMetadata {
    * Examples:
    * - o-series: ['low', 'medium', 'high']
    * - gpt-5: ['minimal', 'low', 'medium', 'high']
-   * - gpt-5.1/5.2: ['none', 'minimal', 'low', 'medium', 'high']
+   * - gpt-5.2/5.4/5.5: ['none', 'low', 'medium', 'high', 'xhigh']
    * - grok-3-mini: ['low', 'high']
-   * - Claude Opus 4.7+/Sonnet 5/Fable 5: ['low', 'medium', 'high', 'xhigh', 'max']
+   * A leading `none` means the toggle can actually switch reasoning off; without
+   * it, toggle off sends the lowest level (`effortWhenOff`).
+   * - Claude Opus 4.7+/Sonnet 5/Fable 5/5.1: ['low', 'medium', 'high', 'xhigh', 'max']
    * - Claude Opus 4.6/Sonnet 4.6: ['low', 'medium', 'high', 'max'] (no xhigh)
    */
   supportedReasoningEfforts?: ReasoningEffort[];
 
-  /** Uses de facto { thinking: { type: "enabled" | "disabled" } } parameter (DeepSeek, MiMo, Kimi, etc.) */
+  /**
+   * Which reasoning wire shape this model speaks on the Chat Completions transport.
+   * Resolved by `resolveReasoningDialect` — a value here wins over the API
+   * definition's setting, which is what lets Kimi K2.x and K3 coexist in one
+   * Moonshot definition. Set `'openai'` explicitly to stop a definition-level
+   * dialect from applying to a model that doesn't reason at all.
+   */
+  reasoningDialect?: ReasoningDialect;
+
+  /**
+   * The endpoint 400s when an assistant turn with tool calls comes back without
+   * its reasoning (first-party DeepSeek). Reasoning pruning leaves those turns
+   * alone, and tool-call turns that never had reasoning (another provider's,
+   * or reasoning switched off) get an empty placeholder.
+   */
+  mandatesReasoningReplay?: boolean;
+
+  /**
+   * The vendor setting that makes earlier-turn reasoning count, sent only when
+   * `thinkingKeepTurns` asks for history (`-1` or `2+`, see
+   * `wantsReasoningHistory`). Without it these vendors drop reasoning from
+   * every turn before the last user message, replayed or not.
+   */
+  reasoningHistoryParam?: ReasoningHistoryParam;
+
+  /**
+   * @deprecated Superseded by `reasoningDialect`. Still read: `true` resolves to
+   * `'thinking-object'` and `false` to `'openai'`.
+   */
   deFactoThinking?: boolean;
 
   // === Feature Support ===
@@ -203,8 +286,25 @@ export interface ModelMetadata {
   /** When true, adaptive mode is forced regardless of `reasoningBudgetTokens` — Anthropic Opus 4.7+. */
   onlyAdaptiveReasoning?: boolean;
 
+  /**
+   * Anthropic: the `thinking.type` that switches thinking off on a model that
+   * thinks when `thinking` is omitted (Opus 5, Sonnet 5). Unset on models whose
+   * default is off, where omitting the field already means no thinking.
+   * Always-on models (`reasoningMode: 'always'`) can't switch it off and get
+   * their lowest effort instead.
+   */
+  thinkingOffType?: 'disabled';
+
   /** Accepts the OpenAI `verbosity` parameter — GPT-5 family only; gpt-4.x and the o-series reject it. */
   supportsVerbosity?: boolean;
+
+  /**
+   * Which hosted web-search tool shape the Responses endpoint expects. Defaults
+   * to the GA `web_search`; `web_search_preview` is the legacy alias that the
+   * GPT-5 family and the ChatGPT/Codex backend reject outright, so set it only
+   * for an older or third-party endpoint that still wants it.
+   */
+  webSearchTool?: 'web_search' | 'web_search_preview';
 
   /** Supports function/tool calling */
   supportsTools?: boolean;
@@ -517,7 +617,15 @@ export interface MessageAttachment {
 }
 
 export interface MessageMetadata {
+  /** Model id the request was sent with. */
   model?: string;
+  /**
+   * Model id the provider reported as having served the response. Absent for
+   * providers whose wire format carries none (Bedrock) and on messages written
+   * before this field existed. Differs from `model` when an alias resolved to
+   * a dated snapshot or a gateway re-routed the call.
+   */
+  servedModel?: string;
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;

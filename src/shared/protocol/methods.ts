@@ -80,6 +80,12 @@ export const INIT_EXEMPT_METHODS = new Set<string>([
 // Wire-safe data shapes used in method results
 // ============================================================================
 
+/** Outcome of one sign-in step for the `chatgpt-subscription` provider. */
+export type ChatgptOAuthOutcome =
+  | { status: 'pending' }
+  | { status: 'complete'; accountId: string; planType?: string; email?: string }
+  | { status: 'error'; message: string };
+
 /**
  * Serializable subset of a `ClientSideTool` that the project-settings UI
  * needs to render the tool list. Function-typed fields (`execute`,
@@ -442,6 +448,44 @@ export interface GremlinMethods {
   claudeAgentInspectMessage: {
     params: { sessionId?: string; messageUuid: string };
     result: { entry: string; sessionId: string; foundVia: 'stated' | 'scan' };
+    streams: never;
+  };
+
+  // ---- chatgpt-subscription sign-in (Codex-login OAuth) ----
+  /**
+   * Device-code flow, step 1: get a code for the user to type at
+   * `verificationUrl`. The frontend then polls `chatgptOAuthDevicePoll` every
+   * `interval` seconds until it stops answering `pending`.
+   */
+  chatgptOAuthDeviceStart: {
+    params: { apiDefId: string };
+    result: { deviceAuthId: string; userCode: string; verificationUrl: string; interval: number };
+    streams: never;
+  };
+  chatgptOAuthDevicePoll: {
+    params: { apiDefId: string; deviceAuthId: string; userCode: string };
+    result: ChatgptOAuthOutcome;
+    streams: never;
+  };
+  /**
+   * Manual-paste PKCE flow, step 1: the authorize URL to open in a browser.
+   * The verifier + state come back to the frontend, which holds them in
+   * memory and returns them with the pasted redirect URL.
+   */
+  chatgptOAuthAuthorizeUrl: {
+    params: { apiDefId: string };
+    result: { url: string; codeVerifier: string; state: string };
+    streams: never;
+  };
+  chatgptOAuthExchange: {
+    params: { apiDefId: string; redirectUrl: string; codeVerifier: string; state: string };
+    result: ChatgptOAuthOutcome;
+    streams: never;
+  };
+  /** Drop the stored tokens; the definition survives, unsigned. */
+  chatgptOAuthSignOut: {
+    params: { apiDefId: string };
+    result: { ok: true };
     streams: never;
   };
 

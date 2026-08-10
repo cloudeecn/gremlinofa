@@ -1,3 +1,6 @@
+// Backward-compat coverage: `deFactoThinking` is superseded by `reasoningDialect`
+// (see reasoningDialects.test.ts) but stored definitions and any un-migrated model
+// metadata still carry the boolean, so the resolver must keep honoring it.
 import { describe, expect, it } from 'vitest';
 import type { ChatCompletionCreateParams } from 'openai/resources/index.mjs';
 import type OpenAI from 'openai';

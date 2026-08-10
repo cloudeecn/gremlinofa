@@ -18,7 +18,11 @@
 
 import type OpenAI from 'openai';
 import type { StreamResult } from './baseClient';
-import type { ResponsesSSEEvent } from './responsesStreamMapper';
+import {
+  responsesStopReason,
+  terminalResponseOf,
+  type ResponsesSSEEvent,
+} from './responsesStreamMapper';
 
 type OutputItem = OpenAI.Responses.ResponseInputItem;
 
@@ -37,6 +41,10 @@ export interface AccumulatorFinalState {
   hasFunctionCall: boolean;
   webSearchCount: number;
   tokens: AccumulatorTokens;
+  /** The model id the provider reported, when it named one. */
+  servedModel?: string;
+  /** The terminal event's response; undefined when the stream never finished. */
+  terminalResponse?: Record<string, unknown>;
 }
 
 /**
@@ -50,6 +58,8 @@ export class ResponsesStreamAccumulator {
   private items: Map<number, MutableItem> = new Map();
   private textContent: string = '';
   private thinkingContent: string = '';
+  private servedModel: string | undefined;
+  private terminalResponse: Record<string, unknown> | undefined;
   private tokens: AccumulatorTokens = {
     input: 0,
     output: 0,
@@ -167,8 +177,18 @@ export class ResponsesStreamAccumulator {
         break;
       }
 
-      case 'response.completed': {
+      case 'error':
+        this.terminalResponse = terminalResponseOf(event);
+        break;
+
+      case 'response.completed':
+      case 'response.incomplete':
+      case 'response.failed': {
+        this.terminalResponse = terminalResponseOf(event);
         const response = data.response as Record<string, unknown> | undefined;
+        if (typeof response?.model === 'string') {
+          this.servedModel = response.model;
+        }
         const usage = response?.usage as Record<string, unknown> | undefined;
         if (usage) {
           const inputTokens = (usage.input_tokens as number) || 0;
@@ -219,6 +239,8 @@ export class ResponsesStreamAccumulator {
       hasFunctionCall,
       webSearchCount,
       tokens: this.tokens,
+      servedModel: this.servedModel,
+      terminalResponse: this.terminalResponse,
     };
   }
 
@@ -313,7 +335,8 @@ export class ResponsesStreamAccumulator {
 
 /**
  * Build a `StreamResult` from the accumulator's finalized state. Mirrors
- * the shape produced by `ResponsesClient.processResponse`.
+ * the shape produced by `ResponsesClient.processResponse`, including the
+ * throw from `responsesStopReason` when the response failed or never finished.
  */
 export function buildStreamResultFromAccumulator(
   accumulator: ResponsesStreamAccumulator
@@ -326,11 +349,12 @@ export function buildStreamResultFromAccumulator(
     thinkingContent: state.thinkingContent || undefined,
     hasCoT: state.hasCoT,
     fullContent: state.fullContent,
-    stopReason: state.hasFunctionCall ? 'tool_use' : undefined,
+    stopReason: responsesStopReason(state.terminalResponse, state.hasFunctionCall),
     inputTokens: tokens.input - tokens.cachedInput,
     outputTokens: tokens.output - tokens.reasoning,
     cacheReadTokens: tokens.cachedInput,
     reasoningTokens: tokens.reasoning > 0 ? tokens.reasoning : undefined,
     webSearchCount: state.webSearchCount > 0 ? state.webSearchCount : undefined,
+    servedModel: state.servedModel,
   };
 }

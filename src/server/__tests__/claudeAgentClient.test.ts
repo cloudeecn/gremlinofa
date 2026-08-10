@@ -141,6 +141,8 @@ function makeFailingTurnQuery(opts: {
   messageStopReason?: string;
   /** Final text on the result message (the `result` string). */
   resultText?: string;
+  /** End the SDK iterator before the `result` message. */
+  omitResult?: boolean;
 }) {
   return vi.fn(
     () =>
@@ -179,6 +181,7 @@ function makeFailingTurnQuery(opts: {
             },
           };
         }
+        if (opts.omitResult) return;
         yield {
           type: 'result' as const,
           subtype: 'success' as const,
@@ -926,6 +929,37 @@ describe('ClaudeAgentClient', () => {
     }
   });
 
+  it('never sends disabled to an always-on model, and caps Opus 5 at high when off', async () => {
+    const optsSink: { value?: unknown } = {};
+    const fakeQuery = makeFakeQuery({ text: 'ok' }, optsSink);
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: fakeQuery as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+    const off = { enableReasoning: false, reasoningEffort: 'max' };
+
+    // Opus 5.5 400s on `disabled` at every effort: omit it, ask for the least effort
+    await consume(client, [userMessage('hey')], makeApiDef(), off, 'claude-opus-5-5');
+    let opts = optsSink.value as Record<string, unknown>;
+    expect(opts.thinking).toBeUndefined();
+    expect(opts.effort).toBe('low');
+
+    // Opus 5 rejects `disabled` beside xhigh / max
+    optsSink.value = undefined;
+    await consume(client, [userMessage('hey')], makeApiDef(), off, 'claude-opus-5');
+    opts = optsSink.value as Record<string, unknown>;
+    expect(opts.thinking).toEqual({ type: 'disabled' });
+    expect(opts.effort).toBe('high');
+
+    // A default-off model keeps the picked effort beside `disabled`
+    optsSink.value = undefined;
+    await consume(client, [userMessage('hey')], makeApiDef(), off, 'claude-opus-4-8');
+    opts = optsSink.value as Record<string, unknown>;
+    expect(opts.thinking).toEqual({ type: 'disabled' });
+    expect(opts.effort).toBe('max');
+  });
+
   it('omits effort for a model that does not accept it', async () => {
     const optsSink: { value?: unknown } = {};
     const fakeQuery = makeFakeQuery({ text: 'ok' }, optsSink);
@@ -1098,9 +1132,12 @@ describe('ClaudeAgentClient', () => {
     const models = await client.discoverModels(makeApiDef());
     expect(models.map(m => m.id).sort()).toEqual([
       'claude-fable-5',
+      'claude-fable-5-1',
       'claude-haiku-4-5',
       'claude-opus-4-7',
       'claude-opus-4-8',
+      'claude-opus-5',
+      'claude-opus-5-5',
       'claude-sonnet-4-6',
     ]);
   });
@@ -2011,6 +2048,21 @@ describe('ClaudeAgentClient', () => {
     // Accept-the-turn convention (matches direct anthropicClient): the partial
     // text stands, downstream reacts to the stop reason.
     expect(r.error).toBeUndefined();
+    debugSpy.mockRestore();
+  });
+
+  it('errors on a turn whose SDK iterator ended without a result message', async () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = new ClaudeAgentClient(makeDeps(), {
+      query: makeFailingTurnQuery({ text: 'partial answer', omitResult: true }) as never,
+      sessionDir: () => '/tmp',
+      generateSessionId: () => 'u',
+    });
+
+    const { result } = await consume(client, [userMessage('hi')], makeApiDef());
+    const r = result as { textContent: string; error?: { message: string } };
+    expect(r.error?.message).toBe('claude-agent: SDK stream ended without a result message');
+    expect(r.textContent).toBe('partial answer');
     debugSpy.mockRestore();
   });
 

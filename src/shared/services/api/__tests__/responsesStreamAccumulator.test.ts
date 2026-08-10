@@ -323,6 +323,23 @@ describe('ResponsesStreamAccumulator', () => {
       reasoning: 10,
     });
   });
+
+  it('captures the served model from response.completed', () => {
+    const acc = new ResponsesStreamAccumulator();
+
+    acc.pushEvent(ev('response.completed', { response: { model: 'gpt-5.2-2026-03-01' } }));
+
+    expect(acc.finalize().servedModel).toBe('gpt-5.2-2026-03-01');
+    expect(buildStreamResultFromAccumulator(acc).servedModel).toBe('gpt-5.2-2026-03-01');
+  });
+
+  it('leaves the served model undefined when the provider names none', () => {
+    const acc = new ResponsesStreamAccumulator();
+
+    acc.pushEvent(ev('response.completed', { response: { usage: { input_tokens: 5 } } }));
+
+    expect(buildStreamResultFromAccumulator(acc).servedModel).toBeUndefined();
+  });
 });
 
 describe('buildStreamResultFromAccumulator', () => {
@@ -385,9 +402,100 @@ describe('buildStreamResultFromAccumulator', () => {
         delta: 'hi',
       })
     );
+    acc.pushEvent(ev('response.completed', { response: { status: 'completed' } }));
 
     const result = buildStreamResultFromAccumulator(acc);
     expect(result.stopReason).toBeUndefined();
     expect(result.textContent).toBe('hi');
+  });
+
+  describe('termination', () => {
+    // A reasoning item that never got its output_item.done
+    function accWithOpenReasoning(): ResponsesStreamAccumulator {
+      const acc = new ResponsesStreamAccumulator();
+      acc.pushEvent(
+        ev('response.output_item.added', {
+          output_index: 0,
+          item: { type: 'reasoning', id: 'rs_1', status: 'in_progress', summary: [] },
+        })
+      );
+      acc.pushEvent(
+        ev('response.reasoning_text.delta', { output_index: 0, content_index: 0, delta: 'hmm' })
+      );
+      return acc;
+    }
+
+    it('throws when the stream ended without a terminal event', () => {
+      expect(() => buildStreamResultFromAccumulator(accWithOpenReasoning())).toThrow(
+        'Stream ended before the response finished'
+      );
+    });
+
+    it('reports max_tokens with usage and model from response.incomplete', () => {
+      const acc = accWithOpenReasoning();
+      acc.pushEvent(
+        ev('response.incomplete', {
+          response: {
+            status: 'incomplete',
+            incomplete_details: { reason: 'max_output_tokens' },
+            model: 'gpt-5.2-2026-03-01',
+            usage: {
+              input_tokens: 40,
+              output_tokens: 256,
+              output_tokens_details: { reasoning_tokens: 256 },
+            },
+          },
+        })
+      );
+
+      const result = buildStreamResultFromAccumulator(acc);
+      expect(result.stopReason).toBe('max_tokens');
+      expect(result.inputTokens).toBe(40);
+      expect(result.reasoningTokens).toBe(256);
+      expect(result.servedModel).toBe('gpt-5.2-2026-03-01');
+      expect(result.thinkingContent).toBe('hmm');
+    });
+
+    it('prefers max_tokens over tool_use for a truncated function call', () => {
+      const acc = new ResponsesStreamAccumulator();
+      acc.pushEvent(
+        ev('response.output_item.added', {
+          output_index: 0,
+          item: { type: 'function_call', call_id: 'c_1', name: 'tool', arguments: '' },
+        })
+      );
+      acc.pushEvent(
+        ev('response.function_call_arguments.delta', { output_index: 0, delta: '{"pa' })
+      );
+      acc.pushEvent(
+        ev('response.incomplete', {
+          response: { incomplete_details: { reason: 'max_output_tokens' } },
+        })
+      );
+
+      expect(buildStreamResultFromAccumulator(acc).stopReason).toBe('max_tokens');
+    });
+
+    it('throws with the provider message on response.failed', () => {
+      const acc = accWithOpenReasoning();
+      acc.pushEvent(
+        ev('response.failed', {
+          response: { status: 'failed', error: { code: 'server_error', message: 'boom' } },
+        })
+      );
+
+      expect(() => buildStreamResultFromAccumulator(acc)).toThrow(
+        'Response failed: server_error: boom'
+      );
+    });
+
+    it('throws on a spec error event', () => {
+      const acc = accWithOpenReasoning();
+      acc.pushEvent(ev('error', { code: 'rate_limit_exceeded', message: 'slow down' }));
+
+      expect(() => buildStreamResultFromAccumulator(acc)).toThrow(
+        'Response failed: rate_limit_exceeded: slow down'
+      );
+    });
   });
 });

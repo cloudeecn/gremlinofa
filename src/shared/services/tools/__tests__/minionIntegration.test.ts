@@ -32,7 +32,6 @@ const mocks = vi.hoisted(() => ({
   apiService: {
     sendMessageStream: vi.fn(),
     extractToolUseBlocks: vi.fn(),
-    mapStopReason: vi.fn((_: unknown, reason: string | null) => reason || 'end_turn'),
     shouldPrependPrefill: vi.fn(() => false),
   },
   storage: {} as Record<string, ReturnType<typeof vi.fn>>,
@@ -55,7 +54,6 @@ vi.mock('../../api/apiService', () => ({
   APIService: class MockAPIService {
     sendMessageStream = mocks.apiService.sendMessageStream;
     extractToolUseBlocks = mocks.apiService.extractToolUseBlocks;
-    mapStopReason = mocks.apiService.mapStopReason;
     shouldPrependPrefill = mocks.apiService.shouldPrependPrefill;
   },
   apiService: mocks.apiService,
@@ -1450,6 +1448,105 @@ describe('Minion Integration', () => {
       // Savepoint should stay at SAVEPOINT_START (not advanced past the failed run)
       const newChat = [...mockStorageData.minionChats.values()][0];
       expect(newChat?.savepoint).toBe(SAVEPOINT_START);
+    });
+
+    describe('mid-stream termination', () => {
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const makeContext = (): ToolContext => ({
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      });
+      // Follow-up answers queued with mockReturnValueOnce go unconsumed when the
+      // minion stops as it should; clearAllMocks keeps once-queues, so reset.
+      beforeEach(() => vi.mocked(apiService.sendMessageStream).mockReset());
+      afterEach(() => vi.mocked(apiService.sendMessageStream).mockReset());
+
+      // What a follow-up iteration would answer, should the truncated turn be continued
+      const finishedTurn = {
+        textContent: 'Done',
+        fullContent: [{ type: 'text', text: 'Done' }],
+        stopReason: 'end_turn',
+        inputTokens: 10,
+        outputTokens: 5,
+      };
+
+      it('returns error for a stream cut off before the response finished', async () => {
+        vi.mocked(apiService.sendMessageStream).mockReturnValue(
+          createMockStream([{ type: 'content', content: 'Half an ans' }], {
+            textContent: 'Half an ans',
+            fullContent: [],
+            error: { message: 'API Error: Stream ended before the response finished' },
+            inputTokens: 0,
+            outputTokens: 0,
+          }) as never
+        );
+
+        const result = await collectToolResult(
+          minionTool.execute({ message: 'Test' }, toolOptions, makeContext())
+        );
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain('Stream ended before the response finished');
+      });
+
+      it('returns error instead of running tool calls from a max_tokens turn', async () => {
+        const truncatedToolTurn = {
+          textContent: '',
+          fullContent: [
+            { type: 'tool_use', id: 'toolu_1', name: 'memory', input: { command: 'view' } },
+          ],
+          stopReason: 'max_tokens',
+          inputTokens: 100,
+          outputTokens: 4096,
+        };
+        vi.mocked(apiService.sendMessageStream)
+          .mockReturnValueOnce(createMockStream([], truncatedToolTurn) as never)
+          .mockReturnValueOnce(createMockStream([], finishedTurn) as never);
+        vi.mocked(executeClientSideTool).mockImplementation(() =>
+          mockToolGenerator({ content: 'Files listed', isError: false })
+        );
+
+        const result = await collectToolResult(
+          minionTool.execute({ message: 'Test' }, toolOptions, makeContext())
+        );
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain('max_tokens');
+        expect(executeClientSideTool).not.toHaveBeenCalled();
+        expect(apiService.sendMessageStream).toHaveBeenCalledTimes(1);
+      });
+
+      it('returns error for a truncated turn instead of auto-enforcing the return tool', async () => {
+        vi.mocked(apiService.sendMessageStream)
+          .mockReturnValueOnce(
+            createMockStream([], {
+              textContent: 'Truncated respon',
+              fullContent: [{ type: 'text', text: 'Truncated respon' }],
+              stopReason: 'max_tokens',
+              inputTokens: 100,
+              outputTokens: 4096,
+            }) as never
+          )
+          .mockReturnValueOnce(createMockStream([], finishedTurn) as never);
+
+        const result = await collectToolResult(
+          minionTool.execute(
+            { message: 'Test' },
+            { ...toolOptions, returnMode: 'auto-enforced' },
+            makeContext()
+          )
+        );
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain('max_tokens');
+        expect(apiService.sendMessageStream).toHaveBeenCalledTimes(1);
+      });
     });
   });
 

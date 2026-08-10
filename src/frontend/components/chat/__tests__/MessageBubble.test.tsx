@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import MessageBubble from '../MessageBubble';
 import type { Message } from '../../../../shared/protocol/types';
 import type { MessageBubbleProps } from '../types';
@@ -16,7 +17,8 @@ vi.mock('../../../lib/markdownRenderer', () => ({
   renderMarkdownSafe: (text: string) => `<div>${text}</div>`,
 }));
 
-vi.mock('../../../lib/messageFormatters', () => ({
+vi.mock('../../../lib/messageFormatters', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../../lib/messageFormatters')>()),
   stripMetadata: (content: string) => content.replace(/<metadata>.*?<\/metadata>/gs, ''),
   formatTimestamp: (date: Date) => date.toISOString().split('T')[0],
   formatTokens: (label: string, count?: number) => (count ? `${label}${count}` : ''),
@@ -122,7 +124,7 @@ describe('MessageBubble', () => {
       expect(wrapper).not.toBeInTheDocument();
     });
 
-    it('passes onAction to UserMessageBubble', () => {
+    it('passes onAction to UserMessageBubble', async () => {
       const onAction = vi.fn();
       const props = createProps({
         message: createMessage({ role: 'user' }),
@@ -130,7 +132,8 @@ describe('MessageBubble', () => {
       });
       render(<MessageBubble {...props} />);
 
-      // Edit and Fork buttons should be present for user messages
+      // Edit and Fork buttons live on the info bar's expanded row
+      await userEvent.click(screen.getByRole('button', { name: 'Message details' }));
       expect(screen.getByTitle('Edit message')).toBeInTheDocument();
       expect(screen.getByTitle('Fork chat from here')).toBeInTheDocument();
     });

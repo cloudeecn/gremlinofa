@@ -4,9 +4,9 @@ import type {
   ToolResultRenderBlock,
 } from '../../../shared/protocol/types/content';
 import type { Message } from '../../../shared/protocol/types';
-import { formatTimestamp, formatTokenGroup } from '../../lib/messageFormatters';
 import { usePreferences } from '../../hooks/usePreferences';
 import ToolResultView, { FocusedMinionView } from './ToolResultView';
+import MessageInfoBar, { INFO_BAR_BUTTON } from './MessageInfoBar';
 
 export interface ToolResultBubbleProps {
   message: Message<unknown>;
@@ -49,6 +49,8 @@ export default function ToolResultBubble({
     r => !r.renderingGroups || r.renderingGroups.length === 0
   );
   const complexResults = toolResults.filter(r => r.renderingGroups && r.renderingGroups.length > 0);
+  // Tool results only carry usage when a sub-agent (minion) ran; zero cost means nothing to show.
+  const hasCost = (message.metadata?.messageCost ?? 0) > 0;
 
   const hasSimple = simpleResults.length > 0;
   const hasError = simpleResults.some(r => r.is_error);
@@ -161,41 +163,33 @@ export default function ToolResultBubble({
       {/* Timestamp, cost, and actions — hidden in focus mode or while any tool is still in progress */}
       {!focusMode &&
         toolResults.every(r => !r.status || r.status === 'complete' || r.status === 'error') && (
-          <div className="mt-1 flex items-center gap-2">
-            <span className="text-[10px] text-gray-500">{formatTimestamp(message.timestamp)}</span>
-            {(message.metadata?.messageCost ?? 0) > 0 && message.metadata && (
-              <span className="text-[10px] text-gray-500">
-                <span className="text-gray-400">|</span>{' '}
-                {formatTokenGroup('↑', message.metadata.inputTokens, [
-                  { prefix: 'C↑', value: message.metadata.cacheCreationTokens },
-                  { prefix: 'C↓', value: message.metadata.cacheReadTokens },
-                ])}
-                {message.metadata.inputTokens ? ' ' : ''}
-                {formatTokenGroup('↓', message.metadata.outputTokens, [
-                  { prefix: 'R:', value: message.metadata.reasoningTokens },
-                ])}{' '}
-                ${message.metadata.messageCost!.toFixed(3)}
-              </span>
-            )}
-            {onAction && !isLastMessage && (
-              <button
-                onClick={() => onAction('rollback', message.id)}
-                className="text-[10px] text-gray-400 transition-colors hover:text-orange-600"
-                title="Roll back to here"
-              >
-                ⏪
-              </button>
-            )}
-            {onDeleteMessage && (
-              <button
-                onClick={() => onDeleteMessage(message.id)}
-                className="text-[10px] text-gray-400 transition-colors hover:text-red-600"
-                title="Delete this message"
-              >
-                ❌
-              </button>
-            )}
-          </div>
+          <MessageInfoBar
+            timestamp={message.timestamp}
+            cost={hasCost ? message.metadata?.messageCost : undefined}
+            tokens={hasCost ? message.metadata : undefined}
+            actions={
+              <>
+                {onAction && !isLastMessage && (
+                  <button
+                    onClick={() => onAction('rollback', message.id)}
+                    className={`${INFO_BAR_BUTTON} text-gray-400 hover:text-orange-600`}
+                    title="Roll back to here"
+                  >
+                    ⏪
+                  </button>
+                )}
+                {onDeleteMessage && (
+                  <button
+                    onClick={() => onDeleteMessage(message.id)}
+                    className={`${INFO_BAR_BUTTON} text-gray-400 hover:text-red-600`}
+                    title="Delete this message"
+                  >
+                    ❌
+                  </button>
+                )}
+              </>
+            }
+          />
         )}
     </div>
   );

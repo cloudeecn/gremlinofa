@@ -1,17 +1,21 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { Part, GenerateContentResponse } from '@google/genai';
 import type { APIDefinition } from '../../../protocol/types';
-import { GoogleClient } from '../googleClient';
+import { GoogleClient, resolveThinkingLevel, resolveThinkingOff } from '../googleClient';
+import { ThinkingLevel } from '@google/genai';
 
 // Mock the SDK so discoverModels' pager can be driven deterministically. Only
 // GoogleGenAI is replaced; everything else (ThinkingLevel, types) stays real.
-const { mockModelsList } = vi.hoisted(() => ({ mockModelsList: vi.fn() }));
+const { mockModelsList, mockGenerateContentStream } = vi.hoisted(() => ({
+  mockModelsList: vi.fn(),
+  mockGenerateContentStream: vi.fn(),
+}));
 vi.mock('@google/genai', async importOriginal => {
   const actual = await importOriginal<typeof import('@google/genai')>();
   return {
     ...actual,
     GoogleGenAI: class {
-      models = { list: mockModelsList };
+      models = { list: mockModelsList, generateContentStream: mockGenerateContentStream };
     },
   };
 });
@@ -238,10 +242,6 @@ describe('googleStreamMapper', () => {
       expect(mapGoogleFinishReason('SAFETY')).toBe('safety');
     });
 
-    it('maps undefined to end_turn', () => {
-      expect(mapGoogleFinishReason(undefined)).toBe('end_turn');
-    });
-
     it('passes through unknown reasons', () => {
       expect(mapGoogleFinishReason('BLOCKLIST')).toBe('BLOCKLIST');
     });
@@ -317,6 +317,92 @@ describe('GoogleClient', () => {
 
     it('returns empty for non-array input', () => {
       expect(client.extractToolUseBlocks('not an array')).toEqual([]);
+    });
+  });
+
+  describe('resolveThinkingOff', () => {
+    it('switches 2.5 Flash off at budget 0', () => {
+      expect(resolveThinkingOff('gemini-2.5-flash', { reasoningMode: 'optional' })).toEqual({
+        thinkingBudget: 0,
+        includeThoughts: false,
+      });
+    });
+
+    it('gives 2.5 Pro its smallest budget, since it cannot switch off', () => {
+      expect(resolveThinkingOff('gemini-2.5-pro', { reasoningMode: 'always' })).toEqual({
+        thinkingBudget: 128,
+        includeThoughts: false,
+      });
+    });
+
+    it('gives Gemini 3.x its lowest level', () => {
+      expect(
+        resolveThinkingOff('gemini-3.6-flash', {
+          reasoningMode: 'always',
+          supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high'],
+        })
+      ).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL, includeThoughts: false });
+      expect(
+        resolveThinkingOff('gemini-3.1-pro-preview', {
+          reasoningMode: 'always',
+          supportedReasoningEfforts: ['low', 'medium', 'high'],
+        })
+      ).toEqual({ thinkingLevel: ThinkingLevel.LOW, includeThoughts: false });
+    });
+
+    it('gives Gemini 4 Argon its lowest level, never a budget', () => {
+      expect(
+        resolveThinkingOff('gemini-4-argon', {
+          reasoningMode: 'always',
+          supportedReasoningEfforts: ['low', 'medium', 'high'],
+        })
+      ).toEqual({ thinkingLevel: ThinkingLevel.LOW, includeThoughts: false });
+    });
+
+    it('sends nothing for unknown or non-thinking models', () => {
+      expect(resolveThinkingOff('gemini-9-flash', {})).toBeUndefined();
+      expect(resolveThinkingOff('gemini-2.0-flash', { reasoningMode: 'none' })).toBeUndefined();
+      // A 3.x model without a known ladder has no lowest level to pick
+      expect(resolveThinkingOff('gemini-3-next', { reasoningMode: 'always' })).toBeUndefined();
+    });
+  });
+
+  describe('resolveThinkingLevel', () => {
+    const flash37 = ['low', 'medium', 'high'] as const;
+
+    it('omits the level when no effort was picked so the model default applies', () => {
+      expect(resolveThinkingLevel(undefined, flash37)).toBeUndefined();
+    });
+
+    it('clamps minimal up to the lowest level 3.7 Flash accepts', () => {
+      expect(resolveThinkingLevel('minimal', flash37)).toBe(ThinkingLevel.LOW);
+    });
+
+    it('keeps an effort the model advertises', () => {
+      expect(resolveThinkingLevel('medium', flash37)).toBe(ThinkingLevel.MEDIUM);
+    });
+
+    it('clamps above-range efforts down to the highest supported', () => {
+      expect(resolveThinkingLevel('max', flash37)).toBe(ThinkingLevel.HIGH);
+    });
+
+    it('rounds an in-between effort up (Gemini 3 Pro has low / high)', () => {
+      expect(resolveThinkingLevel('medium', ['low', 'high'])).toBe(ThinkingLevel.HIGH);
+    });
+
+    it('passes minimal through for models that support it', () => {
+      expect(resolveThinkingLevel('minimal', ['minimal', 'low', 'medium', 'high'])).toBe(
+        ThinkingLevel.MINIMAL
+      );
+    });
+
+    it('leaves the effort unmapped when metadata advertises nothing', () => {
+      expect(resolveThinkingLevel('minimal', undefined)).toBe(ThinkingLevel.MINIMAL);
+      expect(resolveThinkingLevel('high', [])).toBe(ThinkingLevel.HIGH);
+    });
+
+    it('maps none to unspecified without clamping', () => {
+      expect(resolveThinkingLevel('none', flash37)).toBe(ThinkingLevel.THINKING_LEVEL_UNSPECIFIED);
     });
   });
 
@@ -418,6 +504,124 @@ describe('GoogleClient', () => {
 
       expect(pager.nextPage).toHaveBeenCalledTimes(1);
       expect(models.map(m => m.name)).toEqual(['gemini-1', 'gemini-2']);
+    });
+  });
+});
+
+describe('GoogleClient stream termination', () => {
+  const client = new GoogleClient(stubApiDeps);
+  const apiDef = { id: 'g1', name: 'Test Google', apiType: 'google', apiKey: 'k' } as APIDefinition;
+
+  const textChunk = (text: string, finishReason?: string) => ({
+    candidates: [{ content: { parts: [{ text }] }, ...(finishReason && { finishReason }) }],
+  });
+  const callChunk = (finishReason?: string) => ({
+    candidates: [
+      {
+        content: { parts: [{ functionCall: { id: 'fc_1', name: 'ping', args: {} } }] },
+        ...(finishReason && { finishReason }),
+      },
+    ],
+  });
+
+  const runStream = async (chunks: object[]) => {
+    mockGenerateContentStream.mockResolvedValueOnce(
+      (async function* () {
+        yield* chunks;
+      })()
+    );
+    const messages: Parameters<typeof client.sendMessageStream>[0] = [
+      { id: 'msg1', role: 'user', content: { type: 'text', content: 'Hi' }, timestamp: new Date() },
+    ];
+    const generator = client.sendMessageStream(messages, 'gemini-3-pro', apiDef, {
+      maxTokens: 2048,
+      enableReasoning: false,
+      reasoningBudgetTokens: 0,
+      signal: new AbortController().signal,
+    });
+    let next = await generator.next();
+    while (!next.done) next = await generator.next();
+    return next.value;
+  };
+
+  it('errors on a stream that rendered text but never sent a finishReason', async () => {
+    const result = await runStream([textChunk('Half an ans')]);
+
+    expect(result.error?.message).toBe('Stream ended before a finishReason arrived');
+    expect(result.textContent).toBe('Half an ans');
+  });
+
+  it('errors on a blocked prompt', async () => {
+    const result = await runStream([{ promptFeedback: { blockReason: 'PROHIBITED_CONTENT' } }]);
+
+    expect(result.error?.message).toBe('Prompt blocked: PROHIBITED_CONTENT');
+  });
+
+  it('reports tool_use for function calls that finished with STOP', async () => {
+    const result = await runStream([callChunk('STOP')]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.stopReason).toBe('tool_use');
+  });
+
+  it('lets MAX_TOKENS win over function calls', async () => {
+    const result = await runStream([callChunk('MAX_TOKENS')]);
+
+    expect(result.stopReason).toBe('max_tokens');
+  });
+
+  it('drops function calls from a cut-off stream', async () => {
+    const result = await runStream([textChunk('Calling'), callChunk()]);
+
+    expect(result.error).toBeDefined();
+    expect(result.fullContent.some(p => p.functionCall)).toBe(false);
+  });
+});
+
+describe('GoogleClient thinking config', () => {
+  const client = new GoogleClient(stubApiDeps);
+  const apiDef = { id: 'g1', name: 'Test Google', apiType: 'google', apiKey: 'k' } as APIDefinition;
+
+  const sentThinkingConfig = async (modelId: string) => {
+    mockGenerateContentStream.mockReset();
+    mockGenerateContentStream.mockResolvedValueOnce(
+      (async function* () {
+        yield { candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] };
+      })()
+    );
+    const messages: Parameters<typeof client.sendMessageStream>[0] = [
+      { id: 'msg1', role: 'user', content: { type: 'text', content: 'Hi' }, timestamp: new Date() },
+    ];
+    const generator = client.sendMessageStream(messages, modelId, apiDef, {
+      maxTokens: 2048,
+      enableReasoning: true,
+      reasoningBudgetTokens: 4096,
+      reasoningEffort: 'high',
+      signal: new AbortController().signal,
+    });
+    let next = await generator.next();
+    while (!next.done) next = await generator.next();
+    return mockGenerateContentStream.mock.calls[0][0].config.thinkingConfig;
+  };
+
+  it('sends Gemini 4 Argon a thinkingLevel, since it rejects a budget', async () => {
+    expect(await sentThinkingConfig('gemini-4-argon')).toEqual({
+      thinkingLevel: ThinkingLevel.HIGH,
+      includeThoughts: true,
+    });
+  });
+
+  it('sends a level to models it has no generation rule for', async () => {
+    expect(await sentThinkingConfig('gemini-pro-latest')).toEqual({
+      thinkingLevel: ThinkingLevel.HIGH,
+      includeThoughts: true,
+    });
+  });
+
+  it('keeps Gemini 2.5 on a token budget', async () => {
+    expect(await sentThinkingConfig('gemini-2.5-pro')).toEqual({
+      thinkingBudget: 4096,
+      includeThoughts: true,
     });
   });
 });

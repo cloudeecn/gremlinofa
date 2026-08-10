@@ -153,14 +153,15 @@ export function mapGoogleChunkToStreamChunks(
 }
 
 /**
- * Map Google finish reason to our stop reason string.
+ * Map Google finish reason to our stop reason string. The client treats a
+ * missing finish reason as a cut-off stream before getting here.
  */
-export function mapGoogleFinishReason(finishReason: string | undefined): string {
+export function mapGoogleFinishReason(finishReason: string): string {
   if (finishReason === 'STOP') return 'end_turn';
   if (finishReason === 'MAX_TOKENS') return 'max_tokens';
   if (finishReason === 'SAFETY') return 'safety';
   if (finishReason === 'RECITATION') return 'recitation';
-  return finishReason ?? 'end_turn';
+  return finishReason;
 }
 
 /**

@@ -7,11 +7,22 @@ import type {
   MessageStopReason,
   Model,
   ReasoningEffort,
+  ReasoningHistoryParam,
   ToolUseBlock,
   ToolOptions,
 } from '../../protocol/types';
-import { mapReasoningEffort } from '../../engine/lib/reasoningEffort';
-import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import {
+  effortBesideToggle,
+  effortWhenOff,
+  mapReasoningEffort,
+} from '../../engine/lib/reasoningEffort';
+import { resolveReasoningDialect, wantsReasoningHistory } from '../../engine/lib/reasoningDialect';
+import {
+  parseToolArguments,
+  type APIClient,
+  type StreamChunk,
+  type StreamResult,
+} from './baseClient';
 import type { APIServiceDeps } from './apiService';
 import {
   effectiveInjectionMode,
@@ -22,6 +33,7 @@ import {
 import {
   CompletionFullContentAccumulator,
   createFullContentFromMessage,
+  reasoningTextOf,
 } from './completionFullContentAccumulator';
 import type { CompletionChunk, CompletionMessage } from './completionStreamMapper';
 import {
@@ -29,64 +41,94 @@ import {
   createMapperState,
   mapCompletionChunkToStreamChunks,
 } from './completionStreamMapper';
-import { findCheckpointIndex, tidyAgnosticMessage } from './contextTidy';
+import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
 import {
   populateFromOpenRouterModel,
   type OpenRouterModel,
 } from '../../engine/lib/api/model_metadatas/openRouterModelMapper';
 
+/** OpenRouter's unified `reasoning` request object. `effort` and `max_tokens` are alternatives. */
+interface OpenRouterReasoningParam {
+  effort?: ReasoningEffort;
+  max_tokens?: number;
+  enabled?: boolean;
+}
+
 /**
- * Checkpoint-only message tidy for OpenAI Chat Completions.
- * No thinking blocks — only tool filtering via checkpoint.
+ * Combined message tidy for OpenAI Chat Completions: checkpoint tool filtering
+ * plus reasoning pruning. Mirrors `responsesClient.tidyMessages`, except the
+ * pruning unit is a field on the stored message rather than an array item —
+ * Chat Completions carries reasoning as `reasoning_content` / `reasoning` on
+ * the assistant message itself.
  *
  * OpenAI fullContent is either:
  * - Object (CompletionMessage) with optional tool_calls[] for assistant messages
  * - Array of { type: 'tool_result', tool_call_id } for user tool result messages
+ *
+ * `keepToolTurnReasoning` (models with `mandatesReasoningReplay`) exempts
+ * assistant turns that still carry tool calls from every kind of stripping.
  */
-function tidyMessages(
+export function tidyMessages(
   messages: Message<unknown>[],
   checkpointMessageId: string | undefined,
-  tidyToolNames: Set<string> | undefined
+  tidyToolNames: Set<string> | undefined,
+  pruneThinking: boolean,
+  pruneThinkingKeepTurns: number | undefined,
+  keepToolTurnReasoning = false
 ): Message<unknown>[] {
   const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
-  if (checkpointIdx === -1) return messages;
+  const projectPruneActive = pruneThinkingKeepTurns !== undefined && pruneThinkingKeepTurns >= 0;
+  const anyPrune = pruneThinking || projectPruneActive;
+  const effectiveKeep = projectPruneActive ? (pruneThinkingKeepTurns as number) : 1;
+  const thinkingBoundary = anyPrune ? findThinkingBoundaryN(messages, effectiveKeep) : -1;
+
+  if (checkpointIdx === -1 && thinkingBoundary <= 0) return messages;
 
   const toolNames = tidyToolNames ?? new Set<string>();
   const removedToolUseIds = new Set<string>();
+  const processUntil = Math.max(checkpointIdx, thinkingBoundary - 1);
   const result: Message<unknown>[] = [];
 
-  for (let i = 0; i <= checkpointIdx; i++) {
+  for (let i = 0; i <= processUntil; i++) {
     const msg = messages[i];
-    const isCheckpoint = i === checkpointIdx;
+    const inCheckpoint = checkpointIdx >= 0 && i <= checkpointIdx;
+    const isCheckpoint = inCheckpoint && i === checkpointIdx;
+    const inThinking = thinkingBoundary > 0 && i < thinkingBoundary;
 
     // Wrong modelFamily or missing fullContent
     if (msg.content.modelFamily !== 'chatgpt' || msg.content.fullContent == null) {
       if (isCheckpoint) {
         result.push(msg);
-        continue;
+      } else if (inCheckpoint) {
+        const { message, newRemovedIds } = tidyAgnosticMessage(
+          msg,
+          toolNames,
+          removedToolUseIds,
+          false
+        );
+        for (const id of newRemovedIds) removedToolUseIds.add(id);
+        if (message) result.push(message);
+      } else if (inThinking) {
+        // Another provider's thinking-only message has nothing left to send
+        const hasText = msg.content.content.trim().length > 0;
+        const hasTools =
+          (msg.content.toolCalls?.length ?? 0) + (msg.content.toolResults?.length ?? 0) > 0;
+        if (hasText || hasTools) result.push(msg);
+      } else {
+        result.push(msg);
       }
-      const { message, newRemovedIds } = tidyAgnosticMessage(
-        msg,
-        toolNames,
-        removedToolUseIds,
-        false
-      );
-      for (const id of newRemovedIds) removedToolUseIds.add(id);
-      if (message) result.push(message);
-      continue;
-    }
-
-    // Checkpoint message: no filtering needed (no thinking blocks)
-    if (isCheckpoint) {
-      result.push(msg);
       continue;
     }
 
     const fullContent = msg.content.fullContent;
 
-    // Array fullContent = tool result message
+    // Array fullContent = tool result message, no reasoning to strip
     if (Array.isArray(fullContent)) {
+      if (isCheckpoint || !inCheckpoint) {
+        result.push(msg);
+        continue;
+      }
       const filtered = fullContent.filter((item: unknown) => {
         const it = item as { type?: string; tool_call_id?: string };
         return !(
@@ -104,37 +146,66 @@ function tidyMessages(
       continue;
     }
 
-    // Object fullContent = CompletionMessage with optional tool_calls
-    const cmsg = fullContent as {
-      tool_calls?: Array<{ id: string; function: { name: string } }>;
-    };
-    if (!cmsg.tool_calls?.length) {
-      result.push(msg);
+    // Object fullContent = CompletionMessage with optional reasoning + tool_calls
+    let cmsg = fullContent as CompletionMessage;
+    let changed = false;
+
+    if (inCheckpoint && !isCheckpoint && cmsg.tool_calls?.length) {
+      const keptCalls = cmsg.tool_calls.filter(tc => {
+        if (toolNames.has(tc.function.name)) {
+          removedToolUseIds.add(tc.id);
+          return false;
+        }
+        return true;
+      });
+
+      if (keptCalls.length !== cmsg.tool_calls.length) {
+        changed = true;
+        if (keptCalls.length === 0) {
+          const { tool_calls: _tc, ...rest } = cmsg;
+          cmsg = rest;
+        } else {
+          cmsg = { ...cmsg, tool_calls: keptCalls };
+        }
+      }
+    }
+
+    // Reasoning goes in the checkpoint range unconditionally (the checkpoint
+    // note replaces that history) and before the thinking boundary when pruning.
+    // Decided after the tool-call filter, so the mandated-replay exemption only
+    // covers calls that still go out.
+    //
+    // All-or-nothing per message, deliberately: a `reasoning_details` array with
+    // some entries removed is an ordering violation upstream, while a message
+    // carrying none is just a historical turn without reasoning, which every
+    // provider accepts.
+    const stripReasoning =
+      ((inCheckpoint && !isCheckpoint) || (inThinking && anyPrune)) &&
+      !(keepToolTurnReasoning && cmsg.tool_calls?.length);
+    if (stripReasoning && (cmsg.reasoning_content || cmsg.reasoning || cmsg.reasoning_details)) {
+      const { reasoning_content: _rc, reasoning: _r, reasoning_details: _rd, ...rest } = cmsg;
+      cmsg = rest;
+      changed = true;
+    }
+
+    // Tidying emptied it out: drop rather than send a blank assistant turn
+    if (
+      changed &&
+      !cmsg.content?.trim() &&
+      !cmsg.tool_calls?.length &&
+      !msg.content.content.trim()
+    ) {
       continue;
     }
 
-    const keptCalls = cmsg.tool_calls.filter(tc => {
-      if (toolNames.has(tc.function.name)) {
-        removedToolUseIds.add(tc.id);
-        return false;
-      }
-      return true;
-    });
-
-    if (keptCalls.length === 0) {
-      const { tool_calls: _, ...rest } = cmsg;
-      result.push({ ...msg, content: { ...msg.content, fullContent: rest } });
-    } else if (keptCalls.length !== cmsg.tool_calls.length) {
-      result.push({
-        ...msg,
-        content: { ...msg.content, fullContent: { ...cmsg, tool_calls: keptCalls } },
-      });
+    if (changed) {
+      result.push({ ...msg, content: { ...msg.content, fullContent: cmsg } });
     } else {
       result.push(msg);
     }
   }
 
-  for (let i = checkpointIdx + 1; i < messages.length; i++) {
+  for (let i = processUntil + 1; i < messages.length; i++) {
     result.push(messages[i]);
   }
 
@@ -233,6 +304,8 @@ export class OpenAIClient implements APIClient {
       maxTokens: number;
       enableReasoning: boolean;
       reasoningBudgetTokens: number;
+      thinkingKeepTurns?: number;
+      pruneThinkingKeepTurns?: number;
       reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       verbosity?: 'low' | 'medium' | 'high';
@@ -258,12 +331,30 @@ export class OpenAIClient implements APIClient {
         ...(proxy && { defaultHeaders: proxy.headers }),
       });
 
-      // Tidy messages: checkpoint-based tool filtering
+      // Needed before message conversion, not just at request-param time: the
+      // dialect decides whether signed `reasoning_details` are echoed back.
+      const model = await this.deps.storage.getModel(apiDefinition.id, modelId);
+      const dialect = resolveReasoningDialect(model, apiDefinition);
+      // Fresh lookup, not the cached model: the cache is a discovery-time
+      // snapshot and predates these fields.
+      const knowledge = getModelMetadataFor(apiDefinition, modelId);
+      const mandatesReplay = knowledge.mandatesReasoningReplay === true;
+
+      // Tidy messages: checkpoint-based tool filtering + reasoning pruning
       const tidiedMessages = tidyMessages(
         messages,
         options.checkpointMessageId,
-        options.tidyToolNames
+        options.tidyToolNames,
+        apiDefinition.advancedSettings?.pruneThinking ?? false,
+        options.pruneThinkingKeepTurns,
+        mandatesReplay
       );
+
+      // Mandated replay: a tool-call turn with no reasoning to send still needs
+      // the field. DeepSeek accepts an empty string.
+      const replayPlaceholder = (mandatesReplay ? { reasoning_content: '' } : undefined) as
+        | Partial<OpenAI.ChatCompletionAssistantMessageParam>
+        | undefined;
 
       // Convert our message format to OpenAI's format
       const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [];
@@ -392,6 +483,7 @@ export class OpenAIClient implements APIClient {
             openaiMessages.push({
               role: 'assistant',
               content: msg.content.content || null,
+              ...replayPlaceholder,
               tool_calls: msg.content.toolCalls.map(tc => ({
                 id: tc.id,
                 type: 'function' as const,
@@ -407,11 +499,30 @@ export class OpenAIClient implements APIClient {
           // Handle new CompletionMessage fullContent format
           const fullContent = msg.content.fullContent as CompletionMessage | undefined;
           if (fullContent && typeof fullContent === 'object' && !Array.isArray(fullContent)) {
+            // Reasoning goes back as `reasoning_content` whichever key it
+            // arrived on: every probed endpoint reads that key, while a plain
+            // `reasoning` key is ignored by DeepSeek, GLM and MiniMax. Under the
+            // OpenRouter dialect the signed `reasoning_details` array displaces
+            // the text rather than joining it: sending both hands the gateway
+            // two representations of the same reasoning, and an Anthropic
+            // upstream can translate the unsigned one into a second thinking
+            // block — the exact sequence mismatch the signature is meant to
+            // catch. The SDK's message type has none of these fields, hence the cast.
+            const reasoningText = reasoningTextOf(fullContent);
+            const reasoningEcho = (
+              dialect === 'openrouter' && fullContent.reasoning_details?.length
+                ? { reasoning_details: fullContent.reasoning_details }
+                : reasoningText
+                  ? { reasoning_content: reasoningText }
+                  : undefined
+            ) as Partial<OpenAI.ChatCompletionAssistantMessageParam> | undefined;
+
             // New format: CompletionMessage object
             if (fullContent.tool_calls && fullContent.tool_calls.length > 0) {
               openaiMessages.push({
                 role: 'assistant',
                 content: fullContent.content ?? null,
+                ...(reasoningEcho ?? replayPlaceholder),
                 tool_calls: fullContent.tool_calls as OpenAI.ChatCompletionMessageToolCall[],
               });
               return;
@@ -420,6 +531,7 @@ export class OpenAIClient implements APIClient {
             openaiMessages.push({
               role: 'assistant',
               content: fullContent.content ?? msg.content.content,
+              ...reasoningEcho,
             });
             return;
           }
@@ -432,6 +544,7 @@ export class OpenAIClient implements APIClient {
               openaiMessages.push({
                 role: 'assistant',
                 content: msg.content.content || null,
+                ...replayPlaceholder,
                 tool_calls: toolCallsBlock.tool_calls as OpenAI.ChatCompletionMessageToolCall[],
               });
               return;
@@ -480,9 +593,13 @@ export class OpenAIClient implements APIClient {
         requestParams.tools = [...(requestParams.tools || []), ...clientToolDefs];
       }
 
-      // Get model metadata for reasoning configuration
-      const model = await this.deps.storage.getModel(apiDefinition.id, modelId);
-      this.applyReasoning(requestParams, options, model, apiDefinition);
+      this.applyReasoning(
+        requestParams,
+        options,
+        model,
+        apiDefinition,
+        knowledge.reasoningHistoryParam
+      );
 
       // Verbosity is GPT-5-era only — older models reject the param, so it
       // rides on the per-model flag rather than the project setting alone.
@@ -497,6 +614,7 @@ export class OpenAIClient implements APIClient {
       let cacheReadTokens = 0;
       let reasoningTokens = 0;
       let finishReason: string | null = null;
+      let servedModel: string | undefined;
 
       // Use streaming unless explicitly disabled
       if (!options.disableStream) {
@@ -516,6 +634,9 @@ export class OpenAIClient implements APIClient {
         for await (const chunk of stream) {
           // Cast SDK chunk to our interface
           const completionChunk = chunk as unknown as CompletionChunk;
+          if (completionChunk.model) {
+            servedModel = completionChunk.model;
+          }
 
           // Accumulate for fullContent
           accumulator.pushChunk(completionChunk);
@@ -547,14 +668,14 @@ export class OpenAIClient implements APIClient {
         let fullContent = accumulator.finalize();
         let textContent = accumulator.getContent();
 
-        // Error on completely empty stream (no content, no tool calls, no finish reason)
-        if (!finishReason && !textContent && !fullContent.tool_calls?.length) {
+        // No finish_reason: the stream was cut off, however much it rendered.
+        // Its tool calls never ran, and replaying them without results 400s.
+        if (!finishReason) {
+          const { tool_calls: _cutCalls, ...partialMessage } = fullContent;
           return {
-            textContent: '',
-            fullContent,
-            error: {
-              message: 'Stream completed with no content, no tool calls, and no finish reason',
-            },
+            textContent,
+            fullContent: partialMessage,
+            error: { message: 'Stream ended before a finish_reason arrived' },
             inputTokens,
             outputTokens,
             cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
@@ -576,6 +697,7 @@ export class OpenAIClient implements APIClient {
           hasCoT: mapperState.hadReasoning,
           fullContent,
           stopReason: this.mapStopReason(finishReason),
+          servedModel,
           inputTokens,
           outputTokens,
           cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
@@ -593,6 +715,7 @@ export class OpenAIClient implements APIClient {
 
         const message = response.choices[0]?.message;
         finishReason = response.choices[0]?.finish_reason || null;
+        servedModel = response.model || undefined;
 
         if (!message) {
           return {
@@ -648,9 +771,15 @@ export class OpenAIClient implements APIClient {
 
         return {
           textContent,
-          hasCoT: reasoningTokens > 0,
+          // Some providers stream reasoning text without reporting
+          // reasoning_tokens, so text presence counts too
+          hasCoT:
+            reasoningTokens > 0 ||
+            reasoningTextOf(fullContent).length > 0 ||
+            (fullContent.reasoning_details?.length ?? 0) > 0,
           fullContent,
           stopReason: this.mapStopReason(finishReason),
+          servedModel,
           inputTokens,
           outputTokens,
           cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
@@ -703,42 +832,80 @@ export class OpenAIClient implements APIClient {
       temperature?: number;
       enableReasoning?: boolean;
       reasoningEffort?: ReasoningEffort;
+      reasoningBudgetTokens?: number;
+      maxTokens?: number;
+      thinkingKeepTurns?: number;
     },
     model?: Model,
-    apiDefinition?: APIDefinition
+    apiDefinition?: APIDefinition,
+    historyParam?: ReasoningHistoryParam
   ) {
-    const effort = options.reasoningEffort;
-    const useDeFactoThinking =
-      model?.deFactoThinking || apiDefinition?.advancedSettings?.deFactoThinking;
-
     if (options.temperature) requestParams.temperature = options.temperature;
 
-    // Skip reasoning if explicitly disabled or model doesn't support it
-    if (options.enableReasoning === false || model?.reasoningMode === 'none') {
-      if (useDeFactoThinking) {
+    const reasoningOff = options.enableReasoning === false || model?.reasoningMode === 'none';
+    // An always-reasoning model reasons regardless, and some hosts 400 on the
+    // attempt (Alibaba and OpenRouter for GLM-5.3, Kimi for K2.7 Code).
+    const sendDisable = reasoningOff && model?.reasoningMode !== 'always';
+    const keepHistory = !sendDisable && wantsReasoningHistory(options.thinkingKeepTurns);
+
+    switch (resolveReasoningDialect(model, apiDefinition)) {
+      case 'thinking-object': {
+        const thinking: Record<string, unknown> = { type: sendDisable ? 'disabled' : 'enabled' };
+        if (keepHistory && historyParam === 'clear_thinking') thinking.clear_thinking = false;
+        if (keepHistory && historyParam === 'thinking_keep') thinking.keep = 'all';
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (requestParams as any)['thinking'] = { type: 'disabled' };
+        (requestParams as any)['thinking'] = thinking;
+        const effort = effortBesideToggle(options.reasoningEffort, model, reasoningOff);
+        // `max` is outside the SDK's reasoning_effort type, hence the untyped write.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (effort) (requestParams as any)['reasoning_effort'] = effort;
+        return;
       }
-      return;
-    }
 
-    // De facto thinking: inject { thinking: { type: "enabled" } } and skip standard params
-    if (useDeFactoThinking) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (requestParams as any)['thinking'] = { type: 'enabled' };
-      return;
-    }
+      // Never with `reasoning_effort`: Alibaba's Chat Completions has none for
+      // these models (Qwen 3.8's levels are Responses-only).
+      case 'enable-thinking':
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (requestParams as any)['enable_thinking'] = !sendDisable;
+        if (keepHistory && historyParam === 'preserve_thinking') {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (requestParams as any)['preserve_thinking'] = true;
+        }
+        return;
 
+      case 'openrouter':
+        this.applyOpenRouterReasoning(requestParams, options, model);
+        return;
+
+      case 'openai': {
+        if (!reasoningOff) {
+          this.applyEffortReasoning(requestParams, options.reasoningEffort, model);
+          return;
+        }
+        // Omitting the field would leave the model at its default effort.
+        const offEffort = effortWhenOff(model);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (offEffort) (requestParams as any)['reasoning_effort'] = offEffort;
+        return;
+      }
+    }
+  }
+
+  private applyEffortReasoning(
+    requestParams: ChatCompletionCreateParams,
+    effort: ReasoningEffort,
+    model?: Model
+  ) {
     const supportedEfforts = model?.supportedReasoningEfforts;
 
-    // Model with reasoning but no configurable effort (e.g., grok-4)
+    // Model with reasoning but no configurable effort (e.g., grok-4.20)
     if (!supportedEfforts || supportedEfforts.length === 0) {
       // No effort param needed - model always reasons or doesn't support effort config
       return;
     }
 
-    // Model with configurable reasoning effort. `supportedReasoningEfforts` never includes
-    // 'max' for any OpenAI/xAI model (the SDK's reasoning_effort type doesn't accept it).
+    // Model with configurable reasoning effort. The cast only satisfies the SDK type, which
+    // lacks 'max'; gpt-5.6 and gpt-6 list it and the API accepts it.
     const mappedEffort = mapReasoningEffort(
       effort,
       supportedEfforts as Exclude<ReasoningEffort, 'max'>[]
@@ -746,6 +913,71 @@ export class OpenAIClient implements APIClient {
     if (mappedEffort !== undefined) {
       requestParams.reasoning_effort = mappedEffort;
     }
+  }
+
+  /**
+   * OpenRouter's unified `reasoning` object. `effort` and `max_tokens` are
+   * alternatives upstream — never both — and `deFactoThinking` metadata carried
+   * by a model routed *through* OpenRouter is deliberately ignored, since the
+   * gateway speaks its own shape regardless of what the underlying vendor wants.
+   *
+   * `exclude` is not wired: it suppresses `reasoning_details` too, which would
+   * destroy the round-trip and force `hasCoT` false for every turn.
+   */
+  protected applyOpenRouterReasoning(
+    requestParams: ChatCompletionCreateParams,
+    options: {
+      enableReasoning?: boolean;
+      reasoningEffort?: ReasoningEffort;
+      reasoningBudgetTokens?: number;
+      maxTokens?: number;
+    },
+    model?: Model
+  ) {
+    // A model that can't reason gets no field at all — some upstreams reject it.
+    if (model?.reasoningMode === 'none') return;
+
+    const setReasoning = (value: OpenRouterReasoningParam) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (requestParams as any)['reasoning'] = value;
+    };
+
+    if (options.enableReasoning === false) {
+      // A mandatory-reasoning endpoint 400s on `enabled: false`; ask it for its
+      // least effort instead, when the levels are known.
+      if (model?.reasoningMode !== 'always') {
+        setReasoning({ enabled: false });
+      } else {
+        const offEffort = effortWhenOff(model);
+        if (offEffort) setReasoning({ effort: offEffort });
+      }
+      return;
+    }
+
+    const supportedEfforts = model?.supportedReasoningEfforts;
+    // Unlike `reasoning_effort`, this field is ours to shape, so 'xhigh' / 'max'
+    // pass through instead of being clamped out by the SDK's narrower type.
+    const mappedEffort =
+      supportedEfforts && supportedEfforts.length > 0
+        ? mapReasoningEffort(options.reasoningEffort, supportedEfforts)
+        : options.reasoningEffort;
+    if (mappedEffort !== undefined) {
+      setReasoning({ effort: mappedEffort });
+      return;
+    }
+
+    const budget = options.reasoningBudgetTokens ?? 0;
+    if (budget > 0) {
+      setReasoning({ max_tokens: budget });
+      // Anthropic upstream rejects a budget that leaves no room for the answer,
+      // and OpenRouter surfaces it as an opaque 400 (mirrors anthropicClient).
+      if (options.maxTokens !== undefined && budget >= options.maxTokens) {
+        requestParams.max_completion_tokens = budget + 500;
+      }
+      return;
+    }
+
+    setReasoning({ enabled: true });
   }
 
   protected systemPromptRole(_modelId: string): 'developer' | 'system' {
@@ -780,18 +1012,24 @@ export class OpenAIClient implements APIClient {
    * Supports both new CompletionMessage format and legacy array format.
    */
   extractToolUseBlocks(fullContent: unknown): ToolUseBlock[] {
+    // Arguments cut off by a `length` finish don't parse: drop the call
+    // rather than run or replay it.
+    const toBlocks = (calls: { id: string; name: string; args: string | undefined }[]) =>
+      calls.flatMap(call => {
+        const input = parseToolArguments(call.args);
+        return input ? [{ type: 'tool_use' as const, id: call.id, name: call.name, input }] : [];
+      });
+
     // Handle new CompletionMessage format
     if (fullContent && typeof fullContent === 'object' && !Array.isArray(fullContent)) {
       const msg = fullContent as CompletionMessage;
-      if (msg.tool_calls && msg.tool_calls.length > 0) {
-        return msg.tool_calls.map(tc => ({
-          type: 'tool_use' as const,
+      return toBlocks(
+        (msg.tool_calls ?? []).map(tc => ({
           id: tc.id,
           name: tc.function.name,
-          input: JSON.parse(tc.function.arguments || '{}'),
-        }));
-      }
-      return [];
+          args: tc.function.arguments,
+        }))
+      );
     }
 
     // Handle legacy array format for backward compatibility
@@ -799,14 +1037,16 @@ export class OpenAIClient implements APIClient {
 
     for (const block of fullContent as Array<Record<string, unknown>>) {
       if (block.type === 'tool_calls' && Array.isArray(block.tool_calls)) {
-        return (block.tool_calls as Array<Record<string, unknown>>).map(tc => ({
-          type: 'tool_use' as const,
-          id: tc.id as string,
-          name: (tc.function as Record<string, unknown>)?.name as string,
-          input: JSON.parse(
-            ((tc.function as Record<string, unknown>)?.arguments as string) || '{}'
-          ),
-        }));
+        return toBlocks(
+          (block.tool_calls as Array<Record<string, unknown>>).map(tc => {
+            const fn = tc.function as Record<string, unknown> | undefined;
+            return {
+              id: tc.id as string,
+              name: fn?.name as string,
+              args: fn?.arguments as string | undefined,
+            };
+          })
+        );
       }
     }
     return [];

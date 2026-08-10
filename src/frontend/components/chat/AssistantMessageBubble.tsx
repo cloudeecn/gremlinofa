@@ -1,11 +1,6 @@
 import { useState } from 'react';
 import type { RenderingBlockGroup } from '../../../shared/protocol/types/content';
-import {
-  stripMetadata,
-  formatTimestamp,
-  formatTokenGroup,
-  formatTokenCount,
-} from '../../lib/messageFormatters';
+import { stripMetadata, formatContextWindow } from '../../lib/messageFormatters';
 import { showAlert } from '../../lib/alerts';
 import { coerceToString } from '../../../shared/lib/coerceToString';
 import type { AssistantMessageBubbleProps } from './types';
@@ -14,6 +9,7 @@ import ClaudeAgentDebugModal from './ClaudeAgentDebugModal';
 import ErrorBlockView from './ErrorBlockView';
 import TextGroupView from './TextGroupView';
 import StopReasonBadge from './StopReasonBadge';
+import MessageInfoBar, { INFO_BAR_BUTTON } from './MessageInfoBar';
 
 export default function AssistantMessageBubble({
   message,
@@ -45,18 +41,6 @@ export default function AssistantMessageBubble({
     } catch (_error) {
       showAlert('Error', 'Failed to copy message JSON');
     }
-  };
-
-  // Format context window display
-  const formatContextWindow = () => {
-    if (!message.metadata?.contextWindowUsage) return '';
-
-    const usage = formatTokenCount(message.metadata.contextWindowUsage);
-    if (message.metadata.contextWindow) {
-      const max = formatTokenCount(message.metadata.contextWindow);
-      return `${usage}/${max}`;
-    }
-    return usage;
   };
 
   const visibleGroups = focusMode
@@ -95,97 +79,75 @@ export default function AssistantMessageBubble({
         ))}
       </div>
 
-      {/* Assistant metadata line (hidden in focus mode) */}
+      {/* Assistant info bar (hidden in focus mode) */}
       {!focusMode && (
-        <div
-          className={`mt-1 flex w-full items-center justify-start gap-2 text-[10px] ${isDummy ? 'text-green-700' : 'text-gray-500'}`}
-        >
-          <span>{formatTimestamp(message.timestamp)}</span>
-          <button
-            onClick={handleCopy}
-            className="transition-colors hover:text-gray-700"
-            title="Copy message"
-          >
-            📋
-          </button>
-          <button
-            onClick={handleDumpMessage}
-            className="transition-colors hover:text-gray-700"
-            title="Copy message JSON"
-          >
-            🔍
-          </button>
-          {claudeAgentUuid && (
-            <button
-              onClick={() => setShowAgentDebug(true)}
-              className="transition-colors hover:text-gray-700"
-              title="View SDK session entry"
-            >
-              🔬
-            </button>
+        <MessageInfoBar
+          timestamp={message.timestamp}
+          tone={isDummy ? 'dummy' : 'default'}
+          model={
+            isDummy
+              ? undefined
+              : { requested: message.metadata?.model, served: message.metadata?.servedModel }
+          }
+          contextText={formatContextWindow(
+            message.metadata?.contextWindowUsage,
+            message.metadata?.contextWindow
           )}
-          {onAction && !isLastMessage && (
-            <button
-              onClick={() => onAction('rollback', message.id)}
-              className="transition-colors hover:text-orange-600"
-              title="Roll back to here"
-            >
-              ⏪
-            </button>
-          )}
-          {onDeleteMessage && (
-            <button
-              onClick={() => onDeleteMessage(message.id)}
-              className="transition-colors hover:text-red-600"
-              title="Delete this message"
-            >
-              ❌
-            </button>
-          )}
-
-          {message.metadata && (
-            <>
-              <span className="text-gray-400">|</span>
-
-              {/* Token breakdown */}
-              {isDummy ? (
-                <span>✨ DUMMY</span>
-              ) : (
-                <span className="flex items-center gap-1">
-                  {formatTokenGroup('↑', message.metadata.inputTokens, [
-                    { prefix: 'C↑', value: message.metadata.cacheCreationTokens },
-                    { prefix: 'C↓', value: message.metadata.cacheReadTokens },
-                  ])}
-                  {message.metadata.inputTokens ? ' ' : ''}
-                  {formatTokenGroup('↓', message.metadata.outputTokens, [
-                    { prefix: 'R:', value: message.metadata.reasoningTokens },
-                  ])}
-                </span>
-              )}
-
-              {/* Context window and cost */}
-              {(message.metadata.contextWindowUsage ||
-                message.metadata.messageCost !== undefined) && (
-                <>
-                  <span className="text-gray-400">|</span>
-                  <span>
-                    {formatContextWindow()}
-                    {message.metadata.messageCost !== undefined &&
-                      ` $${message.metadata.messageCost.toFixed(3)}`}
-                  </span>
-                </>
-              )}
-            </>
-          )}
-
-          {/* Stop reason badge for non-normal endings */}
-          {message.content.stopReason && message.content.stopReason !== 'end_turn' && (
-            <>
-              <span className="text-gray-400">|</span>
+          cost={message.metadata?.messageCost}
+          tokens={isDummy ? undefined : message.metadata}
+          badge={
+            isDummy ? (
+              <span>✨ DUMMY</span>
+            ) : message.content.stopReason && message.content.stopReason !== 'end_turn' ? (
               <StopReasonBadge stopReason={message.content.stopReason} />
+            ) : undefined
+          }
+          actions={
+            <>
+              <button
+                onClick={handleCopy}
+                className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                title="Copy message"
+              >
+                📋
+              </button>
+              <button
+                onClick={handleDumpMessage}
+                className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                title="Copy message JSON"
+              >
+                🔍
+              </button>
+              {claudeAgentUuid && (
+                <button
+                  onClick={() => setShowAgentDebug(true)}
+                  className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                  title="View SDK session entry"
+                >
+                  🔬
+                </button>
+              )}
+              {onAction && !isLastMessage && (
+                <button
+                  onClick={() => onAction('rollback', message.id)}
+                  className={`${INFO_BAR_BUTTON} hover:text-orange-600`}
+                  title="Roll back to here"
+                >
+                  ⏪
+                </button>
+              )}
+              {onDeleteMessage && (
+                <button
+                  onClick={() => onDeleteMessage(message.id)}
+                  className={`${INFO_BAR_BUTTON} hover:text-red-600`}
+                  title="Delete this message"
+                >
+                  ❌
+                </button>
+              )}
             </>
-          )}
-        </div>
+          }
+        />
       )}
 
       {claudeAgentUuid && showAgentDebug && (

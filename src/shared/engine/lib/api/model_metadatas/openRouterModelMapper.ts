@@ -29,6 +29,12 @@ export interface OpenRouterModel {
     is_moderated?: boolean;
   };
   supported_parameters?: string[];
+  reasoning?: {
+    /** The endpoint rejects `reasoning: { enabled: false }` (e.g. z-ai/glm-5.3). */
+    mandatory?: boolean;
+    default_enabled?: boolean;
+    supported_efforts?: string[];
+  };
 }
 
 /**
@@ -137,6 +143,12 @@ export function populateFromOpenRouterModel(model: Model, rawModel: OpenRouterMo
         }
       }
     }
+  }
+
+  // The endpoint's own answer beats both the hardcoded mode and the inference
+  // above: GLM-5.3 can turn thinking off on Z.ai but not through OpenRouter.
+  if (rawModel.reasoning?.mandatory === true) {
+    model.reasoningMode = 'always';
   }
 
   // If we populated pricing from API and matchedMode was 'default', upgrade to 'fuzz'

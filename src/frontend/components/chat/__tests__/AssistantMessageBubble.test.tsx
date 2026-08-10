@@ -5,7 +5,13 @@ import AssistantMessageBubble from '../AssistantMessageBubble';
 import type { Message, MessageMetadata } from '../../../../shared/protocol/types';
 import type { AssistantMessageBubbleProps } from '../types';
 
-vi.mock('../../../lib/messageFormatters', () => ({
+/** The info bar hides its action buttons and token detail until the trigger row is clicked. */
+async function expandInfoBar() {
+  await userEvent.click(screen.getByRole('button', { name: 'Message details' }));
+}
+
+vi.mock('../../../lib/messageFormatters', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../../lib/messageFormatters')>()),
   stripMetadata: (content: string) => content.replace(/<metadata>.*?<\/metadata>/gs, ''),
   formatTimestamp: (date: Date) => date.toISOString().split('T')[0],
   formatTokens: (label: string, count?: number) => (count ? `${label}${count}` : ''),
@@ -186,7 +192,7 @@ describe('AssistantMessageBubble', () => {
       expect(screen.getByText('2024-01-01')).toBeInTheDocument();
     });
 
-    it('renders without crashing when renderingContent is missing (legacy message)', () => {
+    it('renders without crashing when renderingContent is missing (legacy message)', async () => {
       const props = createProps({
         message: createMessage({
           content: {
@@ -197,8 +203,9 @@ describe('AssistantMessageBubble', () => {
       });
       render(<AssistantMessageBubble {...props} />);
 
-      // No content groups, but the metadata line still renders
+      // No content groups, but the info bar still renders
       expect(screen.queryByTestId('text-group-view')).not.toBeInTheDocument();
+      await expandInfoBar();
       expect(screen.getByTitle('Copy message')).toBeInTheDocument();
     });
 
@@ -219,13 +226,22 @@ describe('AssistantMessageBubble', () => {
   });
 
   describe('Action Buttons', () => {
-    it('shows Copy button', () => {
+    it('hides action buttons until the trigger row is clicked', async () => {
       render(<AssistantMessageBubble {...createProps()} />);
+      expect(screen.queryByTitle('Copy message')).not.toBeInTheDocument();
+      await expandInfoBar();
       expect(screen.getByTitle('Copy message')).toBeInTheDocument();
     });
 
-    it('shows Dump button', () => {
+    it('shows Copy button', async () => {
       render(<AssistantMessageBubble {...createProps()} />);
+      await expandInfoBar();
+      expect(screen.getByTitle('Copy message')).toBeInTheDocument();
+    });
+
+    it('shows Dump button', async () => {
+      render(<AssistantMessageBubble {...createProps()} />);
+      await expandInfoBar();
       expect(screen.getByTitle('Copy message JSON')).toBeInTheDocument();
     });
 
@@ -241,6 +257,7 @@ describe('AssistantMessageBubble', () => {
         }),
       });
       render(<AssistantMessageBubble {...props} />);
+      await expandInfoBar();
 
       await userEvent.click(screen.getByTitle('Copy message'));
 
@@ -252,6 +269,7 @@ describe('AssistantMessageBubble', () => {
       const message = createMessage();
       const props = createProps({ message });
       render(<AssistantMessageBubble {...props} />);
+      await expandInfoBar();
 
       await userEvent.click(screen.getByTitle('Copy message JSON'));
 
@@ -263,67 +281,86 @@ describe('AssistantMessageBubble', () => {
   });
 
   describe('Metadata Display', () => {
-    it('displays input tokens', () => {
+    it('keeps token detail off the trigger row until expanded', async () => {
+      const metadata: MessageMetadata = { inputTokens: 100, outputTokens: 200 };
+      const props = createProps({
+        message: createMessage({ metadata }),
+      });
+      render(<AssistantMessageBubble {...props} />);
+
+      expect(screen.queryByText(/↑100/)).not.toBeInTheDocument();
+      await expandInfoBar();
+      expect(screen.getByText(/↑100/)).toBeInTheDocument();
+    });
+
+    it('displays input tokens', async () => {
       const metadata: MessageMetadata = { inputTokens: 100 };
       const props = createProps({
         message: createMessage({ metadata }),
       });
       render(<AssistantMessageBubble {...props} />);
+      await expandInfoBar();
 
       expect(screen.getByText(/↑100/)).toBeInTheDocument();
     });
 
-    it('displays output tokens', () => {
+    it('displays output tokens', async () => {
       const metadata: MessageMetadata = { outputTokens: 200 };
       const props = createProps({
         message: createMessage({ metadata }),
       });
       render(<AssistantMessageBubble {...props} />);
+      await expandInfoBar();
 
       expect(screen.getByText(/↓200/)).toBeInTheDocument();
     });
 
-    it('displays reasoning tokens grouped with output', () => {
+    it('displays reasoning tokens grouped with output', async () => {
       const metadata: MessageMetadata = { outputTokens: 200, reasoningTokens: 50 };
       const props = createProps({
         message: createMessage({ metadata }),
       });
       const { container } = render(<AssistantMessageBubble {...props} />);
+      await expandInfoBar();
 
       const metadataLine = container.querySelector('.text-\\[10px\\]');
       expect(metadataLine?.textContent).toContain('↓(200, R:50)');
     });
 
-    it('displays cache creation tokens grouped with input', () => {
+    it('displays cache creation tokens grouped with input', async () => {
       const metadata: MessageMetadata = { inputTokens: 100, cacheCreationTokens: 30 };
       const props = createProps({
         message: createMessage({ metadata }),
       });
       const { container } = render(<AssistantMessageBubble {...props} />);
+      await expandInfoBar();
 
       const metadataLine = container.querySelector('.text-\\[10px\\]');
       expect(metadataLine?.textContent).toContain('↑(100, C↑30)');
     });
 
-    it('displays cache read tokens grouped with input', () => {
+    it('displays cache read tokens grouped with input', async () => {
       const metadata: MessageMetadata = { inputTokens: 100, cacheReadTokens: 40 };
       const props = createProps({
         message: createMessage({ metadata }),
       });
       const { container } = render(<AssistantMessageBubble {...props} />);
+      await expandInfoBar();
 
       const metadataLine = container.querySelector('.text-\\[10px\\]');
       expect(metadataLine?.textContent).toContain('↑(100, C↓40)');
     });
 
-    it('displays context window usage', () => {
-      const metadata: MessageMetadata = { contextWindowUsage: 5000 };
+    it('displays context window usage on the trigger row', () => {
+      const metadata: MessageMetadata = { contextWindowUsage: 12500, contextWindow: 200000 };
       const props = createProps({
         message: createMessage({ metadata }),
       });
       render(<AssistantMessageBubble {...props} />);
 
-      expect(screen.getByText(/5\.0k/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Message details' })).toHaveTextContent(
+        '12.5k/200.0k'
+      );
     });
 
     it('displays message cost', () => {
@@ -334,6 +371,55 @@ describe('AssistantMessageBubble', () => {
       render(<AssistantMessageBubble {...props} />);
 
       expect(screen.getByText(/\$0\.123/)).toBeInTheDocument();
+    });
+  });
+
+  describe('Model Display', () => {
+    it('shows the served model on the trigger row, red when it differs from the requested one', () => {
+      const metadata: MessageMetadata = { model: 'gpt-5', servedModel: 'gpt-5-2026-08-01' };
+      render(<AssistantMessageBubble {...createProps({ message: createMessage({ metadata }) })} />);
+
+      const modelEl = screen.getByTestId('info-bar-model');
+      expect(modelEl).toHaveTextContent('gpt-5-2026-08-01');
+      expect(modelEl).toHaveClass('text-red-600');
+      expect(modelEl).toHaveAttribute('title', 'gpt-5 → gpt-5-2026-08-01');
+    });
+
+    it('shows "-" (never the requested id) when no served model was recorded', () => {
+      const metadata: MessageMetadata = { model: 'gpt-5' };
+      render(<AssistantMessageBubble {...createProps({ message: createMessage({ metadata }) })} />);
+
+      const modelEl = screen.getByTestId('info-bar-model');
+      expect(modelEl).toHaveTextContent('-');
+      expect(modelEl).not.toHaveTextContent('gpt-5');
+      expect(modelEl).not.toHaveClass('text-red-600');
+    });
+
+    it('shows "-" for legacy messages with no model metadata at all', () => {
+      render(
+        <AssistantMessageBubble {...createProps({ message: createMessage({ metadata: {} }) })} />
+      );
+
+      expect(screen.getByTestId('info-bar-model')).toHaveTextContent('-');
+    });
+
+    it('stays gray when served and requested match', () => {
+      const metadata: MessageMetadata = { model: 'claude-opus-5', servedModel: 'claude-opus-5' };
+      render(<AssistantMessageBubble {...createProps({ message: createMessage({ metadata }) })} />);
+
+      expect(screen.getByTestId('info-bar-model')).not.toHaveClass('text-red-600');
+    });
+
+    it('truncates long model ids to 16 characters and keeps the full id in the title', () => {
+      const metadata: MessageMetadata = {
+        model: 'claude-fable-5-1-20260901',
+        servedModel: 'claude-fable-5-1-20260901',
+      };
+      render(<AssistantMessageBubble {...createProps({ message: createMessage({ metadata }) })} />);
+
+      const modelEl = screen.getByTestId('info-bar-model');
+      expect(modelEl).toHaveTextContent('claude-fable-5-…');
+      expect(modelEl).toHaveAttribute('title', 'claude-fable-5-1-20260901');
     });
   });
 
@@ -448,7 +534,7 @@ describe('AssistantMessageBubble', () => {
       expect(screen.getByTestId('error-block-view')).toBeInTheDocument();
     });
 
-    it('shows metadata when focus mode is off', () => {
+    it('shows metadata when focus mode is off', async () => {
       const props = createProps({
         focusMode: false,
         message: createMessage({
@@ -458,6 +544,7 @@ describe('AssistantMessageBubble', () => {
       render(<AssistantMessageBubble {...props} />);
 
       expect(screen.getByText('2024-01-01')).toBeInTheDocument();
+      await expandInfoBar();
       expect(screen.getByTitle('Copy message')).toBeInTheDocument();
     });
   });

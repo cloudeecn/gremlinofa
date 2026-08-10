@@ -38,6 +38,9 @@ export function extractToolUseBlocks(apiType: APIType, fullContent: unknown): To
     case 'anthropic':
       return extractAnthropicToolBlocks(fullContent);
     case 'responses_api':
+    case 'chatgpt-subscription':
+      // The ChatGPT backend speaks the Responses wire format, so stored
+      // fullContent carries the same function_call items.
       return extractOpenAIResponsesToolBlocks(fullContent);
     case 'google':
       return extractGoogleToolBlocks(fullContent);
@@ -55,6 +58,13 @@ export function extractToolUseBlocks(apiType: APIType, fullContent: unknown): To
       return [];
   }
 }
+
+/**
+ * Mapped stop reasons of a turn that ended on its own terms. Anything else
+ * (`max_tokens`, a content filter, a provider oddity) means the turn was cut
+ * short: minions report it as an error, and its tool calls may be partial.
+ */
+export const NORMAL_STOP_REASONS: ReadonlySet<string> = new Set(['end_turn', 'stop_sequence']);
 
 /**
  * Map provider-specific stop reasons to the project's `MessageStopReason`

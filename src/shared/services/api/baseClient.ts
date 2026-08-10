@@ -167,6 +167,14 @@ export interface StreamResult<T> {
   hasCoT?: boolean; // True if response included any chain-of-thought reasoning (including encrypted)
   fullContent: T; // Provider-specific blocks (Anthropic: ContentBlock[], ChatCompletions: {role,content,tool_calls?,refusal})
   stopReason?: string; // Why the response ended (end_turn, max_tokens, etc.)
+  /**
+   * Model id the provider reports as having served the response (Anthropic
+   * `message.model`, OpenAI `model`, Gemini `modelVersion`, claude-agent's
+   * coalesced assistant message). Differs from the requested id when an alias
+   * resolves to a dated snapshot or a gateway re-routes. Undefined where the
+   * wire format has no such field (Bedrock Converse).
+   */
+  servedModel?: string;
   error?: {
     message: string;
     status?: number;
@@ -205,4 +213,18 @@ export interface StreamResult<T> {
    * `chat_metadata_updated` loop event. claude-agent only.
    */
   chatMetadata?: { name?: string; summary?: string };
+}
+
+/**
+ * Parse a tool call's JSON-string arguments for `extractToolUseBlocks`.
+ * Returns `undefined` when they don't parse — arguments cut off by an output
+ * token limit — so the caller drops the call instead of throwing out of the
+ * whole turn.
+ */
+export function parseToolArguments(args: string | undefined): Record<string, unknown> | undefined {
+  try {
+    return JSON.parse(args || '{}') as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
 }

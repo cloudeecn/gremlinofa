@@ -1,0 +1,22 @@
+[
+  { "type": "thinking.start" },
+  { "type": "thinking", "content": "Let me check " },
+  { "type": "thinking", "content": "the weather." },
+  { "type": "thinking.end" },
+  { "type": "content.start" },
+  { "type": "content", "content": "Checking now." },
+  { "type": "content.end" },
+  {
+    "type": "tool_use",
+    "id": "call_1",
+    "name": "get_weather",
+    "input": { "location": "Boston" }
+  },
+  {
+    "type": "token_usage",
+    "inputTokens": 20,
+    "outputTokens": 18,
+    "cacheReadTokens": 0,
+    "reasoningTokens": 12
+  }
+]

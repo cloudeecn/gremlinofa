@@ -1,5 +1,18 @@
-import { describe, it, expect } from 'vitest';
-import { detectBedrockReasoningType, buildReasoningConfig } from '../bedrockClient';
+import { describe, it, expect, vi } from 'vitest';
+import type { APIDefinition } from '../../../protocol/types';
+import { BedrockClient, detectBedrockReasoningType, buildReasoningConfig } from '../bedrockClient';
+import { stubApiDeps } from './testStubs';
+
+const { mockRuntimeSend } = vi.hoisted(() => ({ mockRuntimeSend: vi.fn() }));
+vi.mock('@aws-sdk/client-bedrock-runtime', async importOriginal => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-bedrock-runtime')>();
+  return {
+    ...actual,
+    BedrockRuntimeClient: class {
+      send = mockRuntimeSend;
+    },
+  };
+});
 
 describe('detectBedrockReasoningType', () => {
   describe('Claude 3.x models', () => {
@@ -234,6 +247,59 @@ describe('buildReasoningConfig', () => {
           ],
         },
       });
+    });
+  });
+
+  describe('Claude 4+ with the toggle off', () => {
+    it('switches off a model that thinks by default (Opus 5, Sonnet 5)', () => {
+      const result = buildReasoningConfig('claude-4', {
+        enableReasoning: false,
+        reasoningBudgetTokens: 0,
+        reasoningEffort: 'max',
+        thinkingOffType: 'disabled',
+      });
+      expect(result).toEqual({ reasoning_config: { type: 'disabled' } });
+    });
+
+    it('asks an always-on model for its lowest effort (Opus 5.5)', () => {
+      const result = buildReasoningConfig('claude-4', {
+        enableReasoning: false,
+        reasoningBudgetTokens: 0,
+        reasoningMode: 'always',
+        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      });
+      expect(result).toEqual({ output_config: { effort: 'low' } });
+    });
+
+    it('sends nothing to a model whose default is off', () => {
+      expect(
+        buildReasoningConfig('claude-4', { enableReasoning: false, reasoningBudgetTokens: 0 })
+      ).toBeUndefined();
+    });
+  });
+
+  describe('Claude effort in budget mode', () => {
+    it('sends effort beside budget_tokens on a model without adaptive (Opus 4.5)', () => {
+      const result = buildReasoningConfig('claude-4', {
+        enableReasoning: true,
+        reasoningBudgetTokens: 4096,
+        reasoningEffort: 'medium',
+        supportedReasoningEfforts: ['low', 'medium', 'high'],
+      }) as Record<string, unknown>;
+      expect(result.reasoning_config).toEqual({ type: 'enabled', budget_tokens: 4096 });
+      expect(result.output_config).toEqual({ effort: 'medium' });
+    });
+
+    it('leaves the deprecated 4.6 budget path without effort', () => {
+      const result = buildReasoningConfig('claude-4', {
+        enableReasoning: true,
+        reasoningBudgetTokens: 4096,
+        reasoningEffort: 'medium',
+        supportsAdaptiveReasoning: true,
+        supportedReasoningEfforts: ['low', 'medium', 'high', 'max'],
+      }) as Record<string, unknown>;
+      expect(result.reasoning_config).toEqual({ type: 'enabled', budget_tokens: 4096 });
+      expect(result.output_config).toBeUndefined();
     });
   });
 
@@ -512,5 +578,64 @@ describe('buildReasoningConfig', () => {
       }) as { thinking?: { type: string; display?: string } };
       expect(result.thinking).toMatchObject({ type: 'enabled', display: 'summarized' });
     });
+  });
+});
+
+describe('BedrockClient stream termination', () => {
+  const client = new BedrockClient(stubApiDeps);
+  const apiDef = {
+    id: 'b1',
+    name: 'Test Bedrock',
+    apiType: 'bedrock',
+    apiKey: 'k',
+  } as APIDefinition;
+
+  const runStream = async (events: object[]) => {
+    mockRuntimeSend.mockResolvedValueOnce({
+      stream: (async function* () {
+        yield* events;
+      })(),
+    });
+    const messages: Parameters<typeof client.sendMessageStream>[0] = [
+      { id: 'msg1', role: 'user', content: { type: 'text', content: 'Hi' }, timestamp: new Date() },
+    ];
+    const generator = client.sendMessageStream(messages, 'amazon.nova-pro-v1:0', apiDef, {
+      maxTokens: 2048,
+      enableReasoning: false,
+      reasoningBudgetTokens: 0,
+      signal: new AbortController().signal,
+    });
+    let next = await generator.next();
+    while (!next.done) next = await generator.next();
+    return next.value;
+  };
+
+  const textEvents = [
+    { contentBlockDelta: { contentBlockIndex: 0, delta: { text: 'Half an ans' } } },
+    { contentBlockStop: { contentBlockIndex: 0 } },
+  ];
+  const toolEvents = [
+    {
+      contentBlockStart: {
+        contentBlockIndex: 1,
+        start: { toolUse: { toolUseId: 'tu_1', name: 'ping' } },
+      },
+    },
+    { contentBlockDelta: { contentBlockIndex: 1, delta: { toolUse: { input: '{"ho' } } } },
+  ];
+
+  it('errors on a stream that never sent messageStop, dropping partial tool calls', async () => {
+    const result = await runStream([...textEvents, ...toolEvents]);
+
+    expect(result.error?.message).toBe('Stream ended before messageStop');
+    expect(result.textContent).toBe('Half an ans');
+    expect(result.fullContent.some(block => 'toolUse' in block)).toBe(false);
+  });
+
+  it('passes the messageStop reason through', async () => {
+    const result = await runStream([...textEvents, { messageStop: { stopReason: 'max_tokens' } }]);
+
+    expect(result.error).toBeUndefined();
+    expect(result.stopReason).toBe('max_tokens');
   });
 });

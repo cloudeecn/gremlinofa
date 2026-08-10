@@ -45,6 +45,7 @@ import {
   type AgenticLoopEvent,
 } from '../agentic/agenticLoopGenerator';
 import { createTokenTotals, addTokens } from '../../engine/lib/tokenTotals';
+import { NORMAL_STOP_REASONS } from '../../engine/lib/apiHelpers';
 import { formatFileWithLineNumbers } from '../../engine/lib/formatFileContent';
 import type { InjectedFile, InjectionMode } from '../api/fileInjectionHelper';
 import {
@@ -681,6 +682,13 @@ export async function applyClaudeAgentRewindOnRollback(
     keptTailId
   );
   await storage.saveMinionChat(minionChat);
+}
+
+/** Stop reason of a run's last message — `end_turn` unless it's an assistant message that says otherwise. */
+function finalStopReason(messages: Message<unknown>[]): string {
+  const lastMsg = messages[messages.length - 1];
+  if (lastMsg?.role !== 'assistant') return 'end_turn';
+  return (lastMsg.content.stopReason as string) ?? 'end_turn';
 }
 
 function resolveReturnMode(opts: ToolOptions): string {
@@ -2464,10 +2472,12 @@ async function* executeMinionInner(
       // Auto-enforce retry: if return wasn't called and retries remain, send reminder and re-run.
       // Skipped for claude-agent — the SDK owns the loop, so return is free-run
       // best-effort and there's no clean "re-run with a reminder" boundary.
+      // Skipped for a truncated run too: the abnormal-stop gate below reports it.
       if (
         returnMode === 'auto-enforced' &&
         !isClaudeAgent &&
         !usedReturnTool &&
+        NORMAL_STOP_REASONS.has(finalStopReason(lastFinalResult.messages)) &&
         autoEnforceAttempts < AUTO_ENFORCE_MAX_RETRIES
       ) {
         autoEnforceAttempts++;
@@ -2519,22 +2529,14 @@ async function* executeMinionInner(
       };
     }
 
-    // Determine stop reason from last assistant message
-    let stopReason = 'end_turn';
-    if (lastFinalResult && lastFinalResult.messages.length > 0) {
-      const lastMsg = lastFinalResult.messages[lastFinalResult.messages.length - 1];
-      if (lastMsg.role === 'assistant') {
-        stopReason = (lastMsg.content.stopReason as string) ?? 'end_turn';
-      }
-    }
+    let stopReason = lastFinalResult ? finalStopReason(lastFinalResult.messages) : 'end_turn';
     // Map tool_use → end_turn when return tool triggered completion
     if (usedReturnTool && stopReason === 'tool_use') {
       stopReason = 'end_turn';
     }
 
     // Abnormal stop reasons → error (skip savepoint so next call can roll back)
-    const normalStopReasons = new Set(['end_turn', 'stop_sequence']);
-    if (!normalStopReasons.has(stopReason)) {
+    if (!NORMAL_STOP_REASONS.has(stopReason)) {
       await applyClaudeAgentRewindOnFailure(
         storage,
         minionChat,

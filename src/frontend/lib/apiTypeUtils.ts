@@ -8,6 +8,7 @@ const API_TYPE_DISPLAY_NAMES: Record<APIType, string> = {
   bedrock: 'Bedrock',
   google: 'Google Gemini',
   'claude-agent': 'Claude Agent (subscription)',
+  'chatgpt-subscription': 'ChatGPT (subscription)',
   'ds01-dummy-system': 'DUMMY',
 };
 
@@ -19,6 +20,7 @@ const API_TYPE_DEFAULT_ICONS: Record<APIType, string> = {
   bedrock: '☁️',
   google: '💎',
   'claude-agent': '🅒',
+  'chatgpt-subscription': '🅖',
   'ds01-dummy-system': '✨',
 };
 

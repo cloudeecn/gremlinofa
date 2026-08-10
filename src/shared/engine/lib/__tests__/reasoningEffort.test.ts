@@ -28,8 +28,8 @@ describe('mapReasoningEffort', () => {
       expect(mapReasoningEffort('low', supported)).toBe('low');
     });
 
-    it('maps medium to low (between, maps to lower)', () => {
-      expect(mapReasoningEffort('medium', supported)).toBe('low');
+    it('maps medium to high (between, rounds up)', () => {
+      expect(mapReasoningEffort('medium', supported)).toBe('high');
     });
 
     it('maps high to high (exact match)', () => {
@@ -83,12 +83,17 @@ describe('mapReasoningEffort', () => {
   describe('with sparse supported values', () => {
     const supported = ['none', 'high'] as const;
 
-    it('maps minimal to none (between, maps to lower)', () => {
-      expect(mapReasoningEffort('minimal', supported)).toBe('none');
+    // Rounding down would switch reasoning off for a `minimal` pick
+    it('maps minimal to high (between, rounds up)', () => {
+      expect(mapReasoningEffort('minimal', supported)).toBe('high');
     });
 
-    it('maps medium to none (between, maps to lower)', () => {
-      expect(mapReasoningEffort('medium', supported)).toBe('none');
+    it('maps medium to high (between, rounds up)', () => {
+      expect(mapReasoningEffort('medium', supported)).toBe('high');
+    });
+
+    it('keeps an explicit none', () => {
+      expect(mapReasoningEffort('none', supported)).toBe('none');
     });
 
     it('maps xhigh to high (above max)', () => {
@@ -103,8 +108,20 @@ describe('mapReasoningEffort', () => {
 
     it('handles unsorted supported array', () => {
       const supported = ['high', 'low'] as const;
-      expect(mapReasoningEffort('medium', supported)).toBe('low');
+      expect(mapReasoningEffort('medium', supported)).toBe('high');
       expect(mapReasoningEffort('xhigh', supported)).toBe('high');
+    });
+  });
+
+  describe('gapped vendor ladders round up like the vendors do', () => {
+    it('sends medium to high and xhigh to max on low / high / max (DeepSeek, Kimi K3, GLM-5.3)', () => {
+      const supported = ['low', 'high', 'max'] as const;
+      expect(mapReasoningEffort('medium', supported)).toBe('high');
+      expect(mapReasoningEffort('xhigh', supported)).toBe('max');
+    });
+
+    it('sends high to xhigh on Qwen 3.8', () => {
+      expect(mapReasoningEffort('high', ['low', 'medium', 'xhigh'] as const)).toBe('xhigh');
     });
   });
 
@@ -182,7 +199,6 @@ describe('mapAnthropicEffort', () => {
     });
   });
 
-  // xhigh means "deeper than high", so it escalates rather than rounding down.
   describe('xhigh on a model without it', () => {
     it('escalates to max when max is available', () => {
       expect(mapAnthropicEffort('xhigh', NO_XHIGH)).toBe('max');

@@ -367,6 +367,50 @@ describe('GremlinClient (in-process contract)', () => {
     });
   });
 
+  describe('chatgpt-subscription sign-in', () => {
+    const oauth = { accessToken: 'a', refreshToken: 'r', expiresAt: 1, accountId: 'acct' };
+    const subDef = (): APIDefinition => ({
+      ...mkAPIDef('sub_1'),
+      apiType: 'chatgpt-subscription',
+      apiKey: '',
+    });
+
+    it('saveAPIDefinition keeps the stored oauth block over whatever the client sends', async () => {
+      vi.mocked(storage.getAPIDefinition).mockResolvedValue({ ...subDef(), oauth });
+      const stale = { ...subDef(), oauth: { ...oauth, refreshToken: 'stale' } };
+      await client.saveAPIDefinition(stale);
+      expect(storage.saveAPIDefinition).toHaveBeenCalledWith({ ...stale, oauth });
+    });
+
+    it('chatgptOAuthSignOut clears the tokens', async () => {
+      vi.mocked(storage.getAPIDefinition).mockResolvedValue({ ...subDef(), oauth });
+      await client.chatgptOAuthSignOut('sub_1');
+      expect(storage.saveAPIDefinition).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'sub_1', oauth: undefined })
+      );
+    });
+
+    it('chatgptOAuthAuthorizeUrl returns a Codex authorize URL plus the PKCE verifier', async () => {
+      vi.mocked(storage.getAPIDefinition).mockResolvedValue(subDef());
+      const authorize = await client.chatgptOAuthAuthorizeUrl('sub_1');
+      expect(authorize.url).toMatch(/^https:\/\/auth\.openai\.com\/oauth\/authorize\?/);
+      expect(authorize.codeVerifier).toBeTruthy();
+      expect(authorize.state).toBeTruthy();
+    });
+
+    it('chatgptOAuthExchange rejects a state mismatch without touching storage', async () => {
+      vi.mocked(storage.getAPIDefinition).mockResolvedValue(subDef());
+      const outcome = await client.chatgptOAuthExchange(
+        'sub_1',
+        'http://localhost:1455/auth/callback?code=c&state=other',
+        'verifier',
+        'expected'
+      );
+      expect(outcome).toMatchObject({ status: 'error' });
+      expect(storage.saveAPIDefinition).not.toHaveBeenCalled();
+    });
+  });
+
   describe('active loops', () => {
     it('listActiveLoops returns the registry contents', async () => {
       const loops = await client.listActiveLoops();

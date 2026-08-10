@@ -50,6 +50,16 @@ describe('StopReasonBadge', () => {
     });
   });
 
+  describe('content_filter', () => {
+    it('renders filtered badge', () => {
+      render(<StopReasonBadge stopReason="content_filter" />);
+
+      expect(screen.getByText('🚫')).toBeInTheDocument();
+      expect(screen.getByText('Filtered')).toBeInTheDocument();
+      expect(screen.getByTitle('Message stopped: content_filter')).toBeInTheDocument();
+    });
+  });
+
   describe('error', () => {
     it('renders error badge', () => {
       render(<StopReasonBadge stopReason="error" />);
@@ -100,10 +110,10 @@ describe('StopReasonBadge', () => {
     });
 
     it('displays the exact stop reason text', () => {
-      render(<StopReasonBadge stopReason={'content_filter' as MessageStopReason} />);
+      render(<StopReasonBadge stopReason={'recitation' as MessageStopReason} />);
 
-      expect(screen.getByText('content_filter')).toBeInTheDocument();
-      expect(screen.getByTitle('Message stopped: content_filter')).toBeInTheDocument();
+      expect(screen.getByText('recitation')).toBeInTheDocument();
+      expect(screen.getByTitle('Message stopped: recitation')).toBeInTheDocument();
     });
   });
 

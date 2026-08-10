@@ -1,0 +1,26 @@
+{
+  "role": "assistant",
+  "content": "Checking now.",
+  "refusal": null,
+  "reasoning": "Let me check the weather.",
+  "reasoning_details": [
+    {
+      "type": "reasoning.text",
+      "index": 0,
+      "id": "rd-1",
+      "format": "anthropic-claude-v1",
+      "text": "Let me check the weather.",
+      "signature": "sig-xyz"
+    }
+  ],
+  "tool_calls": [
+    {
+      "id": "call_1",
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "arguments": "{\"location\":\"Boston\"}"
+      }
+    }
+  ]
+}

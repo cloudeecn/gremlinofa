@@ -61,7 +61,10 @@ import {
 
 /** Hard-coded model list — the SDK has no listing endpoint. */
 const CLAUDE_AGENT_MODELS = [
+  'claude-fable-5-1',
   'claude-fable-5',
+  'claude-opus-5-5',
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-sonnet-4-6',
@@ -886,7 +889,8 @@ export class ClaudeAgentClient implements APIClient {
       options.reasoningSummary !== undefined ? 'summarized' : undefined;
 
     // Map our reasoning controls onto SDK shapes.
-    //   - explicit `false` → disabled
+    //   - explicit `false` → disabled, except on an always-on model (Opus 5.5,
+    //     Fable, Sonnet 5.5 until `between_tools` is wired), which 400s on it → omit
     //   - explicit `true` + positive budget → enabled with that budget
     //   - explicit `true` + budget 0 / missing → adaptive. Normally omitted so
     //     the SDK's adaptive default kicks in (matches GremlinOFA's
@@ -895,9 +899,11 @@ export class ClaudeAgentClient implements APIClient {
     //     the level via `effort`), but a display opt-in needs the explicit
     //     `{ type: 'adaptive' }` form to have somewhere to ride.
     //   - both unset → omit
+    const modelMeta = getModelMetadataFor(apiDefinition, modelId);
+    const alwaysOn = modelMeta.reasoningMode === 'always';
     let thinking: Options['thinking'];
     if (options.enableReasoning === false) {
-      thinking = { type: 'disabled' };
+      if (!alwaysOn) thinking = { type: 'disabled' };
     } else if (
       options.enableReasoning === true &&
       typeof options.reasoningBudgetTokens === 'number' &&
@@ -915,11 +921,21 @@ export class ClaudeAgentClient implements APIClient {
     // The SDK's EffortLevel has no 'none'/'minimal', and a model that doesn't take
     // `effort` rejects it — clamp against metadata instead of casting. Gated on the
     // model's effort list alone, not on adaptive mode: the SDK accepts `effort`
-    // independently of `thinking`.
-    const effortLevel = mapAnthropicEffort(
-      options.reasoningEffort,
-      getModelMetadataFor(apiDefinition, modelId).supportedReasoningEfforts
-    );
+    // independently of `thinking`. With the toggle off, an always-on model gets
+    // its lowest level, and a default-on one (Opus 5, Sonnet 5) at most `high`:
+    // Opus 5 rejects `disabled` beside `xhigh` / `max`.
+    const levels = modelMeta.supportedReasoningEfforts;
+    const effortLevel =
+      options.enableReasoning !== false
+        ? mapAnthropicEffort(options.reasoningEffort, levels)
+        : alwaysOn
+          ? mapAnthropicEffort('none', levels)
+          : modelMeta.thinkingOffType
+            ? mapAnthropicEffort(
+                options.reasoningEffort,
+                levels?.filter(level => level !== 'xhigh' && level !== 'max')
+              )
+            : mapAnthropicEffort(options.reasoningEffort, levels);
 
     // --- Tool bridge ------------------------------------------------------
     // Expose the enabled, bridgeable subset of our internal tools to the SDK
@@ -1273,12 +1289,17 @@ export class ClaudeAgentClient implements APIClient {
     // context at the end of the turn (mid-turn auto-compaction included).
     let lastStepUsage: ReturnType<typeof mapSdkUsage> | undefined;
     let resultError: { message: string; status?: number } | undefined;
+    let sawResult = false;
     // Latest subscription rate-limit status + assistant-message error, captured
     // from the rate_limit_event / assistant SDK messages. Used to turn a turn
     // that closes "successfully" but renders nothing into a loud loop error
     // instead of an empty bubble.
     let lastRateLimitStatus: string | undefined;
     let lastAssistantError: string | undefined;
+    // Model the SDK reports on its coalesced assistant messages. A turn can
+    // span several internal calls (and a fallback handoff); the last one wins,
+    // matching the `lastStepUsage` rule.
+    let lastServedModel: string | undefined;
     // The assistant message's own BetaMessage.stop_reason — the real API signal
     // (pause_turn / refusal / max_tokens / model_context_window_exceeded). It can
     // differ from the result message's session-level stop_reason (often a generic
@@ -1497,6 +1518,9 @@ export class ClaudeAgentClient implements APIClient {
           lastAssistantError = msg.error;
           console.debug('[claudeAgent] assistant error=%s uuid=%s', msg.error, msg.uuid);
         }
+        if (typeof msg.message?.model === 'string' && msg.message.model) {
+          lastServedModel = msg.message.model;
+        }
         // No-partials degradation: the mapper never runs, so the per-call
         // context-fill snapshot comes from the coalesced BetaMessage's own usage
         // instead. Per-block assistants of one call overwrite each other; the
@@ -1708,6 +1732,7 @@ export class ClaudeAgentClient implements APIClient {
           }
         }
       } else if (msg.type === 'result') {
+        sawResult = true;
         stopReason = msg.stop_reason ?? msg.subtype;
         usage = mapSdkUsage(msg.usage);
         numTurns = msg.num_turns;
@@ -1867,6 +1892,12 @@ export class ClaudeAgentClient implements APIClient {
       textBuf += resultText;
     }
 
+    // The SDK iterator ended without a `result` message: the turn never
+    // closed, however much it rendered, and carries no billing usage.
+    if (!sawResult && !resultError) {
+      resultError = { message: 'claude-agent: SDK stream ended without a result message' };
+    }
+
     // Surface a turn that closed "successfully" but rendered nothing usable
     // (see `classifyTurnError`). Gated on `!resultError` so a non-success
     // `result` subtype captured above still wins.
@@ -1927,6 +1958,7 @@ export class ClaudeAgentClient implements APIClient {
       hasCoT: thinkingBuf.length > 0,
       fullContent,
       stopReason: surfacedStopReason,
+      ...(lastServedModel ? { servedModel: lastServedModel } : {}),
       ...usage,
       // Context fill after the last internal API call (gross output — thinking
       // included). The spread `usage` above stays the whole-turn billing

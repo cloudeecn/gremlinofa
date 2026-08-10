@@ -23,6 +23,13 @@
 import { APIService } from '../services/api/apiService';
 import type { APIClient } from '../services/api/baseClient';
 import {
+  chatgptOAuthAuthorizeUrl,
+  chatgptOAuthDevicePoll,
+  chatgptOAuthDeviceStart,
+  chatgptOAuthExchange,
+  chatgptOAuthSignOut,
+} from '../services/api/chatgptOAuthRpc';
+import {
   UnifiedStorage,
   CekOracleMismatchError,
   CEK_ORACLE_KEY,
@@ -453,9 +460,15 @@ export class GremlinServer {
         return this.storage.getAPIDefinitions();
       case 'getAPIDefinition':
         return this.storage.getAPIDefinition(params.apiDefId);
-      case 'saveAPIDefinition':
-        await this.storage.saveAPIDefinition(params.apiDef);
+      case 'saveAPIDefinition': {
+        // `oauth` is backend-owned: refresh tokens rotate, and the frontend's
+        // copy is a snapshot that may predate a rotation. Writing it back
+        // would trip `refresh_token_reused` and lock the account out, so the
+        // stored block always wins over whatever the caller sent.
+        const existing = await this.storage.getAPIDefinition(params.apiDef.id);
+        await this.storage.saveAPIDefinition({ ...params.apiDef, oauth: existing?.oauth });
         return { ok: true };
+      }
       case 'deleteAPIDefinition':
         await this.storage.deleteAPIDefinition(params.apiDefId);
         return { ok: true };
@@ -549,6 +562,18 @@ export class GremlinServer {
         }
         return inspection;
       }
+
+      // ----- chatgpt-subscription sign-in -----
+      case 'chatgptOAuthDeviceStart':
+        return chatgptOAuthDeviceStart(this.storage, params.apiDefId);
+      case 'chatgptOAuthDevicePoll':
+        return chatgptOAuthDevicePoll(this.storage, params);
+      case 'chatgptOAuthAuthorizeUrl':
+        return chatgptOAuthAuthorizeUrl(this.storage, params.apiDefId);
+      case 'chatgptOAuthExchange':
+        return chatgptOAuthExchange(this.storage, params);
+      case 'chatgptOAuthSignOut':
+        return chatgptOAuthSignOut(this.storage, params.apiDefId);
 
       // ----- attachments -----
       case 'getAttachments':

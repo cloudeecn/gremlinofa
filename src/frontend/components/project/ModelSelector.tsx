@@ -3,7 +3,11 @@ import Modal from '../ui/Modal';
 import { useApp } from '../../hooks/useApp';
 import { getApiTypeDisplayName, getApiDefinitionIcon } from '../../lib/apiTypeUtils';
 import type { Model, APIDefinition } from '../../../shared/protocol/types';
-import { apiKeyOptional } from '../../../shared/protocol/apiDefinition';
+import {
+  apiKeyOptional,
+  isChatgptSignedIn,
+  isSubscriptionApiDefinition,
+} from '../../../shared/protocol/apiDefinition';
 
 interface ModelSelectorProps {
   isOpen: boolean;
@@ -21,7 +25,11 @@ interface ModelSelectorProps {
 function getStatusBadge(apiDef: APIDefinition): { className: string; text: string } {
   const hasApiKey = apiDef.apiKey && apiDef.apiKey.trim() !== '';
 
-  if (apiDef.isLocal) {
+  if (apiDef.apiType === 'chatgpt-subscription') {
+    return isChatgptSignedIn(apiDef)
+      ? { className: 'bg-green-100 text-green-800', text: 'Signed in' }
+      : { className: 'bg-red-100 text-red-800', text: 'Not signed in' };
+  } else if (apiDef.isLocal) {
     return { className: 'bg-blue-100 text-blue-800', text: 'Local' };
   } else if (hasApiKey) {
     return { className: 'bg-green-100 text-green-800', text: 'Configured' };
@@ -284,12 +292,12 @@ function ModelSelectorContent({
                     </div>
                     <div className="truncate font-mono text-xs text-gray-400">{model.id}</div>
                     <div className="mt-1 text-xs font-medium text-green-700">
-                      {selectedApiDef?.advancedSettings?.isSubscription
+                      {isSubscriptionApiDefinition(selectedApiDef)
                         ? '📋 Subscription'
                         : `💰 ${priceDisplay}`}
                     </div>
                     {/* Unreliable pricing warning */}
-                    {isUnreliable && !selectedApiDef?.advancedSettings?.isSubscription && (
+                    {isUnreliable && !isSubscriptionApiDefinition(selectedApiDef) && (
                       <div className="mt-1 text-xs text-yellow-600">
                         ⚠️ Cost calculation may be inaccurate for this model
                       </div>

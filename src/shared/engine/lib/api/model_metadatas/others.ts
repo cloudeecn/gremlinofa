@@ -12,6 +12,6 @@ export const OTHER_MODELS: ModelKnowledge[] = [
     outputPrice: 5.48,
     reasoningMode: 'optional',
     supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    reasoningDialect: 'thinking-object',
   },
 ];

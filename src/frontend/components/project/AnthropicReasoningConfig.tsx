@@ -89,7 +89,9 @@ function KeepThinkingTurnsField({
     <div>
       <label className="mb-2 block text-sm font-medium text-gray-900">Keep Thinking Turns</label>
       <p className="mb-2 text-xs text-gray-500">
-        Opus 4.5 keeps all turns by default; other models keep 1 turn. Use -1 for "all".
+        Opus 4.5 keeps all turns by default; other models keep 1 turn. Use -1 for "all". On GLM,
+        Qwen, Kimi K2.6 and GPT-5.4+, -1 or 2 and up also asks the provider to keep earlier turns’
+        reasoning.
       </p>
       <input
         type="number"

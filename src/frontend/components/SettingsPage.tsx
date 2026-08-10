@@ -3,14 +3,141 @@ import Spinner from './ui/Spinner';
 import { useApp } from '../hooks/useApp';
 import { useAlert } from '../hooks/useAlert';
 import { useIsMobile } from '../hooks/useIsMobile';
-import type { APIDefinition, APIType } from '../../shared/protocol/types';
+import type { APIDefinition, APIType, ReasoningDialect } from '../../shared/protocol/types';
 import { generateUniqueId } from '../../shared/protocol/idGenerator';
-import { apiKeyOptional } from '../../shared/protocol/apiDefinition';
+import { apiKeyOptional, isChatgptSignedIn } from '../../shared/protocol/apiDefinition';
 import {
   getApiTypeDisplayName,
   getApiTypeDefaultIcon,
   getApiDefinitionIcon,
 } from '../lib/apiTypeUtils';
+import ChatgptSignInPanel from './settings/ChatgptSignInPanel';
+
+/** Stored dialect for a definition, reading the legacy `deFactoThinking` boolean. */
+function reasoningDialectOf(def: APIDefinition): ReasoningDialect {
+  const advanced = def.advancedSettings;
+  if (advanced?.reasoningDialect) return advanced.reasoningDialect;
+  return advanced?.deFactoThinking ? 'thinking-object' : 'openai';
+}
+
+const REASONING_DIALECT_OPTIONS: { value: ReasoningDialect; label: string; hint: string }[] = [
+  {
+    value: 'openai',
+    label: 'OpenAI — reasoning_effort',
+    hint: 'The standard field. OpenAI, xAI, Kimi K3.',
+  },
+  {
+    value: 'thinking-object',
+    label: 'DeepSeek-style — thinking: {type}',
+    hint: 'Sends {thinking: {type: enabled/disabled}}. DeepSeek, GLM, MiMo, Doubao.',
+  },
+  {
+    value: 'enable-thinking',
+    label: 'Qwen-style — enable_thinking',
+    hint: 'Sends enable_thinking: true/false, always alone. Qwen/DashScope, Kimi K2.x.',
+  },
+  {
+    value: 'openrouter',
+    label: 'OpenRouter — reasoning: {…}',
+    hint: "Sends OpenRouter's unified reasoning object and feeds signed reasoning_details back on later turns, so Claude behind OpenRouter survives a tool loop.",
+  },
+];
+
+// The reasoning wire shape differs per vendor and several of them reject a
+// request carrying two of them, so this is a dropdown, not a stack of toggles.
+function ReasoningDialectField(props: {
+  apiType: APIType;
+  dialect: ReasoningDialect;
+  override: boolean;
+  onDialectChange: (value: ReasoningDialect) => void;
+  onOverrideChange: (value: boolean) => void;
+}) {
+  // Only the two OpenAI-compatible clients read the dialect; Anthropic, Google,
+  // Bedrock and claude-agent each have their own reasoning parameters.
+  if (props.apiType !== 'chatgpt' && props.apiType !== 'responses_api') return null;
+
+  // The Responses API has its own native reasoning field, so OpenRouter's object
+  // is meaningless there — the other two dialects still apply.
+  const options =
+    props.apiType === 'chatgpt'
+      ? REASONING_DIALECT_OPTIONS
+      : REASONING_DIALECT_OPTIONS.filter(o => o.value !== 'openrouter');
+  const selected = REASONING_DIALECT_OPTIONS.find(o => o.value === props.dialect);
+  // OpenRouter normalizes every model it fronts, so its own shape always wins.
+  const overrideImplied = props.dialect === 'openrouter';
+
+  return (
+    <>
+      <label className="mb-1.5 block text-sm font-medium text-gray-700">Reasoning dialect</label>
+      <select
+        value={props.dialect}
+        onChange={e => props.onDialectChange(e.target.value as ReasoningDialect)}
+        className="mb-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+      >
+        {options.map(option => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <p className="mb-2 text-xs text-gray-500">{selected?.hint}</p>
+
+      <label className="mb-2 flex cursor-pointer items-center">
+        <input
+          type="checkbox"
+          checked={overrideImplied || props.override}
+          disabled={overrideImplied}
+          onChange={e => props.onOverrideChange(e.target.checked)}
+          className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-60"
+        />
+        <span className="text-sm text-gray-700">Override per-model dialect</span>
+      </label>
+      <p className="mb-3 ml-6 text-xs text-gray-500">
+        {overrideImplied
+          ? 'Always on for OpenRouter — it normalizes every model it serves, so a model’s own dialect never applies.'
+          : 'Off: a known model’s own dialect wins and this is only the fallback for unrecognized ones. On: this dialect wins everywhere — for a gateway that re-shapes what it fronts.'}
+      </p>
+    </>
+  );
+}
+
+// Custom model list knobs shared by the providers with a built-in list
+// (claude-agent, chatgpt-subscription): extraModelIds appends to it,
+// modelsEndpointDisabled replaces it.
+function ModelListFields(props: {
+  builtInListName: string;
+  extraModelIds: string;
+  modelListReplaced: boolean;
+  onExtraModelIdsChange: (value: string) => void;
+  onModelListReplacedChange: (value: boolean) => void;
+}) {
+  return (
+    <>
+      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+        Extra Model IDs (Optional)
+      </label>
+      <textarea
+        className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+        placeholder="one-model-id-per-line"
+        rows={3}
+        value={props.extraModelIds}
+        onChange={e => props.onExtraModelIdsChange(e.target.value)}
+      />
+      <p className="mb-1 text-xs text-gray-500">
+        Model IDs added to the {props.builtInListName} list (one per line)
+      </p>
+      <label className="mb-4 flex items-center gap-2 text-sm text-gray-600">
+        <input
+          type="checkbox"
+          checked={props.modelListReplaced}
+          onChange={e => props.onModelListReplacedChange(e.target.checked)}
+          className="rounded border-gray-300"
+        />
+        Use only my model list (replace the {props.builtInListName} list)
+      </label>
+    </>
+  );
+}
 
 interface SettingsPageProps {
   onMenuPress?: () => void;
@@ -61,34 +188,25 @@ function ClaudeAgentFields(props: {
         <code className="rounded bg-gray-100 px-1">--key value</code> /{' '}
         <code className="rounded bg-gray-100 px-1">--key=value</code> forms are supported.
       </p>
-      <label className="mb-1.5 block text-sm font-medium text-gray-700">
-        Extra Model IDs (Optional)
-      </label>
-      <textarea
-        className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-        placeholder="one-model-id-per-line"
-        rows={3}
-        value={props.extraModelIds}
-        onChange={e => props.onExtraModelIdsChange(e.target.value)}
+      <ModelListFields
+        builtInListName="built-in claude-agent"
+        extraModelIds={props.extraModelIds}
+        modelListReplaced={props.modelListReplaced}
+        onExtraModelIdsChange={props.onExtraModelIdsChange}
+        onModelListReplacedChange={props.onModelListReplacedChange}
       />
-      <p className="mb-1 text-xs text-gray-500">
-        Model IDs added to the built-in claude-agent list (one per line)
-      </p>
-      <label className="mb-4 flex items-center gap-2 text-sm text-gray-600">
-        <input
-          type="checkbox"
-          checked={props.modelListReplaced}
-          onChange={e => props.onModelListReplacedChange(e.target.checked)}
-          className="rounded border-gray-300"
-        />
-        Use only my model list (replace the built-in list)
-      </label>
     </>
   );
 }
 
 export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
-  const { apiDefinitions, saveAPIDefinition, deleteAPIDefinition, refreshModels } = useApp();
+  const {
+    apiDefinitions,
+    saveAPIDefinition,
+    deleteAPIDefinition,
+    refreshModels,
+    refreshAPIDefinitions,
+  } = useApp();
   const { showAlert, showDestructiveConfirm } = useAlert();
   const isMobile = useIsMobile();
 
@@ -111,7 +229,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   const [formPruneEmptyText, setFormPruneEmptyText] = useState(false);
   const [formIsSubscription, setFormIsSubscription] = useState(false);
   const [formEnforceGenuineAnthropic, setFormEnforceGenuineAnthropic] = useState(false);
-  const [formDeFactoThinking, setFormDeFactoThinking] = useState(false);
+  const [formReasoningDialect, setFormReasoningDialect] = useState<ReasoningDialect>('openai');
+  const [formReasoningDialectOverride, setFormReasoningDialectOverride] = useState(false);
   const [formNudgeThinking, setFormNudgeThinking] = useState(false);
   const [formMandateCoT, setFormMandateCoT] = useState(false);
   const [formTreatEmptyOutputAsError, setFormTreatEmptyOutputAsError] = useState(false);
@@ -141,7 +260,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormPruneEmptyText(false);
     setFormIsSubscription(false);
     setFormEnforceGenuineAnthropic(false);
-    setFormDeFactoThinking(false);
+    setFormReasoningDialect('openai');
+    setFormReasoningDialectOverride(false);
     setFormNudgeThinking(false);
     setFormMandateCoT(false);
     setFormTreatEmptyOutputAsError(false);
@@ -158,6 +278,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     { id: 'bedrock', name: 'AWS Bedrock', icon: '☁️' },
     { id: 'google', name: 'Google Gemini', icon: '💎' },
     { id: 'claude-agent', name: 'Claude Agent (subscription)', icon: '🅒' },
+    { id: 'chatgpt-subscription', name: 'ChatGPT (subscription)', icon: '🅖' },
   ] as const;
 
   // The Claude Agent SDK never reads baseUrl / CORS proxy / models endpoint /
@@ -167,6 +288,16 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
   // modelsEndpointDisabled replaces it). Sender already drops anything that
   // leaked through.
   const isClaudeAgentForm = formApiType === 'claude-agent';
+  // chatgpt-subscription authenticates through the sign-in panel (no API
+  // key), has a fixed base URL, and lists models from the ChatGPT backend —
+  // only the CORS proxy (worker mode) and the custom model list still apply.
+  const isChatgptSubscriptionForm = formApiType === 'chatgpt-subscription';
+  const hidesProviderFields = isClaudeAgentForm || isChatgptSubscriptionForm;
+
+  const handleSignInChanged = async (apiDefId: string) => {
+    await refreshAPIDefinitions();
+    await refreshModels(apiDefId, true);
+  };
 
   const handleStartEdit = (def: APIDefinition) => {
     setEditingId(def.id);
@@ -188,7 +319,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormPruneEmptyText(def.advancedSettings?.pruneEmptyText || false);
     setFormIsSubscription(def.advancedSettings?.isSubscription || false);
     setFormEnforceGenuineAnthropic(def.advancedSettings?.enforceGenuineAnthropic || false);
-    setFormDeFactoThinking(def.advancedSettings?.deFactoThinking || false);
+    setFormReasoningDialect(reasoningDialectOf(def));
+    setFormReasoningDialectOverride(def.advancedSettings?.reasoningDialectOverride || false);
     setFormNudgeThinking(def.advancedSettings?.nudgeThinking || false);
     setFormMandateCoT(def.advancedSettings?.mandateCoT || false);
     setFormTreatEmptyOutputAsError(def.advancedSettings?.treatEmptyOutputAsError || false);
@@ -206,7 +338,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormPruneEmptyText(def.advancedSettings?.pruneEmptyText || false);
     setFormIsSubscription(def.advancedSettings?.isSubscription || false);
     setFormEnforceGenuineAnthropic(def.advancedSettings?.enforceGenuineAnthropic || false);
-    setFormDeFactoThinking(def.advancedSettings?.deFactoThinking || false);
+    setFormReasoningDialect(reasoningDialectOf(def));
+    setFormReasoningDialectOverride(def.advancedSettings?.reasoningDialectOverride || false);
     setFormNudgeThinking(def.advancedSettings?.nudgeThinking || false);
     setFormMandateCoT(def.advancedSettings?.mandateCoT || false);
     setFormTreatEmptyOutputAsError(def.advancedSettings?.treatEmptyOutputAsError || false);
@@ -236,7 +369,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     setFormPruneEmptyText(false);
     setFormIsSubscription(false);
     setFormEnforceGenuineAnthropic(false);
-    setFormDeFactoThinking(false);
+    setFormReasoningDialect('openai');
+    setFormReasoningDialectOverride(false);
     setFormNudgeThinking(false);
     setFormMandateCoT(false);
     setFormTreatEmptyOutputAsError(false);
@@ -269,12 +403,14 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
         apiType: formApiType,
         name: formName.trim(),
         icon: formIcon.trim() || undefined,
-        baseUrl: formBaseUrl.trim(),
-        apiKey: formApiKey.trim(),
+        // chatgpt-subscription's base URL is fixed and its credentials live in
+        // the backend-owned `oauth` block, so neither field is user-settable.
+        baseUrl: isChatgptSubscriptionForm ? '' : formBaseUrl.trim(),
+        apiKey: isChatgptSubscriptionForm ? '' : formApiKey.trim(),
         isDefault: editingId ? apiDefinitions.find(d => d.id === editingId)?.isDefault : false,
-        // claude-agent has no Local checkbox anymore — scrub stale values so
-        // the Host CLI badge (not Local) wins for keyless definitions.
-        isLocal: formApiType === 'claude-agent' ? false : formIsLocal,
+        // The subscription providers have no Local checkbox — scrub stale
+        // values so their own badges (not Local) win for keyless definitions.
+        isLocal: hidesProviderFields ? false : formIsLocal,
         modelsEndpoint: formModelsEndpoint.trim() || undefined,
         modelsEndpointDisabled: formModelsEndpointDisabled || undefined,
         proxyUrl: formProxyUrl.trim() || undefined,
@@ -292,7 +428,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
           formPruneEmptyText ||
           formIsSubscription ||
           formEnforceGenuineAnthropic ||
-          formDeFactoThinking ||
+          formReasoningDialect !== 'openai' ||
+          formReasoningDialectOverride ||
           formNudgeThinking ||
           formMandateCoT ||
           formTreatEmptyOutputAsError ||
@@ -304,7 +441,12 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                 ...(formPruneEmptyText && { pruneEmptyText: true }),
                 ...(formIsSubscription && { isSubscription: true }),
                 ...(formEnforceGenuineAnthropic && { enforceGenuineAnthropic: true }),
-                ...(formDeFactoThinking && { deFactoThinking: true }),
+                // Writing the enum drops any legacy `deFactoThinking` key on save,
+                // which is the migration: the resolver reads both, we only write one.
+                ...(formReasoningDialect !== 'openai' && {
+                  reasoningDialect: formReasoningDialect,
+                }),
+                ...(formReasoningDialectOverride && { reasoningDialectOverride: true }),
                 ...(formNudgeThinking && { nudgeThinking: true }),
                 ...(formMandateCoT && { mandateCoT: true }),
                 ...(formTreatEmptyOutputAsError && { treatEmptyOutputAsError: true }),
@@ -333,6 +475,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formName,
     formIcon,
     formApiType,
+    isChatgptSubscriptionForm,
+    hidesProviderFields,
     formIsLocal,
     formApiKey,
     formModelsEndpoint,
@@ -346,7 +490,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formPruneEmptyText,
     formIsSubscription,
     formEnforceGenuineAnthropic,
-    formDeFactoThinking,
+    formReasoningDialect,
+    formReasoningDialectOverride,
     formNudgeThinking,
     formMandateCoT,
     formTreatEmptyOutputAsError,
@@ -375,7 +520,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
           formPruneEmptyText ||
           formIsSubscription ||
           formEnforceGenuineAnthropic ||
-          formDeFactoThinking ||
+          formReasoningDialect !== 'openai' ||
+          formReasoningDialectOverride ||
           formNudgeThinking ||
           formMandateCoT ||
           formTreatEmptyOutputAsError ||
@@ -387,7 +533,12 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                 ...(formPruneEmptyText && { pruneEmptyText: true }),
                 ...(formIsSubscription && { isSubscription: true }),
                 ...(formEnforceGenuineAnthropic && { enforceGenuineAnthropic: true }),
-                ...(formDeFactoThinking && { deFactoThinking: true }),
+                // Writing the enum drops any legacy `deFactoThinking` key on save,
+                // which is the migration: the resolver reads both, we only write one.
+                ...(formReasoningDialect !== 'openai' && {
+                  reasoningDialect: formReasoningDialect,
+                }),
+                ...(formReasoningDialectOverride && { reasoningDialectOverride: true }),
                 ...(formNudgeThinking && { nudgeThinking: true }),
                 ...(formMandateCoT && { mandateCoT: true }),
                 ...(formTreatEmptyOutputAsError && { treatEmptyOutputAsError: true }),
@@ -409,7 +560,8 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
     formPruneEmptyText,
     formIsSubscription,
     formEnforceGenuineAnthropic,
-    formDeFactoThinking,
+    formReasoningDialect,
+    formReasoningDialectOverride,
     formNudgeThinking,
     formMandateCoT,
     formTreatEmptyOutputAsError,
@@ -470,7 +622,13 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                 // Determine status badge
                 let statusBadgeClass = '';
                 let statusText = '';
-                if (def.isLocal) {
+                if (def.apiType === 'chatgpt-subscription') {
+                  const signedIn = isChatgptSignedIn(def);
+                  statusBadgeClass = signedIn
+                    ? 'bg-green-100 text-green-800'
+                    : 'bg-red-100 text-red-800';
+                  statusText = signedIn ? 'Signed in' : 'Not signed in';
+                } else if (def.isLocal) {
                   statusBadgeClass = 'bg-blue-100 text-blue-800';
                   statusText = 'Local';
                 } else if (hasApiKey) {
@@ -510,6 +668,12 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                                   via proxy: {def.proxyUrl}
                                 </div>
                               )}
+                              {def.apiType === 'chatgpt-subscription' && def.oauth && (
+                                <div className="text-xs text-gray-600">
+                                  {def.oauth.email ?? 'ChatGPT account'}
+                                  {def.oauth.planType ? ` · ${def.oauth.planType} plan` : ''}
+                                </div>
+                              )}
                             </div>
                           </div>
                           <span
@@ -518,6 +682,13 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                             {statusText}
                           </span>
                         </div>
+                        {def.apiType === 'chatgpt-subscription' && (
+                          <div className="mb-3 rounded-lg border border-yellow-300 bg-yellow-50 px-3 py-2 text-xs text-yellow-900">
+                            {def.advancedSettings?.isSubscription
+                              ? 'Usage bills your ChatGPT plan and is tracked as $0. Turn off "Subscription service" under Advanced to see what it would have cost at API-list prices.'
+                              : 'Usage bills your ChatGPT plan, but costs are shown at API-list prices so you can see what you would have spent. Turn on "Subscription service" under Advanced to track $0 instead.'}
+                          </div>
+                        )}
                         <div className="flex gap-2">
                           <button
                             onClick={() => handleStartEdit(def)}
@@ -585,36 +756,39 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           <span className="text-sm text-gray-700">Subscription service</span>
                         </label>
                         <p className="mb-3 ml-6 text-xs text-gray-500">
-                          Flat-rate subscription — all usage is tracked as $0.
+                          {isChatgptSubscriptionForm
+                            ? 'Track all usage as $0. Off (default) keeps API-list prices so the totals show what this usage would have cost per token.'
+                            : 'Flat-rate subscription — all usage is tracked as $0.'}
                         </p>
 
-                        <label className="mb-2 flex cursor-pointer items-center">
-                          <input
-                            type="checkbox"
-                            checked={formDeFactoThinking}
-                            onChange={e => setFormDeFactoThinking(e.target.checked)}
-                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          />
-                          <span className="text-sm text-gray-700">De facto thinking mode</span>
-                        </label>
-                        <p className="mb-3 ml-6 text-xs text-gray-500">
-                          Sends {'{'}thinking: {'{'}type: enabled/disabled{'}'}
-                          {'}'} in request body. Used by DeepSeek, Kimi, MiMo, and other providers.
-                        </p>
+                        {/* The thinking / Anthropic knobs don't apply to the ChatGPT backend. */}
+                        {!isChatgptSubscriptionForm && (
+                          <>
+                            <ReasoningDialectField
+                              apiType={formApiType}
+                              dialect={formReasoningDialect}
+                              override={formReasoningDialectOverride}
+                              onDialectChange={setFormReasoningDialect}
+                              onOverrideChange={setFormReasoningDialectOverride}
+                            />
 
-                        <label className="mb-2 flex cursor-pointer items-center">
-                          <input
-                            type="checkbox"
-                            checked={formEnforceGenuineAnthropic}
-                            onChange={e => setFormEnforceGenuineAnthropic(e.target.checked)}
-                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          />
-                          <span className="text-sm text-gray-700">Enforce genuine Anthropic</span>
-                        </label>
-                        <p className="mb-3 ml-6 text-xs text-gray-500">
-                          Rejects responses with zero cache activity or unsigned thinking blocks —
-                          catches API routers silently forwarding to non-Anthropic providers.
-                        </p>
+                            <label className="mb-2 flex cursor-pointer items-center">
+                              <input
+                                type="checkbox"
+                                checked={formEnforceGenuineAnthropic}
+                                onChange={e => setFormEnforceGenuineAnthropic(e.target.checked)}
+                                className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              <span className="text-sm text-gray-700">
+                                Enforce genuine Anthropic
+                              </span>
+                            </label>
+                            <p className="mb-3 ml-6 text-xs text-gray-500">
+                              Rejects responses with zero cache activity or unsigned thinking blocks
+                              — catches API routers silently forwarding to non-Anthropic providers.
+                            </p>
+                          </>
+                        )}
 
                         <label className="mb-2 flex cursor-pointer items-center">
                           <input
@@ -704,23 +878,29 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           </>
                         )}
 
-                        <label className="mb-2 flex cursor-pointer items-center">
-                          <input
-                            type="checkbox"
-                            checked={formFlexTierSupported}
-                            onChange={e => setFormFlexTierSupported(e.target.checked)}
-                            className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          />
-                          <span className="text-sm text-gray-700">Supports flex / batch tier</span>
-                        </label>
-                        <p className="mb-4 ml-6 text-xs text-gray-500">
-                          Provider accepts{' '}
-                          <code className="rounded bg-gray-100 px-1">service_tier: "flex"</code>{' '}
-                          (OpenAI) or{' '}
-                          <code className="rounded bg-gray-100 px-1">serviceTier: "flex"</code>{' '}
-                          (Gemini) for a discounted, lower-priority service tier. Enable only if
-                          your provider documents this — most OpenAI-compatible endpoints don't.
-                        </p>
+                        {!isChatgptSubscriptionForm && (
+                          <>
+                            <label className="mb-2 flex cursor-pointer items-center">
+                              <input
+                                type="checkbox"
+                                checked={formFlexTierSupported}
+                                onChange={e => setFormFlexTierSupported(e.target.checked)}
+                                className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              <span className="text-sm text-gray-700">
+                                Supports flex / batch tier
+                              </span>
+                            </label>
+                            <p className="mb-4 ml-6 text-xs text-gray-500">
+                              Provider accepts{' '}
+                              <code className="rounded bg-gray-100 px-1">service_tier: "flex"</code>{' '}
+                              (OpenAI) or{' '}
+                              <code className="rounded bg-gray-100 px-1">serviceTier: "flex"</code>{' '}
+                              (Gemini) for a discounted, lower-priority service tier. Enable only if
+                              your provider documents this — most OpenAI-compatible endpoints don't.
+                            </p>
+                          </>
+                        )}
 
                         <div className="flex justify-end gap-2">
                           <button
@@ -769,7 +949,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           maxLength={2}
                         />
 
-                        {!isClaudeAgentForm && (
+                        {!hidesProviderFields && (
                           <>
                             <label className="mb-1.5 block text-sm font-medium text-gray-700">
                               Base URL (Optional)
@@ -813,30 +993,49 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           </>
                         )}
 
-                        <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                          API Key {formIsLocal || isClaudeAgentForm ? '(Optional)' : '*'}
-                        </label>
-                        <input
-                          type="password"
-                          className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                          placeholder={
-                            isClaudeAgentForm
-                              ? 'Leave blank to use host `claude` CLI credentials'
-                              : 'Enter your API key'
-                          }
-                          value={formApiKey}
-                          onChange={e => setFormApiKey(e.target.value)}
-                        />
-                        {isClaudeAgentForm ? (
-                          <p className="mb-4 text-xs text-gray-500">
-                            Empty → host CLI OAuth (subscription billed). Paste an{' '}
-                            <code className="rounded bg-gray-100 px-1">sk-ant-oat01-…</code> OAuth
-                            token for explicit subscription auth, or an{' '}
-                            <code className="rounded bg-gray-100 px-1">sk-ant-api03-…</code> key for
-                            pay-per-token (defeats the purpose).
-                          </p>
+                        {isChatgptSubscriptionForm ? (
+                          <ChatgptSignInPanel
+                            apiDef={def}
+                            onChanged={() => handleSignInChanged(def.id)}
+                          />
                         ) : (
-                          <div className="mb-4" />
+                          <>
+                            <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                              API Key {formIsLocal || isClaudeAgentForm ? '(Optional)' : '*'}
+                            </label>
+                            <input
+                              type="password"
+                              className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                              placeholder={
+                                isClaudeAgentForm
+                                  ? 'Leave blank to use host `claude` CLI credentials'
+                                  : 'Enter your API key'
+                              }
+                              value={formApiKey}
+                              onChange={e => setFormApiKey(e.target.value)}
+                            />
+                            {isClaudeAgentForm ? (
+                              <p className="mb-4 text-xs text-gray-500">
+                                Empty → host CLI OAuth (subscription billed). Paste an{' '}
+                                <code className="rounded bg-gray-100 px-1">sk-ant-oat01-…</code>{' '}
+                                OAuth token for explicit subscription auth, or an{' '}
+                                <code className="rounded bg-gray-100 px-1">sk-ant-api03-…</code> key
+                                for pay-per-token (defeats the purpose).
+                              </p>
+                            ) : (
+                              <div className="mb-4" />
+                            )}
+                          </>
+                        )}
+
+                        {isChatgptSubscriptionForm && (
+                          <ModelListFields
+                            builtInListName="ChatGPT backend"
+                            extraModelIds={formExtraModelIds}
+                            modelListReplaced={formModelsEndpointDisabled}
+                            onExtraModelIdsChange={setFormExtraModelIds}
+                            onModelListReplacedChange={setFormModelsEndpointDisabled}
+                          />
                         )}
 
                         {isClaudeAgentForm && (
@@ -852,7 +1051,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                           />
                         )}
 
-                        {!isClaudeAgentForm && (
+                        {!hidesProviderFields && (
                           <>
                             <label className="mb-1.5 block text-sm font-medium text-gray-700">
                               Models Endpoint (Optional)
@@ -904,7 +1103,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                               onChange={e => setFormProxyUrl(e.target.value)}
                             />
                             <p className="mb-4 text-xs text-gray-500">
-                              Routes API traffic through a CORS proxy server
+                              {isChatgptSubscriptionForm
+                                ? 'Required in worker mode: the browser cannot reach chatgpt.com or auth.openai.com directly. The proxy must allow both hosts. Server mode does not need it.'
+                                : 'Routes API traffic through a CORS proxy server'}
                             </p>
                             <label className="mb-1.5 block text-sm font-medium text-gray-700">
                               CORS Proxy Auth Token (Optional)
@@ -991,19 +1192,13 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         Removes empty text blocks from older messages.
                       </p>
 
-                      <label className="mb-2 flex cursor-pointer items-center">
-                        <input
-                          type="checkbox"
-                          checked={formDeFactoThinking}
-                          onChange={e => setFormDeFactoThinking(e.target.checked)}
-                          className="mr-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <span className="text-sm text-gray-700">De facto thinking mode</span>
-                      </label>
-                      <p className="mb-3 ml-6 text-xs text-gray-500">
-                        Sends {'{'}thinking: {'{'}type: enabled/disabled{'}'}
-                        {'}'} in request body. Used by DeepSeek, Kimi, MiMo, and other providers.
-                      </p>
+                      <ReasoningDialectField
+                        apiType={formApiType}
+                        dialect={formReasoningDialect}
+                        override={formReasoningDialectOverride}
+                        onDialectChange={setFormReasoningDialect}
+                        onOverrideChange={setFormReasoningDialectOverride}
+                      />
 
                       <label className="mb-2 flex cursor-pointer items-center">
                         <input
@@ -1163,7 +1358,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         maxLength={2}
                       />
 
-                      {!isClaudeAgentForm && (
+                      {!hidesProviderFields && (
                         <>
                           <label className="mb-1.5 block text-sm font-medium text-gray-700">
                             Base URL (Optional)
@@ -1207,30 +1402,51 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         </>
                       )}
 
-                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
-                        API Key {formIsLocal || isClaudeAgentForm ? '(Optional)' : '*'}
-                      </label>
-                      <input
-                        type="password"
-                        className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
-                        placeholder={
-                          isClaudeAgentForm
-                            ? 'Leave blank to use host `claude` CLI credentials'
-                            : 'Enter your API key'
-                        }
-                        value={formApiKey}
-                        onChange={e => setFormApiKey(e.target.value)}
-                      />
-                      {isClaudeAgentForm && (
-                        <p className="mb-4 text-xs text-gray-500">
-                          Empty → host CLI OAuth (subscription billed). Paste an{' '}
-                          <code className="rounded bg-gray-100 px-1">sk-ant-oat01-…</code> OAuth
-                          token for explicit subscription auth, or an{' '}
-                          <code className="rounded bg-gray-100 px-1">sk-ant-api03-…</code> key for
-                          pay-per-token (defeats the purpose).
-                        </p>
+                      {isChatgptSubscriptionForm ? (
+                        <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+                          No API key. Save this definition, then open <strong>Edit</strong> and sign
+                          in with your ChatGPT account. Usage bills your ChatGPT Plus/Pro plan —
+                          OpenAI tolerates third-party apps on subscription sign-in but does not
+                          guarantee it; keep it to personal use.
+                        </div>
+                      ) : (
+                        <>
+                          <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                            API Key {formIsLocal || isClaudeAgentForm ? '(Optional)' : '*'}
+                          </label>
+                          <input
+                            type="password"
+                            className="mb-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                            placeholder={
+                              isClaudeAgentForm
+                                ? 'Leave blank to use host `claude` CLI credentials'
+                                : 'Enter your API key'
+                            }
+                            value={formApiKey}
+                            onChange={e => setFormApiKey(e.target.value)}
+                          />
+                          {isClaudeAgentForm && (
+                            <p className="mb-4 text-xs text-gray-500">
+                              Empty → host CLI OAuth (subscription billed). Paste an{' '}
+                              <code className="rounded bg-gray-100 px-1">sk-ant-oat01-…</code> OAuth
+                              token for explicit subscription auth, or an{' '}
+                              <code className="rounded bg-gray-100 px-1">sk-ant-api03-…</code> key
+                              for pay-per-token (defeats the purpose).
+                            </p>
+                          )}
+                          {!isClaudeAgentForm && <div className="mb-3" />}
+                        </>
                       )}
-                      {!isClaudeAgentForm && <div className="mb-3" />}
+
+                      {isChatgptSubscriptionForm && (
+                        <ModelListFields
+                          builtInListName="ChatGPT backend"
+                          extraModelIds={formExtraModelIds}
+                          modelListReplaced={formModelsEndpointDisabled}
+                          onExtraModelIdsChange={setFormExtraModelIds}
+                          onModelListReplacedChange={setFormModelsEndpointDisabled}
+                        />
+                      )}
 
                       {isClaudeAgentForm && (
                         <ClaudeAgentFields
@@ -1245,7 +1461,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                         />
                       )}
 
-                      {!isClaudeAgentForm && (
+                      {!hidesProviderFields && (
                         <>
                           <label className="mb-1.5 block text-sm font-medium text-gray-700">
                             Models Endpoint (Optional)
@@ -1297,7 +1513,9 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                             onChange={e => setFormProxyUrl(e.target.value)}
                           />
                           <p className="mb-4 text-xs text-gray-500">
-                            Routes API traffic through a CORS proxy server
+                            {isChatgptSubscriptionForm
+                              ? 'Required in worker mode: the browser cannot reach chatgpt.com or auth.openai.com directly. The proxy must allow both hosts. Server mode does not need it.'
+                              : 'Routes API traffic through a CORS proxy server'}
                           </p>
                           <label className="mb-1.5 block text-sm font-medium text-gray-700">
                             CORS Proxy Auth Token (Optional)
@@ -1316,7 +1534,7 @@ export default function SettingsPage({ onMenuPress }: SettingsPageProps) {
                       )}
 
                       <div className="flex justify-end gap-2">
-                        {!isClaudeAgentForm && (
+                        {!hidesProviderFields && (
                           <button
                             onClick={() => setShowAdvanced(true)}
                             className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"

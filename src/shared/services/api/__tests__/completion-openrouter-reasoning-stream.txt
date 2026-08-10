@@ -1,0 +1,19 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-or-1","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1768771974,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":null,"reasoning_details":[]},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-or-1","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1768771974,"choices":[{"index":0,"delta":{"content":"","reasoning":"Let me check ","reasoning_details":[{"type":"reasoning.text","index":0,"id":"rd-1","format":"anthropic-claude-v1","text":"Let me check "}]},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-or-1","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1768771974,"choices":[{"index":0,"delta":{"content":"","reasoning":"the weather.","reasoning_details":[{"type":"reasoning.text","index":0,"id":null,"text":"the weather."}]},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-or-1","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1768771974,"choices":[{"index":0,"delta":{"content":"","reasoning":null,"reasoning_details":[{"type":"reasoning.text","index":0,"id":null,"signature":"sig-xyz"}]},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-or-1","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1768771974,"choices":[{"index":0,"delta":{"content":"Checking now.","reasoning":null,"reasoning_details":[]},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-or-1","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1768771974,"choices":[{"index":0,"delta":{"content":"","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Boston\"}"}}]},"finish_reason":null,"native_finish_reason":null,"logprobs":null}]}
+
+data: {"id":"gen-or-1","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1768771974,"choices":[{"index":0,"delta":{"content":""},"finish_reason":"tool_calls","native_finish_reason":"tool_use","logprobs":null}]}
+
+data: {"id":"gen-or-1","provider":"Anthropic","model":"anthropic/claude-sonnet-4.5","object":"chat.completion.chunk","created":1768771974,"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":30,"completion_tokens_details":{"reasoning_tokens":12}}}
+
+data: [DONE]

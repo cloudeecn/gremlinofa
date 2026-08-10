@@ -63,8 +63,19 @@ export function mapCompletionChunkToStreamChunks(
   const delta = choice.delta;
   const finishReason = choice.finish_reason;
 
-  // Handle reasoning content (delta.reasoning or delta.reasoning_content)
-  const reasoningText = delta?.reasoning || delta?.reasoning_content;
+  // An encrypted-only turn (Anthropic behind OpenRouter) is real chain-of-thought
+  // with nothing renderable, so latch here rather than inside the text branch —
+  // otherwise `hasCoT` reads false and `mandateCoT` rejects the whole run.
+  if (delta?.reasoning_details?.length) {
+    newState.hadReasoning = true;
+  }
+
+  // Handle reasoning content. `reasoning_details` is a fallback, never additive:
+  // OpenRouter sends it alongside `delta.reasoning` carrying the same text.
+  const reasoningText =
+    delta?.reasoning ||
+    delta?.reasoning_content ||
+    reasoningTextFromDetails(delta?.reasoning_details);
   if (reasoningText) {
     if (!state.inReasoningBlock) {
       chunks.push({ type: 'thinking.start' });
@@ -166,6 +177,17 @@ export function mapCompletionChunkToStreamChunks(
 export function convertMessageToStreamChunks(message: CompletionMessage): StreamChunk[] {
   const chunks: StreamChunk[] = [];
 
+  // Reasoning comes first, matching the block order the streaming mapper emits
+  const reasoningText =
+    message.reasoning_content ||
+    message.reasoning ||
+    reasoningTextFromDetails(message.reasoning_details);
+  if (reasoningText) {
+    chunks.push({ type: 'thinking.start' });
+    chunks.push({ type: 'thinking', content: reasoningText });
+    chunks.push({ type: 'thinking.end' });
+  }
+
   // Handle text content
   if (message.content) {
     chunks.push({ type: 'content.start' });
@@ -218,8 +240,42 @@ function createTokenUsageChunk(usage: CompletionUsage): StreamChunk {
 // Type definitions for Chat Completions API structures
 // ============================================================================
 
+/**
+ * One entry of OpenRouter's `reasoning_details` array.
+ *
+ * The index signature is load-bearing: these objects must be echoed back byte-for-byte
+ * on later turns (Anthropic validates `signature` against the block it signed), so an
+ * unrecognized future field has to survive the round-trip rather than be rebuilt away.
+ */
+export interface ReasoningDetail {
+  /** 'reasoning.text' | 'reasoning.summary' | 'reasoning.encrypted', or something newer */
+  type?: string;
+  id?: string | null;
+  format?: string;
+  index?: number;
+  text?: string | null;
+  summary?: string | null;
+  /** base64 — never rendered */
+  data?: string | null;
+  signature?: string | null;
+  [key: string]: unknown;
+}
+
+/** Renderable reasoning text carried by a `reasoning_details` array, if any. */
+export function reasoningTextFromDetails(details: ReasoningDetail[] | undefined): string {
+  if (!details?.length) return '';
+  let text = '';
+  for (const detail of details) {
+    if (detail.type === 'reasoning.encrypted') continue;
+    text += detail.text ?? detail.summary ?? '';
+  }
+  return text;
+}
+
 /** Minimal interface for SDK stream chunk */
 export interface CompletionChunk {
+  /** Model that served the response; every chunk carries it. */
+  model?: string;
   choices?: Array<{
     index: number;
     delta?: {
@@ -227,6 +283,7 @@ export interface CompletionChunk {
       content?: string | null;
       reasoning?: string | null;
       reasoning_content?: string | null;
+      reasoning_details?: ReasoningDetail[];
       tool_calls?: Array<{
         index: number;
         id?: string;
@@ -242,10 +299,21 @@ export interface CompletionChunk {
   usage?: CompletionUsage;
 }
 
-/** Minimal interface for non-streaming message */
+/**
+ * Minimal interface for non-streaming message. Also the stored `fullContent`
+ * shape for the `chatgpt` model family.
+ *
+ * Reasoning is kept under whichever key the provider used: `reasoning_content`
+ * (DeepSeek, GLM, Kimi, Qwen), `reasoning` (OpenRouter's plain-text mirror), or
+ * `reasoning_details` (OpenRouter's structured, signed form). The plain
+ * `reasoning` string is never echoed back — see `openaiClient`.
+ */
 export interface CompletionMessage {
   role: string;
   content: string | null;
+  reasoning_content?: string | null;
+  reasoning?: string | null;
+  reasoning_details?: ReasoningDetail[];
   tool_calls?: Array<{
     id: string;
     type: string;

@@ -28,6 +28,8 @@ export interface ResponsesMapperState {
   outputTokens: number;
   reasoningTokens: number;
   cacheReadTokens: number;
+  /** The response the terminal event carried; null until one arrives. See `terminalResponseOf`. */
+  terminalResponse: Record<string, unknown> | null;
 }
 
 /**
@@ -43,7 +45,76 @@ export function createMapperState(): ResponsesMapperState {
     outputTokens: 0,
     reasoningTokens: 0,
     cacheReadTokens: 0,
+    terminalResponse: null,
   };
+}
+
+const TERMINAL_STATUS: Record<string, string> = {
+  'response.completed': 'completed',
+  'response.incomplete': 'incomplete',
+  'response.failed': 'failed',
+};
+
+/**
+ * The Response-like object a terminal event carries, with `status` filled in
+ * from the event name when the provider leaves it out. A spec `error` event
+ * (`{ code, message }` at the top level, which the SDK doesn't throw on)
+ * becomes a failed response. `undefined` for every non-terminal event.
+ */
+export function terminalResponseOf(event: ResponsesSSEEvent): Record<string, unknown> | undefined {
+  if (event.type === 'error') {
+    return {
+      status: 'failed',
+      error: { code: event.data.code, message: event.data.message },
+    };
+  }
+  const status = TERMINAL_STATUS[event.type];
+  if (!status) return undefined;
+  const response = (event.data.response as Record<string, unknown> | undefined) ?? {};
+  return response.status ? response : { ...response, status };
+}
+
+export const STREAM_CUT_MESSAGE =
+  'Stream ended before the response finished (no response.completed)';
+
+interface TerminalResponseLike {
+  status?: unknown;
+  incomplete_details?: { reason?: unknown } | null;
+  error?: { code?: unknown; message?: unknown } | null;
+}
+
+/**
+ * Stop reason for a Responses API turn, from how the response ended.
+ * Truncations keep the turn (`max_tokens`, `content_filter`, ...); failures
+ * and responses that never finished throw, for the client's catch to turn
+ * into an error result. A missing `status` counts as completed — some
+ * non-stock providers omit it.
+ */
+export function responsesStopReason(
+  response: TerminalResponseLike | undefined | null,
+  hasFunctionCall: boolean
+): string | undefined {
+  if (!response) throw new Error(STREAM_CUT_MESSAGE);
+
+  switch (response.status) {
+    case 'failed': {
+      const code = response.error?.code;
+      const message = response.error?.message ?? 'no error details';
+      throw new Error(`Response failed: ${code ? `${String(code)}: ` : ''}${String(message)}`);
+    }
+    case 'in_progress':
+    case 'queued':
+      throw new Error(`${STREAM_CUT_MESSAGE}, status: ${response.status}`);
+    case 'incomplete': {
+      const reason = response.incomplete_details?.reason;
+      if (reason === 'max_output_tokens') return 'max_tokens';
+      return typeof reason === 'string' && reason ? reason : 'incomplete';
+    }
+    case 'cancelled':
+      return 'cancelled';
+    default:
+      return hasFunctionCall ? 'tool_use' : undefined;
+  }
 }
 
 /**
@@ -263,7 +334,14 @@ export function mapResponsesEventToStreamChunks(
       break;
     }
 
-    case 'response.completed': {
+    case 'error':
+      newState.terminalResponse = terminalResponseOf(event) ?? null;
+      break;
+
+    case 'response.completed':
+    case 'response.incomplete':
+    case 'response.failed': {
+      newState.terminalResponse = terminalResponseOf(event) ?? null;
       // Close any open blocks
       if (state.inContentBlock) {
         chunks.push({ type: 'content.end' });

@@ -1,5 +1,9 @@
 import type { ModelKnowledge } from '../../../../protocol/types';
 
+// Doubao Seed: `reasoning_effort` (Chat) / `reasoning.effort` (Responses) take
+// all seven values, but only low / medium / high are distinct: `minimal` and
+// `none` switch thinking off, `xhigh` / `max` map to high. Default medium
+// (high on Seed 2.1). Prefixes match Volcengine ids only, not BytePlus ones.
 export const BYTEDANCE_MODELS: ModelKnowledge[] = [
   // Doubao Seed 2.1 Pro
   {
@@ -15,8 +19,8 @@ export const BYTEDANCE_MODELS: ModelKnowledge[] = [
     contextWindow: 256000,
     maxOutputTokens: 128000,
     reasoningMode: 'optional',
-    supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    reasoningDialect: 'thinking-object',
     supportsTools: true,
   },
   // Doubao Seed 2.0 Pro
@@ -33,8 +37,8 @@ export const BYTEDANCE_MODELS: ModelKnowledge[] = [
     contextWindow: 256000,
     maxOutputTokens: 128000,
     reasoningMode: 'optional',
-    supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    reasoningDialect: 'thinking-object',
     supportsTools: true,
   },
   // Doubao Seed 2.0 Code Preview — same pricing as pro
@@ -51,8 +55,8 @@ export const BYTEDANCE_MODELS: ModelKnowledge[] = [
     contextWindow: 256000,
     maxOutputTokens: 128000,
     reasoningMode: 'optional',
-    supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    reasoningDialect: 'thinking-object',
     supportsTools: true,
   },
   // Doubao Seed 2.0 Lite (covers -260215 and -260428 snapshots, same price)
@@ -69,8 +73,8 @@ export const BYTEDANCE_MODELS: ModelKnowledge[] = [
     contextWindow: 256000,
     maxOutputTokens: 32000,
     reasoningMode: 'optional',
-    supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    reasoningDialect: 'thinking-object',
     supportsTools: true,
   },
   // Doubao Seed 2.0 Mini — bare ID is canonical; -260428 snapshot is ~6% cheaper
@@ -88,8 +92,8 @@ export const BYTEDANCE_MODELS: ModelKnowledge[] = [
     contextWindow: 256000,
     maxOutputTokens: 32000,
     reasoningMode: 'optional',
-    supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    reasoningDialect: 'thinking-object',
     supportsTools: true,
   },
   // Doubao Seed 1.8
@@ -106,8 +110,8 @@ export const BYTEDANCE_MODELS: ModelKnowledge[] = [
     contextWindow: 256000,
     maxOutputTokens: 64000,
     reasoningMode: 'optional',
-    supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    reasoningDialect: 'thinking-object',
     supportsTools: true,
   },
 ];

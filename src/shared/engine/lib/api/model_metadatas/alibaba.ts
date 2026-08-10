@@ -2,6 +2,14 @@ import type { ModelKnowledge } from '../../../../protocol/types';
 
 // Alibaba Qwen (DashScope / OpenAI- & Anthropic-compatible endpoints).
 // Prices are USD per 1M tokens: input / cached-input read / output.
+//
+// Effort levels are Responses-only (`reasoning.effort`, which outranks
+// `enable_thinking` there). Chat Completions has no effort for these models,
+// only `thinking_budget`, so the `enable-thinking` dialect never sends one.
+
+/** Qwen 3.8's distinct levels on Responses; server default `xhigh`. */
+const QWEN_3_8_EFFORTS: ModelKnowledge['supportedReasoningEfforts'] = ['low', 'medium', 'xhigh'];
+
 export const ALIBABA_MODELS: ModelKnowledge[] = [
   // Qwen 3.8 Max — flat pricing across the full 1M context. Cache read is the
   // implicit-cache rate; explicit caching ($0.17 read / $2.50 write) not billed.
@@ -16,8 +24,26 @@ export const ALIBABA_MODELS: ModelKnowledge[] = [
     cacheReadPrice: 0.25,
     outputPrice: 6.0,
     reasoningMode: 'optional',
-    supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    supportedReasoningEfforts: QWEN_3_8_EFFORTS,
+    reasoningDialect: 'enable-thinking',
+    reasoningHistoryParam: 'preserve_thinking',
+    supportsTools: true,
+  },
+  // Qwen 3.8 Flash. Its cache-hit rate is console-only (not the usual 20% of
+  // input), so cache reads bill at the input price.
+  {
+    matches: [
+      {
+        apiType: ['anthropic', 'chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'qwen3.8-flash' }],
+      },
+    ],
+    inputPrice: 0.15,
+    outputPrice: 0.47,
+    reasoningMode: 'optional',
+    supportedReasoningEfforts: QWEN_3_8_EFFORTS,
+    reasoningDialect: 'enable-thinking',
+    reasoningHistoryParam: 'preserve_thinking',
     supportsTools: true,
   },
   // Qwen 3.7 Max
@@ -33,7 +59,8 @@ export const ALIBABA_MODELS: ModelKnowledge[] = [
     outputPrice: 7.5,
     reasoningMode: 'optional',
     supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    reasoningDialect: 'enable-thinking',
+    reasoningHistoryParam: 'preserve_thinking',
     supportsTools: true,
   },
   // Qwen 3.7 Plus — tiered by context length. We bill the base (<256K) tier;
@@ -56,7 +83,8 @@ export const ALIBABA_MODELS: ModelKnowledge[] = [
     },
     reasoningMode: 'optional',
     supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    reasoningDialect: 'enable-thinking',
+    reasoningHistoryParam: 'preserve_thinking',
     supportsTools: true,
   },
   // Qwen 3.6 Plus — no separate cached-input price (cache reads fall back to input)
@@ -71,7 +99,8 @@ export const ALIBABA_MODELS: ModelKnowledge[] = [
     outputPrice: 3.0,
     reasoningMode: 'optional',
     supportedReasoningEfforts: [],
-    deFactoThinking: true,
+    reasoningDialect: 'enable-thinking',
+    reasoningHistoryParam: 'preserve_thinking',
     supportsTools: true,
   },
 ];

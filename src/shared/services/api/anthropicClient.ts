@@ -796,6 +796,8 @@ export class AnthropicClient implements APIClient {
       const thinkingDisplay: 'summarized' | undefined =
         options.reasoningSummary !== undefined ? 'summarized' : undefined;
 
+      // Toggle off: omitting `thinking` is enough where the model's default is
+      // off; Opus 5 / Sonnet 5 think by default and need an explicit `disabled`.
       const thinkingConfig = options.enableReasoning
         ? useAdaptive
           ? ({ type: 'adaptive', ...(thinkingDisplay && { display: thinkingDisplay }) } as const)
@@ -804,13 +806,23 @@ export class AnthropicClient implements APIClient {
               budget_tokens: options.reasoningBudgetTokens,
               ...(thinkingDisplay && { display: thinkingDisplay }),
             } as const)
-        : undefined;
+        : modelMeta.thinkingOffType
+          ? ({ type: modelMeta.thinkingOffType } as const)
+          : undefined;
 
-      // Effort for adaptive mode, clamped to what the model accepts. Omitted when
-      // the model advertises no configurable effort — the server default applies.
-      const effortLevel = useAdaptive
-        ? mapAnthropicEffort(options.reasoningEffort, modelMeta.supportedReasoningEfforts)
-        : undefined;
+      // Effort, clamped to what the model accepts. Omitted when the model advertises
+      // no configurable effort — the server default applies. Adaptive mode always
+      // takes it; budget mode only on a model without adaptive (Opus 4.5), since
+      // 4.6+ in budget mode is a deprecated path left as it was. Toggle off sends
+      // none, except the lowest level to an always-on model, which can't stop
+      // thinking.
+      const effortLevel = options.enableReasoning
+        ? useAdaptive || !modelMeta.supportsAdaptiveReasoning
+          ? mapAnthropicEffort(options.reasoningEffort, modelMeta.supportedReasoningEfforts)
+          : undefined
+        : modelMeta.reasoningMode === 'always'
+          ? mapAnthropicEffort('none', modelMeta.supportedReasoningEfforts)
+          : undefined;
 
       // Auto-adjust maxTokens if reasoning is enabled and maxTokens <= reasoningBudgetTokens
       // Anthropic requires max_tokens > budget_tokens for reasoning to work
@@ -833,7 +845,8 @@ export class AnthropicClient implements APIClient {
 
       // Build context_management config if thinkingKeepTurns is set
       let contextManagement: Anthropic.Beta.BetaContextManagementConfig | undefined;
-      if (options.thinkingKeepTurns !== undefined) {
+      // Nothing to clear with thinking switched off.
+      if (options.thinkingKeepTurns !== undefined && thinkingConfig?.type !== 'disabled') {
         const keepValue:
           | Anthropic.Beta.BetaThinkingTurns
           | Anthropic.Beta.BetaAllThinkingTurns
@@ -955,6 +968,7 @@ export class AnthropicClient implements APIClient {
         hasCoT: fullContent.some(b => b.type === 'thinking' || b.type === 'redacted_thinking'),
         fullContent,
         stopReason: finalMessage.stop_reason ?? undefined,
+        servedModel: finalMessage.model,
         inputTokens: usage.input_tokens,
         outputTokens: usage.output_tokens - thinkingTokens,
         reasoningTokens: thinkingTokens > 0 ? thinkingTokens : undefined,

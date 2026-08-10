@@ -8,7 +8,25 @@ import type { APIDefinition } from './types';
  * keyless claude-agent definitions aren't treated as unconfigured.
  */
 export function apiKeyOptional(def: Pick<APIDefinition, 'isLocal' | 'apiType'>): boolean {
-  return !!def.isLocal || def.apiType === 'claude-agent';
+  return !!def.isLocal || def.apiType === 'claude-agent' || def.apiType === 'chatgpt-subscription';
+}
+
+/**
+ * Whether every call's cost is tracked as $0 because the definition bills a
+ * flat-rate subscription. Opt-in through the Advanced `isSubscription`
+ * checkbox for every apiType — including the subscription providers, which
+ * default to metadata (API-list) prices so the user can see what the same
+ * usage would have cost per token.
+ */
+export function isSubscriptionApiDefinition(
+  def: Pick<APIDefinition, 'apiType' | 'advancedSettings'> | null | undefined
+): boolean {
+  return !!def?.advancedSettings?.isSubscription;
+}
+
+/** Whether a `chatgpt-subscription` definition currently holds sign-in tokens. */
+export function isChatgptSignedIn(def: Pick<APIDefinition, 'oauth'>): boolean {
+  return !!def.oauth?.accessToken && !!def.oauth?.refreshToken;
 }
 
 /**
@@ -43,6 +61,7 @@ export function isConfiguredApiDefinition(def: APIDefinition): boolean {
     (def.extraModelIds?.length ?? 0) > 0 ||
     !!def.binaryPath ||
     !!def.extraArgs ||
+    !!def.oauth ||
     !!def.icon ||
     hasAdvancedSettings
   );

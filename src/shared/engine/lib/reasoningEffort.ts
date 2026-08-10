@@ -1,4 +1,4 @@
-import type { ReasoningEffort } from '../../protocol/types';
+import type { Model, ReasoningEffort } from '../../protocol/types';
 
 export const REASONING_EFFORTS: readonly ReasoningEffort[] = [
   'none',
@@ -11,11 +11,14 @@ export const REASONING_EFFORTS: readonly ReasoningEffort[] = [
 ] as const;
 
 /**
- * Map a reasoning effort level to the nearest supported level.
+ * Map a reasoning effort level to a supported one.
  * - undefined → undefined
  * - Below supported range → lowest supported
  * - Above supported range → highest supported
- * - Between two supported values → lower one
+ * - Between two supported values → the higher one. Every vendor with a gapped
+ *   ladder rounds this way itself (DeepSeek, Z.ai and Alibaba send `medium` to
+ *   `high`), and rounding down would let `minimal` switch off a model whose
+ *   ladder starts at `none`.
  */
 export function mapReasoningEffort<T extends ReasoningEffort>(
   effort: ReasoningEffort | undefined,
@@ -28,34 +31,43 @@ export function mapReasoningEffort<T extends ReasoningEffort>(
   }
 
   const effortIndex = REASONING_EFFORTS.indexOf(effort);
-
-  // Build sorted indices of supported efforts
   const supportedIndices = supportedEfforts
     .map(e => REASONING_EFFORTS.indexOf(e))
     .sort((a, b) => a - b);
+  const atOrAbove = supportedIndices.find(i => i >= effortIndex);
+  return REASONING_EFFORTS[atOrAbove ?? supportedIndices[supportedIndices.length - 1]] as T;
+}
 
-  const minSupported = supportedIndices[0];
-  const maxSupported = supportedIndices[supportedIndices.length - 1];
+/**
+ * Effort for a request with the reasoning toggle off: `none` where the model's
+ * ladder has it (which actually switches reasoning off), else the lowest level,
+ * since a model that can't switch off should at least reason as little as it
+ * allows. No ladder, or a model that doesn't reason → undefined, send nothing.
+ */
+export function effortWhenOff(
+  model: Pick<Model, 'reasoningMode' | 'supportedReasoningEfforts'> | undefined
+): ReasoningEffort | undefined {
+  const levels = model?.supportedReasoningEfforts;
+  if (!levels?.length || model?.reasoningMode === 'none') return undefined;
+  return mapReasoningEffort('none', levels);
+}
 
-  // Below range → lowest supported
-  if (effortIndex <= minSupported) {
-    return REASONING_EFFORTS[minSupported] as T;
-  }
-
-  // At or above range → highest supported
-  if (effortIndex >= maxSupported) {
-    return REASONING_EFFORTS[maxSupported] as T;
-  }
-
-  // In between → find highest supported that's <= effort
-  for (let i = supportedIndices.length - 1; i >= 0; i--) {
-    if (supportedIndices[i] <= effortIndex) {
-      return REASONING_EFFORTS[supportedIndices[i]] as T;
-    }
-  }
-
-  // Fallback (shouldn't reach here)
-  return REASONING_EFFORTS[minSupported] as T;
+/**
+ * Effort to send beside a dialect's thinking toggle (`thinking` object, or
+ * `enable_thinking` on Responses). Only a model whose metadata lists effort
+ * levels gets one; Kimi K2.x rejects the pair and lists none. With the toggle
+ * off, an always-reasoning model drops to its lowest level, Z.ai's documented
+ * replacement for `thinking: disabled`.
+ */
+export function effortBesideToggle(
+  effort: ReasoningEffort | undefined,
+  model: Model | undefined,
+  reasoningOff: boolean
+): ReasoningEffort | undefined {
+  const levels = model?.supportedReasoningEfforts;
+  if (!levels?.length) return undefined;
+  if (reasoningOff) return model?.reasoningMode === 'always' ? effortWhenOff(model) : undefined;
+  return mapReasoningEffort(effort, levels);
 }
 
 const ANTHROPIC_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -84,8 +96,5 @@ export function mapAnthropicEffort(
   if (effort === undefined) return undefined;
   const levels = (supportedEfforts ?? []).filter(isAnthropicEffort);
   if (levels.length === 0) return undefined;
-  // `xhigh` means "deeper than high", so on a model without it escalate to `max`
-  // rather than letting the generic helper round down to `high`.
-  if (effort === 'xhigh' && !levels.includes('xhigh') && levels.includes('max')) return 'max';
   return mapReasoningEffort(effort, levels);
 }

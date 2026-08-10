@@ -27,6 +27,7 @@ import type { APIDefinition, Message, Model, ToolUseBlock } from '../../../proto
 vi.mock('../../../engine/lib/apiHelpers', () => ({
   extractToolUseBlocks: vi.fn(),
   mapStopReason: vi.fn((_apiType, reason) => reason || 'end_turn'),
+  NORMAL_STOP_REASONS: new Set(['end_turn', 'stop_sequence']),
   shouldPrependPrefill: vi.fn(() => false),
 }));
 
@@ -408,6 +409,32 @@ describe('agenticLoopGenerator', () => {
       // Billing metadata still carries the aggregate.
       expect(assistant?.metadata?.inputTokens).toBe(105);
       expect(assistant?.metadata?.cacheReadTokens).toBe(1000);
+    });
+
+    it('persists the served model next to the requested one', async () => {
+      const mockResult = {
+        textContent: 'Hello!',
+        fullContent: [{ type: 'text', text: 'Hello!' }],
+        stopReason: 'end_turn',
+        servedModel: 'gpt-5-2026-08-01',
+        inputTokens: 10,
+        outputTokens: 5,
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([{ type: 'content', content: 'Hello!' }], mockResult) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const options = createMockOptions();
+      const result = await collectAgenticLoop(
+        runAgenticLoop(options, [createMockUserMessage('Hi')])
+      );
+
+      const assistant = result.messages[1];
+      // `model` stays the requested id; the served id lands next to it.
+      expect(assistant?.metadata?.model).toBe(options.model.id);
+      expect(assistant?.metadata?.model).not.toBe('gpt-5-2026-08-01');
+      expect(assistant?.metadata?.servedModel).toBe('gpt-5-2026-08-01');
     });
 
     it('falls back to summing billing usage when no snapshot is reported', async () => {
@@ -836,6 +863,37 @@ describe('agenticLoopGenerator', () => {
 
         const assistantMsg = result.messages.find(m => m.role === 'assistant');
         expect(assistantMsg).toBeDefined();
+        expect(assistantMsg?.incomplete).toBe(true);
+        expect(assistantMsg?.content.stopReason).toBe('aborted');
+      });
+
+      it('returns aborted when the SDK swallows the abort and ends the stream cleanly', async () => {
+        const controller = new AbortController();
+
+        vi.mocked(apiService.sendMessageStream).mockImplementation(() => {
+          return (async function* mockSwallowingStream() {
+            yield { type: 'content', content: 'partial response' };
+            // OpenAI's stream iterator returns on AbortError instead of
+            // throwing, so the client returns a result after the abort.
+            controller.abort();
+            return {
+              textContent: 'partial response',
+              fullContent: [],
+              error: { message: 'Stream ended before the response finished' },
+              inputTokens: 0,
+              outputTokens: 0,
+            };
+          })() as never;
+        });
+        vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+        const options = createMockOptions({ signal: controller.signal });
+        const context = [createMockUserMessage('Hi')];
+
+        const result = await collectAgenticLoop(runAgenticLoop(options, context));
+
+        expect(result.status).toBe('aborted');
+        const assistantMsg = result.messages.find(m => m.role === 'assistant');
         expect(assistantMsg?.incomplete).toBe(true);
         expect(assistantMsg?.content.stopReason).toBe('aborted');
       });

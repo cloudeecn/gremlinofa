@@ -4,10 +4,11 @@ import type {
   TextRenderBlock,
   InjectedFileRenderBlock,
 } from '../../../shared/protocol/types/content';
-import { stripMetadata, formatTimestamp } from '../../lib/messageFormatters';
+import { stripMetadata } from '../../lib/messageFormatters';
 import { showAlert } from '../../lib/alerts';
 import ImageLightbox from '../ui/ImageLightbox';
 import { InjectedFilesList } from './InjectedFilesList';
+import MessageInfoBar, { INFO_BAR_BUTTON } from './MessageInfoBar';
 import type { UserMessageBubbleProps } from './types';
 
 export default function UserMessageBubble({
@@ -124,72 +125,75 @@ export default function UserMessageBubble({
         </div>
       )}
 
-      {/* User metadata line (hidden in focus mode) */}
+      {/* User info bar (hidden in focus mode) */}
       {!focusMode && (
-        <div
-          className={`mt-1 flex max-w-[85%] items-center justify-end gap-2 text-[10px] text-gray-500`}
-        >
-          {onAction && (
+        <MessageInfoBar
+          timestamp={message.timestamp}
+          align="end"
+          actions={
             <>
-              {/* Edit is supported for claude-agent: it rewinds the SDK to
-                  the prior assistant turn and drops this user message text
-                  back into the input box. Fork stays hidden — splitting an
-                  SDK session in two isn't supported. */}
-              <button
-                onClick={handleEdit}
-                className="transition-colors hover:text-gray-700"
-                title="Edit message"
-              >
-                📝 Edit
-              </button>
-              {!isClaudeAgentChat && (
+              {onAction && (
+                <>
+                  {/* Edit is supported for claude-agent: it rewinds the SDK to
+                      the prior assistant turn and drops this user message text
+                      back into the input box. Fork stays hidden — splitting an
+                      SDK session in two isn't supported. */}
+                  <button
+                    onClick={handleEdit}
+                    className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                    title="Edit message"
+                  >
+                    📝 Edit
+                  </button>
+                  {!isClaudeAgentChat && (
+                    <button
+                      onClick={handleFork}
+                      className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                      title="Fork chat from here"
+                    >
+                      🔀 Fork
+                    </button>
+                  )}
+                  {/* Rollback-to-user-message is not supported for claude-agent:
+                      the SDK can only rewind to assistant message UUIDs. Use the
+                      rollback button on the assistant message above instead. */}
+                  {!isLastMessage && !isClaudeAgentChat && (
+                    <button
+                      onClick={handleRollback}
+                      className={`${INFO_BAR_BUTTON} hover:text-orange-600`}
+                      title="Roll back to here"
+                    >
+                      ⏪ Rollback
+                    </button>
+                  )}
+                  <button
+                    onClick={handleCopy}
+                    className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                    title="Copy message"
+                  >
+                    📋 Copy
+                  </button>
+                  <button
+                    onClick={handleDumpMessage}
+                    className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                    title="Copy message JSON"
+                  >
+                    🔍
+                  </button>
+                </>
+              )}
+              {onDeleteMessage && (
                 <button
-                  onClick={handleFork}
-                  className="transition-colors hover:text-gray-700"
-                  title="Fork chat from here"
+                  onClick={() => onDeleteMessage(message.id)}
+                  className={`${INFO_BAR_BUTTON} hover:text-red-600`}
+                  title="Delete this message"
                 >
-                  🔀 Fork
+                  ❌
                 </button>
               )}
-              {/* Rollback-to-user-message is not supported for claude-agent:
-                  the SDK can only rewind to assistant message UUIDs. Use the
-                  rollback button on the assistant message above instead. */}
-              {!isLastMessage && !isClaudeAgentChat && (
-                <button
-                  onClick={handleRollback}
-                  className="transition-colors hover:text-orange-600"
-                  title="Roll back to here"
-                >
-                  ⏪ Rollback
-                </button>
-              )}
-              <button
-                onClick={handleCopy}
-                className="transition-colors hover:text-gray-700"
-                title="Copy message"
-              >
-                📋 Copy
-              </button>
-              <button
-                onClick={handleDumpMessage}
-                className="transition-colors hover:text-gray-700"
-                title="Copy message JSON"
-              >
-                🔍
-              </button>
             </>
-          )}
-          {onDeleteMessage && (
-            <button
-              onClick={() => onDeleteMessage(message.id)}
-              className="transition-colors hover:text-red-600"
-              title="Delete this message"
-            >
-              ❌
-            </button>
-          )}
-          <span>{formatTimestamp(message.timestamp)}</span>
-        </div>
+          }
+        />
       )}
 
       {/* Image lightbox */}

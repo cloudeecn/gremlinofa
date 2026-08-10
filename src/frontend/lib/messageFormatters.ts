@@ -38,14 +38,38 @@ export function formatTokenGroup(
 }
 
 /**
- * Format message timestamp (12-hour format with AM/PM)
+ * Format message timestamp as date + 12-hour time, e.g. `Sep 10, 3:42 PM`.
+ * The year is only spelled out when it differs from the current one.
  */
-export function formatTimestamp(timestamp: Date): string {
+export function formatTimestamp(timestamp: Date, now: Date = new Date()): string {
+  const sameYear = timestamp.getFullYear() === now.getFullYear();
   return new Intl.DateTimeFormat('en-US', {
+    ...(sameYear ? {} : { year: 'numeric' }),
+    month: 'short',
+    day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
   }).format(timestamp);
+}
+
+/**
+ * Context-fill string for the info bar: `12.5k/200k` when the model's window
+ * is known, bare usage otherwise, empty when there is no usage figure.
+ */
+export function formatContextWindow(usage?: number, max?: number): string {
+  if (!usage) return '';
+  const used = formatTokenCount(usage);
+  return max ? `${used}/${formatTokenCount(max)}` : used;
+}
+
+/**
+ * Clamp a model id for the one-line info bar. Longer ids keep `max - 1`
+ * leading characters plus an ellipsis; the full id belongs in a `title`.
+ */
+export function truncateModelName(name: string, max = 16): string {
+  if (name.length <= max) return name;
+  return `${name.slice(0, max - 1)}…`;
 }
 
 /**

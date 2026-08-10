@@ -3,7 +3,7 @@
  * Unified schema for model information from OpenAI, Anthropic, xAI, OpenRouter, and other providers
  */
 
-import type { APIDefinition, ModelKnowledge, Model } from '../../../protocol/types';
+import type { APIDefinition, APIType, ModelKnowledge, Model } from '../../../protocol/types';
 import { ANTHROPIC_MODELS } from './model_metadatas/anthropic';
 import { OPENAI_MODELS } from './model_metadatas/openai';
 import { XAI_MODELS } from './model_metadatas/xai';
@@ -116,7 +116,12 @@ function buildModelKnowledgeStorage(apiDefinition: APIDefinition): ModelKnowledg
     modelKnowledges: [],
   };
 
-  const { apiType, baseUrl } = apiDefinition;
+  const { baseUrl } = apiDefinition;
+  // The ChatGPT backend serves the same gpt-5.x / codex slugs the Responses
+  // API does, so it borrows every `responses_api` knowledge entry instead of
+  // being listed on each one.
+  const apiType: APIType =
+    apiDefinition.apiType === 'chatgpt-subscription' ? 'responses_api' : apiDefinition.apiType;
 
   // Step 1 & 2: Flatten and filter matches
   for (const knowledge of ALL_MODEL_KNOWLEDGE) {

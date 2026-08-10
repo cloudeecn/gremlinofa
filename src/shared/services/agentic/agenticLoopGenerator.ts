@@ -15,6 +15,7 @@
 import {
   extractToolUseBlocks,
   mapStopReason,
+  NORMAL_STOP_REASONS,
   shouldPrependPrefill,
 } from '../../engine/lib/apiHelpers';
 import { calculateCost, isCostUnreliable } from '../../engine/lib/api/modelMetadata';
@@ -43,6 +44,7 @@ import type {
   TokenTotals,
 } from '../../protocol/types';
 import { type ToolResultRenderBlock, type ToolUseRenderBlock } from '../../protocol/types/content';
+import { isSubscriptionApiDefinition } from '../../protocol/apiDefinition';
 import { generateUniqueId } from '../../protocol/idGenerator';
 import { sha256Hex } from '../../protocol/sha256Hex';
 import { createTokenTotals, addTokens, hasTokenUsage } from '../../engine/lib/tokenTotals';
@@ -723,6 +725,7 @@ function buildAssistantMessage(
     textContent: string;
     fullContent: unknown;
     stopReason?: string;
+    servedModel?: string;
     error?: { message: string; status?: number; stack?: string };
     providerExtra?: Record<string, unknown>;
     contextWindowUsage?: number;
@@ -786,6 +789,7 @@ function buildAssistantMessage(
     timestamp: new Date(),
     metadata: {
       model: modelId,
+      servedModel: result.servedModel,
       inputTokens: iterTokens.inputTokens,
       outputTokens: iterTokens.outputTokens,
       reasoningTokens: iterTokens.reasoningTokens > 0 ? iterTokens.reasoningTokens : undefined,
@@ -1866,6 +1870,9 @@ export async function* runAgenticLoop(
           options.signal.throwIfAborted();
           streamNext = await stream.next();
         }
+        // SDKs that swallow the abort (OpenAI's stream iterator) end the stream
+        // cleanly; their result would otherwise land as a normal or cut-off turn.
+        options.signal.throwIfAborted();
 
         yield { type: 'streaming_end' };
 
@@ -1917,7 +1924,7 @@ export async function* runAgenticLoop(
           apiDef.apiType === 'anthropic' && options.useAnthropicOneHourCache ? '1h' : '5m',
           options.flexTierEnabled ? 0.5 : 1.0
         );
-        if (apiDef.advancedSettings?.isSubscription) {
+        if (isSubscriptionApiDefinition(apiDef)) {
           iterTokens.cost = 0;
           iterTokens.costUnreliable = false;
         }
@@ -2031,10 +2038,15 @@ export async function* runAgenticLoop(
           };
         }
 
-        // Check stop reason — fallback extraction for minion loops with wrong stopReason
+        // Check stop reason — fallback extraction for minion loops with wrong stopReason.
+        // Only for a turn that finished: a truncated one's calls may be partial,
+        // and running them would hide the truncation from the minion's stop gate.
         if (result.stopReason !== 'tool_use') {
           let hasToolBlocks = false;
-          if (options.fallbackToolExtraction) {
+          if (
+            options.fallbackToolExtraction &&
+            NORMAL_STOP_REASONS.has(mapStopReason(apiDef.apiType, result.stopReason ?? null))
+          ) {
             fallbackExtractedBlocks = extractToolUseBlocks(apiDef.apiType, result.fullContent);
             hasToolBlocks = fallbackExtractedBlocks.length > 0;
             if (hasToolBlocks) {

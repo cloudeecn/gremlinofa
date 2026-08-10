@@ -14,11 +14,13 @@ import {
   type Content,
   type Part,
   type GenerateContentConfig,
+  type ThinkingConfig,
 } from '@google/genai';
 import type {
   APIDefinition,
   Message,
   Model,
+  ReasoningEffort,
   ToolUseBlock,
   ToolOptions,
 } from '../../protocol/types';
@@ -32,6 +34,7 @@ import {
 } from './fileInjectionHelper';
 import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
+import { effortWhenOff, mapReasoningEffort } from '../../engine/lib/reasoningEffort';
 import type { APIServiceDeps } from './apiService';
 import {
   createMapperState,
@@ -176,10 +179,71 @@ function tidyMessages(
 }
 
 /**
- * Detect if a model uses thinkingLevel (Gemini 3.x) vs thinkingBudget (Gemini 2.5).
+ * Gemini 2.5 and older take a token `thinkingBudget`; Gemini 3 onward takes
+ * `thinkingLevel`, and Gemini 4 Argon 400s on a budget ("Thinking budget is not
+ * supported for this model"). Matching the old generations instead of the new
+ * ones keeps the next release, and aliases like `gemini-pro-latest`, on levels.
  */
 function usesThinkingLevel(modelId: string): boolean {
-  return modelId.includes('gemini-3');
+  return !/gemini-[12]\./.test(modelId);
+}
+
+const THINKING_LEVELS: Record<string, ThinkingLevel> = {
+  none: ThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
+  minimal: ThinkingLevel.MINIMAL,
+  low: ThinkingLevel.LOW,
+  medium: ThinkingLevel.MEDIUM,
+  high: ThinkingLevel.HIGH,
+  xhigh: ThinkingLevel.HIGH,
+  max: ThinkingLevel.HIGH,
+};
+
+/**
+ * Pick the `thinkingLevel` for a Gemini 3+ request.
+ *
+ * Returns undefined when no effort was requested, so the field is omitted and each
+ * model's own default applies (MEDIUM on 3.7 Flash, HIGH on 3 Pro). An explicit
+ * effort is clamped to what the model advertises: Gemini rejects a level outside a
+ * model's range outright — 3.7 Flash fails the request on MINIMAL, for instance.
+ */
+export function resolveThinkingLevel(
+  effort: ReasoningEffort | undefined,
+  supportedEfforts: readonly ReasoningEffort[] | undefined
+): ThinkingLevel | undefined {
+  if (effort === undefined) return undefined;
+  if (effort === 'none') return ThinkingLevel.THINKING_LEVEL_UNSPECIFIED;
+
+  const clamped =
+    supportedEfforts && supportedEfforts.length > 0
+      ? mapReasoningEffort(effort, supportedEfforts)
+      : effort;
+
+  return (clamped && THINKING_LEVELS[clamped]) ?? ThinkingLevel.MEDIUM;
+}
+
+/** Gemini 2.5 Pro's smallest thinking budget; it can't go to 0. */
+const GEMINI_MIN_THINKING_BUDGET = 128;
+
+/**
+ * Thinking config for a request with the reasoning toggle off. Most Gemini
+ * models think when the config is omitted: 2.5 Flash switches off at budget 0,
+ * while 2.5 Pro and every model from Gemini 3 on can't, so they get their smallest
+ * budget or lowest level. Unknown and non-thinking models get nothing.
+ */
+export function resolveThinkingOff(
+  modelId: string,
+  meta: Pick<Model, 'reasoningMode' | 'supportedReasoningEfforts'>
+): ThinkingConfig | undefined {
+  if (!meta.reasoningMode || meta.reasoningMode === 'none') return undefined;
+  if (usesThinkingLevel(modelId)) {
+    const lowest = effortWhenOff(meta);
+    const level = lowest && resolveThinkingLevel(lowest, meta.supportedReasoningEfforts);
+    return level ? { thinkingLevel: level, includeThoughts: false } : undefined;
+  }
+  return {
+    thinkingBudget: meta.reasoningMode === 'always' ? GEMINI_MIN_THINKING_BUDGET : 0,
+    includeThoughts: false,
+  };
 }
 
 export class GoogleClient implements APIClient {
@@ -318,27 +382,23 @@ export class GoogleClient implements APIClient {
       // Thinking configuration
       if (options.enableReasoning) {
         if (usesThinkingLevel(modelId)) {
-          // Gemini 3.x: use thinkingLevel
-          const effort = options.reasoningEffort ?? 'medium';
-          const levelMap: Record<string, ThinkingLevel> = {
-            none: ThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
-            minimal: ThinkingLevel.MINIMAL,
-            low: ThinkingLevel.LOW,
-            medium: ThinkingLevel.MEDIUM,
-            high: ThinkingLevel.HIGH,
-            xhigh: ThinkingLevel.HIGH,
-          };
+          const level = resolveThinkingLevel(
+            options.reasoningEffort,
+            getModelMetadataFor(apiDefinition, modelId).supportedReasoningEfforts
+          );
           config.thinkingConfig = {
-            thinkingLevel: levelMap[effort] ?? ThinkingLevel.MEDIUM,
+            ...(level ? { thinkingLevel: level } : null),
             includeThoughts: true,
           };
         } else {
-          // Gemini 2.5: use thinkingBudget
           config.thinkingConfig = {
             thinkingBudget: options.reasoningBudgetTokens,
             includeThoughts: true,
           };
         }
+      } else {
+        const offConfig = resolveThinkingOff(modelId, getModelMetadataFor(apiDefinition, modelId));
+        if (offConfig) config.thinkingConfig = offConfig;
       }
 
       // Tools — function declarations and Google Search
@@ -393,8 +453,13 @@ export class GoogleClient implements APIClient {
       let mapperState = createMapperState();
       const allParts: Part[] = [];
       let lastFinishReason: string | undefined;
+      let blockReason: string | undefined;
+      let servedModel: string | undefined;
 
       for await (const chunk of streamResponse) {
+        if (chunk.modelVersion) {
+          servedModel = chunk.modelVersion;
+        }
         const result = mapGoogleChunkToStreamChunks(chunk, mapperState);
         mapperState = result.state;
 
@@ -413,13 +478,39 @@ export class GoogleClient implements APIClient {
         if (fr && fr !== 'FINISH_REASON_UNSPECIFIED') {
           lastFinishReason = fr;
         }
+        if (chunk.promptFeedback?.blockReason) {
+          blockReason = chunk.promptFeedback.blockReason;
+        }
       }
 
       const textContent = extractTextFromParts(allParts);
       const thinkingContent = extractThinkingFromParts(allParts);
 
+      // A blocked prompt gets no candidates, so no finish reason either.
+      // Calls from a cut-off stream never ran; replaying them without
+      // responses would 400.
+      if (blockReason || !lastFinishReason) {
+        return {
+          textContent,
+          thinkingContent,
+          hasCoT: !!thinkingContent,
+          fullContent: allParts.filter(p => !p.functionCall),
+          error: {
+            message: blockReason
+              ? `Prompt blocked: ${blockReason}`
+              : 'Stream ended before a finishReason arrived',
+          },
+          servedModel,
+          inputTokens: mapperState.inputTokens,
+          outputTokens: mapperState.outputTokens,
+          reasoningTokens: mapperState.thoughtsTokens || undefined,
+          cacheReadTokens: mapperState.cacheReadTokens || undefined,
+        };
+      }
+
       // Gemini returns STOP for function calls (no distinct finish reason),
-      // so detect function call parts and override to 'tool_use' for the agentic loop.
+      // so detect function call parts and override to 'tool_use' for the agentic
+      // loop. Any other reason (MAX_TOKENS, SAFETY, ...) wins over the calls.
       const hasFunctionCalls = allParts.some(p => p.functionCall?.name);
 
       return {
@@ -427,7 +518,11 @@ export class GoogleClient implements APIClient {
         thinkingContent,
         hasCoT: !!thinkingContent,
         fullContent: allParts,
-        stopReason: hasFunctionCalls ? 'tool_use' : mapGoogleFinishReason(lastFinishReason),
+        stopReason:
+          hasFunctionCalls && lastFinishReason === 'STOP'
+            ? 'tool_use'
+            : mapGoogleFinishReason(lastFinishReason),
+        servedModel,
         inputTokens: mapperState.inputTokens,
         outputTokens: mapperState.outputTokens,
         reasoningTokens: mapperState.thoughtsTokens || undefined,

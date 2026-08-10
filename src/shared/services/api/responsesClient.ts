@@ -2,14 +2,26 @@ import OpenAI from 'openai';
 import { getProxyConfig } from './proxyConfig';
 import type {
   APIDefinition,
+  APIType,
   Message,
   Model,
   ReasoningEffort,
+  ReasoningHistoryParam,
   ToolUseBlock,
   ToolOptions,
 } from '../../protocol/types';
-import { mapReasoningEffort } from '../../engine/lib/reasoningEffort';
-import type { APIClient, StreamChunk, StreamResult } from './baseClient';
+import {
+  effortBesideToggle,
+  effortWhenOff,
+  mapReasoningEffort,
+} from '../../engine/lib/reasoningEffort';
+import { resolveReasoningDialect, wantsReasoningHistory } from '../../engine/lib/reasoningDialect';
+import {
+  parseToolArguments,
+  type APIClient,
+  type StreamChunk,
+  type StreamResult,
+} from './baseClient';
 import type { APIServiceDeps } from './apiService';
 import {
   effectiveInjectionMode,
@@ -23,12 +35,15 @@ import {
   createTokenUsageChunk,
   mapResponsesEventToStreamChunks,
   parseResponsesStreamEvent,
+  responsesStopReason,
+  STREAM_CUT_MESSAGE,
 } from './responsesStreamMapper';
 import {
   ResponsesStreamAccumulator,
   buildStreamResultFromAccumulator,
 } from './responsesStreamAccumulator';
 import { findCheckpointIndex, findThinkingBoundaryN, tidyAgnosticMessage } from './contextTidy';
+import { probePrefixDivergence } from './promptCacheDebug';
 import { getModelMetadataFor } from '../../engine/lib/api/modelMetadata';
 import {
   populateFromOpenRouterModel,
@@ -36,8 +51,21 @@ import {
 } from '../../engine/lib/api/model_metadatas/openRouterModelMapper';
 
 /**
+ * Mandated-replay placeholder (see `mandatesReasoningReplay`). DeepSeek treats an
+ * empty `reasoning_text` as missing, but takes a single space.
+ */
+const REPLAY_PLACEHOLDER = {
+  type: 'reasoning',
+  summary: [],
+  content: [{ type: 'reasoning_text', text: ' ' }],
+} as unknown as OpenAI.Responses.ResponseInputItem;
+
+/**
  * Combined message tidy: checkpoint filtering, thinking pruning, empty text removal.
  * Single forward pass with direct access to Responses API item types.
+ *
+ * `keepToolTurnReasoning` (models with `mandatesReasoningReplay`) exempts
+ * messages that still carry a `function_call` from reasoning removal.
  */
 function tidyMessages(
   messages: Message<unknown>[],
@@ -45,7 +73,9 @@ function tidyMessages(
   tidyToolNames: Set<string> | undefined,
   pruneThinking: boolean,
   pruneEmptyText: boolean,
-  pruneThinkingKeepTurns: number | undefined
+  pruneThinkingKeepTurns: number | undefined,
+  ownFamily: APIType,
+  keepToolTurnReasoning = false
 ): Message<unknown>[] {
   const checkpointIdx = findCheckpointIndex(messages, checkpointMessageId);
   const projectPruneActive = pruneThinkingKeepTurns !== undefined && pruneThinkingKeepTurns >= 0;
@@ -66,7 +96,7 @@ function tidyMessages(
     const isCheckpoint = inCheckpoint && i === checkpointIdx;
     const inThinking = thinkingBoundary > 0 && i < thinkingBoundary;
 
-    if (msg.content.modelFamily !== 'responses_api' || msg.content.fullContent == null) {
+    if (msg.content.modelFamily !== ownFamily || msg.content.fullContent == null) {
       if (inCheckpoint && !isCheckpoint) {
         const { message, newRemovedIds } = tidyAgnosticMessage(
           msg,
@@ -93,12 +123,15 @@ function tidyMessages(
       call_id?: string;
       text?: string;
     }[];
+    const pruneReasoning = (list: typeof items) =>
+      keepToolTurnReasoning && list.some(it => it.type === 'function_call')
+        ? list
+        : list.filter(it => it.type !== 'reasoning');
 
     if (inCheckpoint) {
       const filtered: typeof items = [];
       for (const it of items) {
-        if (it.type === 'reasoning') continue;
-        if (isCheckpoint) {
+        if (isCheckpoint || it.type === 'reasoning') {
           filtered.push(it);
           continue;
         }
@@ -111,11 +144,13 @@ function tidyMessages(
         }
         filtered.push(it);
       }
-      items = filtered;
+      // After the call filter, so the mandated-replay exemption only covers
+      // calls that still go out
+      items = pruneReasoning(filtered);
     }
 
     if (inThinking && !inCheckpoint && (pruneThinking || projectPruneActive)) {
-      items = items.filter(it => it.type !== 'reasoning');
+      items = pruneReasoning(items);
     }
 
     if (inThinking && pruneEmptyText) {
@@ -139,19 +174,72 @@ function tidyMessages(
 
 export class ResponsesClient implements APIClient {
   protected readonly deps: APIServiceDeps;
+  /**
+   * The `modelFamily` this client stamps on messages and recognizes as its
+   * own stored wire format. Stored items from any other family go through
+   * cross-model reconstruction instead of being replayed verbatim. Subclasses
+   * speaking the same wire format under a different apiType override this.
+   */
+  protected readonly ownFamily: APIType = 'responses_api';
 
   constructor(deps: APIServiceDeps) {
     this.deps = deps;
   }
 
-  async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
+  /** Build the SDK client. Subclasses swap credentials / base URL / headers here. */
+  protected async createClient(apiDefinition: APIDefinition): Promise<OpenAI> {
     const proxy = getProxyConfig(apiDefinition);
-    const client = new OpenAI({
+    return new OpenAI({
       dangerouslyAllowBrowser: true,
       apiKey: apiDefinition.apiKey,
       baseURL: proxy?.baseURL ?? (apiDefinition.baseUrl || undefined),
       ...(proxy && { defaultHeaders: proxy.headers }),
     });
+  }
+
+  /**
+   * Last hook before the request goes out — every field (input, tools,
+   * reasoning, verbosity) is already set. No-op here; subclasses reshape the
+   * request for backends with a narrower contract.
+   */
+  protected finalizeRequestParams(
+    _requestParams: OpenAI.Responses.ResponseCreateParams,
+    _options: { systemPrompt?: string },
+    _model: Model | undefined
+  ): void {}
+
+  /** Whether to bypass the SDK's `.stream()` snapshot accumulator (see the stream branch). */
+  protected useStreamAccumulator(apiDefinition: APIDefinition): boolean {
+    return apiDefinition.advancedSettings?.useStreamAccumulator === true;
+  }
+
+  /**
+   * Per-request headers this backend needs on top of the client's defaults.
+   * Applied identically to all three request paths. No-op here; subclasses
+   * speaking a backend with its own header contract override it.
+   */
+  protected requestHeaders(_options: {
+    cacheRoutingKey?: string;
+  }): Record<string, string> | undefined {
+    return undefined;
+  }
+
+  /**
+   * The hosted web-search tool. `web_search_preview` is the legacy alias — the
+   * GPT-5 family and the ChatGPT/Codex backend answer 400 for it — so the GA
+   * `web_search` is the default and metadata opts a model back to the alias.
+   */
+  protected buildWebSearchTool(model?: Model): OpenAI.Responses.Tool {
+    return { type: model?.webSearchTool ?? 'web_search' };
+  }
+
+  /** Whether this backend accepts `stream: false`, i.e. can honour the project's disable-streaming toggle. */
+  protected supportsNonStreaming(): boolean {
+    return true;
+  }
+
+  async discoverModels(apiDefinition: APIDefinition): Promise<Model[]> {
+    const client = await this.createClient(apiDefinition);
 
     // Get all models from the API
     const modelsResponse = await client.models.list();
@@ -248,13 +336,14 @@ export class ResponsesClient implements APIClient {
   ): AsyncGenerator<StreamChunk, StreamResult<OpenAI.Responses.ResponseInputItem[]>, unknown> {
     let requestParams: OpenAI.Responses.ResponseCreateParams = {};
     try {
-      const proxy = getProxyConfig(apiDefinition);
-      const client = new OpenAI({
-        dangerouslyAllowBrowser: true,
-        apiKey: apiDefinition.apiKey,
-        baseURL: proxy?.baseURL ?? (apiDefinition.baseUrl || undefined),
-        ...(proxy && { defaultHeaders: proxy.headers }),
-      });
+      const client = await this.createClient(apiDefinition);
+
+      // Model metadata drives reasoning, verbosity and the web-search tool shape
+      const model = await this.deps.storage.getModel(apiDefinition.id, modelId);
+      // Fresh lookup, not the cached model: the cache is a discovery-time
+      // snapshot and predates these fields.
+      const knowledge = getModelMetadataFor(apiDefinition, modelId);
+      const mandatesReplay = knowledge.mandatesReasoningReplay === true;
 
       // Tidy messages: checkpoint filtering, thinking pruning, empty text removal
       const tidiedMessages = tidyMessages(
@@ -263,7 +352,9 @@ export class ResponsesClient implements APIClient {
         options.tidyToolNames,
         apiDefinition.advancedSettings?.pruneThinking ?? false,
         apiDefinition.advancedSettings?.pruneEmptyText ?? false,
-        options.pruneThinkingKeepTurns
+        options.pruneThinkingKeepTurns,
+        this.ownFamily,
+        mandatesReplay
       );
 
       // Build input array using ResponseInputItem format
@@ -287,7 +378,7 @@ export class ResponsesClient implements APIClient {
         if (msg.role === 'user') {
           // Legacy stored messages: fullContent has function_call_output items
           if (
-            msg.content.modelFamily === 'responses_api' &&
+            msg.content.modelFamily === this.ownFamily &&
             msg.content.fullContent &&
             Array.isArray(msg.content.fullContent)
           ) {
@@ -333,7 +424,7 @@ export class ResponsesClient implements APIClient {
           // goes before the text item, `injectedFilesAfter` after it.
           const pushInjectedFiles = (files?: InjectedFile[]) => {
             if (!files?.length || !msg.content.injectionMode) return;
-            const mode = effectiveInjectionMode(msg.content.injectionMode, 'responses_api');
+            const mode = effectiveInjectionMode(msg.content.injectionMode, this.ownFamily);
             if (mode === 'as-file') {
               for (const file of files) {
                 contentItems.push({
@@ -376,22 +467,37 @@ export class ResponsesClient implements APIClient {
           });
         } else if (msg.role === 'assistant') {
           if (
-            msg.content.modelFamily === 'responses_api' &&
+            msg.content.modelFamily === this.ownFamily &&
             msg.content.fullContent &&
             Array.isArray(msg.content.fullContent)
           ) {
             // Include ALL stored items (message, function_call, reasoning, etc.)
-            // Don't filter - API needs full context including encrypted reasoning
-            // Cast through unknown since stored data loses SDK type info
+            // Don't filter - API needs full context including encrypted reasoning.
+            // Items are copied before reshaping: they are the stored history.
             const storedItems = msg.content.fullContent as OpenAI.Responses.ResponseInputItem[];
+            // Placeholders lead the turn, where the vendor's own reasoning item sits
+            if (
+              mandatesReplay &&
+              !storedItems.some(item => item.type === 'reasoning') &&
+              storedItems.some(item => item.type === 'function_call')
+            ) {
+              input.push(REPLAY_PLACEHOLDER);
+            }
             for (const item of storedItems) {
               if ('parsed_arguments' in item) {
-                delete item.parsed_arguments;
+                const { parsed_arguments: _parsed, ...rest } = item;
+                input.push(rest as OpenAI.Responses.ResponseInputItem);
+              } else if (item.type === 'reasoning' && !item.summary) {
+                // OpenAI 400s on a reasoning item without `summary`. Every probed
+                // vendor emits one; this covers the rest.
+                input.push({ ...item, summary: [] });
+              } else {
+                input.push(item);
               }
-              input.push(item);
             }
           } else if (msg.content.toolCalls?.length) {
             // Cross-model reconstruction: text message + function_call items
+            if (mandatesReplay) input.push(REPLAY_PLACEHOLDER);
             if (msg.content.content.trim()) {
               input.push({
                 type: 'message',
@@ -429,13 +535,8 @@ export class ResponsesClient implements APIClient {
         });
       }
 
-      // Prepare tools if web search is enabled
       const tools: OpenAI.Responses.Tool[] = options.webSearchEnabled
-        ? [
-            {
-              type: 'web_search_preview',
-            },
-          ]
+        ? [this.buildWebSearchTool(model)]
         : [];
 
       // Add client-side tool definitions
@@ -455,9 +556,20 @@ export class ResponsesClient implements APIClient {
         ...(options.flexTierEnabled && { service_tier: 'flex' as const }),
       };
 
-      // Get model metadata for reasoning configuration
-      const model = await this.deps.storage.getModel(apiDefinition.id, modelId);
-      this.applyReasoning(requestParams, options, model, apiDefinition);
+      this.applyReasoning(
+        requestParams,
+        options,
+        model,
+        apiDefinition,
+        knowledge.reasoningHistoryParam
+      );
+
+      // Sent whatever the toggle says: an always-reasoning model reasons anyway,
+      // and the blob is what the next turn replays. Every probed vendor accepts
+      // it, OpenAI's non-reasoning models included.
+      if (model?.reasoningMode !== 'none') {
+        requestParams.include = ['reasoning.encrypted_content'];
+      }
 
       // Verbosity is GPT-5-era only — older models reject the param, so it
       // rides on the per-model flag rather than the project setting alone.
@@ -470,10 +582,22 @@ export class ResponsesClient implements APIClient {
         requestParams.tools = tools;
       }
 
-      // Use streaming unless explicitly disabled
-      if (!options.disableStream) {
+      this.finalizeRequestParams(requestParams, options, model);
+
+      // One options object for every request path so headers can't drift
+      // between them.
+      const extraHeaders = this.requestHeaders(options);
+      const requestOptions = {
+        signal: options.signal,
+        ...(extraHeaders && { headers: extraHeaders }),
+      };
+
+      probePrefixDivergence(apiDefinition.apiType, options.cacheRoutingKey, requestParams);
+
+      // Use streaming unless explicitly disabled — and unless the backend has no non-streaming mode
+      if (!options.disableStream || !this.supportsNonStreaming()) {
         let mapperState = createMapperState();
-        const useAccumulator = apiDefinition.advancedSettings?.useStreamAccumulator === true;
+        const useAccumulator = this.useStreamAccumulator(apiDefinition);
 
         // === Stream accumulator path (opt-in) ===
         // For third-party Responses API providers (e.g. OpenRouter) that:
@@ -492,7 +616,7 @@ export class ResponsesClient implements APIClient {
               ...requestParams,
               stream: true,
             },
-            { signal: options.signal }
+            requestOptions
           );
 
           const accumulator = new ResponsesStreamAccumulator();
@@ -521,7 +645,7 @@ export class ResponsesClient implements APIClient {
             ...requestParams,
             stream: true,
           },
-          { signal: options.signal }
+          requestOptions
         );
 
         for await (const event of stream) {
@@ -536,11 +660,23 @@ export class ResponsesClient implements APIClient {
           }
         }
 
-        // Get the final assembled response after streaming completes
-        const finalResponse = await stream.finalResponse();
+        const terminal = mapperState.terminalResponse;
+        if (!terminal) throw new Error(STREAM_CUT_MESSAGE);
 
-        // Process and return final response
-        return this.processResponse(finalResponse);
+        const snapshot = await stream.finalResponse();
+        if (terminal.status === 'completed') return this.processResponse(snapshot);
+
+        // The SDK adopts the terminal response only on `response.completed`;
+        // after `response.incomplete` / `response.failed` its snapshot is
+        // still the `response.created` one, items and all `in_progress`.
+        const terminalOutput = terminal.output as OpenAI.Responses.ResponseOutputItem[] | undefined;
+        const response = { ...snapshot, ...terminal } as OpenAI.Responses.Response;
+        if (terminalOutput?.length) {
+          response.output_text = '';
+        } else {
+          response.output = snapshot.output;
+        }
+        return this.processResponse(response);
       } else {
         // NON-STREAMING PATH - convert output to chunks
         const response = await client.responses.create(
@@ -548,7 +684,7 @@ export class ResponsesClient implements APIClient {
             ...requestParams,
             stream: false,
           },
-          { signal: options.signal }
+          requestOptions
         );
 
         // Yield chunks for non-streaming response
@@ -691,7 +827,8 @@ export class ResponsesClient implements APIClient {
       thinkingContent: thinkingContent || thinkingSummary || undefined,
       hasCoT: fullContent.some(item => item.type === 'reasoning'),
       fullContent,
-      stopReason: hasFunctionCall ? 'tool_use' : undefined,
+      stopReason: responsesStopReason(response, hasFunctionCall),
+      servedModel: response.model,
       inputTokens: inputTokens - cachedTokens,
       outputTokens: outputTokens - reasoningTokens,
       cacheReadTokens: cachedTokens,
@@ -707,52 +844,93 @@ export class ResponsesClient implements APIClient {
       enableReasoning?: boolean;
       reasoningEffort?: ReasoningEffort;
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
+      thinkingKeepTurns?: number;
     },
     model?: Model,
-    apiDefinition?: APIDefinition
+    apiDefinition?: APIDefinition,
+    historyParam?: ReasoningHistoryParam
   ) {
     const effort = options.reasoningEffort;
     const summary = options.reasoningSummary;
-    const useDeFactoThinking =
-      model?.deFactoThinking || apiDefinition?.advancedSettings?.deFactoThinking;
 
     if (options.temperature) requestParams.temperature = options.temperature;
 
-    // Skip reasoning if explicitly disabled or model doesn't support it
-    if (options.enableReasoning === false || model?.reasoningMode === 'none') {
-      if (useDeFactoThinking) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (requestParams as any)['thinking'] = { type: 'disabled' };
+    const reasoningOff = options.enableReasoning === false || model?.reasoningMode === 'none';
+    // An always-reasoning model reasons regardless, and some hosts 400 on the
+    // attempt to switch it off.
+    const sendDisable = reasoningOff && model?.reasoningMode !== 'always';
+    const keepHistory = !sendDisable && wantsReasoningHistory(options.thinkingKeepTurns);
+    // `openrouter` is Chat-Completions-only — this API has its own native
+    // `reasoning` field, handled by the effort path below.
+    const dialect = resolveReasoningDialect(model, apiDefinition);
+
+    if (dialect === 'thinking-object') {
+      const thinking: Record<string, unknown> = { type: sendDisable ? 'disabled' : 'enabled' };
+      if (keepHistory && historyParam === 'clear_thinking') thinking.clear_thinking = false;
+      if (keepHistory && historyParam === 'thinking_keep') thinking.keep = 'all';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (requestParams as any)['thinking'] = thinking;
+      // `thinking` stays for Ark, but DeepSeek, MiMo and Z.ai ignore it on this
+      // API and switch thinking off only through `reasoning.effort: none` (Z.ai
+      // merely shortens it). Effort goes there too, never top-level.
+      const thinkingEffort = sendDisable ? 'none' : effortBesideToggle(effort, model, reasoningOff);
+      if (thinkingEffort) {
+        requestParams.reasoning = { effort: thinkingEffort as OpenAI.ReasoningEffort };
       }
       return;
     }
 
-    // De facto thinking: inject { thinking: { type: "enabled" } } and skip standard params
-    if (useDeFactoThinking) {
+    if (dialect === 'enable-thinking') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (requestParams as any)['thinking'] = { type: 'enabled' };
+      (requestParams as any)['enable_thinking'] = !sendDisable;
+      if (keepHistory && historyParam === 'preserve_thinking') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (requestParams as any)['preserve_thinking'] = true;
+      }
+      // Alibaba still reads `enable_thinking` here, so the switch needs no
+      // `none`; the effort ladder (Qwen 3.8) exists only on this API.
+      const toggleEffort = effortBesideToggle(effort, model, reasoningOff);
+      if (toggleEffort) {
+        requestParams.reasoning = { effort: toggleEffort as OpenAI.ReasoningEffort };
+      }
+      return;
+    }
+
+    // Set before the toggle check: an always-reasoning model with the toggle off
+    // still reasons at its lowest level, and that reasoning counts as history.
+    if (keepHistory && historyParam === 'reasoning_context') {
+      requestParams.reasoning = { context: 'all_turns' };
+    }
+
+    if (reasoningOff) {
+      // Omitting the effort would leave the model at its default.
+      const offEffort = effortWhenOff(model);
+      if (offEffort) {
+        requestParams.reasoning = {
+          ...requestParams.reasoning,
+          effort: offEffort as OpenAI.ReasoningEffort,
+        };
+      }
       return;
     }
 
     const supportedEfforts = model?.supportedReasoningEfforts;
 
-    // Model with reasoning but no configurable effort (e.g., grok-4)
+    // Model with reasoning but no configurable effort (e.g., grok-4.20)
     if (!supportedEfforts || supportedEfforts.length === 0) {
       if (model?.reasoningMode === 'always' || model?.reasoningMode === 'optional') {
-        requestParams.reasoning = { summary };
-        requestParams.include = ['reasoning.encrypted_content'];
+        requestParams.reasoning = { ...requestParams.reasoning, summary };
       }
       return;
     }
 
-    // Model with configurable reasoning effort. `supportedReasoningEfforts` never includes
-    // 'max' for any OpenAI/xAI model (the SDK's reasoning_effort type doesn't accept it).
+    // Model with configurable reasoning effort. The cast only satisfies the SDK type, which
+    // lacks 'max'; gpt-5.6 and gpt-6 list it and the API accepts it.
     const mappedEffort = mapReasoningEffort(
       effort,
       supportedEfforts as Exclude<ReasoningEffort, 'max'>[]
     );
-    requestParams.reasoning = { effort: mappedEffort, summary };
-    requestParams.include = ['reasoning.encrypted_content'];
+    requestParams.reasoning = { ...requestParams.reasoning, effort: mappedEffort, summary };
   }
 
   /**
@@ -767,14 +945,16 @@ export class ResponsesClient implements APIClient {
     // Note: call_id is used for matching function_call_output, not id
     const toolUseBlocks: ToolUseBlock[] = [];
     for (const item of fullContent as Array<Record<string, unknown>>) {
-      if (item.type === 'function_call') {
-        toolUseBlocks.push({
-          type: 'tool_use' as const,
-          id: item.call_id as string,
-          name: item.name as string,
-          input: JSON.parse((item.arguments as string) || '{}'),
-        });
-      }
+      if (item.type !== 'function_call') continue;
+      const input = parseToolArguments(item.arguments as string | undefined);
+      // Arguments cut off by max_output_tokens: never run or replay the call
+      if (!input) continue;
+      toolUseBlocks.push({
+        type: 'tool_use' as const,
+        id: item.call_id as string,
+        name: item.name as string,
+        input,
+      });
     }
     return toolUseBlocks;
   }
@@ -793,7 +973,7 @@ export class ResponsesClient implements APIClient {
       // Check for provider-specific override first
       const override = this.deps.toolRegistry.getToolOverride(
         def.name,
-        'responses_api',
+        this.ownFamily,
         toolOptions[def.name] ?? {}
       );
       if (override) {

@@ -51,6 +51,7 @@ import type {
 } from '../../shared/protocol/types/vfs';
 import type {
   AdminRecordView,
+  ChatgptOAuthOutcome,
   PromptSegment,
   TableName,
 } from '../../shared/protocol/methods';
@@ -486,6 +487,46 @@ export class GremlinClient {
     messageUuid: string
   ): Promise<{ entry: string; sessionId: string; foundVia: 'stated' | 'scan' }> {
     return this.request('claudeAgentInspectMessage', { sessionId, messageUuid });
+  }
+
+  // ==========================================================================
+  // ChatGPT subscription sign-in
+  // ==========================================================================
+
+  chatgptOAuthDeviceStart(apiDefId: string): Promise<{
+    deviceAuthId: string;
+    userCode: string;
+    verificationUrl: string;
+    interval: number;
+  }> {
+    return this.request('chatgptOAuthDeviceStart', { apiDefId });
+  }
+
+  chatgptOAuthDevicePoll(
+    apiDefId: string,
+    deviceAuthId: string,
+    userCode: string
+  ): Promise<ChatgptOAuthOutcome> {
+    return this.request('chatgptOAuthDevicePoll', { apiDefId, deviceAuthId, userCode });
+  }
+
+  chatgptOAuthAuthorizeUrl(
+    apiDefId: string
+  ): Promise<{ url: string; codeVerifier: string; state: string }> {
+    return this.request('chatgptOAuthAuthorizeUrl', { apiDefId });
+  }
+
+  chatgptOAuthExchange(
+    apiDefId: string,
+    redirectUrl: string,
+    codeVerifier: string,
+    state: string
+  ): Promise<ChatgptOAuthOutcome> {
+    return this.request('chatgptOAuthExchange', { apiDefId, redirectUrl, codeVerifier, state });
+  }
+
+  async chatgptOAuthSignOut(apiDefId: string): Promise<void> {
+    await this.request('chatgptOAuthSignOut', { apiDefId });
   }
 
   // ==========================================================================

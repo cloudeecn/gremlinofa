@@ -39,6 +39,7 @@ import { activeLoopsStore, gremlinClient, GremlinSession } from '../client';
 import type {
   APIDefinition,
   Chat,
+  ChatAgentConfig,
   Message,
   MessageAttachment,
   Project,
@@ -54,6 +55,10 @@ import {
   assembleGroups,
   type ToolGroupsState,
 } from '../../shared/services/tools/toolGroupsDelta';
+import {
+  computeClaudeAgentRewindBefore,
+  computeClaudeAgentRewindKeeping,
+} from '../../shared/engine/lib/claudeAgentRewind';
 
 /**
  * Throttle interval for streaming/tool-block UI updates (ms). Batches rapid
@@ -111,85 +116,6 @@ function extractToolResultIdsFromMessage(message: Message<unknown>): Set<string>
 }
 
 /** True iff the last assistant message has tool calls without matching results. */
-/**
- * For claude-agent chats: compute the SDK rewind to apply when deleting
- * messages from `cutoffIndex` onward (i.e., editing a user message at
- * cutoffIndex, which removes it and everything after). The next send
- * should resume the SDK "up to and including" the most recent assistant
- * message strictly before cutoffIndex.
- *
- * - If a prior assistant message with `claudeAgentMessageUuid` exists →
- *   set `claudeAgentResumeAt = thatUuid`, and when the message also stamps
- *   its owning `claudeAgentSessionId`, repoint the chat's sessionId to it
- *   (the anchor may predate a session drop/fork; unstamped legacy anchors
- *   keep the current sessionId and rely on the server-side fallback).
- * - Otherwise → drop the session entirely so the next send starts a
- *   fresh SDK session.
- *
- * Returns `{}` for non-claude-agent chats — nothing to plumb.
- */
-export function computeClaudeAgentRewindBefore(
-  chat: Chat,
-  messages: Message<unknown>[],
-  cutoffIndex: number
-): Pick<Chat, 'claudeAgentResumeAt' | 'claudeAgentSessionId'> {
-  if (!chat.claudeAgentSessionId) return {};
-  for (let i = cutoffIndex - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === 'assistant' && m.metadata?.claudeAgentMessageUuid) {
-      console.debug(
-        '[useChat] claude-agent rewind: resumeAt=%s sessionId=%s (assistant msg %d)',
-        m.metadata.claudeAgentMessageUuid,
-        m.metadata.claudeAgentSessionId ?? '(unstamped)',
-        i
-      );
-      return {
-        claudeAgentResumeAt: m.metadata.claudeAgentMessageUuid,
-        // Anchor's stamped owning session wins — the anchor may predate a
-        // session drop/fork. Unstamped (legacy) anchors keep the current
-        // session; the server's send-time fallback resolves those.
-        ...(m.metadata.claudeAgentSessionId
-          ? { claudeAgentSessionId: m.metadata.claudeAgentSessionId }
-          : {}),
-      };
-    }
-  }
-  console.debug('[useChat] claude-agent rewind: no prior assistant — fresh session');
-  return { claudeAgentSessionId: undefined, claudeAgentResumeAt: undefined };
-}
-
-/**
- * Variant for rollback-on-assistant: keeps the message at `targetIndex`
- * (which the UI guarantees is an assistant message) and discards
- * everything after. SDK should resume "up to and including" the target.
- */
-export function computeClaudeAgentRewindKeeping(
-  chat: Chat,
-  messages: Message<unknown>[],
-  targetIndex: number
-): Pick<Chat, 'claudeAgentResumeAt' | 'claudeAgentSessionId'> {
-  if (!chat.claudeAgentSessionId) return {};
-  const target = messages[targetIndex];
-  if (target?.role === 'assistant' && target.metadata?.claudeAgentMessageUuid) {
-    console.debug(
-      '[useChat] claude-agent rollback: resumeAt=%s sessionId=%s (kept assistant msg %d)',
-      target.metadata.claudeAgentMessageUuid,
-      target.metadata.claudeAgentSessionId ?? '(unstamped)',
-      targetIndex
-    );
-    return {
-      claudeAgentResumeAt: target.metadata.claudeAgentMessageUuid,
-      ...(target.metadata.claudeAgentSessionId
-        ? { claudeAgentSessionId: target.metadata.claudeAgentSessionId }
-        : {}),
-    };
-  }
-  // Target isn't an assistant with a stored UUID — fall back to the
-  // "rewind to before" semantics so the SDK at least lands on a sane
-  // boundary instead of staying stuck on stale state.
-  return computeClaudeAgentRewindBefore(chat, messages, targetIndex + 1);
-}
-
 /**
  * Split a claude-agent rewind patch into surgical `fields` (keys to set) and
  * `unset` (keys to clear). Clears MUST go through `unset` — the JSON wire drops
@@ -264,6 +190,8 @@ export interface UseChatProps {
 
 export interface UseChatReturn {
   chat: Chat | null;
+  /** The chat's project — the inherit-from side of the chat settings panel. */
+  project: Project | null;
   messages: Message<unknown>[];
   isLoading: boolean;
   loopPhase: 'idle' | 'pending' | 'streaming';
@@ -296,6 +224,11 @@ export interface UseChatReturn {
   copyMessage: (chatId: string, messageId: string) => Promise<void>;
   forkChat: (chatId: string, messageId: string) => Promise<{ id: string } | null>;
   overrideModel: (chatId: string, apiDefId: string | null, modelId: string | null) => Promise<void>;
+  /**
+   * Replace the chat's agent-config layer wholesale. `undefined` clears it.
+   * Resolves once the backend has acknowledged, with the merged row adopted.
+   */
+  updateAgentConfig: (agentConfig: ChatAgentConfig | undefined) => Promise<void>;
   updateChatName: (chatId: string, name: string) => Promise<void>;
   /** Resolve pending tool calls with stop (error) or continue (execute) */
   resolvePendingToolCalls: (
@@ -1222,6 +1155,24 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     );
   };
 
+  const updateAgentConfig = async (agentConfig: ChatAgentConfig | undefined) => {
+    if (!chat) return;
+
+    // Optimistic first so the form settles immediately...
+    setChat(prev => (prev ? { ...prev, agentConfig } : prev));
+
+    // ...then adopt the backend's merged row. `chat_updated` overwrites `chat`
+    // wholesale from the backend, so during a live loop an optimistic-only
+    // write can flicker back to the pre-save value.
+    const merged = agentConfig
+      ? await gremlinClient.patchChat(chat.id, { agentConfig }, { touch: true })
+      : await gremlinClient.patchChat(chat.id, {}, { touch: true, unset: ['agentConfig'] });
+
+    if (!verifyChatId(chat.id, 'updateAgentConfig')) return;
+    setChat(merged);
+    callbacksRef.current.onChatMetadataChanged?.(merged.id, merged);
+  };
+
   const updateChatName = async (incomingChatId: string, name: string) => {
     if (!verifyChatId(incomingChatId, 'updateChatName')) return;
     if (!chat || !name.trim()) return;
@@ -1364,6 +1315,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
   return {
     chat,
+    project,
     messages,
     isLoading,
     loopPhase,
@@ -1385,6 +1337,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     copyMessage,
     forkChat,
     overrideModel,
+    updateAgentConfig,
     updateChatName,
     resolvePendingToolCalls,
     resendFromMessage,

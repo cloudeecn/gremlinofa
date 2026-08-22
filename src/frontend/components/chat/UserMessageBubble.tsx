@@ -35,8 +35,10 @@ export default function UserMessageBubble({
   // group and the trailing batch's after it, so the text group is the split
   // point — bars render on the same side of the bubble as their content sits
   // in what the minion received.
+  // The text group may carry no blocks (inject-only minion call) and still
+  // marks the split, so match on category rather than on a text block.
   const renderingGroups = (message.content.renderingContent ?? []) as RenderingBlockGroup[];
-  const textGroupIdx = renderingGroups.findIndex(g => g.blocks.some(b => b.type === 'text'));
+  const textGroupIdx = renderingGroups.findIndex(g => g.category === 'text');
   const splitAt = textGroupIdx === -1 ? renderingGroups.length : textGroupIdx;
   const pickInjectedFiles = (groups: RenderingBlockGroup[]) =>
     groups
@@ -85,32 +87,35 @@ export default function UserMessageBubble({
         </div>
       )}
 
-      {/* User message bubble */}
-      <div className={'max-w-[90%] rounded-2xl bg-blue-600 px-4 py-3 text-white shadow-sm'}>
-        {/* Image thumbnails with click-to-preview */}
-        {attachments.length > 0 && (
-          <div className="mb-2 grid grid-cols-3 gap-2">
-            {attachments.map((attachment: MessageAttachment) => (
-              <button
-                key={attachment.id}
-                onClick={() =>
-                  setLightboxImage(`data:${attachment.mimeType};base64,${attachment.data}`)
-                }
-                className="cursor-pointer overflow-hidden rounded transition-opacity hover:opacity-80"
-              >
-                <img
-                  src={`data:${attachment.mimeType};base64,${attachment.data}`}
-                  alt="Attachment"
-                  className="h-24 w-full object-cover"
-                />
-              </button>
-            ))}
+      {/* User message bubble — omitted for an inject-only minion message,
+          whose whole content is the file bars around it */}
+      {(displayContent.trim() !== '' || attachments.length > 0) && (
+        <div className={'max-w-[90%] rounded-2xl bg-blue-600 px-4 py-3 text-white shadow-sm'}>
+          {/* Image thumbnails with click-to-preview */}
+          {attachments.length > 0 && (
+            <div className="mb-2 grid grid-cols-3 gap-2">
+              {attachments.map((attachment: MessageAttachment) => (
+                <button
+                  key={attachment.id}
+                  onClick={() =>
+                    setLightboxImage(`data:${attachment.mimeType};base64,${attachment.data}`)
+                  }
+                  className="cursor-pointer overflow-hidden rounded transition-opacity hover:opacity-80"
+                >
+                  <img
+                    src={`data:${attachment.mimeType};base64,${attachment.data}`}
+                    alt="Attachment"
+                    className="h-24 w-full object-cover"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="text-[15px] leading-relaxed break-all whitespace-pre-wrap">
+            {displayContent}
           </div>
-        )}
-        <div className="text-[15px] leading-relaxed break-all whitespace-pre-wrap">
-          {displayContent}
         </div>
-      </div>
+      )}
 
       {/* Trailing injected files (injectFilesAfter) below the bubble */}
       {injectedFilesAfter.length > 0 && (

@@ -526,10 +526,11 @@ export class ClaudeAgentClient implements APIClient {
   }
 
   /**
-   * GC a superseded on-disk SDK session (a forked retry replaced it on the
-   * chat row, so no future send can ever resume it). Best-effort: the forked
-   * session carries the entire kept history, so a stale file only wastes disk
-   * — a failed delete must never break the turn that triggered it.
+   * Delete an on-disk SDK session. No send path calls this any more — a session
+   * id only changes when the send forked off one another record shares, so the
+   * predecessor is live by definition. Retained for the chat-deletion leak
+   * tracked in development.md's Known Issues, which is where a session genuinely
+   * becomes unreachable. Best-effort: a failed delete must never break a turn.
    */
   async deleteProviderSession(sessionId: string): Promise<void> {
     try {
@@ -543,7 +544,8 @@ export class ClaudeAgentClient implements APIClient {
   // --- Session JSONL introspection (best-effort, fail-open) ---------------
   // The persisted {claudeAgentSessionId, claudeAgentMessageUuid} pair on
   // message metadata is the primary ownership record; these file probes only
-  // heal legacy unstamped anchors and stamps whose session was fork-GC'd.
+  // heal legacy unstamped anchors and pre-change lineages, whose stamps a
+  // fork-then-GC invalidated back when rollbacks still forked.
 
   private sessionFilePath(sessionId: string): string {
     return path.join(this.sessionJsonlDir(), `${sessionId}.jsonl`);
@@ -591,6 +593,48 @@ export class ClaudeAgentClient implements APIClient {
   }
 
   /**
+   * Stored assistant messages carrying an SDK message uuid, newest first, with
+   * the session each one was stamped with. Shared by the tip anchor (first
+   * yield only) and the recovery walk (every yield), so "which message can an
+   * anchor come from" is answered in one place.
+   */
+  private *anchoredAssistants(
+    messages: Message<unknown>[],
+    excludeUuid?: string
+  ): Generator<{ uuid: string; stamped?: string }> {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      const uuid = m.metadata?.claudeAgentMessageUuid;
+      if (m.role !== 'assistant' || !uuid || uuid === excludeUuid) continue;
+      yield { uuid, stamped: m.metadata?.claudeAgentSessionId };
+    }
+  }
+
+  /**
+   * The stored tip's uuid, when the stated session's own file still holds it.
+   *
+   * Every continuation is anchored, not just rewound ones: an ordinary rollback
+   * now rewinds in place rather than forking, so a session file can hold a dead
+   * branch, and a bare `resume` would leave the CLI to pick a path through it.
+   *
+   * Guarded deliberately. An anchor the stated session lacks is dropped here
+   * rather than handed to `resolveResumeTarget`, whose `resumeAt` ladder scans
+   * and can repoint — which would start moving chats that today verify in a
+   * single `existsSync`. Dropped, the send takes the anchorless path it always
+   * took, so the tip anchor can never make recovery worse.
+   */
+  private tipAnchor(sessionId: string, messages: Message<unknown>[]): string | undefined {
+    try {
+      const tip = this.anchoredAssistants(messages).next().value;
+      if (!tip) return undefined;
+      return this.sessionFileHasUuid(sessionId, tip.uuid) ? tip.uuid : undefined;
+    } catch (err) {
+      console.debug('[claudeAgent] tip anchor probe skipped:', err);
+      return undefined;
+    }
+  }
+
+  /**
    * Walk stored assistant messages newest-first for an anchor uuid that still
    * exists in some session file — the stamped owning session is checked
    * first, then the full scan. `excludeUuid` skips the anchor that already
@@ -600,11 +644,7 @@ export class ClaudeAgentClient implements APIClient {
     messages: Message<unknown>[],
     excludeUuid?: string
   ): { uuid: string; sessionId: string } | undefined {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      const uuid = m.metadata?.claudeAgentMessageUuid;
-      if (m.role !== 'assistant' || !uuid || uuid === excludeUuid) continue;
-      const stamped = m.metadata?.claudeAgentSessionId;
+    for (const { uuid, stamped } of this.anchoredAssistants(messages, excludeUuid)) {
       if (stamped && this.sessionFileHasUuid(stamped, uuid)) {
         return { uuid, sessionId: stamped };
       }
@@ -736,6 +776,12 @@ export class ClaudeAgentClient implements APIClient {
       reasoningSummary?: 'auto' | 'concise' | 'detailed';
       claudeAgentSessionId?: string;
       claudeAgentResumeAt?: string;
+      /**
+       * Branch into a new session rather than continuing this one. Resolved by
+       * the engine (`shouldForkSession`), because every send here carries an
+       * anchor and so anchor presence cannot tell a rewind from a continuation.
+       */
+      claudeAgentForkSession?: boolean;
       // Tool bridge inputs (claude-agent only). The agentic loop forwards its
       // prebuilt ToolContext + enabled tools so we can expose the bridgeable
       // subset as an in-process MCP server.
@@ -771,7 +817,12 @@ export class ClaudeAgentClient implements APIClient {
     let sessionId = options.claudeAgentSessionId ?? this.generateSessionId();
     let isFirstTurn = !options.claudeAgentSessionId;
     let resumeAt = options.claudeAgentResumeAt;
+    let forkSession = options.claudeAgentForkSession === true;
     if (!isFirstTurn) {
+      const requestedSessionId = sessionId;
+      // A plain continuation gets anchored at the stored tip; a rewind already
+      // carries its anchor from the rollback.
+      resumeAt ??= this.tipAnchor(sessionId, messages);
       const resolved = this.resolveResumeTarget(sessionId, resumeAt, messages);
       if (resolved.outcome !== 'verified' && resolved.outcome !== 'unverified') {
         console.debug(
@@ -786,6 +837,13 @@ export class ClaudeAgentClient implements APIClient {
       sessionId = resolved.sessionId;
       resumeAt = resolved.resumeAt;
       isFirstTurn = resolved.fresh;
+      // The resolver found our anchor somewhere the row never named — a legacy
+      // unstamped stamp, or a pre-change lineage whose own fork collected the
+      // stated session. We are not continuing our own session, and the one we
+      // landed on may well be another record's, so branch instead of appending.
+      if (!resolved.fresh && resolved.sessionId !== requestedSessionId) {
+        forkSession = true;
+      }
     }
 
     // Auth fallback chain: explicit OAuth token > explicit API key >
@@ -1127,17 +1185,25 @@ export class ClaudeAgentClient implements APIClient {
       ...(extraArgs ? { extraArgs } : {}),
       ...(thinking ? { thinking } : {}),
       ...(effortLevel ? { effort: effortLevel } : {}),
-      // A rewound send (resumeAt set) FORKS into a fresh session containing
-      // history only up to the anchor uuid. Resuming the old session in place
-      // would leave the rejected/aborted turn in its JSONL, and whether a later
-      // plain `resume` excludes such dead branches is CLI-internal behavior we
-      // can't rely on. The forked id arrives on the `system:init` message and
-      // flows back through providerExtra; the engine then GCs the old session.
+      // The SDK's two rewind options do separate jobs and we pass them
+      // separately. `resumeSessionAt` is the truncation — "resume only up to
+      // and including this uuid" — and rides EVERY continuation, anchored at
+      // the stored tip, so the CLI never has to pick a path through a file that
+      // a rollback left a dead branch in.
+      //
+      // `forkSession` is only the id. It is set exactly when this rewind would
+      // truncate a session another record also resumes through (decided
+      // engine-side, see engine/lib/claudeAgentSessionSharing) or when the
+      // resolver landed us in a session the row never named. The forked id
+      // arrives on the `system:init` message and flows back through
+      // providerExtra. Nothing is deleted: the predecessor of a fork is shared
+      // by definition.
       ...(isFirstTurn
         ? { sessionId }
         : {
             resume: sessionId,
-            ...(resumeAt ? { resumeSessionAt: resumeAt, forkSession: true } : {}),
+            ...(resumeAt ? { resumeSessionAt: resumeAt } : {}),
+            ...(forkSession ? { forkSession: true } : {}),
           }),
     };
 
@@ -1161,10 +1227,11 @@ export class ClaudeAgentClient implements APIClient {
     }
     dbg('[claudeAgent] query() options=', sdkOptionsForLog);
     console.debug(
-      '[claudeAgent] turn lifecycle: isFirstTurn=%s sessionId=%s resumeAt=%s',
+      '[claudeAgent] turn lifecycle: isFirstTurn=%s sessionId=%s resumeAt=%s fork=%s',
       isFirstTurn,
       sessionId,
-      resumeAt ?? '(none)'
+      resumeAt ?? '(none)',
+      forkSession
     );
 
     // The one-shot generator mirrors the SDK's own string-prompt wrapper

@@ -226,6 +226,73 @@ describe('OpenAIClient verbosity', () => {
   });
 });
 
+describe('OpenAIClient injected-file content parts', () => {
+  const mockGetModel = vi.fn();
+  const client = new OpenAIClient({
+    ...stubApiDeps,
+    storage: { getModel: mockGetModel } as unknown as UnifiedStorage,
+  });
+
+  const apiDefinition: APIDefinition = {
+    id: 'test-api-def',
+    apiType: 'chatgpt',
+    name: 'Test OpenAI',
+    baseUrl: '',
+    apiKey: 'test-key',
+    isDefault: false,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const captureUserContent = async (text: string) => {
+    vi.clearAllMocks();
+    mockGetModel.mockResolvedValueOnce({ id: 'gpt-5', apiType: 'chatgpt' });
+    const create = vi.fn().mockResolvedValue({
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    });
+    (OpenAI as MockedClass<typeof OpenAI>).mockImplementation(function (this: any) {
+      return { chat: { completions: { create } } } as any;
+    });
+
+    const messages: Message<any>[] = [
+      {
+        id: 'msg1',
+        role: 'user',
+        content: {
+          type: 'text',
+          content: text,
+          injectedFiles: [{ path: '/f.ts', content: 'const x = 1;' }],
+          injectionMode: 'separate-block',
+        },
+        timestamp: new Date(),
+      },
+    ];
+    const generator = client.sendMessageStream(messages, 'gpt-5', apiDefinition, {
+      temperature: 1,
+      maxTokens: 2048,
+      enableReasoning: true,
+      reasoningBudgetTokens: 2048,
+      signal: new AbortController().signal,
+      disableStream: true,
+    });
+    for await (const _chunk of generator) {
+      // drain
+    }
+    return create.mock.calls[0][0].messages[0].content as Array<{ type: string; text?: string }>;
+  };
+
+  it('emits the file part and the text part for a message with text', async () => {
+    const parts = await captureUserContent('analyze');
+    expect(parts.map(p => p.text)).toEqual(['=== /f.ts ===\nconst x = 1;', 'analyze']);
+  });
+
+  it('skips the empty text part for an inject-only message', async () => {
+    const parts = await captureUserContent('');
+    expect(parts.map(p => p.text)).toEqual(['=== /f.ts ===\nconst x = 1;']);
+  });
+});
+
 describe('OpenAIClient non-streaming token usage', () => {
   const mockGetModel = vi.fn();
   const client = new OpenAIClient({

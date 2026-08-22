@@ -16,11 +16,13 @@
  */
 
 import type { AgenticLoopOptions } from '../services/agentic/agenticLoopGenerator';
-import { NUDGE_THINKING_DEFAULT } from '../services/api/apiService';
+import { AgentPromptError, resolveAgentSystemPrompt } from '../services/agentic/agentSystemPrompt';
 import type { UnifiedStorage } from '../services/storage/unifiedStorage';
-import type { APIDefinition, Chat, Model, Project } from '../protocol/types';
+import type { APIDefinition, Chat, Model, Project, VfsAdapterFactory } from '../protocol/types';
 import type { BackendDeps } from './backendDeps';
 import { ProtocolError } from './GremlinServer';
+import { shouldForkSession } from './lib/claudeAgentSessionSharing';
+import { resolveChatAgentSettings } from './lib/resolveChatAgentConfig';
 
 /**
  * Bundle of records loaded from storage that the agentic loop needs to
@@ -101,7 +103,8 @@ export async function buildAgenticLoopOptionsForContext(
   parentLoopId?: string
 ): Promise<AgenticLoopOptions> {
   const { chat, project, apiDef, model, modelId } = ctx;
-  const enabledTools = project.enabledTools ?? [];
+  const settings = resolveChatAgentSettings(project, apiDef, chat.agentConfig);
+  const enabledTools = settings.enabledTools;
   const toolOptions = project.toolOptions ?? {};
 
   // Build VFS adapter factory first — needed by system prompt generation.
@@ -127,6 +130,7 @@ export async function buildAgenticLoopOptionsForContext(
     apiDefinitionId: apiDef.id,
     modelId,
     apiType: apiDef.apiType,
+    namespace: settings.namespace,
     createVfsAdapter,
   };
 
@@ -136,20 +140,19 @@ export async function buildAgenticLoopOptionsForContext(
     systemPromptContext,
     toolOptions
   );
-  const combinedSystemPrompt = [project.systemPrompt, ...toolSystemPrompts]
-    .filter(Boolean)
-    .join('\n\n');
+  const basePrompt = await resolveChatBasePrompt(chat, project, createVfsAdapter);
+  const combinedSystemPrompt = [basePrompt, ...toolSystemPrompts].filter(Boolean).join('\n\n');
 
   return {
     apiDef,
     model,
     projectId: project.id,
     chatId: chat.id,
-    temperature: project.temperature ?? undefined,
-    maxTokens: project.maxOutputTokens,
+    temperature: settings.temperature,
+    maxTokens: settings.maxTokens,
     systemPrompt: combinedSystemPrompt || undefined,
     preFillResponse: project.preFillResponse,
-    webSearchEnabled: project.webSearchEnabled,
+    webSearchEnabled: settings.webSearchEnabled,
     enabledTools,
     toolOptions,
     disableStream: project.disableStream ?? false,
@@ -159,29 +162,74 @@ export async function buildAgenticLoopOptionsForContext(
     cacheRoutingScope: project.cacheRoutingScope,
     flexTierEnabled: !!(project.flexTierEnabled && apiDef.advancedSettings?.flexTierSupported),
     createVfsAdapter,
-    enableReasoning: project.enableReasoning,
-    reasoningBudgetTokens: project.reasoningBudgetTokens,
-    thinkingKeepTurns: project.thinkingKeepTurns,
-    pruneThinkingKeepTurns:
-      project.pruneThinkingBeforeApiCall &&
-      project.thinkingKeepTurns !== undefined &&
-      project.thinkingKeepTurns >= 0
-        ? project.thinkingKeepTurns
-        : undefined,
-    reasoningEffort: project.reasoningEffort,
+    enableReasoning: settings.enableReasoning,
+    reasoningBudgetTokens: settings.reasoningBudgetTokens,
+    thinkingKeepTurns: settings.thinkingKeepTurns,
+    pruneThinkingKeepTurns: settings.pruneThinkingKeepTurns,
+    reasoningEffort: settings.reasoningEffort,
     reasoningSummary: project.reasoningSummary,
-    verbosity: project.verbosity,
+    verbosity: settings.verbosity,
+    fileLineNumbers: settings.fileLineNumbers,
+    namespace: settings.namespace,
     checkpointMessageIds: enabledTools.includes('checkpoint')
       ? (chat.checkpointMessageIds ??
         (chat.checkpointMessageId ? [chat.checkpointMessageId] : undefined))
       : undefined,
     activeHook: chat.activeHook,
-    nudgeThinking: apiDef.advancedSettings?.nudgeThinking ? NUDGE_THINKING_DEFAULT : undefined,
+    nudgeThinking: settings.nudgeThinking,
     claudeAgentSessionId: chat.claudeAgentSessionId,
     claudeAgentResumeAt: chat.claudeAgentResumeAt,
+    claudeAgentForkSession: shouldForkSession(chat),
     signal,
     loopId,
     parentLoopId,
     deps,
   };
+}
+
+/**
+ * Resolve the chat's base system prompt — everything before the tool prompts.
+ *
+ * `systemPromptMode` decides whether the chat layer contributes at all. In
+ * `'project'` mode (the default, and every chat that predates this feature)
+ * the chat's prompt sources are skipped entirely and the project's prompt is
+ * returned unchanged, so a chat with no `agentConfig` produces byte-identical
+ * loop options to before.
+ */
+async function resolveChatBasePrompt(
+  chat: Chat,
+  project: Project,
+  createVfsAdapter: VfsAdapterFactory
+): Promise<string> {
+  const agent = chat.agentConfig;
+  const mode = agent?.systemPromptMode ?? 'project';
+  if (!agent || mode === 'project') return project.systemPrompt;
+
+  let chatPrompt: string;
+  try {
+    chatPrompt = await resolveAgentSystemPrompt({
+      createVfsAdapter,
+      persona: agent.persona,
+      prePersonaFile: agent.prePersonaSystemPromptFile,
+      inlineSegments: [agent.systemPrompt],
+      promptFiles: agent.systemPromptFile,
+    });
+  } catch (err) {
+    if (err instanceof AgentPromptError) {
+      // Raised before `loop_started`, so `ChatRunner` has nothing to unwind. A
+      // chat-level persona is stated intent: falling back to the project
+      // prompt would run the agent under the wrong identity with no signal.
+      throw new ProtocolError(
+        'CHAT_AGENT_PROMPT_UNRESOLVED',
+        `chat ${chat.id}: could not resolve system prompt from ${err.path}${
+          err.detail ? ` (${err.detail})` : ''
+        }`
+      );
+    }
+    throw err;
+  }
+
+  return mode === 'append'
+    ? [project.systemPrompt, chatPrompt].filter(Boolean).join('\n\n')
+    : chatPrompt;
 }

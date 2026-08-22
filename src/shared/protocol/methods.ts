@@ -13,6 +13,7 @@ import type {
   APIDefinition,
   AttachmentSection,
   Chat,
+  ChatAgentConfig,
   Message,
   MessageAttachment,
   MinionChat,
@@ -25,6 +26,16 @@ import type { TableName } from '../services/storage/StorageAdapter';
 // Re-exported so the frontend (restricted to `shared/protocol/**` imports)
 // can type the admin record editor's table parameter.
 export type { TableName };
+
+/** One contributor to a chat's resolved system prompt, for the settings preview. */
+export interface PromptSegment {
+  source: 'pre-persona' | 'persona' | 'inline' | 'file' | 'project' | 'tool';
+  path?: string;
+  chars: number;
+  /** Set when this segment failed to resolve; `chars` is 0 in that case. */
+  error?: string;
+}
+
 import type {
   CompactOptions,
   DirEntry,
@@ -274,6 +285,26 @@ export interface GremlinMethods {
       forkMessageContent?: string;
     };
     result: { newChatId: string };
+    streams: never;
+  };
+  /**
+   * Promote a minion transcript into a regular chat, carrying its agent config.
+   * `notes` reports what could and could not be brought across (SDK session,
+   * closed-off `return` call) for the UI to surface after the fact.
+   */
+  cloneMinionChat: {
+    params: { minionChatId: string; targetProjectId?: string; name?: string };
+    result: { newChatId: string; notes: string[] };
+    streams: never;
+  };
+  /**
+   * Resolve a chat's system prompt for the settings panel's preview.
+   * `overrides` lets the panel preview an UNSAVED draft; omitted, it previews
+   * what the chat would send right now.
+   */
+  previewChatSystemPrompt: {
+    params: { chatId: string; overrides?: ChatAgentConfig };
+    result: { text: string; segments: PromptSegment[] };
     streams: never;
   };
   getMessageCount: {

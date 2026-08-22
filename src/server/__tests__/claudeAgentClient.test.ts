@@ -716,13 +716,26 @@ describe('ClaudeAgentClient', () => {
     });
     expect((optsSink.value as Record<string, unknown>).resume).toBe('persisted-uuid');
     expect((optsSink.value as Record<string, unknown>).resumeSessionAt).toBe('asst-uuid-prev');
-    // Rewound sends fork so the dead branch stays in the old session file.
-    expect((optsSink.value as Record<string, unknown>).forkSession).toBe(true);
+    // A rewind truncates; whether it also branches is the engine's call, and
+    // this chat shares nothing.
+    expect((optsSink.value as Record<string, unknown>).forkSession).toBeUndefined();
     expect((optsSink.value as Record<string, unknown>).sessionId).toBeUndefined();
 
-    // Plain resume (no rewind): same session continued in place, no fork.
+    // Rewind into a session another record resumes through: same truncation,
+    // plus a branch. The flag arrives from the engine, never inferred here.
     optsSink.value = undefined;
     await consume(client, [userMessage('third')], makeApiDef(), {
+      claudeAgentSessionId: 'persisted-uuid',
+      claudeAgentResumeAt: 'asst-uuid-prev',
+      claudeAgentForkSession: true,
+    });
+    expect((optsSink.value as Record<string, unknown>).resumeSessionAt).toBe('asst-uuid-prev');
+    expect((optsSink.value as Record<string, unknown>).forkSession).toBe(true);
+
+    // Plain resume with nothing on disk to anchor against: the synthesized tip
+    // is dropped rather than guessed at, and no fork either way.
+    optsSink.value = undefined;
+    await consume(client, [userMessage('fourth')], makeApiDef(), {
       claudeAgentSessionId: 'persisted-uuid',
     });
     expect((optsSink.value as Record<string, unknown>).resume).toBe('persisted-uuid');
@@ -3037,9 +3050,66 @@ describe('resume resolution (session JSONL verification)', () => {
     });
     expect(sdkOpts(optsSink).resume).toBe('sess-cur');
     expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-anchor');
+    // The anchor truncates on its own; nothing here is shared, so no branch.
+    expect(sdkOpts(optsSink).forkSession).toBeUndefined();
+  });
+
+  it('anchors a plain continuation at the stored tip without forking', async () => {
+    const dir = makeJsonlDir();
+    writeSession(dir, 'sess-cur', ['uuid-older', 'uuid-tip']);
+    const optsSink: { value?: unknown } = {};
+    await consume(
+      makeClient(dir, optsSink),
+      [
+        assistantMessage('uuid-older', 'sess-cur'),
+        assistantMessage('uuid-tip', 'sess-cur'),
+        userMessage('go'),
+      ],
+      makeApiDef(),
+      { claudeAgentSessionId: 'sess-cur' }
+    );
+    // Anchoring every send is what lets an ordinary rollback rewind in place:
+    // the file may hold a dead branch, and a bare `resume` would leave the CLI
+    // to pick a path through it.
+    expect(sdkOpts(optsSink).resume).toBe('sess-cur');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-tip');
+    expect(sdkOpts(optsSink).forkSession).toBeUndefined();
+  });
+
+  it('omits a synthesized tip the stated session file does not hold', async () => {
+    const dir = makeJsonlDir();
+    writeSession(dir, 'sess-cur', ['uuid-older']);
+    const optsSink: { value?: unknown } = {};
+    await consume(
+      makeClient(dir, optsSink),
+      [assistantMessage('uuid-tip', 'sess-cur'), userMessage('go')],
+      makeApiDef(),
+      { claudeAgentSessionId: 'sess-cur' }
+    );
+    // Dropped rather than resolved: feeding an unverified anchor into the
+    // ladder would scan and possibly repoint a chat that verifies in one
+    // `existsSync`. So the send falls back to the anchorless path.
+    expect(sdkOpts(optsSink).resume).toBe('sess-cur');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBeUndefined();
+    expect(sdkOpts(optsSink).forkSession).toBeUndefined();
+  });
+
+  it('honours the engine flag for a rewind into a shared session', async () => {
+    const dir = makeJsonlDir();
+    writeSession(dir, 'sess-shared', ['uuid-anchor']);
+    const optsSink: { value?: unknown } = {};
+    await consume(makeClient(dir, optsSink), [userMessage('go')], makeApiDef(), {
+      claudeAgentSessionId: 'sess-shared',
+      claudeAgentResumeAt: 'uuid-anchor',
+      claudeAgentForkSession: true,
+    });
+    expect(sdkOpts(optsSink).resume).toBe('sess-shared');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-anchor');
     expect(sdkOpts(optsSink).forkSession).toBe(true);
   });
 
+  // A repoint forks on its own, with no engine flag: the resolver landed us in
+  // a session the row never named, which may well be another record's.
   it('repoints resume to the session file that owns the anchor', async () => {
     const dir = makeJsonlDir();
     writeSession(dir, 'sess-cur', ['uuid-unrelated']);
@@ -3112,6 +3182,61 @@ describe('resume resolution (session JSONL verification)', () => {
     );
     expect(sdkOpts(optsSink).resume).toBe('sess-old');
     expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-a');
+    expect(sdkOpts(optsSink).forkSession).toBe(true);
+  });
+
+  // --- Bridge to the in-memory lifecycle matrix ----------------------------
+  // `src/shared/engine/__tests__/claudeAgentSessionLifecycle.test.ts` drives
+  // every clone/rollback ordering against an in-memory model of these semantics,
+  // which is why the matrix does not re-exercise the fs ladder. These two
+  // cases pin the join: they show what an unmutated ancestor buys a cloned
+  // chat, in the layer that actually reads the files.
+
+  it('a cloned chat resumes its protected ancestor directly — no scan, no downgrade', async () => {
+    const dir = makeJsonlDir();
+    // The shared ancestor, retained because it is in the clone's protect list.
+    writeSession(dir, 'sess-ancestor', ['uuid-early', 'uuid-anchor']);
+    // The minion's post-rollback fork, which truncated at uuid-early.
+    writeSession(dir, 'sess-minion-fork', ['uuid-early']);
+    const optsSink: { value?: unknown } = {};
+
+    await consume(
+      makeClient(dir, optsSink),
+      [assistantMessage('uuid-early', 'sess-ancestor'), userMessage('go')],
+      makeApiDef(),
+      {
+        claudeAgentSessionId: 'sess-ancestor',
+        claudeAgentResumeAt: 'uuid-anchor',
+        // `shouldForkSession` said yes: the ancestor is in the protect list.
+        claudeAgentForkSession: true,
+      }
+    );
+
+    expect(sdkOpts(optsSink).resume).toBe('sess-ancestor');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-anchor');
+    expect(sdkOpts(optsSink).forkSession).toBe(true);
+  });
+
+  it('the same history with the ancestor gone silently downgrades the clone’s anchor', async () => {
+    const dir = makeJsonlDir();
+    // Identical setup, except the shared ancestor is missing — what a minion's
+    // rewind would do to it if the fork rule let it truncate in place.
+    writeSession(dir, 'sess-minion-fork', ['uuid-early']);
+    const optsSink: { value?: unknown } = {};
+
+    await consume(
+      makeClient(dir, optsSink),
+      [assistantMessage('uuid-early', 'sess-minion-fork'), userMessage('go')],
+      makeApiDef(),
+      { claudeAgentSessionId: 'sess-ancestor', claudeAgentResumeAt: 'uuid-anchor' }
+    );
+
+    // No error, no warning — the turn just resumes from an earlier point, and
+    // everything the user can still see between uuid-early and uuid-anchor is
+    // missing from the model's context. That silence is why a rewind into a
+    // shared session must branch instead of truncating.
+    expect(sdkOpts(optsSink).resume).toBe('sess-minion-fork');
+    expect(sdkOpts(optsSink).resumeSessionAt).toBe('uuid-early');
     expect(sdkOpts(optsSink).forkSession).toBe(true);
   });
 

@@ -353,13 +353,22 @@ export class ResponsesClient implements APIClient {
           };
           pushInjectedFiles(msg.content.injectedFiles);
 
-          // Add text content
-          contentItems.push({
-            type: 'input_text',
-            text: msg.content.content,
-          });
+          // Add text content (only if non-empty — an inject-only minion
+          // message has files but no text)
+          if (msg.content.content.trim()) {
+            contentItems.push({
+              type: 'input_text',
+              text: msg.content.content,
+            });
+          }
 
           pushInjectedFiles(msg.content.injectedFilesAfter);
+
+          // A message with nothing at all still goes out as one empty text
+          // item rather than an empty content array.
+          if (contentItems.length === 0) {
+            contentItems.push({ type: 'input_text', text: msg.content.content });
+          }
 
           input.push({
             role: 'user',

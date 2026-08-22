@@ -317,6 +317,78 @@ export interface ChatPendingState {
   };
 }
 
+/**
+ * How the chat layer's resolved system prompt relates to the project's.
+ * - 'project' / undefined — `project.systemPrompt` is the base; the chat's
+ *   persona / prompt-file / inline fields are ignored entirely.
+ * - 'replace' — the chat layer IS the base; `project.systemPrompt` is dropped.
+ * - 'append' — `project.systemPrompt`, then the chat layer's resolved text.
+ * Tool system prompts are appended after whichever base wins, unchanged.
+ */
+export type ChatSystemPromptMode = 'project' | 'replace' | 'append';
+
+/**
+ * Chat-level override layer, resolved between the project defaults and the
+ * runtime loop options. Scoped to "agent identity" — who the agent is and how
+ * it thinks — rather than transport or provider knobs. `undefined` at any
+ * field defers to the project.
+ *
+ * Stored as ONE nested object on purpose. `patchChat` merges shallowly at the
+ * top level, so patching `agentConfig` replaces the whole bundle: the settings
+ * form submits the full object and omission means cleared, with no `unset`
+ * bookkeeping per field. Clearing the layer is `unset: ['agentConfig']`.
+ * Do NOT teach `patchChat` to deep-merge — that would make sub-field clears
+ * impossible to express.
+ *
+ * Accepted cost of the wholesale replace: two concurrent writers to
+ * `agentConfig` clobber each other. Only the chat settings UI writes this
+ * layer; the running loop patches top-level token totals, which never collide.
+ *
+ * `''` is a value, not "inherit", for `prePersonaSystemPromptFile` (disables
+ * the pre-persona read) and `nudgeThinking` (disables the nudge).
+ * `namespace` is the exception: projects have no namespace, so absent and `''`
+ * both mean the root VFS.
+ */
+export interface ChatAgentConfig {
+  systemPromptMode?: ChatSystemPromptMode;
+  /** Persona name → reads `/minions/<persona>.md` from the ROOT VFS. */
+  persona?: string;
+  /** VFS namespace for every VFS-touching tool in this chat. '' / undefined = root. */
+  namespace?: string;
+  /** undefined = `/minions/_global.md` (optional); '' = off; other = required. */
+  prePersonaSystemPromptFile?: string;
+  /** VFS path(s) read and appended after the persona block, in order. */
+  systemPromptFile?: string | string[];
+  /** Inline text appended after the persona block, before the prompt files. */
+  systemPrompt?: string;
+  /** Narrowing override — always intersected with `project.enabledTools`. */
+  enabledTools?: string[];
+  temperature?: number;
+  maxOutputTokens?: number;
+  enableReasoning?: boolean;
+  reasoningBudgetTokens?: number;
+  reasoningEffort?: ReasoningEffort;
+  verbosity?: Verbosity;
+  webSearchEnabled?: boolean;
+  /** Positive polarity (true = show). Wins over `project.noLineNumbers`. */
+  fileLineNumbers?: boolean;
+  /** '' explicitly disables the nudge even when the apiDef enables it. */
+  nudgeThinking?: string;
+  thinkingKeepTurns?: number;
+  pruneThinkingBeforeApiCall?: boolean;
+}
+
+/** True when the chat carries at least one agent-config override. */
+export function isEmptyAgentConfig(cfg: ChatAgentConfig | undefined): boolean {
+  if (!cfg) return true;
+  return !Object.values(cfg).some(v => v !== undefined);
+}
+
+/** Header marker predicate: does this chat deviate from its project's agent config? */
+export function hasChatAgentOverrides(chat: Pick<Chat, 'agentConfig'>): boolean {
+  return !isEmptyAgentConfig(chat.agentConfig);
+}
+
 // Chat types
 export interface Chat {
   id: string;
@@ -328,6 +400,16 @@ export interface Chat {
   // Overrides (null = use project default)
   apiDefinitionId: string | null;
   modelId: string | null;
+  /**
+   * Chat-level agent-identity overrides, resolved between the project and the
+   * runtime loop options. `apiDefinitionId` / `modelId` stay top-level: they
+   * already mean null-is-inherit and the header renders them from there.
+   */
+  agentConfig?: ChatAgentConfig;
+  /** Source minion chat when this chat was cloned out of one. */
+  clonedFromMinionChatId?: string;
+  /** The main chat that owned that minion chat. */
+  clonedFromChatId?: string;
   //
   messageCount?: number;
   // Cumulative totals (never decrease, even when messages deleted)
@@ -373,6 +455,16 @@ export interface Chat {
    * once the SDK has accepted the rewind.
    */
   claudeAgentResumeAt?: string;
+  /**
+   * claude-agent sessions this chat may resume but must NEVER mutate —
+   * ancestors shared with a minion chat it was cloned from (or a clone of it).
+   * A rewind into a shared ancestor truncates it past the other side's anchor
+   * and silently drops that context, so a rewind whose session is listed here
+   * branches instead (`shouldForkSession`). Seeded once at clone time and never
+   * mutated. See development.md "Claude Agent provider → Fork on branch, not on
+   * rollback".
+   */
+  claudeAgentProtectedSessionIds?: string[];
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system';
@@ -1046,6 +1138,8 @@ export interface MinionChat {
   systemPrompt?: string;
   /** Override: VFS path(s) to system prompt file(s). String or array of strings. */
   systemPromptFile?: string | string[];
+  /** Override: VFS path of the pre-persona ("global") prompt file. Default /minions/_global.md; empty string = disabled. */
+  prePersonaSystemPromptFile?: string;
   /** Override: thinking-nudge text appended to last user message. Empty string = explicitly off. */
   nudgeThinking?: string;
   /** Override: line-number display (positive; true = show). Applies to injected files and the minion's own reads. */
@@ -1060,6 +1154,12 @@ export interface MinionChat {
   claudeAgentSessionId?: string;
   /** SDK assistant UUID to rewind to on next minion send. Cleared after consumption. */
   claudeAgentResumeAt?: string;
+  /**
+   * claude-agent sessions this minion chat may resume but must NEVER mutate —
+   * ancestors shared with a `Chat` cloned out of it. Seeded on both sides at
+   * clone time. See `Chat.claudeAgentProtectedSessionIds`.
+   */
+  claudeAgentProtectedSessionIds?: string[];
   /**
    * Verify-hook rejection reason awaiting delivery (verifyFeedback tool option).
    * Appended to the next true-retry message so the model gets a corrective

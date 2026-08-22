@@ -184,7 +184,7 @@ function makeBackendDepsStub(storage: UnifiedStorage, loopRegistry: LoopRegistry
   return {
     storage,
     encryption: {} as unknown as EncryptionCore,
-    apiService: {} as unknown as APIService,
+    apiService: { deleteProviderSession: vi.fn(async () => {}) } as unknown as APIService,
     toolRegistry: {} as unknown as ClientSideToolRegistry,
     loopRegistry,
   };
@@ -227,6 +227,85 @@ describe('ChatRunner', () => {
     deps = makeBackendDepsStub(storage, registry);
     runner = new ChatRunner(deps, registry);
     runAgenticLoopMock.mockReset();
+  });
+
+  describe('claude-agent session persistence', () => {
+    const emptyResult = {
+      status: 'complete' as const,
+      messages: [],
+      tokens: {
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        webSearchCount: 0,
+        cost: 0,
+        costUnreliable: false,
+      },
+    };
+
+    const runWithTurn = async (chat: Chat, sessionId: string) => {
+      vi.mocked(storage.getChat).mockResolvedValue(chat);
+      vi.mocked(storage.getProject).mockResolvedValue(mkProject('p1'));
+      vi.mocked(storage.getAPIDefinition).mockResolvedValue(mkAPIDef('api_1'));
+      vi.mocked(storage.getModel).mockResolvedValue(mkModel('m1'));
+      vi.mocked(storage.getMessages).mockResolvedValue([]);
+      runAgenticLoopMock.mockImplementation(() =>
+        fakeLoopGen([{ type: 'claude_agent_turn', sessionId } as AgenticLoopEvent], emptyResult)
+      );
+
+      const events: LoopEvent[] = [];
+      const gen = runner.run(
+        { chatId: chat.id, mode: 'send', content: 'hi' },
+        new AbortController(),
+        'loop_gc'
+      );
+      for await (const ev of gen) events.push(ev);
+      return events;
+    };
+
+    it('persists a changed session id and deletes nothing', async () => {
+      // An id only changes when the send forked off a session another record
+      // resumes through, so the predecessor is live by definition.
+      const chat = { ...mkChat('c1', 'p1'), claudeAgentSessionId: 'sess-old' };
+      await runWithTurn(chat, 'sess-new');
+
+      expect(deps.apiService.deleteProviderSession).not.toHaveBeenCalled();
+      expect(storage.patchChat).toHaveBeenCalledWith(
+        'c1',
+        expect.objectContaining({ claudeAgentSessionId: 'sess-new' }),
+        undefined
+      );
+    });
+
+    it('keeps a shared ancestor and still persists the new id', async () => {
+      const chat = {
+        ...mkChat('c1', 'p1'),
+        claudeAgentSessionId: 'sess-old',
+        claudeAgentProtectedSessionIds: ['sess-old'],
+      };
+      const events = await runWithTurn(chat, 'sess-new');
+
+      expect(deps.apiService.deleteProviderSession).not.toHaveBeenCalled();
+      expect(storage.patchChat).toHaveBeenCalledWith(
+        'c1',
+        expect.objectContaining({ claudeAgentSessionId: 'sess-new' }),
+        undefined
+      );
+      expect(events.some(e => e.type === 'chat_updated')).toBe(true);
+    });
+
+    it('writes nothing when the session id is unchanged and no rewind is pending', async () => {
+      const chat = { ...mkChat('c1', 'p1'), claudeAgentSessionId: 'sess-same' };
+      await runWithTurn(chat, 'sess-same');
+      expect(deps.apiService.deleteProviderSession).not.toHaveBeenCalled();
+      expect(storage.patchChat).not.toHaveBeenCalledWith(
+        'c1',
+        expect.objectContaining({ claudeAgentSessionId: 'sess-same' }),
+        expect.anything()
+      );
+    });
   });
 
   describe('happy path', () => {

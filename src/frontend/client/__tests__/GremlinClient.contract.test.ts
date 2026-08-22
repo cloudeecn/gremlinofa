@@ -241,6 +241,15 @@ describe('GremlinClient (in-process contract)', () => {
       expect(result).toEqual({ newChatId: 'cloned' });
     });
 
+    it('cloneMinionChat surfaces MINION_CHAT_NOT_FOUND across the transport', async () => {
+      // The clone orchestration itself is covered by cloneMinionChat.test.ts;
+      // what matters here is that a typed error survives the round trip
+      // instead of arriving as a generic string.
+      await expect(client.cloneMinionChat('missing')).rejects.toMatchObject({
+        code: 'MINION_CHAT_NOT_FOUND',
+      });
+    });
+
     it('getMessageCount unwraps the count', async () => {
       vi.mocked(storage.getMessageCount).mockResolvedValue(7);
       expect(await client.getMessageCount('c1')).toBe(7);

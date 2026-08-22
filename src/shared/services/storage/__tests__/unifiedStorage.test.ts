@@ -459,6 +459,36 @@ describe('UnifiedStorage', () => {
       expect(reloaded?.claudeAgentSessionId).toBeUndefined();
     });
 
+    it('patchChat REPLACES agentConfig wholesale rather than deep-merging', async () => {
+      // The reason the chat override layer is one nested object: the settings
+      // form submits the full bundle and omission means cleared, with no
+      // per-field `unset` bookkeeping. Teaching patchChat to deep-merge here
+      // would make sub-field clears impossible to express.
+      await storage.patchChat('test-chat-1', {
+        agentConfig: { temperature: 0.2, persona: 'researcher', systemPromptMode: 'replace' },
+      });
+      await storage.patchChat('test-chat-1', { agentConfig: { temperature: 0.9 } });
+
+      const stored = await storage.getChat('test-chat-1');
+      expect(stored?.agentConfig).toEqual({ temperature: 0.9 });
+    });
+
+    it("patchChat preserves '' in agentConfig — it is a value, not an inherit", async () => {
+      await storage.patchChat('test-chat-1', {
+        agentConfig: { prePersonaSystemPromptFile: '', nudgeThinking: '' },
+      });
+      const stored = await storage.getChat('test-chat-1');
+      expect(stored?.agentConfig?.prePersonaSystemPromptFile).toBe('');
+      expect(stored?.agentConfig?.nudgeThinking).toBe('');
+    });
+
+    it("unset: ['agentConfig'] clears the whole override layer", async () => {
+      await storage.patchChat('test-chat-1', { agentConfig: { temperature: 0.2 } });
+      const cleared = await storage.patchChat('test-chat-1', {}, { unset: ['agentConfig'] });
+      expect(cleared.agentConfig).toBeUndefined();
+      expect((await storage.getChat('test-chat-1'))?.agentConfig).toBeUndefined();
+    });
+
     it('patchChat on a missing chat throws and writes nothing', async () => {
       adapter.save.mockClear();
       await expect(storage.patchChat('nope', { name: 'x' })).rejects.toThrow(/not found/);

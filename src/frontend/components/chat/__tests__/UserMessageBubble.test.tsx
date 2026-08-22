@@ -252,6 +252,36 @@ describe('UserMessageBubble', () => {
       expect(rendered.indexOf('trail.ts')).toBeGreaterThan(rendered.indexOf('Analyze these'));
     });
 
+    it('renders an inject-only message as bars on both sides with no bubble', () => {
+      const props = createProps({
+        message: createMessage({
+          content: {
+            type: 'text',
+            content: '',
+            renderingContent: [
+              {
+                category: 'backstage',
+                blocks: [{ type: 'injected_file', path: 'lead.ts', content: 'const a = 1;' }],
+              },
+              { category: 'text', blocks: [] },
+              {
+                category: 'backstage',
+                blocks: [{ type: 'injected_file', path: 'trail.ts', content: 'const b = 2;' }],
+              },
+            ],
+          },
+        }),
+      });
+      const { container } = render(<UserMessageBubble {...props} />);
+
+      expect(container.querySelector('.bg-blue-600')).toBeNull();
+      const rendered = container.textContent ?? '';
+      expect(rendered.indexOf('lead.ts')).toBeLessThan(rendered.indexOf('trail.ts'));
+      // The trailing bar sits below the (absent) bubble slot, not merged into the leading list.
+      expect(container.querySelector('.mt-1.w-full')?.textContent).toContain('trail.ts');
+      expect(container.querySelector('.mb-1.w-full')?.textContent).toContain('lead.ts');
+    });
+
     it('does not render file bars when no injected files present', () => {
       const props = createProps({
         message: createMessage({

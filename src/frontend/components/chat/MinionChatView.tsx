@@ -1,10 +1,11 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMinionChat } from '../../hooks/useMinionChat';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { formatTokenGroup } from '../../lib/messageFormatters';
-import { showDestructiveConfirm } from '../../lib/alerts';
+import { showAlert, showDestructiveConfirm } from '../../lib/alerts';
 import MessageList from './MessageList';
+import CloneMinionChatModal from './CloneMinionChatModal';
 
 interface MinionChatViewProps {
   minionChatId: string;
@@ -19,8 +20,17 @@ export default function MinionChatView({
 }: MinionChatViewProps) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const { minionChat, messages, isLoading, tokenUsage, deleteMessage, rollbackToMessage } =
-    useMinionChat(minionChatId);
+  const {
+    minionChat,
+    messages,
+    isLoading,
+    tokenUsage,
+    deleteMessage,
+    rollbackToMessage,
+    cloneToChat,
+    isCloning,
+  } = useMinionChat(minionChatId);
+  const [isCloneModalOpen, setIsCloneModalOpen] = useState(false);
 
   // claude-agent minions can't splice out a single message or rewind to a user
   // turn — the SDK only resumes at assistant UUIDs. Hide ❌ delete + user-message
@@ -47,6 +57,30 @@ export default function MinionChatView({
       navigate('/');
     }
   };
+
+  const handleClone = useCallback(
+    async (name: string) => {
+      try {
+        const { newChatId, notes } = await cloneToChat(name);
+        setIsCloneModalOpen(false);
+        // Close the overlay before navigating: ChatView is keyed by chatId, so
+        // the new chat remounts anyway, and leaving the overlay up for a frame
+        // flashes the old minion over the new chat.
+        onClose?.();
+        navigate(`/chat/${newChatId}`);
+        if (notes.length > 0) {
+          await showAlert('Cloned', notes.join('\n\n'));
+        }
+      } catch (error) {
+        console.debug('[MinionChatView] clone failed:', error);
+        await showAlert(
+          'Clone failed',
+          error instanceof Error ? error.message : 'Could not clone this minion chat.'
+        );
+      }
+    },
+    [cloneToChat, navigate, onClose]
+  );
 
   const handleDeleteMessage = useCallback(
     async (messageId: string) => {
@@ -103,7 +137,17 @@ export default function MinionChatView({
             <span className="truncate text-xs text-gray-500">{minionChatId}</span>
           </div>
           <button
+            onClick={() => setIsCloneModalOpen(true)}
+            disabled={isCloning || isLoading}
+            aria-label="Clone to a chat"
+            title="Clone to a chat"
+            className="flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100 disabled:opacity-40"
+          >
+            <span className="text-xl text-gray-700">⧉</span>
+          </button>
+          <button
             onClick={handleClose}
+            aria-label="Close"
             className="-mr-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
           >
             <span className="text-2xl text-gray-600">✕</span>
@@ -141,6 +185,16 @@ export default function MinionChatView({
         currentModelId={null}
         isClaudeAgentChat={isClaudeAgent}
       />
+
+      {isCloneModalOpen && (
+        <CloneMinionChatModal
+          minionChat={minionChat}
+          messageCount={messages.length}
+          isCloning={isCloning}
+          onCancel={() => setIsCloneModalOpen(false)}
+          onConfirm={handleClone}
+        />
+      )}
     </div>
   );
 }

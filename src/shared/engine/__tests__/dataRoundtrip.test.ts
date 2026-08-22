@@ -405,6 +405,42 @@ describe('Data Export/Import Roundtrip', () => {
     );
   });
 
+  it("preserves a chat's agentConfig and protect list through the roundtrip", async () => {
+    // The chat override layer rides inside the encrypted chat row, so no
+    // adapter or bundle change was needed — this pins that it stays true.
+    const agentConfig = {
+      systemPromptMode: 'replace',
+      persona: 'researcher',
+      prePersonaSystemPromptFile: '',
+      enabledTools: ['memory'],
+      temperature: 0,
+    };
+    const payload = JSON.stringify({
+      name: 'Cloned minion',
+      agentConfig,
+      claudeAgentProtectedSessionIds: ['sess-ancestor'],
+      clonedFromMinionChatId: 'mc_1',
+    });
+    mockData[Tables.CHATS].push({
+      id: 'chat_cloned',
+      encryptedData: `encrypted:${payload}`,
+      timestamp: '2024-01-05T10:00:00Z',
+      parentId: 'proj_1',
+    });
+
+    const csv = await collectCSV(mockExportAdapter);
+    await importDataFromFile(mockImportAdapter, csvToFile(csv), 'test-cek', mockAppEncryption);
+
+    const imported = getAllRecords(Tables.CHATS).find((c: ExportRow) => c.id === 'chat_cloned');
+    expect(imported).toBeDefined();
+    expect(imported!.encryptedData).toBe(`encrypted:${payload}`);
+    // `''` and `0` are values here, not inherits — they must not be lost.
+    expect(JSON.parse(imported!.encryptedData.slice('encrypted:'.length))).toMatchObject({
+      agentConfig: { prePersonaSystemPromptFile: '', temperature: 0 },
+      claudeAgentProtectedSessionIds: ['sess-ancestor'],
+    });
+  });
+
   it('should handle empty tables gracefully', async () => {
     // Create data with empty chats and messages
     mockData[Tables.CHATS] = [];

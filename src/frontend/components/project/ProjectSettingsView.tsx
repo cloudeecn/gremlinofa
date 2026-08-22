@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
@@ -33,8 +33,8 @@ import SystemPromptModal from './SystemPromptModal';
 import LongtextOptionEditor from './LongtextOptionEditor';
 import AnthropicReasoningConfig from './AnthropicReasoningConfig';
 import OpenAIReasoningConfig from './OpenAIReasoningConfig';
-import { gremlinClient } from '../../client';
-import type { ToolInventoryEntry } from '../../../shared/protocol/protocol';
+import { useToolInventory } from '../../hooks/useToolInventory';
+import ReasoningEffortSelect from './ReasoningEffortSelect';
 
 interface ProjectSettingsViewProps {
   projectId: string;
@@ -212,18 +212,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     ? `${apiDef ? getApiDefinitionIcon(apiDef) + ' ' : ''}${apiDef?.name || 'Unknown'} • ${selectedModelId}`
     : 'Select a model to get started';
 
-  // Tool inventory comes from the backend (the in-process registry lives
-  // server-side after the boundary cleanup). One-shot fetch on mount.
-  const [availableTools, setAvailableTools] = useState<ToolInventoryEntry[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    gremlinClient.listTools().then(tools => {
-      if (!cancelled) setAvailableTools(tools);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const availableTools = useToolInventory();
 
   // Helper functions for tool state management
   const isToolEnabled = useCallback(
@@ -442,7 +431,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       <SystemPromptModal
         key={project.id}
         isOpen={showSystemPromptModal}
-        projectId={project.id}
+        contextId={project.id}
         initialValue={project.systemPrompt || ''}
         onSave={async value => {
           setSystemPrompt(value);
@@ -647,35 +636,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
               {enableReasoning && (
                 <div className="space-y-6 bg-white p-4">
                   {/* Shared: Reasoning Effort (used by OpenAI/Nova directly, maps to output effort for Anthropic adaptive) */}
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-gray-900">
-                      Reasoning Effort
-                    </label>
-                    <select
-                      value={reasoningEffort ?? ''}
-                      onChange={e =>
-                        setReasoningEffort(
-                          e.target.value === ''
-                            ? undefined
-                            : (e.target.value as typeof reasoningEffort)
-                        )
-                      }
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                    >
-                      <option value="">(default)</option>
-                      <option value="none">None</option>
-                      <option value="minimal">Minimal</option>
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                      <option value="xhigh">Extra High</option>
-                      <option value="max">Max</option>
-                    </select>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Used by OpenAI/Nova models directly. For Anthropic adaptive reasoning (budget
-                      = 0), maps to output effort.
-                    </p>
-                  </div>
+                  <ReasoningEffortSelect value={reasoningEffort} onChange={setReasoningEffort} />
 
                   {/* Anthropic / Bedrock Claude Subsection */}
                   <div className="border-t border-gray-100 pt-4">

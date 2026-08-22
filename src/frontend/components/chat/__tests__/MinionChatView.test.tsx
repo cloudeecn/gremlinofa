@@ -75,6 +75,7 @@ const mockTokenUsage: TokenUsage = {
 
 const mockDeleteMessage = vi.fn();
 const mockRollbackToMessage = vi.fn();
+const mockCloneToChat = vi.fn();
 
 function renderView(minionChatId = 'mc_test', onMenuPress?: () => void, onClose?: () => void) {
   return render(
@@ -90,6 +91,7 @@ describe('MinionChatView', () => {
     capturedOnDeleteMessage = undefined;
     mockDeleteMessage.mockResolvedValue(undefined);
     mockRollbackToMessage.mockResolvedValue(undefined);
+    mockCloneToChat.mockResolvedValue({ newChatId: 'chat_new', notes: [] });
     mockUseMinionChat.mockReturnValue({
       minionChat: mockMinionChat,
       messages: mockMessages,
@@ -97,6 +99,8 @@ describe('MinionChatView', () => {
       tokenUsage: mockTokenUsage,
       deleteMessage: mockDeleteMessage,
       rollbackToMessage: mockRollbackToMessage,
+      cloneToChat: mockCloneToChat,
+      isCloning: false,
     });
   });
 

@@ -49,6 +49,8 @@ export interface APIClient {
       // Claude Agent SDK — chat-level session state (server-mode only)
       claudeAgentSessionId?: string;
       claudeAgentResumeAt?: string;
+      /** Branch into a new session instead of continuing `claudeAgentSessionId`. */
+      claudeAgentForkSession?: boolean;
     }
   ): AsyncGenerator<StreamChunk, StreamResult<unknown>, unknown>;
 

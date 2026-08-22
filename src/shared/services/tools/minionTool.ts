@@ -57,6 +57,21 @@ import { NUDGE_THINKING_DEFAULT } from '../api/apiService';
 import { JsVMContext } from './jsvm/JsVMContext';
 import type { HookInputMessage } from '../agentic/dummyHookRuntime';
 import { makeEmitterState, nextStreamingDelta, finalizeMessageDelta } from './toolGroupsDelta';
+import { shouldForkSession } from '../../engine/lib/claudeAgentSessionSharing';
+import {
+  findAssistantAnchorAtOrBefore,
+  rewindPatchFromAnchor,
+  type ClaudeAgentRewindAnchor,
+  type ClaudeAgentStampedMessage,
+} from '../../engine/lib/claudeAgentRewind';
+import {
+  AgentPromptError,
+  type AgentPromptSpec,
+  DEFAULT_PRE_PERSONA_FILE,
+  MINION_VFS_ROOT,
+  personaNamespace,
+  resolveAgentSystemPrompt,
+} from '../agentic/agentSystemPrompt';
 
 /** Truncate error messages to avoid wasting parent LLM context tokens */
 export function truncateError(message: string, limit = 200): string {
@@ -225,14 +240,98 @@ const DEFAULT_MAX_NESTING_DEPTH = 3;
 // Sentinel savepoint value meaning "before any messages" (enables first-run retry)
 export const SAVEPOINT_START = '_start';
 
+/**
+ * Resolve a minion call's persona, namespace and the four inputs
+ * `resolveAgentSystemPrompt` needs.
+ *
+ * Extracted so `deriveChatAgentConfigFromMinion` can be tested against the
+ * real thing rather than a transcription of it: a clone reproduces the
+ * minion's prompt exactly when these inputs and the ones derived for the chat
+ * layer agree, and `cloneMinionChat.equivalence.test.ts` asserts precisely
+ * that. Pure — no VFS reads happen here.
+ */
+export function resolveMinionPromptInputs(
+  minionInput: Pick<
+    MinionInput,
+    'persona' | 'prePersonaSystemPromptFile' | 'systemPrompt' | 'systemPromptFile'
+  >,
+  minionChat: Pick<
+    MinionChat,
+    'persona' | 'prePersonaSystemPromptFile' | 'systemPrompt' | 'systemPromptFile'
+  >,
+  minionToolOptions: ToolOptions
+): {
+  nsMode: string;
+  persona: string;
+  shouldNamespace: boolean;
+  usePersonaFile: boolean;
+  namespace: string | undefined;
+  spec: Omit<AgentPromptSpec, 'createVfsAdapter'>;
+} {
+  const nsMode = (minionToolOptions.namespacedMinion as string | undefined) ?? 'off';
+  const persona = minionInput.persona ?? minionChat.persona ?? 'default';
+  // 'persona' mode namespaces only non-default personas; 'all' namespaces everyone.
+  const shouldNamespace = nsMode !== 'off' && (nsMode === 'all' || persona !== 'default');
+  // A persona file, when one is read, replaces the tool-level configured prompt.
+  const usePersonaFile = shouldNamespace && persona !== 'default';
+
+  // Pre-persona prompt path: input -> persisted -> default. `typeof` cascade so
+  // '' explicitly disables the read instead of falling through to the default.
+  const prePersonaOverride =
+    typeof minionInput.prePersonaSystemPromptFile === 'string'
+      ? minionInput.prePersonaSystemPromptFile
+      : minionChat.prePersonaSystemPromptFile;
+
+  return {
+    nsMode,
+    persona,
+    shouldNamespace,
+    usePersonaFile,
+    namespace: shouldNamespace ? personaNamespace(persona) : undefined,
+    spec: {
+      persona: usePersonaFile ? persona : undefined,
+      // Only namespaced minions read a pre-persona file at all.
+      prePersonaFile: shouldNamespace ? prePersonaOverride : '',
+      inlineSegments: [
+        usePersonaFile
+          ? undefined
+          : typeof minionToolOptions.systemPrompt === 'string'
+            ? minionToolOptions.systemPrompt
+            : '',
+        minionInput.systemPrompt ?? minionChat.systemPrompt,
+      ],
+      promptFiles: minionInput.systemPromptFile ?? minionChat.systemPromptFile,
+    },
+  };
+}
+
+/**
+ * Map a resolver failure back to the minion's recovery text. These strings are
+ * the LLM's instructions for fixing the call, so they are reproduced verbatim —
+ * treat them as a behavioural contract, not as log messages.
+ */
+export function minionPromptErrorText(err: AgentPromptError): string {
+  switch (err.kind) {
+    case 'pre_persona_read_failed':
+      return `Error: Failed to read prePersonaSystemPromptFile: ${err.path}. ${err.detail} Pass a corrected path, '' to disable, or '${DEFAULT_PRE_PERSONA_FILE}' to restore the default. Resend to reattempt.`;
+    case 'persona_not_found':
+      return `Error: Persona file ${err.path} not found. Create the file or use a different persona. Resend to reattempt.`;
+    case 'prompt_file_read_failed':
+      return `Error: Failed to read system prompt file: ${err.path}. ${err.detail}`;
+  }
+}
+
 /** Input parameters for minion tool */
 interface MinionInput {
   /** Action: 'message' (default) sends a new message, 'retry' rolls back to savepoint and re-executes */
   action?: 'message' | 'retry';
   /** Optional: existing minion chat ID to continue a conversation */
   minionChatId?: string;
-  /** Task/message to send to the minion. Required for 'message' action, optional for 'retry'. */
-  message: string;
+  /**
+   * Task/message to send to the minion. Required for 'message' action unless
+   * `injectFiles` / `injectFilesAfter` carry the whole task; optional for 'retry'.
+   */
+  message?: string;
   /** Enable web search for the minion */
   enableWeb?: boolean;
   /** Scoped tools for the minion (intersected with project tools) */
@@ -271,6 +370,8 @@ interface MinionInput {
   systemPrompt?: string;
   /** VFS file path(s) to system prompt file(s). String or array of strings; contents appended after systemPrompt in order. */
   systemPromptFile?: string | string[];
+  /** Override the pre-persona ("global") prompt file path for namespaced personas (default /minions/_global.md). Empty string disables it. Persists on the minion chat. */
+  prePersonaSystemPromptFile?: string;
   /** Override nudge text appended to the last user message for this minion call. Empty string disables. */
   nudgeThinking?: string;
   /** Override how many recent user turns of thinking blocks to keep. -1 = all, 0+ = exact count. */
@@ -330,6 +431,38 @@ export function resolveRetryStash(
   const isTrueRetry =
     rollback.recoveredMessage !== undefined && message === rollback.recoveredMessage;
   return { isTrueRetry, stash: isTrueRetry ? rollback.stashedRetryContent : undefined };
+}
+
+/**
+ * True when the call injects at least one file. An inject-only call (no
+ * `message`) is a complete task: the file content becomes the message.
+ */
+export function hasInjectSpecs(input: {
+  injectFiles?: unknown[];
+  injectFilesAfter?: unknown[];
+}): boolean {
+  return Boolean(input.injectFiles?.length || input.injectFilesAfter?.length);
+}
+
+/**
+ * Inline assembly: leading files, end marker, message, trailing files. With
+ * no message text the separators around it would leave the payload starting
+ * or ending in blank lines, so an inject-only call is trimmed; a real message
+ * keeps its exact bytes.
+ */
+export function buildInlineContent(
+  prefix: string,
+  endMarker: string,
+  message: string,
+  suffix: string
+): string {
+  const assembled = prefix + endMarker + message + suffix;
+  return message === '' ? assembled.trim() : assembled;
+}
+
+/** True when a retry stash carries injected files that a re-send can rebuild. */
+function stashHasInjectedFiles(stash: StashedRetryContent | undefined): boolean {
+  return Boolean(stash?.injectedFiles?.length || stash?.injectedFilesAfter?.length);
 }
 
 /**
@@ -395,6 +528,11 @@ async function rollbackToSavepoint(
   const textContent = firstAfter.content.content as string;
   if (textContent) {
     recoveredMessage = stripVerifyFeedbackNote(textContent);
+  } else if (stashHasInjectedFiles(stashedRetryContent)) {
+    // Inject-only message in a structured mode: the text is legitimately empty
+    // and the files live in the stash, so the original is '' (recovered), not
+    // unrecoverable.
+    recoveredMessage = '';
   } else {
     recoveredMessage = extractToolResultText(firstAfter.content.fullContent) ?? undefined;
   }
@@ -451,28 +589,32 @@ async function rollbackToSavepoint(
  * resolves those).
  */
 export function findPriorAssistantClaudeAgentUuid(
-  messages: {
-    id: string;
-    role: string;
-    metadata?: { claudeAgentMessageUuid?: string; claudeAgentSessionId?: string };
-  }[],
+  messages: (ClaudeAgentStampedMessage & { id: string })[],
   savepoint: string | undefined
-): { uuid: string; sessionId?: string } | undefined {
+): ClaudeAgentRewindAnchor | undefined {
   if (!savepoint || savepoint === SAVEPOINT_START) {
     return undefined;
   }
   const savepointIdx = messages.findIndex(m => m.id === savepoint);
   if (savepointIdx < 0) return undefined;
-  for (let i = savepointIdx; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === 'assistant' && m.metadata?.claudeAgentMessageUuid) {
-      return {
-        uuid: m.metadata.claudeAgentMessageUuid,
-        sessionId: m.metadata.claudeAgentSessionId,
-      };
-    }
+  return findAssistantAnchorAtOrBefore(messages, savepointIdx);
+}
+
+/**
+ * Write a resolved anchor onto the minion chat row. Mutates in place because
+ * both callers save the row themselves after further bookkeeping.
+ */
+function applyRewindPatch(
+  minionChat: MinionChat,
+  anchor: ClaudeAgentRewindAnchor | undefined
+): void {
+  const patch = rewindPatchFromAnchor(anchor);
+  minionChat.claudeAgentResumeAt = patch.claudeAgentResumeAt;
+  // An unstamped anchor omits the session so the row keeps the one it has;
+  // no anchor at all clears it, dropping to a fresh session on the next send.
+  if ('claudeAgentSessionId' in patch) {
+    minionChat.claudeAgentSessionId = patch.claudeAgentSessionId;
   }
-  return undefined;
 }
 
 /**
@@ -482,7 +624,8 @@ export function findPriorAssistantClaudeAgentUuid(
  * drop the session entirely when there's no prior assistant — a failed first
  * turn, where a fresh session is the clean retry. No-op for non-claude-agent
  * minions, whose whole history lives in the rolled-back stored messages.
- * Mirrors the parent-chat rewind `computeClaudeAgentRewindBefore` (useChat).
+ * Shares its anchor arithmetic with the parent chat via
+ * `engine/lib/claudeAgentRewind` — the two used to mirror each other by hand.
  */
 export async function applyClaudeAgentRewindOnFailure(
   storage: UnifiedStorage,
@@ -497,27 +640,14 @@ export async function applyClaudeAgentRewindOnFailure(
     [...existingMessages, ...newMessages],
     minionChat.savepoint
   );
-  if (anchor) {
-    minionChat.claudeAgentResumeAt = anchor.uuid;
-    // Repoint the session to the anchor's stamped owner — the anchor may
-    // predate a session drop/fork, in which case the current session's file
-    // doesn't contain it. Legacy messages without the stamp keep the current
-    // session (the client's send-time fallback resolves those).
-    if (anchor.sessionId) {
-      minionChat.claudeAgentSessionId = anchor.sessionId;
-    }
-    console.debug(
-      '[minionTool] claude-agent %s: resumeAt=%s sessionId=%s (savepoint=%s)',
-      reason,
-      anchor.uuid,
-      anchor.sessionId ?? minionChat.claudeAgentSessionId,
-      minionChat.savepoint
-    );
-  } else {
-    minionChat.claudeAgentSessionId = undefined;
-    minionChat.claudeAgentResumeAt = undefined;
-    console.debug('[minionTool] claude-agent %s: dropped SDK session (no prior assistant)', reason);
-  }
+  applyRewindPatch(minionChat, anchor);
+  console.debug(
+    '[minionTool] claude-agent %s: resumeAt=%s sessionId=%s (savepoint=%s)',
+    reason,
+    anchor?.uuid ?? '(none — dropped session)',
+    minionChat.claudeAgentSessionId ?? '(none)',
+    minionChat.savepoint
+  );
   await storage.saveMinionChat(minionChat);
 }
 
@@ -529,7 +659,7 @@ export async function applyClaudeAgentRewindOnFailure(
  * everything before it is kept. Mirrors `applyClaudeAgentRewindOnFailure`, but the
  * rewind boundary is the rollback cutoff rather than the savepoint — the same
  * "resume up to and including the kept assistant" semantics the parent chat uses
- * in `computeClaudeAgentRewindKeeping` (useChat). No-op for non-claude-agent
+ * in `computeClaudeAgentRewindKeeping`. No-op for non-claude-agent
  * minions, whose whole history lives in the rolled-back stored messages.
  */
 export async function applyClaudeAgentRewindOnRollback(
@@ -543,23 +673,13 @@ export async function applyClaudeAgentRewindOnRollback(
   if (cutoffIdx === -1) return;
   const keptTailId = cutoffIdx > 0 ? messages[cutoffIdx - 1].id : undefined;
   const anchor = findPriorAssistantClaudeAgentUuid(messages, keptTailId);
-  if (anchor) {
-    minionChat.claudeAgentResumeAt = anchor.uuid;
-    // See applyClaudeAgentRewindOnFailure — anchor's stamped session wins.
-    if (anchor.sessionId) {
-      minionChat.claudeAgentSessionId = anchor.sessionId;
-    }
-    console.debug(
-      '[minionTool] claude-agent rollback: resumeAt=%s sessionId=%s (keptTail=%s)',
-      anchor.uuid,
-      anchor.sessionId ?? minionChat.claudeAgentSessionId,
-      keptTailId
-    );
-  } else {
-    minionChat.claudeAgentSessionId = undefined;
-    minionChat.claudeAgentResumeAt = undefined;
-    console.debug('[minionTool] claude-agent rollback: dropped SDK session (no prior assistant)');
-  }
+  applyRewindPatch(minionChat, anchor);
+  console.debug(
+    '[minionTool] claude-agent rollback: resumeAt=%s sessionId=%s (keptTail=%s)',
+    anchor?.uuid ?? '(none — dropped session)',
+    minionChat.claudeAgentSessionId ?? '(none)',
+    keptTailId
+  );
   await storage.saveMinionChat(minionChat);
 }
 
@@ -737,7 +857,8 @@ async function* executeRemoteMinion(
   }
 
   // Send message + files to the remote session
-  const fullMessage = injectedFilesPrefix + minionInput.message + injectedFilesSuffix;
+  const messageText = minionInput.message ?? '';
+  const fullMessage = buildInlineContent(injectedFilesPrefix, '', messageText, injectedFilesSuffix);
   const files = injectedFileEntries
     .filter(f => !f.error)
     .map(f => ({ path: f.path, content: f.content }));
@@ -780,7 +901,7 @@ async function* executeRemoteMinion(
   const personaLabel = minionChat.displayName ?? minionInput.displayName;
   const infoBlock: ToolInfoRenderBlock = {
     type: 'tool_info',
-    input: minionInput.message,
+    input: messageText,
     chatId: minionChat.id,
     persona: personaLabel,
     displayName: minionChat.displayName ?? minionInput.displayName,
@@ -960,10 +1081,15 @@ async function* executeMinionInner(
 
   const autoRollbackEnabled = toolOptions?.autoRollback === true;
   const verifyFeedbackEnabled = toolOptions?.verifyFeedback === true;
-  if (action === 'message' && !minionInput.message && !autoRollbackEnabled) {
+  if (
+    action === 'message' &&
+    !minionInput.message &&
+    !hasInjectSpecs(minionInput) &&
+    !autoRollbackEnabled
+  ) {
     return {
       content: truncateError(
-        'Error: "message" is required when action is "message" (or omitted). Resend to reattempt.'
+        'Error: "message" is required when action is "message" (or omitted) and no injectFiles / injectFilesAfter are given. Resend to reattempt.'
       ),
       isError: true,
     };
@@ -1065,6 +1191,8 @@ async function* executeMinionInner(
     if (minionInput.systemPrompt !== undefined) minionChat.systemPrompt = minionInput.systemPrompt;
     if (minionInput.systemPromptFile !== undefined)
       minionChat.systemPromptFile = minionInput.systemPromptFile;
+    if (minionInput.prePersonaSystemPromptFile !== undefined)
+      minionChat.prePersonaSystemPromptFile = minionInput.prePersonaSystemPromptFile;
     if (minionInput.nudgeThinking !== undefined)
       minionChat.nudgeThinking = minionInput.nudgeThinking;
     if (minionInput.thinkingKeepTurns !== undefined)
@@ -1099,9 +1227,11 @@ async function* executeMinionInner(
         };
       }
 
-      if (!minionInput.message && rollback.recoveredMessage) {
+      // A recovered '' is a real value (inject-only original) — only `undefined`
+      // means the original is lost.
+      if (!minionInput.message && rollback.recoveredMessage !== undefined) {
         minionInput.message = rollback.recoveredMessage;
-      } else if (!minionInput.message) {
+      } else if (!minionInput.message && !hasInjectSpecs(minionInput)) {
         return {
           content: truncateError(
             'Error: message required — original could not be recovered. Resend to reattempt.'
@@ -1109,7 +1239,7 @@ async function* executeMinionInner(
           isError: true,
         };
       }
-      const resolved = resolveRetryStash(rollback, minionInput.message);
+      const resolved = resolveRetryStash(rollback, minionInput.message ?? '');
       isTrueRetry = resolved.isTrueRetry;
       stashedRetryContent = resolved.stash;
 
@@ -1124,10 +1254,10 @@ async function* executeMinionInner(
           existingMessages,
           minionChat.savepoint
         );
-        if (!minionInput.message && rollback.recoveredMessage) {
+        if (!minionInput.message && rollback.recoveredMessage !== undefined) {
           minionInput.message = rollback.recoveredMessage;
         }
-        const resolved = resolveRetryStash(rollback, minionInput.message);
+        const resolved = resolveRetryStash(rollback, minionInput.message ?? '');
         isTrueRetry = resolved.isTrueRetry;
         stashedRetryContent = resolved.stash;
         existingMessages = await storage.getMinionMessages(minionChat.id);
@@ -1157,6 +1287,7 @@ async function* executeMinionInner(
       fileInjectionMode: minionInput.fileInjectionMode,
       systemPrompt: minionInput.systemPrompt,
       systemPromptFile: minionInput.systemPromptFile,
+      prePersonaSystemPromptFile: minionInput.prePersonaSystemPromptFile,
       nudgeThinking: minionInput.nudgeThinking,
       thinkingKeepTurns: minionInput.thinkingKeepTurns,
       pruneThinkingBeforeApiCall: minionInput.pruneThinkingBeforeApiCall,
@@ -1166,13 +1297,25 @@ async function* executeMinionInner(
     await storage.saveMinionChat(minionChat);
   }
 
-  // After autoRollback may have recovered a message, validate it's available
-  if (!minionInput.message) {
+  // After autoRollback may have recovered a message, validate there is a task to
+  // send: message text, freshly injected files, or stashed files a true retry
+  // can rebuild.
+  if (
+    !minionInput.message &&
+    !hasInjectSpecs(minionInput) &&
+    !stashHasInjectedFiles(stashedRetryContent)
+  ) {
     return {
-      content: truncateError('Error: "message" is required. Resend to reattempt.'),
+      content: truncateError(
+        'Error: "message" is required (or inject files to send). Resend to reattempt.'
+      ),
       isError: true,
     };
   }
+  // Every downstream path treats the message as a string; an inject-only call
+  // sends '' and lets the file content stand as the task.
+  const messageText = minionInput.message ?? '';
+  minionInput.message = messageText;
 
   // ── Phase 2: Validation + setup ──
   // No state change yet. Errors here mean caller should resend.
@@ -1399,7 +1542,7 @@ async function* executeMinionInner(
     const nsMode = minionToolOptions.namespacedMinion ?? 'off';
     const persona = minionInput.persona ?? minionChat.persona ?? 'default';
     const shouldNs = nsMode !== 'off' && (nsMode === 'all' || persona !== 'default');
-    const injectNsPrefix = shouldNs ? `/minions/${persona}` : undefined;
+    const injectNsPrefix = shouldNs ? personaNamespace(persona) : undefined;
     const rootAdapter = context.createVfsAdapter();
 
     const readInjectBatch = async (specs: Array<string | InjectFileSpec>) => {
@@ -1495,7 +1638,7 @@ async function* executeMinionInner(
       ? minionChat.persona
       : undefined);
   const infoGroup = buildInfoGroup(
-    minionInput.message,
+    messageText,
     minionChat.id,
     personaLabel,
     minionChat.displayName,
@@ -1539,7 +1682,7 @@ async function* executeMinionInner(
       role: 'user',
       content: {
         type: 'text',
-        content: minionInput.message,
+        content: messageText,
         modelFamily: stashedRetryContent.modelFamily,
         fullContent: stashedRetryContent.fullContent,
         renderingContent: stashedRetryContent.renderingContent,
@@ -1578,18 +1721,25 @@ async function* executeMinionInner(
       );
     }
 
-    // Return tool result: user's continuation message
+    // Return tool result: user's continuation message. A tool result is plain
+    // text, so injected files ride inline here whatever the injection mode.
+    const continuationText = buildInlineContent(
+      injectedFilesPrefix,
+      injectedFilesEndMarker,
+      messageText,
+      injectedFilesSuffix
+    );
     toolResultBlocks.push({
       type: 'tool_result',
       tool_use_id: pendingReturnToolUse.id,
       name: pendingReturnToolUse.name,
-      content: minionInput.message,
+      content: continuationText,
     });
     toolResultRenderBlocks.push(
       createToolResultRenderBlock(
         pendingReturnToolUse.id,
         pendingReturnToolUse.name,
-        minionInput.message,
+        continuationText,
         false,
         undefined,
         undefined,
@@ -1608,9 +1758,21 @@ async function* executeMinionInner(
       timestamp: new Date(),
     };
     toolResultMessage.content.toolResults = toolResultBlocks;
-    toolResultMessage.content.renderingContent = [
-      { category: 'backstage' as const, blocks: toolResultRenderBlocks },
-    ];
+    const continuationGroups: RenderingBlockGroup[] = [];
+    if (injectedFileEntries.length > 0) {
+      continuationGroups.push({
+        category: 'backstage',
+        blocks: injectedFileEntries.map(f => toInjectedFileBlock(f, injectFileLabel)),
+      });
+    }
+    continuationGroups.push({ category: 'backstage', blocks: toolResultRenderBlocks });
+    if (injectedFileAfterEntries.length > 0) {
+      continuationGroups.push({
+        category: 'backstage',
+        blocks: injectedFileAfterEntries.map(f => toInjectedFileBlock(f, injectFileLabel)),
+      });
+    }
+    toolResultMessage.content.renderingContent = continuationGroups;
 
     await storage.saveMinionMessage(minionChat.id, toolResultMessage);
 
@@ -1637,9 +1799,11 @@ async function* executeMinionInner(
           blocks: injectedFileEntries.map(f => toInjectedFileBlock(f, injectFileLabel)),
         });
       }
+      // The text group is the split point between leading and trailing file
+      // bars in the chat mirror, so an inject-only call still emits it — empty.
       renderingGroups.push({
         category: 'text',
-        blocks: [{ type: 'text', text: minionInput.message }],
+        blocks: messageText === '' ? [] : [{ type: 'text', text: messageText }],
       });
       if (injectedFileAfterEntries.length > 0) {
         renderingGroups.push({
@@ -1666,10 +1830,22 @@ async function* executeMinionInner(
     // pairs), so its downgrade must happen here at production time — the API
     // client can't undo stored messages. Block-level modes stay stored raw and
     // are downgraded client-side like every other provider.
-    const resolvedMode =
-      effectiveMode === 'mock-tool-call'
-        ? effectiveInjectionMode('mock-tool-call', apiDef.apiType)
-        : effectiveMode;
+    // An inject-only call can't use mock-tool-call either: the synthetic pairs
+    // must follow a user turn with content, and an empty user message is
+    // rejected by every provider (or, if skipped, leaves a fresh chat opening
+    // with an assistant turn). Downgrade to separate-block, which keeps the
+    // stored fields and the file bars intact.
+    let resolvedMode: typeof fileInjectionMode;
+    if (effectiveMode !== 'mock-tool-call') {
+      resolvedMode = effectiveMode;
+    } else if (messageText === '') {
+      console.debug(
+        '[minionTool] mock-tool-call: no message text, downgraded to separate-block for inject-only call'
+      );
+      resolvedMode = 'separate-block';
+    } else {
+      resolvedMode = effectiveInjectionMode('mock-tool-call', apiDef.apiType);
+    }
     const isMockToolCall = resolvedMode === 'mock-tool-call';
     const useStructuredInjection =
       !isMockToolCall &&
@@ -1690,8 +1866,13 @@ async function* executeMinionInner(
     // so the API client can build native blocks.
     const llmContent =
       isMockToolCall || useStructuredInjection
-        ? minionInput.message
-        : injectedFilesPrefix + injectedFilesEndMarker + minionInput.message + injectedFilesSuffix;
+        ? messageText
+        : buildInlineContent(
+            injectedFilesPrefix,
+            injectedFilesEndMarker,
+            messageText,
+            injectedFilesSuffix
+          );
 
     // Append the verify-feedback note to what the model receives AND to the
     // rendered mirror (spread, not push — the stash branch above may have
@@ -1801,95 +1982,30 @@ async function* executeMinionInner(
   const requestedPersonaGrant = minionInput.availablePersonas ?? minionChat.availablePersonas;
   const childAvailablePersonas = requestedPersonaGrant ?? personaCeiling;
 
-  // Resolve persona and namespace based on namespacedMinion mode
-  const nsMode = minionToolOptions.namespacedMinion ?? 'off';
-  let minionNamespace: string | undefined;
-  let minionSystemPrompt: string;
+  // Resolve persona, namespace and the four prompt inputs.
+  const promptInputs = resolveMinionPromptInputs(minionInput, minionChat, minionToolOptions);
+  const { persona, nsMode, namespace: minionNamespace } = promptInputs;
 
-  if (nsMode === 'off') {
-    // No namespace, no persona lookup
-    minionSystemPrompt =
-      typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
-  } else {
-    const persona = minionInput.persona ?? minionChat.persona ?? 'default';
-
+  if (nsMode !== 'off') {
     // Capability check: the caller may only spawn personas within its own
     // ceiling, and may only grant a subset of that ceiling onward.
     const delegationError = checkPersonaDelegation(personaCeiling, persona, requestedPersonaGrant);
     if (delegationError) {
       return { content: truncateError(`Error: ${delegationError} Resend.`), isError: true };
     }
-
-    // 'persona' mode: only non-default personas get namespaced
-    // 'all' mode: everyone gets namespaced including default
-    const shouldNamespace = nsMode === 'all' || persona !== 'default';
-
-    if (shouldNamespace) {
-      minionNamespace = `/minions/${persona}`;
-
-      // Read persona files from root VFS (no namespace)
-      const personaAdapter = context.createVfsAdapter();
-      let globalPrompt = '';
-      try {
-        globalPrompt = await personaAdapter.readFile('/minions/_global.md');
-      } catch {
-        // No global prompt — that's fine
-      }
-
-      if (persona !== 'default') {
-        // Read persona prompt from /minions/<persona>.md (root VFS, no namespace)
-        try {
-          const personaPrompt = await personaAdapter.readFile(`/minions/${persona}.md`);
-          minionSystemPrompt = [globalPrompt, personaPrompt].filter(Boolean).join('\n\n');
-        } catch {
-          return {
-            content: truncateError(
-              `Error: Persona file /minions/${persona}.md not found. Create the file or use a different persona. Resend to reattempt.`
-            ),
-            isError: true,
-          };
-        }
-      } else {
-        // Default persona in 'all' mode uses configured system prompt + global
-        const configuredPrompt =
-          typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
-        minionSystemPrompt = [globalPrompt, configuredPrompt].filter(Boolean).join('\n\n');
-      }
-    } else {
-      // 'persona' mode with default/no persona — behave like 'off'
-      minionSystemPrompt =
-        typeof minionToolOptions.systemPrompt === 'string' ? minionToolOptions.systemPrompt : '';
-    }
   }
 
-  // Append input-level systemPrompt (direct string), falling back to stored value
-  const effectiveSystemPrompt = minionInput.systemPrompt ?? minionChat.systemPrompt;
-  if (effectiveSystemPrompt) {
-    minionSystemPrompt = [minionSystemPrompt, effectiveSystemPrompt].filter(Boolean).join('\n\n');
-  }
-
-  // Append systemPromptFile content(s) (read from VFS), falling back to stored value.
-  // Accepts a single path or an array of paths; arrays are read in order and joined with blank lines.
-  const effectiveSystemPromptFile = minionInput.systemPromptFile ?? minionChat.systemPromptFile;
-  const promptFilePaths =
-    typeof effectiveSystemPromptFile === 'string'
-      ? [effectiveSystemPromptFile]
-      : (effectiveSystemPromptFile ?? []);
-  if (promptFilePaths.length > 0) {
-    const promptFileAdapter = context.createVfsAdapter();
-    for (const path of promptFilePaths) {
-      try {
-        const fileContent = await promptFileAdapter.readFile(path);
-        minionSystemPrompt = [minionSystemPrompt, fileContent].filter(Boolean).join('\n\n');
-      } catch (err) {
-        return {
-          content: truncateError(
-            `Error: Failed to read system prompt file: ${path}. ${err instanceof Error ? err.message : String(err)}`
-          ),
-          isError: true,
-        };
-      }
+  let minionSystemPrompt: string;
+  try {
+    minionSystemPrompt = await resolveAgentSystemPrompt({
+      createVfsAdapter: context.createVfsAdapter,
+      ...promptInputs.spec,
+    });
+  } catch (err) {
+    if (err instanceof AgentPromptError) {
+      return { content: truncateError(minionPromptErrorText(err)), isError: true };
     }
+    throw err;
   }
 
   // Build system prompts from enabled tools
@@ -2132,6 +2248,7 @@ async function* executeMinionInner(
     },
     claudeAgentSessionId: minionChat.claudeAgentSessionId,
     claudeAgentResumeAt: minionChat.claudeAgentResumeAt,
+    claudeAgentForkSession: shouldForkSession(minionChat),
   };
 
   // Delta-encoding emitter state. The minion ships `tool_groups_delta`
@@ -2232,20 +2349,14 @@ async function* executeMinionInner(
             case 'claude_agent_turn': {
               // Persist SDK session ID on the MinionChat row and clear any
               // pending resumeAt — same idempotent pattern ChatRunner uses
-              // for the parent-chat case.
-              const previousSessionId = minionChat.claudeAgentSessionId;
-              const needsSessionSave = previousSessionId !== event.sessionId;
+              // for the parent-chat case. Nothing is deleted; see
+              // engine/lib/claudeAgentSessionSharing.
+              const needsSessionSave = minionChat.claudeAgentSessionId !== event.sessionId;
               const needsResumeClear = minionChat.claudeAgentResumeAt !== undefined;
               if (needsSessionSave || needsResumeClear) {
                 minionChat.claudeAgentSessionId = event.sessionId;
                 minionChat.claudeAgentResumeAt = undefined;
                 await storage.saveMinionChat(minionChat);
-                // A changed id means a forked rewind superseded the old
-                // session. GC it only now — after the new id is durably on
-                // the minion chat row — so a crash never orphans the chat.
-                if (needsSessionSave && previousSessionId) {
-                  await apiService.deleteProviderSession('claude-agent', previousSessionId);
-                }
               }
               break;
             }
@@ -2778,6 +2889,11 @@ function renderMinionInput(input: Record<string, unknown>): string {
     if (files) lines.push(`PromptFile: ${files}`);
   }
 
+  if (minionInput.prePersonaSystemPromptFile !== undefined) {
+    const prePersona = minionInput.prePersonaSystemPromptFile;
+    lines.push(prePersona === '' ? 'PrePersonaFile: off' : `PrePersonaFile: ${prePersona}`);
+  }
+
   if (minionInput.nudgeThinking !== undefined) {
     const nudge = minionInput.nudgeThinking;
     lines.push(nudge === '' ? 'Nudge: off' : `Nudge: ${brief(nudge)}`);
@@ -2878,10 +2994,10 @@ async function getMinionSystemPromptInjection(
   const adapter = context.createVfsAdapter();
 
   try {
-    const dirExists = await adapter.isDirectory('/minions');
+    const dirExists = await adapter.isDirectory(MINION_VFS_ROOT);
     if (!dirExists) return '';
 
-    const entries = await adapter.readDir('/minions');
+    const entries = await adapter.readDir(MINION_VFS_ROOT);
     const allowedPersonas = context.minionAvailablePersonas
       ? new Set(context.minionAvailablePersonas)
       : undefined;
@@ -2901,7 +3017,7 @@ async function getMinionSystemPromptInjection(
         continue;
       }
       try {
-        const content = await adapter.readFile(`/minions/${file.name}`);
+        const content = await adapter.readFile(`${MINION_VFS_ROOT}/${file.name}`);
         const firstLine = content
           .split('\n')[0]
           .replace(/^#+\s*/, '')
@@ -2950,6 +3066,7 @@ function getMinionDescription(opts: ToolOptions): string {
     '- Provide a displayName to label this minion in the UI',
     '- Inject file context via injectFiles (array of VFS paths, or objects with path + optional preamble/postamble replacing the default framing). Contents are prepended to the message.',
     '- Use injectFilesAfter for the same thing with the contents appended after the message instead',
+    '- message may be omitted when injectFiles / injectFilesAfter carry the whole task: the file content becomes the message',
     '- Provide a verifyHook (name of a /hooks/<name>.js file) to validate minion output before savepoint advances. The hook returns null to approve or a string to reject.'
   );
 
@@ -3002,7 +3119,7 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
   properties.message = {
     type: 'string',
     description:
-      'The task or message to send to the minion. Required for "message" action. For "retry": omit to re-send the original, or provide a new message to replace it.',
+      'The task or message to send to the minion. Required for "message" action unless injectFiles / injectFilesAfter carry the whole task (their content becomes the message). For "retry": omit to re-send the original, or provide a new message to replace it.',
   };
   properties.enabledTools = {
     type: 'array',
@@ -3065,6 +3182,12 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
       type: 'string',
       description:
         'Persona name for the minion (matches a file in /minions/). Omit for default persona.',
+    };
+
+    properties.prePersonaSystemPromptFile = {
+      type: 'string',
+      description:
+        'Override the VFS path of the pre-persona prompt file read before the persona prompt (default /minions/_global.md). Empty string disables it. Persisted on the minion chat.',
     };
 
     // Add model enum when models list is configured

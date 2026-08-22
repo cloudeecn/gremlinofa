@@ -28,6 +28,7 @@ import type {
   APIDefinition,
   AttachmentSection,
   Chat,
+  ChatAgentConfig,
   Message,
   MessageAttachment,
   MinionChat,
@@ -48,7 +49,11 @@ import type {
   VfsAdapter,
   VfsStat,
 } from '../../shared/protocol/types/vfs';
-import type { AdminRecordView, TableName } from '../../shared/protocol/methods';
+import type {
+  AdminRecordView,
+  PromptSegment,
+  TableName,
+} from '../../shared/protocol/methods';
 import type {
   ActiveLoop,
   ConnectionState,
@@ -342,6 +347,26 @@ export class GremlinClient {
     forkMessageContent?: string
   ): Promise<{ newChatId: string }> {
     return this.request('cloneChat', { chatId, upToMessageId, forkMessageContent });
+  }
+
+  /** Promote a minion transcript into a regular chat, carrying its agent config. */
+  async cloneMinionChat(
+    minionChatId: string,
+    opts?: { targetProjectId?: string; name?: string }
+  ): Promise<{ newChatId: string; notes: string[] }> {
+    return this.request('cloneMinionChat', {
+      minionChatId,
+      targetProjectId: opts?.targetProjectId,
+      name: opts?.name,
+    });
+  }
+
+  /** Resolve a chat's system prompt; `overrides` previews an unsaved draft. */
+  async previewChatSystemPrompt(
+    chatId: string,
+    overrides?: ChatAgentConfig
+  ): Promise<{ text: string; segments: PromptSegment[] }> {
+    return this.request('previewChatSystemPrompt', { chatId, overrides });
   }
 
   async getMessageCount(chatId: string): Promise<number> {

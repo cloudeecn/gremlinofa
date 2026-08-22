@@ -225,6 +225,39 @@ describe('GremlinServer', () => {
       expect(storage.cloneChat).toHaveBeenCalledWith('source', 'p1', 'msg_anchor', 'forked text');
     });
 
+    it('cloneMinionChat throws MINION_CHAT_NOT_FOUND when the source is missing', async () => {
+      await expect(
+        server.handleRequest('cloneMinionChat', { minionChatId: 'missing' })
+      ).rejects.toMatchObject({ code: 'MINION_CHAT_NOT_FOUND' });
+    });
+
+    it('cloneMinionChat throws CHAT_BUSY when the PARENT chat has a running loop', async () => {
+      // Minion loops register under the parent chat's id, so that is the id
+      // that must be idle — cloning mid-run would copy a growing transcript.
+      vi.mocked(storage.getMinionChat).mockResolvedValue({
+        id: 'mc1',
+        parentChatId: 'parent-1',
+        projectId: 'p1',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+      });
+      server.registry.register(
+        {
+          loopId: 'live_minion',
+          chatId: 'parent-1',
+          startedAt: Date.now(),
+          status: 'running',
+          apiDefinitionId: 'api_1',
+          modelId: 'm1',
+        },
+        new AbortController()
+      );
+
+      await expect(
+        server.handleRequest('cloneMinionChat', { minionChatId: 'mc1' })
+      ).rejects.toMatchObject({ code: 'CHAT_BUSY' });
+    });
+
     it('getMessageCount returns wrapped count', async () => {
       vi.mocked(storage.getMessageCount).mockResolvedValue(42);
       const result = await server.handleRequest('getMessageCount', { chatId: 'c1' });

@@ -216,6 +216,13 @@ export interface AgenticLoopOptions {
   // is set (UI rollback / minion verifyHook retry).
   claudeAgentSessionId?: string;
   claudeAgentResumeAt?: string;
+  /**
+   * Resolved by `shouldForkSession`: this send rewinds into a session another
+   * record also resumes through, so it must branch instead of truncating in
+   * place. Decided engine-side because the client anchors *every* send, which
+   * leaves anchor presence unable to tell a rewind from a continuation.
+   */
+  claudeAgentForkSession?: boolean;
 
   /**
    * Hard-abort signal. When the controlling AbortController fires, the loop
@@ -1659,6 +1666,17 @@ export async function* runAgenticLoop(
       }
     }
 
+    // claude-agent session pointer, tracked across iterations. `options` holds
+    // the pre-turn state; once a turn reports its authoritative session id the
+    // rewind is spent, and replaying the pre-turn anchor would rewind again —
+    // with a fork flag attached, that strands the turn we just produced.
+    // Unreachable while `extractToolUseBlocks` returns [] for claude-agent (the
+    // SDK owns its own tool loop), which is exactly why it is worth closing
+    // structurally rather than by comment.
+    let claudeAgentSessionId = options.claudeAgentSessionId;
+    let claudeAgentResumeAt = options.claudeAgentResumeAt;
+    let claudeAgentForkSession = options.claudeAgentForkSession;
+
     while (iteration < MAX_ITERATIONS) {
       // Hard-abort fast path: bail out before doing any more work for this
       // iteration. The catch handler turns the thrown AbortError into the
@@ -1771,8 +1789,9 @@ export async function* runAgenticLoop(
           checkpointMessageId: tidyBoundaryId,
           tidyToolNames: deriveTidyToolNames(toolOptions),
           nudgeThinking: options.nudgeThinking,
-          claudeAgentSessionId: options.claudeAgentSessionId,
-          claudeAgentResumeAt: options.claudeAgentResumeAt,
+          claudeAgentSessionId,
+          claudeAgentResumeAt,
+          claudeAgentForkSession,
           cacheRoutingKey,
           // Forwarded only for the claude-agent provider: its in-process MCP
           // bridge dispatches our internal tools through `executeClientSideTool`
@@ -1947,10 +1966,11 @@ export async function* runAgenticLoop(
           apiDef.apiType === 'claude-agent' &&
           typeof result.providerExtra?.claudeAgentSessionId === 'string'
         ) {
-          yield {
-            type: 'claude_agent_turn',
-            sessionId: result.providerExtra.claudeAgentSessionId,
-          };
+          const authoritativeSessionId = result.providerExtra.claudeAgentSessionId;
+          yield { type: 'claude_agent_turn', sessionId: authoritativeSessionId };
+          claudeAgentSessionId = authoritativeSessionId;
+          claudeAgentResumeAt = undefined;
+          claudeAgentForkSession = false;
         }
 
         // claude-agent: free-run return value from a bridged `return` tool. The

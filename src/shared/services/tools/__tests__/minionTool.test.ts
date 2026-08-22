@@ -15,6 +15,7 @@ import {
   buildMinionTools,
   resolveChildNesting,
   checkPersonaDelegation,
+  minionPromptErrorText,
   truncateError,
   parseSimplifiedOutput,
   stripNsPrefix,
@@ -23,6 +24,8 @@ import {
   applyClaudeAgentRewindOnRollback,
   resolveRetryStash,
   stripVerifyFeedbackNote,
+  hasInjectSpecs,
+  buildInlineContent,
 } from '../minionTool';
 import { LoopRegistry } from '../../../engine/LoopRegistry';
 import type {
@@ -37,6 +40,7 @@ import type {
 import type { VfsAdapter } from '../../vfs/vfsAdapter';
 import type { UnifiedStorage } from '../../storage/unifiedStorage';
 import { stubBackendDeps } from './testStubs';
+import { AgentPromptError } from '../../agentic/agentSystemPrompt';
 
 // minionTool's tests don't reach into vfs adapter methods — the empty
 // stub satisfies ToolContext's shape.
@@ -193,6 +197,19 @@ describe('minionTool', () => {
       expect(desc).toContain('injectFilesAfter');
     });
 
+    it('description and message schema say message may be omitted for inject-only calls', () => {
+      const descFn = minionTool.description;
+      if (typeof descFn !== 'function') throw new Error('Expected description to be a function');
+      expect(descFn({})).toContain('message may be omitted');
+      const schema =
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema({})
+          : minionTool.inputSchema;
+      const message = schema.properties.message as { description: string };
+      expect(message.description).toContain('unless injectFiles / injectFilesAfter');
+      expect(schema.required).not.toContain('message');
+    });
+
     it('schema always includes displayName regardless of options', () => {
       const withNamespaced =
         typeof minionTool.inputSchema === 'function'
@@ -316,6 +333,23 @@ describe('minionTool', () => {
           ? minionTool.inputSchema({})
           : minionTool.inputSchema;
       expect(schema.properties).not.toHaveProperty('persona');
+    });
+
+    it('schema gates prePersonaSystemPromptFile on namespacedMinion', () => {
+      const buildSchema = (opts: ToolOptions) =>
+        typeof minionTool.inputSchema === 'function'
+          ? minionTool.inputSchema(opts)
+          : minionTool.inputSchema;
+      expect(buildSchema({ namespacedMinion: 'all' }).properties).toHaveProperty(
+        'prePersonaSystemPromptFile'
+      );
+      expect(buildSchema({ namespacedMinion: 'persona' }).properties).toHaveProperty(
+        'prePersonaSystemPromptFile'
+      );
+      expect(buildSchema({ namespacedMinion: 'off' }).properties).not.toHaveProperty(
+        'prePersonaSystemPromptFile'
+      );
+      expect(buildSchema({}).properties).not.toHaveProperty('prePersonaSystemPromptFile');
     });
 
     it('description mentions persona when namespacedMinion is "all"', () => {
@@ -840,6 +874,12 @@ describe('minionTool', () => {
       expect(result).not.toContain('Files:');
     });
 
+    it('renders an inject-only call without a trailing blank message line', () => {
+      const result = minionTool.renderInput!({ injectFiles: ['/a.ts'] });
+      expect(result).toContain('Files: /a.ts');
+      expect(result.endsWith('\n')).toBe(false);
+    });
+
     it('renders verifyHook name when specified', () => {
       const input = { message: 'Task', verifyHook: 'check-output' };
       const result = minionTool.renderInput!(input);
@@ -1068,6 +1108,36 @@ describe('minionTool', () => {
     });
   });
 
+  // The three strings below are the LLM's recovery instructions, not log
+  // output — `resolveAgentSystemPrompt` throws typed errors and this mapper is
+  // what preserves the wording the model has always seen. Byte-for-byte.
+  describe('minionPromptErrorText', () => {
+    it('reproduces the pre-persona failure text with its three recovery options', () => {
+      const err = new AgentPromptError(
+        'pre_persona_read_failed',
+        '/custom/global.md',
+        new Error('boom')
+      );
+      expect(minionPromptErrorText(err)).toBe(
+        "Error: Failed to read prePersonaSystemPromptFile: /custom/global.md. boom Pass a corrected path, '' to disable, or '/minions/_global.md' to restore the default. Resend to reattempt."
+      );
+    });
+
+    it('reproduces the persona-not-found text', () => {
+      const err = new AgentPromptError('persona_not_found', '/minions/ghost.md');
+      expect(minionPromptErrorText(err)).toBe(
+        'Error: Persona file /minions/ghost.md not found. Create the file or use a different persona. Resend to reattempt.'
+      );
+    });
+
+    it('reproduces the prompt-file failure text', () => {
+      const err = new AgentPromptError('prompt_file_read_failed', '/a.md', new Error('nope'));
+      expect(minionPromptErrorText(err)).toBe(
+        'Error: Failed to read system prompt file: /a.md. nope'
+      );
+    });
+  });
+
   describe('execute', () => {
     beforeEach(() => {
       vi.clearAllMocks();
@@ -1086,6 +1156,21 @@ describe('minionTool', () => {
       expect(result.isError).toBe(true);
       expect(result.content).toContain('"message" is required');
       expect(result.content).toContain('Resend to reattempt.');
+    });
+
+    it('inject-only call (no message) passes the Phase 1 message gate', async () => {
+      const result = await collectToolResult(
+        minionTool.execute({ injectFiles: ['/a.ts'] }, undefined, {
+          projectId: 'proj_123',
+          vfsAdapter: mockAdapter,
+          createVfsAdapter: mockAdapterFactory,
+          signal: new AbortController().signal,
+          ...mockDeps,
+        })
+      );
+      // Later phases still fail in this bare harness (no model configured),
+      // but never on the message requirement.
+      expect(result.content).not.toContain('"message" is required');
     });
 
     it('returns Phase 1 error when retry action has no minionChatId', async () => {
@@ -1633,6 +1718,33 @@ describe('claude-agent SDK rewind on failure', () => {
       expect(chat.claudeAgentResumeAt).toBeUndefined();
       expect(chat.claudeAgentSessionId).toBe('sess-1');
     });
+  });
+});
+
+describe('hasInjectSpecs', () => {
+  it('is true when either batch has at least one entry', () => {
+    expect(hasInjectSpecs({ injectFiles: ['/a.ts'] })).toBe(true);
+    expect(hasInjectSpecs({ injectFilesAfter: [{ path: '/a.ts' }] })).toBe(true);
+  });
+
+  it('is false for empty or absent batches', () => {
+    expect(hasInjectSpecs({})).toBe(false);
+    expect(hasInjectSpecs({ injectFiles: [], injectFilesAfter: [] })).toBe(false);
+  });
+});
+
+describe('buildInlineContent', () => {
+  it('keeps a real message byte-for-byte, separators included', () => {
+    expect(
+      buildInlineContent('=== a ===\nx\n\n', '=== end of files ===\n\n', 'go\n', '\n\ny')
+    ).toBe('=== a ===\nx\n\n=== end of files ===\n\ngo\n\n\ny');
+  });
+
+  it('trims the separators when there is no message text', () => {
+    expect(buildInlineContent('=== a ===\nx\n\n', '=== end of files ===\n\n', '', '')).toBe(
+      '=== a ===\nx\n\n=== end of files ==='
+    );
+    expect(buildInlineContent('', '', '', '\n\n=== b ===\ny')).toBe('=== b ===\ny');
   });
 });
 

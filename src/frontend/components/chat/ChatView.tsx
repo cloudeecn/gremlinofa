@@ -8,8 +8,10 @@ import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence
 import { processImages } from '../../lib/imageProcessor';
 import { gremlinClient } from '../../client';
 import { getApiDefinitionIcon } from '../../lib/apiTypeUtils';
+import { hasChatAgentOverrides } from '../../../shared/protocol/types';
 import type { MessageAttachment } from '../../../shared/protocol/types';
 import ModelSelector from '../project/ModelSelector';
+import ChatSettingsPanel from './ChatSettingsPanel';
 import Spinner from '../ui/Spinner';
 import ChatInput from './ChatInput';
 import MessageList from './MessageList';
@@ -53,7 +55,9 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   const [disableMath, setDisableMath] = useState(false);
   const [alwaysAutoScroll, setAlwaysAutoScroll] = useState(false);
   const [showViewMenu, setShowViewMenu] = useState(false);
+  const [showChatSettings, setShowChatSettings] = useState(false);
   const viewMenuRef = useRef<HTMLDivElement>(null);
+  const viewMenuButtonRef = useRef<HTMLButtonElement>(null);
 
   // Get API definitions for icon display
   const { apiDefinitions } = useApp();
@@ -160,6 +164,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   // Initialize useChat hook
   const {
     chat,
+    project,
     messages,
     isLoading,
     loopPhase,
@@ -180,6 +185,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     copyMessage,
     forkChat,
     overrideModel,
+    updateAgentConfig,
     updateChatName,
     resolvePendingToolCalls,
     rollbackToMessage,
@@ -209,7 +215,11 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
       }
     } else if (action === 'fork') {
       if (chat?.claudeAgentSessionId) {
-        // Forking a claude-agent chat would split the SDK session — not supported in MVP.
+        // Forking a claude-agent chat would split the SDK session. The hazard
+        // itself is solved — `claudeAgentProtectedSessionIds` is exactly what
+        // lets two records share an ancestor safely (see development.md) — so
+        // this is now unimplemented UI rather than a hard constraint: seed the
+        // protect list from the forked-at message's stamp, same as the clone.
         return;
       }
       const forkedChat = await forkChat(chatId, messageId);
@@ -397,7 +407,11 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
                 onClick={() => setShowModelSelector(true)}
                 className="truncate text-left text-xs text-gray-600 transition-colors hover:text-blue-600"
               >
-                {(chat.apiDefinitionId !== null || chat.modelId !== null) && '*'}
+                {(chat.apiDefinitionId !== null ||
+                  chat.modelId !== null ||
+                  hasChatAgentOverrides(chat)) && (
+                  <span title="This chat overrides some project settings">*</span>
+                )}
                 {currentApiDefId &&
                   (() => {
                     const apiDef = apiDefinitions.find(d => d.id === currentApiDefId);
@@ -409,7 +423,9 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
             {/* View menu */}
             <div ref={viewMenuRef} className="relative">
               <button
+                ref={viewMenuButtonRef}
                 onClick={() => setShowViewMenu(prev => !prev)}
+                aria-label="Chat menu"
                 className="flex h-11 w-11 items-center justify-center text-gray-600 hover:text-gray-900"
               >
                 <span className="text-xl">⋯</span>
@@ -443,6 +459,17 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
                   >
                     <span className="w-5 text-center">{alwaysAutoScroll ? '✓' : ''}</span>
                     <span>Always Auto Scroll</span>
+                  </button>
+                  <div className="my-1 border-t border-gray-200" />
+                  <button
+                    onClick={() => {
+                      setShowViewMenu(false);
+                      setShowChatSettings(true);
+                    }}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+                  >
+                    <span className="w-5 text-center">⚙</span>
+                    <span>Chat Settings</span>
                   </button>
                   <div className="my-1 border-t border-gray-200" />
                   <button
@@ -706,13 +733,32 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           </div>
         )}
 
+        {/* Chat settings — a full-bleed overlay, not a route: a route change
+            would tear down the live loop subscription mid-edit. */}
+        {showChatSettings && project && (
+          <ChatSettingsPanel
+            chat={chat}
+            project={project}
+            apiDefinitions={apiDefinitions}
+            currentApiDefId={currentApiDefId}
+            currentModelId={currentModelId}
+            onOpenModelSelector={() => setShowModelSelector(true)}
+            onSave={updateAgentConfig}
+            onClose={() => {
+              setShowChatSettings(false);
+              viewMenuButtonRef.current?.focus();
+            }}
+          />
+        )}
+
         {/* Minion Chat Overlay(s) — layered so drilling into a sub-minion
-            keeps the parent overlay mounted underneath; closing pops one. */}
+            keeps the parent overlay mounted underneath; closing pops one.
+            Above the chat settings panel (z-40), which is a sibling overlay. */}
         {minionChatStack.map((id, idx) => (
           <div
             key={`${idx}-${id}`}
             className="absolute inset-0 flex flex-col bg-white"
-            style={{ zIndex: 30 + idx }}
+            style={{ zIndex: 50 + idx }}
           >
             <MinionChatView
               minionChatId={id}

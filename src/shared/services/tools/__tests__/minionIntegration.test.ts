@@ -1568,6 +1568,84 @@ describe('Minion Integration', () => {
         ])
       );
     });
+
+    it('inlines injected files into the return tool_result, message or not', async () => {
+      const existingChat: MinionChat = {
+        id: 'minion_return_inject',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+      };
+      mockStorageData.minionChats.set('minion_return_inject', existingChat);
+      mockStorageData.minionMessages.set('minion_return_inject', [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          content: { type: 'text', content: 'Do something' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          content: {
+            type: 'text',
+            content: '',
+            fullContent: [
+              { type: 'tool_use', id: 'toolu_return_2', name: 'return', input: { result: 'r' } },
+            ],
+          },
+          timestamp: new Date(),
+        },
+      ]);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([
+        { type: 'tool_use', id: 'toolu_return_2', name: 'return', input: { result: 'r' } },
+      ]);
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], {
+          textContent: 'ok',
+          fullContent: [{ type: 'text', text: 'ok' }],
+          stopReason: 'end_turn',
+          inputTokens: 1,
+          outputTokens: 1,
+        }) as never
+      );
+      const fileAdapter = { readFile: vi.fn(async () => 'const z = 3;') } as unknown as VfsAdapter;
+
+      // Inject-only continuation after a return call: no message at all.
+      await collectToolResult(
+        minionTool.execute(
+          {
+            minionChatId: 'minion_return_inject',
+            injectFiles: ['/z.ts'],
+            fileLineNumbers: false,
+            fileInjectionMode: 'separate-block',
+          },
+          { model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' } },
+          {
+            projectId: 'proj_test',
+            chatId: 'chat_test',
+            vfsAdapter: minionAdapter,
+            createVfsAdapter: () => fileAdapter,
+            signal: new AbortController().signal,
+            ...mockMinionDeps,
+          }
+        )
+      );
+
+      const saved = mockStorageData.minionMessages.get('minion_return_inject') ?? [];
+      const toolResultMsg = saved[2];
+      const resultBlock = toolResultMsg.content.toolResults!.find(
+        tr => tr.tool_use_id === 'toolu_return_2'
+      )!;
+      expect(resultBlock.content).toContain('=== /z.ts ===');
+      expect(resultBlock.content).toContain('const z = 3;');
+      expect(resultBlock.content.endsWith('=== end of files ===')).toBe(true);
+      const renderedFiles = (toolResultMsg.content.renderingContent as RenderingBlockGroup[])
+        .flatMap(g => g.blocks)
+        .filter(b => b.type === 'injected_file');
+      expect(renderedFiles).toHaveLength(1);
+    });
   });
 
   describe('savepoint population', () => {
@@ -2111,6 +2189,42 @@ describe('Minion Integration', () => {
         injectionMode?: string;
       };
       expect(content.content).toBe('analyze');
+      expect(content.injectionMode).toBe('separate-block');
+      expect(content.injectedFiles).toEqual([{ path: '/f.ts', content: 'const x = 1;' }]);
+    });
+
+    it('retry of an inject-only separate-block message recovers it from the stash', async () => {
+      setupInjectedRetryChat('separate-block');
+      // Make the rolled-back message inject-only: no text, files carried in the fields.
+      const stored = mockStorageData.minionMessages.get('minion_inject_retry')!;
+      const injectOnly = stored.find(m => m.id === 'msg_user_2')!;
+      injectOnly.content.content = '';
+      injectOnly.content.renderingContent = [
+        { category: 'text', blocks: [] },
+        {
+          category: 'backstage',
+          blocks: [{ type: 'injected_file', path: '/f.ts', content: 'const x = 1;' }],
+        },
+      ];
+      setupMockStream();
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { action: 'retry', minionChatId: 'minion_inject_retry' },
+          toolOptions,
+          context
+        )
+      );
+      expect(result.isError).toBeUndefined();
+
+      const sent = vi.mocked(apiService.sendMessageStream).mock.calls[0][0] as Message<unknown>[];
+      const lastUserMsg = sent.filter(m => m.role === 'user').pop()!;
+      const content = lastUserMsg.content as {
+        content: string;
+        injectedFiles?: unknown;
+        injectionMode?: string;
+      };
+      expect(content.content).toBe('');
       expect(content.injectionMode).toBe('separate-block');
       expect(content.injectedFiles).toEqual([{ path: '/f.ts', content: 'const x = 1;' }]);
     });
@@ -3145,6 +3259,92 @@ describe('Minion Integration', () => {
       expect(body).toContain('     1\tconst x = 1;');
     });
 
+    describe('inject-only calls (no message)', () => {
+      it('inline mode sends the file sections as the whole message, trimmed', async () => {
+        const body = firstUserContent(
+          await runInject({ message: undefined, fileLineNumbers: false })
+        );
+        expect(body.startsWith('=== /f.ts ===')).toBe(true);
+        expect(body.endsWith('=== end of files ===')).toBe(true);
+        expect(body).toContain(FILE_BODY);
+      });
+
+      it('inline mode with a trailing-only batch has no leading blank lines', async () => {
+        const body = firstUserContent(
+          await runInject({
+            message: undefined,
+            fileLineNumbers: false,
+            injectFiles: undefined,
+            injectFilesAfter: ['/after.ts'],
+          })
+        );
+        expect(body.startsWith('=== /after.ts ===')).toBe(true);
+        expect(body).not.toContain('=== end of files ===');
+      });
+
+      it('separate-block stores empty text plus the files, with an empty text group as the split', async () => {
+        const messages = await runInject({
+          message: undefined,
+          fileInjectionMode: 'separate-block',
+          fileLineNumbers: false,
+          injectFiles: ['/lead.ts'],
+          injectFilesAfter: ['/trail.ts'],
+        });
+        const content = messages.find(m => m.role === 'user')!.content as {
+          content: string;
+          injectedFiles?: Array<{ path: string }>;
+          injectedFilesAfter?: Array<{ path: string }>;
+          renderingContent: RenderingBlockGroup[];
+        };
+        expect(content.content).toBe('');
+        expect(content.injectedFiles).toEqual([{ path: '/lead.ts', content: FILE_BODY }]);
+        expect(content.injectedFilesAfter).toEqual([{ path: '/trail.ts', content: FILE_BODY }]);
+        const shape = content.renderingContent.map(g => [
+          g.category,
+          ...g.blocks.map(b => (b as { path?: string }).path ?? b.type),
+        ]);
+        expect(shape).toEqual([['backstage', '/lead.ts'], ['text'], ['backstage', '/trail.ts']]);
+      });
+
+      it('mock-tool-call downgrades to separate-block instead of emitting synthetic pairs', async () => {
+        const messages = await runInject({
+          message: undefined,
+          fileInjectionMode: 'mock-tool-call',
+          fileLineNumbers: false,
+        });
+        expect(messages.some(m => m.content.toolResults?.length)).toBe(false);
+        expect(messages.some(m => m.content.toolCalls?.length)).toBe(false);
+        const content = messages.find(m => m.role === 'user')!.content as {
+          content: string;
+          injectedFiles?: Array<{ path: string }>;
+          injectionMode?: string;
+        };
+        expect(content.content).toBe('');
+        expect(content.injectionMode).toBe('separate-block');
+        expect(content.injectedFiles).toEqual([{ path: '/f.ts', content: FILE_BODY }]);
+      });
+
+      it('rejects a call with neither message nor files', async () => {
+        vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+        const result = await collectToolResult(
+          minionTool.execute(
+            { injectFiles: [] },
+            { model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' } },
+            {
+              projectId: 'proj_test',
+              chatId: 'chat_test',
+              vfsAdapter: minionAdapter,
+              createVfsAdapter: fileAdapterFactory(),
+              signal: new AbortController().signal,
+              ...mockMinionDeps,
+            }
+          )
+        );
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain('"message" is required');
+      });
+    });
+
     it('claude-agent downgrades mock-tool-call to separate-block at production time', async () => {
       const apiDef = mockStorageData.apiDefinitions.get('api_test')!;
       mockStorageData.apiDefinitions.set('api_test', { ...apiDef, apiType: 'claude-agent' });
@@ -3307,6 +3507,199 @@ describe('Minion Integration', () => {
       expect(result.content).toContain('/p/missing.md');
       expect(result.content).not.toContain('/p/a.md');
       expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('prePersonaSystemPromptFile', () => {
+    function buildAdapterFactory(files: Record<string, string | Error>) {
+      const adapter = {
+        readFile: vi.fn(async (path: string) => {
+          const v = files[path];
+          if (v instanceof Error) throw v;
+          if (v === undefined) throw new Error(`Path not found: ${path}`);
+          return v;
+        }),
+      } as unknown as VfsAdapter;
+      return { factory: () => adapter, adapter };
+    }
+
+    const okStream = () => {
+      const mockResult = {
+        textContent: 'ok',
+        fullContent: [{ type: 'text', text: 'ok' }],
+        stopReason: 'end_turn',
+        inputTokens: 10,
+        outputTokens: 5,
+      };
+      return createMockStream([{ type: 'content', content: 'ok' }], mockResult);
+    };
+
+    function buildContext(factory: () => VfsAdapter): ToolContext {
+      return {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: factory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+    }
+
+    const namespacedAllOptions: ToolOptions = {
+      model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      systemPrompt: 'CONFIGURED_PROMPT',
+      namespacedMinion: 'all',
+    };
+
+    it('reads /minions/_global.md by default in namespaced mode', async () => {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const { factory } = buildAdapterFactory({ '/minions/_global.md': 'GLOBAL_BODY' });
+
+      const result = await collectToolResult(
+        minionTool.execute({ message: 'go' }, namespacedAllOptions, buildContext(factory))
+      );
+
+      expect(result.isError).toBeUndefined();
+      const sp = vi.mocked(apiService.sendMessageStream).mock.calls[0][3].systemPrompt as string;
+      expect(sp).toContain('GLOBAL_BODY');
+      expect(sp.indexOf('GLOBAL_BODY')).toBeLessThan(sp.indexOf('CONFIGURED_PROMPT'));
+    });
+
+    it('missing default global file is silently skipped', async () => {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const { factory } = buildAdapterFactory({});
+
+      const result = await collectToolResult(
+        minionTool.execute({ message: 'go' }, namespacedAllOptions, buildContext(factory))
+      );
+
+      expect(result.isError).toBeUndefined();
+      const sp = vi.mocked(apiService.sendMessageStream).mock.calls[0][3].systemPrompt as string;
+      expect(sp).toContain('CONFIGURED_PROMPT');
+    });
+
+    it('override path replaces _global.md entirely', async () => {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const { factory, adapter } = buildAdapterFactory({
+        '/minions/_global.md': 'GLOBAL_BODY',
+        '/prompts/team.md': 'TEAM_BODY',
+      });
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'go', prePersonaSystemPromptFile: '/prompts/team.md' },
+          namespacedAllOptions,
+          buildContext(factory)
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+      const sp = vi.mocked(apiService.sendMessageStream).mock.calls[0][3].systemPrompt as string;
+      expect(sp).toContain('TEAM_BODY');
+      expect(sp).not.toContain('GLOBAL_BODY');
+      expect(adapter.readFile).not.toHaveBeenCalledWith('/minions/_global.md');
+    });
+
+    it('override body appears before the persona prompt', async () => {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const { factory } = buildAdapterFactory({
+        '/prompts/team.md': 'TEAM_BODY',
+        '/minions/coder.md': 'CODER_PERSONA_BODY',
+      });
+      const personaOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+        namespacedMinion: 'persona',
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'go', persona: 'coder', prePersonaSystemPromptFile: '/prompts/team.md' },
+          personaOptions,
+          buildContext(factory)
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+      const sp = vi.mocked(apiService.sendMessageStream).mock.calls[0][3].systemPrompt as string;
+      const teamIdx = sp.indexOf('TEAM_BODY');
+      const personaIdx = sp.indexOf('CODER_PERSONA_BODY');
+      expect(teamIdx).toBeGreaterThan(-1);
+      expect(personaIdx).toBeGreaterThan(teamIdx);
+    });
+
+    it('missing custom path is a hard error naming the path', async () => {
+      const { factory } = buildAdapterFactory({ '/minions/_global.md': 'GLOBAL_BODY' });
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'go', prePersonaSystemPromptFile: '/nope.md' },
+          namespacedAllOptions,
+          buildContext(factory)
+        )
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('/nope.md');
+      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+    });
+
+    it('empty string disables the global prompt', async () => {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const { factory, adapter } = buildAdapterFactory({ '/minions/_global.md': 'GLOBAL_BODY' });
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'go', prePersonaSystemPromptFile: '' },
+          namespacedAllOptions,
+          buildContext(factory)
+        )
+      );
+
+      expect(result.isError).toBeUndefined();
+      const sp = vi.mocked(apiService.sendMessageStream).mock.calls[0][3].systemPrompt as string;
+      expect(sp).not.toContain('GLOBAL_BODY');
+      expect(adapter.readFile).not.toHaveBeenCalledWith('/minions/_global.md');
+    });
+
+    it('persists on the minion chat and applies on continuation', async () => {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const { factory } = buildAdapterFactory({
+        '/minions/_global.md': 'GLOBAL_BODY',
+        '/prompts/team.md': 'TEAM_BODY',
+      });
+      const context = buildContext(factory);
+
+      const first = await collectToolResult(
+        minionTool.execute(
+          { message: 'go', prePersonaSystemPromptFile: '/prompts/team.md' },
+          namespacedAllOptions,
+          context
+        )
+      );
+      expect(first.isError).toBeUndefined();
+      const savedChat = vi.mocked(storage.saveMinionChat).mock.calls[0][0] as MinionChat;
+      expect(savedChat.prePersonaSystemPromptFile).toBe('/prompts/team.md');
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(okStream() as never);
+      const second = await collectToolResult(
+        minionTool.execute(
+          { minionChatId: savedChat.id, message: 'continue' },
+          namespacedAllOptions,
+          context
+        )
+      );
+
+      expect(second.isError).toBeUndefined();
+      const secondCall = vi.mocked(apiService.sendMessageStream).mock.calls.at(-1);
+      const sp = secondCall?.[3].systemPrompt as string;
+      expect(sp).toContain('TEAM_BODY');
+      expect(sp).not.toContain('GLOBAL_BODY');
     });
   });
 

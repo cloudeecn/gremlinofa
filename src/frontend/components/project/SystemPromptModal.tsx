@@ -5,22 +5,29 @@ import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence
 
 interface SystemPromptModalProps {
   isOpen: boolean;
-  projectId: string;
+  /**
+   * Draft-persistence key, nothing more — a project id from project settings,
+   * a chat id from the chat settings panel. Named for what it does so a
+   * non-project caller isn't forced to lie about it.
+   */
+  contextId: string;
   initialValue: string; // From DB
+  title?: string;
   onSave: (value: string) => Promise<void>;
   onCancel: () => void;
 }
 
 /**
- * Modal for editing project system prompt with draft persistence.
+ * Modal for editing a system prompt with draft persistence.
  *
- * IMPORTANT: Parent component must use `key={projectId}` on this component
- * to ensure proper state reset when switching between projects.
+ * IMPORTANT: Parent component must use `key={contextId}` on this component
+ * to ensure proper state reset when switching between contexts.
  */
 export default function SystemPromptModal({
   isOpen,
-  projectId,
+  contextId,
   initialValue,
+  title = 'System Prompt',
   onSave,
   onCancel,
 }: SystemPromptModalProps) {
@@ -31,7 +38,7 @@ export default function SystemPromptModal({
 
   useDraftPersistence({
     place: 'system-prompt-modal',
-    contextId: projectId,
+    contextId,
     value: systemPrompt,
     onChange: setSystemPrompt,
     enabled: isOpen,
@@ -40,12 +47,12 @@ export default function SystemPromptModal({
   const handleSave = useCallback(async () => {
     setIsSaving(true);
     try {
-      clearDraft('system-prompt-modal', projectId);
+      clearDraft('system-prompt-modal', contextId);
       await onSave(systemPrompt);
     } finally {
       setIsSaving(false);
     }
-  }, [systemPrompt, projectId, onSave]);
+  }, [systemPrompt, contextId, onSave]);
 
   const handleCancel = useCallback(() => {
     // Keep draft in localStorage for next time
@@ -53,16 +60,16 @@ export default function SystemPromptModal({
   }, [onCancel]);
 
   const handleRevert = useCallback(() => {
-    clearDraft('system-prompt-modal', projectId);
+    clearDraft('system-prompt-modal', contextId);
     setSystemPrompt(initialValue);
-  }, [projectId, initialValue]);
+  }, [contextId, initialValue]);
 
   return (
     <Modal isOpen={isOpen} onClose={onCancel} size="xl" position="bottom">
       <div className="flex max-h-[85dvh] flex-col rounded-t-2xl bg-white md:max-h-[700px] md:rounded-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-200 p-4">
-          <h2 className="text-lg font-semibold text-gray-900">System Prompt</h2>
+          <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
           <button
             onClick={handleCancel}
             className="flex h-11 w-11 items-center justify-center text-gray-600 transition-colors hover:text-gray-900"

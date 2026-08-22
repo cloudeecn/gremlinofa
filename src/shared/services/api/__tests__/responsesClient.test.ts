@@ -808,6 +808,64 @@ describe('ResponsesClient', () => {
     });
   });
 
+  describe('injected-file content items', () => {
+    const captureUserContent = async (text: string, withFiles = true) => {
+      mockGetModel.mockResolvedValueOnce({ id: 'gpt-5', apiType: 'responses_api' });
+      const mockClient = {
+        responses: {
+          create: vi.fn().mockResolvedValue({ output: [], usage: {} }),
+          stream: vi.fn(),
+        },
+      };
+      (OpenAI as MockedClass<typeof OpenAI>).mockImplementation(function (this: any) {
+        return mockClient as any;
+      });
+
+      const messages: Message<any>[] = [
+        {
+          id: 'msg1',
+          role: 'user',
+          content: {
+            type: 'text',
+            content: text,
+            ...(withFiles && {
+              injectedFiles: [{ path: '/f.ts', content: 'const x = 1;' }],
+              injectionMode: 'separate-block',
+            }),
+          },
+          timestamp: new Date(),
+        },
+      ];
+      const generator = client.sendMessageStream(messages, 'gpt-5', mockApiDefinition, {
+        maxTokens: 2048,
+        enableReasoning: true,
+        reasoningBudgetTokens: 2048,
+        signal: new AbortController().signal,
+        disableStream: true,
+      });
+      for await (const _chunk of generator) {
+        // drain
+      }
+      const request = mockClient.responses.create.mock.calls[0][0];
+      return request.input[0].content as Array<{ type: string; text?: string }>;
+    };
+
+    it('emits the file item and the text item for a message with text', async () => {
+      const items = await captureUserContent('analyze');
+      expect(items.map(i => i.text)).toEqual(['=== /f.ts ===\nconst x = 1;', 'analyze']);
+    });
+
+    it('skips the empty text item for an inject-only message', async () => {
+      const items = await captureUserContent('');
+      expect(items.map(i => i.text)).toEqual(['=== /f.ts ===\nconst x = 1;']);
+    });
+
+    it('still sends one empty text item for a message with nothing at all', async () => {
+      const items = await captureUserContent('', false);
+      expect(items).toEqual([{ type: 'input_text', text: '' }]);
+    });
+  });
+
   describe('verbosity', () => {
     // Drains a non-streaming call and hands back the request params the SDK saw.
     const captureRequest = async (

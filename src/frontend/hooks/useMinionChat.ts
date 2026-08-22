@@ -9,12 +9,16 @@ export interface UseMinionChatResult {
   tokenUsage: TokenUsage;
   deleteMessage: (messageId: string) => Promise<void>;
   rollbackToMessage: (messageId: string) => Promise<void>;
+  /** Promote this transcript into a regular chat; resolves to the new chat id. */
+  cloneToChat: (name?: string) => Promise<{ newChatId: string; notes: string[] }>;
+  isCloning: boolean;
 }
 
 export function useMinionChat(minionChatId: string): UseMinionChatResult {
   const [minionChat, setMinionChat] = useState<MinionChat | null>(null);
   const [messages, setMessages] = useState<Message<unknown>[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isCloning, setIsCloning] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,5 +79,26 @@ export function useMinionChat(minionChatId: string): UseMinionChatResult {
     [messages, minionChatId]
   );
 
-  return { minionChat, messages, isLoading, tokenUsage, deleteMessage, rollbackToMessage };
+  const cloneToChat = useCallback(
+    async (name?: string) => {
+      setIsCloning(true);
+      try {
+        return await gremlinClient.cloneMinionChat(minionChatId, { name });
+      } finally {
+        setIsCloning(false);
+      }
+    },
+    [minionChatId]
+  );
+
+  return {
+    minionChat,
+    messages,
+    isLoading,
+    tokenUsage,
+    deleteMessage,
+    rollbackToMessage,
+    cloneToChat,
+    isCloning,
+  };
 }

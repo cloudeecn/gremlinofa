@@ -33,6 +33,11 @@ import type { StorageConfig } from '../protocol/types/storageConfig';
 import { ClientSideToolRegistry } from '../services/tools/clientSideTools';
 import { registerAllTools } from '../services/tools';
 import { applyClaudeAgentRewindOnRollback } from '../services/tools/minionTool';
+import { resolveAgentSystemPromptSegments } from '../services/agentic/agentSystemPrompt';
+import { cloneMinionChatToChat } from './cloneMinionChat';
+import { loadChatLoopContext } from './buildLoopOptions';
+import { resolveChatAgentSettings } from './lib/resolveChatAgentConfig';
+import type { PromptSegment } from '../protocol/methods';
 import type { VfsAdapter } from '../services/vfs/vfsAdapter';
 import { generateUniqueId } from '../protocol/idGenerator';
 import { apiKeyOptional } from '../protocol/apiDefinition';
@@ -353,6 +358,44 @@ export class GremlinServer {
         }
         return { newChatId: cloned.id };
       }
+      case 'cloneMinionChat': {
+        const minionChat = await this.storage.getMinionChat(params.minionChatId);
+        if (!minionChat) {
+          throw new ProtocolError(
+            'MINION_CHAT_NOT_FOUND',
+            `minion chat ${params.minionChatId} not found`
+          );
+        }
+        // Minion loops register under the PARENT chat's id, so that is what
+        // has to be idle — otherwise the transcript can grow mid-copy.
+        if (this.registry.hasRunningLoopForChat(minionChat.parentChatId)) {
+          throw new ProtocolError(
+            'CHAT_BUSY',
+            `chat ${minionChat.parentChatId} has a running loop; stop it before cloning`
+          );
+        }
+        const { chat, notes } = await cloneMinionChatToChat(this.storage, params.minionChatId, {
+          targetProjectId: params.targetProjectId,
+          name: params.name,
+          // A message stamp can name a session a later fork GC'd; the uuid
+          // survives in the fork, and that fork is what the clone resumes
+          // through and must not lose. `inspectProviderMessage` answers
+          // "which session holds this uuid now" (stated first, scan fallback),
+          // and throws in worker mode — the clone catches it and falls back to
+          // the stamp.
+          resolveAnchorSession: async (statedSessionId, uuid) => {
+            const found = await this.deps.apiService.inspectProviderMessage(
+              'claude-agent',
+              statedSessionId,
+              uuid
+            );
+            return found?.sessionId;
+          },
+        });
+        return { newChatId: chat.id, notes };
+      }
+      case 'previewChatSystemPrompt':
+        return this.previewChatSystemPrompt(params.chatId, params.overrides);
       case 'getMessageCount':
         return { count: await this.storage.getMessageCount(params.chatId) };
 
@@ -1644,6 +1687,90 @@ export class GremlinServer {
    * project record's `remoteVfsUrl` field; for remote VFS the userId is
    * derived from the active CEK via `this.deps.encryption.deriveUserId()`.
    */
+  /**
+   * Resolve a chat's system prompt into its contributing segments, for the
+   * chat settings panel's preview.
+   *
+   * Backed by the same resolver the run path uses rather than reassembled in
+   * React: the join order, the `''`-disables rule, the error semantics and the
+   * appended tool prompts are backend behaviour that keeps evolving, and a
+   * second implementation would drift and then lie about what the model sees.
+   *
+   * `overrides` previews an unsaved draft; omitted, it previews the chat as
+   * persisted.
+   */
+  private async previewChatSystemPrompt(
+    chatId: string,
+    overrides?: import('../protocol/types').ChatAgentConfig
+  ): Promise<{ text: string; segments: PromptSegment[] }> {
+    const ctx = await loadChatLoopContext(this.storage, chatId);
+    const agent = overrides ?? ctx.chat.agentConfig;
+    const mode = agent?.systemPromptMode ?? 'project';
+    const settings = resolveChatAgentSettings(ctx.project, ctx.apiDef, agent);
+
+    const factory = this.deps.createVfsAdapter;
+    if (!factory) {
+      throw new ProtocolError(
+        'INTERNAL_ERROR',
+        'previewChatSystemPrompt: createVfsAdapter factory not injected'
+      );
+    }
+    let userId = '';
+    if (ctx.project.remoteVfsUrl) {
+      userId = await this.deps.encryption.deriveUserId();
+    }
+    const createVfsAdapter = (ns?: string) => factory(this.deps, ctx.project, userId, ns);
+
+    const segments: PromptSegment[] = [];
+    const parts: string[] = [];
+
+    if (mode !== 'replace' && ctx.project.systemPrompt) {
+      segments.push({ source: 'project', chars: ctx.project.systemPrompt.length });
+      parts.push(ctx.project.systemPrompt);
+    }
+
+    if (agent && mode !== 'project') {
+      const resolved = await resolveAgentSystemPromptSegments({
+        createVfsAdapter,
+        persona: agent.persona,
+        prePersonaFile: agent.prePersonaSystemPromptFile,
+        inlineSegments: [agent.systemPrompt],
+        promptFiles: agent.systemPromptFile,
+      });
+      for (const seg of resolved) {
+        segments.push({
+          source: seg.source,
+          path: seg.path,
+          chars: seg.text.length,
+          error: seg.error,
+        });
+        if (seg.text) parts.push(seg.text);
+      }
+    }
+
+    const toolPrompts = await this.deps.toolRegistry.getSystemPrompts(
+      ctx.apiDef.apiType,
+      settings.enabledTools,
+      {
+        projectId: ctx.project.id,
+        chatId: ctx.chat.id,
+        apiDefinitionId: ctx.apiDef.id,
+        modelId: ctx.modelId,
+        apiType: ctx.apiDef.apiType,
+        namespace: settings.namespace,
+        createVfsAdapter,
+      },
+      ctx.project.toolOptions ?? {}
+    );
+    for (const prompt of toolPrompts) {
+      if (!prompt) continue;
+      segments.push({ source: 'tool', chars: prompt.length });
+      parts.push(prompt);
+    }
+
+    return { text: parts.filter(Boolean).join('\n\n'), segments };
+  }
+
   private async getProjectVfsAdapter(projectId: string): Promise<VfsAdapter> {
     const cached = this.vfsAdapters.get(projectId);
     if (cached) return cached;

@@ -364,11 +364,14 @@ export class OpenAIClient implements APIClient {
             };
             pushInjectedFiles(msg.content.injectedFiles);
 
-            // Add text content
-            contentParts.push({
-              type: 'text',
-              text: msg.content.content,
-            });
+            // Add text content (only if non-empty — an inject-only minion
+            // message has files but no text)
+            if (msg.content.content.trim()) {
+              contentParts.push({
+                type: 'text',
+                text: msg.content.content,
+              });
+            }
 
             pushInjectedFiles(msg.content.injectedFilesAfter);
 

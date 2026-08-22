@@ -1,10 +1,6 @@
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
-  useChat,
-  computeClaudeAgentRewindBefore,
-  computeClaudeAgentRewindKeeping,
-} from '../useChat';
+import { useChat } from '../useChat';
 import { generateUniqueId } from '../../../shared/protocol/idGenerator';
 import * as alerts from '../../lib/alerts';
 import type {
@@ -415,6 +411,77 @@ describe('useChat', () => {
         'chat_123',
         'msg_user_1'
       );
+    });
+  });
+
+  describe('updateAgentConfig', () => {
+    const mount = async () => {
+      const hook = renderHook(() => useChat({ chatId: 'chat_123', callbacks: mockCallbacks }));
+      await waitFor(() => expect(hook.result.current.chat).toBeTruthy());
+      return hook;
+    };
+
+    it('patches the layer and adopts the backend’s merged row', async () => {
+      // `chat_updated` overwrites `chat` wholesale from the backend, so an
+      // optimistic-only write can flicker back during a live loop. Adopting
+      // the merged return is what closes that race.
+      const merged = { ...mockChat, agentConfig: { temperature: 0.2 }, name: 'Renamed elsewhere' };
+      vi.mocked(gremlinClient.patchChat).mockResolvedValue(merged as never);
+
+      const { result } = await mount();
+      await act(async () => {
+        await result.current.updateAgentConfig({ temperature: 0.2 });
+      });
+
+      expect(gremlinClient.patchChat).toHaveBeenCalledWith(
+        'chat_123',
+        { agentConfig: { temperature: 0.2 } },
+        { touch: true }
+      );
+      expect(result.current.chat?.agentConfig).toEqual({ temperature: 0.2 });
+      // The merged row won, not the optimistic one.
+      expect(result.current.chat?.name).toBe('Renamed elsewhere');
+    });
+
+    it('clears the layer through unset, not an undefined field', async () => {
+      // The JSON wire drops undefined-valued keys, so `{ agentConfig: undefined }`
+      // would be a silent no-op patch instead of a clear.
+      const merged = { ...mockChat };
+      vi.mocked(gremlinClient.patchChat).mockResolvedValue(merged as never);
+
+      const { result } = await mount();
+      await act(async () => {
+        await result.current.updateAgentConfig(undefined);
+      });
+
+      expect(gremlinClient.patchChat).toHaveBeenCalledWith(
+        'chat_123',
+        {},
+        { touch: true, unset: ['agentConfig'] }
+      );
+      expect(result.current.chat?.agentConfig).toBeUndefined();
+    });
+
+    it('does not resurrect a cleared layer on a later chat_updated', async () => {
+      vi.mocked(gremlinClient.patchChat).mockResolvedValue({ ...mockChat } as never);
+      const { result } = await mount();
+      await act(async () => {
+        await result.current.updateAgentConfig(undefined);
+      });
+
+      act(() => {
+        activeSession?.fireEvent({
+          type: 'chat_updated',
+          chat: { ...mockChat, agentConfig: undefined },
+        } as never);
+      });
+
+      expect(result.current.chat?.agentConfig).toBeUndefined();
+    });
+
+    it('exposes the project so the panel has something to inherit from', async () => {
+      const { result } = await mount();
+      expect(result.current.project?.id).toBe('proj_123');
     });
   });
 
@@ -1856,71 +1923,6 @@ describe('useChat', () => {
       rerender({ chatId: 'chat_456' });
 
       expect(result.current.snapshotLoading).toBe(true);
-    });
-  });
-});
-
-describe('claude-agent rewind helpers', () => {
-  const agentChat = { claudeAgentSessionId: 'sess-cur' } as unknown as Chat;
-  const asst = (id: string, uuid?: string, sessionId?: string): Message<unknown> =>
-    ({
-      id,
-      role: 'assistant',
-      ...(uuid
-        ? {
-            metadata: {
-              claudeAgentMessageUuid: uuid,
-              ...(sessionId ? { claudeAgentSessionId: sessionId } : {}),
-            },
-          }
-        : {}),
-    }) as unknown as Message<unknown>;
-  const user = (id: string): Message<unknown> =>
-    ({ id, role: 'user' }) as unknown as Message<unknown>;
-
-  describe('computeClaudeAgentRewindBefore', () => {
-    it('returns {} for non-claude-agent chats', () => {
-      expect(computeClaudeAgentRewindBefore({} as Chat, [asst('m0', 'u0')], 1)).toEqual({});
-    });
-
-    it('anchors to the prior assistant, keeping the session for unstamped anchors', () => {
-      const messages = [asst('m0', 'uuid-0'), user('m1')];
-      expect(computeClaudeAgentRewindBefore(agentChat, messages, 1)).toEqual({
-        claudeAgentResumeAt: 'uuid-0',
-      });
-    });
-
-    it('repoints the session to the anchor stamp when present', () => {
-      const messages = [asst('m0', 'uuid-0', 'sess-old'), user('m1')];
-      expect(computeClaudeAgentRewindBefore(agentChat, messages, 1)).toEqual({
-        claudeAgentResumeAt: 'uuid-0',
-        claudeAgentSessionId: 'sess-old',
-      });
-    });
-
-    it('drops the session when no prior assistant carries a uuid', () => {
-      expect(computeClaudeAgentRewindBefore(agentChat, [user('m0'), user('m1')], 1)).toEqual({
-        claudeAgentSessionId: undefined,
-        claudeAgentResumeAt: undefined,
-      });
-    });
-  });
-
-  describe('computeClaudeAgentRewindKeeping', () => {
-    it('anchors to the kept assistant and repoints to its stamp', () => {
-      const messages = [user('m0'), asst('m1', 'uuid-1', 'sess-old'), user('m2')];
-      expect(computeClaudeAgentRewindKeeping(agentChat, messages, 1)).toEqual({
-        claudeAgentResumeAt: 'uuid-1',
-        claudeAgentSessionId: 'sess-old',
-      });
-    });
-
-    it('falls back to rewind-before semantics when the target has no uuid', () => {
-      const messages = [asst('m0', 'uuid-0', 'sess-old'), asst('m1'), user('m2')];
-      expect(computeClaudeAgentRewindKeeping(agentChat, messages, 1)).toEqual({
-        claudeAgentResumeAt: 'uuid-0',
-        claudeAgentSessionId: 'sess-old',
-      });
     });
   });
 });

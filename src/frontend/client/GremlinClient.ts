@@ -39,6 +39,7 @@ import type {
   CompactOptions,
   CompactProgress,
   CompactResult,
+  DeletePathResult,
   DirEntry,
   FileContent,
   InsertResult,
@@ -665,8 +666,12 @@ export class GremlinClient {
     await this.request('vfsDeleteFile', { projectId, path });
   }
 
-  async vfsMkdir(projectId: string, path: string): Promise<void> {
-    await this.request('vfsMkdir', { projectId, path });
+  async vfsMkdir(
+    projectId: string,
+    path: string,
+    options?: { recursive?: boolean }
+  ): Promise<void> {
+    await this.request('vfsMkdir', { projectId, path, recursive: options?.recursive });
   }
 
   async vfsRmdir(projectId: string, path: string, recursive?: boolean): Promise<void> {
@@ -796,6 +801,14 @@ export class GremlinClient {
     await this.request('vfsDeletePath', { projectId, path });
   }
 
+  vfsDeletePaths(
+    projectId: string,
+    paths: string[],
+    recursive: boolean
+  ): Promise<DeletePathResult[]> {
+    return this.request('vfsDeletePaths', { projectId, paths, recursive });
+  }
+
   async vfsCreateFileGuarded(
     projectId: string,
     path: string,
@@ -862,7 +875,7 @@ export class GremlinClient {
       writeFile: (path, content) => this.vfsWrite(projectId, path, content),
       createFile: (path, content) => this.vfsCreateFile(projectId, path, content),
       deleteFile: path => this.vfsDeleteFile(projectId, path),
-      mkdir: path => this.vfsMkdir(projectId, path),
+      mkdir: (path, options) => this.vfsMkdir(projectId, path, options),
       rmdir: (path, recursive) => this.vfsRmdir(projectId, path, recursive),
       rename: (oldPath, newPath, overwrite) =>
         this.vfsRename(projectId, oldPath, newPath, overwrite),
@@ -901,6 +914,7 @@ export class GremlinClient {
       // ---- compound ops ----
       copyFile: (src, dst, overwrite) => this.vfsCopyFile(projectId, src, dst, overwrite),
       deletePath: path => this.vfsDeletePath(projectId, path),
+      deletePaths: (paths, recursive) => this.vfsDeletePaths(projectId, paths, recursive),
       createFileGuarded: (path, content, overwrite) =>
         this.vfsCreateFileGuarded(projectId, path, content, overwrite),
       ensureDirAndWrite: (dir, files) => this.vfsEnsureDirAndWrite(projectId, dir, files),

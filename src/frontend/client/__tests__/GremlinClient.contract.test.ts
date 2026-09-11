@@ -17,6 +17,7 @@ import { InProcessTransport } from '../../../shared/engine/transports/inProcess'
 import type { Transport } from '../../../shared/protocol/protocol';
 import type { APIService } from '../../../shared/services/api/apiService';
 import type { EncryptionCore } from '../../../shared/services/encryption/encryptionCore';
+import type { VfsService } from '../../../shared/services/vfs/vfsService';
 import type { UnifiedStorage } from '../../../shared/services/storage/unifiedStorage';
 import type { ClientSideToolRegistry } from '../../../shared/services/tools/clientSideTools';
 import type {
@@ -47,6 +48,7 @@ function makeBackendDepsStub(storage: UnifiedStorage): BackendDeps {
   return {
     storage,
     encryption: {} as unknown as EncryptionCore,
+    vfsService: {} as unknown as VfsService,
     apiService: apiServiceStub,
     toolRegistry: {
       getVisibleTools: vi.fn(() => []),

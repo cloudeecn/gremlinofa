@@ -153,6 +153,26 @@ describe('FilesystemVfsAdapter', () => {
       await adapter.rmdir('/parent', true);
       expect(await adapter.exists('/parent')).toBe(false);
     });
+
+    it('creates missing parents, and reports DIR_EXISTS unless recursive', async () => {
+      await adapter.mkdir('/a/b/c');
+      expect(await adapter.isDirectory('/a/b/c')).toBe(true);
+      await expect(adapter.mkdir('/a/b/c')).rejects.toMatchObject({ code: 'DIR_EXISTS' });
+      await expect(adapter.mkdir('/a/b/c', { recursive: true })).resolves.toBeUndefined();
+    });
+
+    it('reports FILE_EXISTS when a file is in the way', async () => {
+      await adapter.writeFile('/f', 'x');
+      await expect(adapter.mkdir('/f', { recursive: true })).rejects.toMatchObject({
+        code: 'FILE_EXISTS',
+      });
+    });
+
+    it('refuses to rmdir the project root', async () => {
+      await adapter.writeFile('/keep.txt', 'k');
+      await expect(adapter.rmdir('/', true)).rejects.toMatchObject({ code: 'INVALID_PATH' });
+      expect(await adapter.readFile('/keep.txt')).toBe('k');
+    });
   });
 
   describe('rename', () => {
@@ -176,6 +196,46 @@ describe('FilesystemVfsAdapter', () => {
       await adapter.writeFile('/a.txt', 'data1');
       await adapter.writeFile('/b.txt', 'data2');
       await expect(adapter.rename('/a.txt', '/b.txt')).rejects.toThrow('already exists');
+      await expect(adapter.rename('/a.txt', '/b.txt')).rejects.toMatchObject({
+        code: 'DESTINATION_EXISTS',
+      });
+    });
+
+    it('should throw PATH_NOT_FOUND when source is missing', async () => {
+      await expect(adapter.rename('/nope.txt', '/b.txt')).rejects.toMatchObject({
+        code: 'PATH_NOT_FOUND',
+      });
+    });
+
+    it('overwrite replaces the destination history with the source history', async () => {
+      await adapter.writeFile('/a.txt', 'a1');
+      await adapter.writeFile('/a.txt', 'a2');
+      await adapter.writeFile('/b.txt', 'b1');
+      await adapter.writeFile('/b.txt', 'b2');
+      await adapter.writeFile('/b.txt', 'b3');
+
+      await adapter.rename('/a.txt', '/b.txt', true);
+
+      expect(await adapter.readFile('/b.txt')).toBe('a2');
+      const fileId = await adapter.getFileId('/b.txt');
+      const versions = await adapter.listVersions(fileId!);
+      expect(versions.map(v => v.version)).toEqual([1, 2]);
+      expect(await adapter.getVersion(fileId!, 1)).toBe('a1');
+
+      const projectRoot = path.join(tmpDir, projectId);
+      expect(fs.existsSync(path.join(projectRoot, '.a.txt.ver'))).toBe(false);
+      expect(await adapter.exists('/a.txt')).toBe(false);
+    });
+
+    it('overwrite onto a destination with history when the source has none', async () => {
+      const projectRoot = path.join(tmpDir, projectId);
+      await adapter.writeFile('/b.txt', 'b1');
+      fs.writeFileSync(path.join(projectRoot, 'raw.txt'), 'raw');
+
+      await adapter.rename('/raw.txt', '/b.txt', true);
+
+      expect(await adapter.readFile('/b.txt')).toBe('raw');
+      expect(fs.existsSync(path.join(projectRoot, '.b.txt.ver'))).toBe(false);
     });
   });
 
@@ -310,6 +370,104 @@ describe('FilesystemVfsAdapter', () => {
       await adapter.writeFile('/a.txt', 'd1');
       await adapter.writeFile('/b.txt', 'd2');
       await expect(adapter.copyFile('/a.txt', '/b.txt')).rejects.toThrow('already exists');
+      await expect(adapter.copyFile('/a.txt', '/b.txt')).rejects.toMatchObject({
+        code: 'DESTINATION_EXISTS',
+      });
+    });
+
+    it('should throw NOT_A_FILE when destination is a directory', async () => {
+      await adapter.writeFile('/a.txt', 'd1');
+      await adapter.mkdir('/dir');
+      await expect(adapter.copyFile('/a.txt', '/dir', true)).rejects.toMatchObject({
+        code: 'NOT_A_FILE',
+      });
+    });
+
+    it('should throw PATH_NOT_FOUND when source is missing', async () => {
+      await expect(adapter.copyFile('/nope.txt', '/b.txt')).rejects.toMatchObject({
+        code: 'PATH_NOT_FOUND',
+      });
+    });
+
+    it('overwrites an existing destination in place', async () => {
+      await adapter.writeFile('/a.txt', 'new');
+      await adapter.writeFile('/b.txt', 'old and longer');
+      const bPath = path.join(tmpDir, projectId, 'b.txt');
+      const inodeBefore = fs.statSync(bPath).ino;
+
+      await adapter.copyFile('/a.txt', '/b.txt', true);
+
+      expect(await adapter.readFile('/b.txt')).toBe('new');
+      expect(fs.statSync(bPath).ino).toBe(inodeBefore);
+    });
+
+    it('overwrite rewrites the destination in place (same inode)', async () => {
+      await adapter.writeFile('/src.txt', 'new content');
+      await adapter.writeFile('/dst.txt', 'old content');
+      const dstAbs = path.join(tmpDir, projectId, 'dst.txt');
+      const inoBefore = fs.statSync(dstAbs).ino;
+
+      await adapter.copyFile('/src.txt', '/dst.txt', true);
+
+      expect(await adapter.readFile('/dst.txt')).toBe('new content');
+      expect(fs.statSync(dstAbs).ino).toBe(inoBefore);
+      const fileId = await adapter.getFileId('/dst.txt');
+      expect((await adapter.listVersions(fileId!)).length).toBe(2);
+    });
+
+    it('does not mirror the source mode onto an existing destination', async () => {
+      await adapter.writeFile('/src.txt', 'x');
+      await adapter.writeFile('/dst.txt', 'y');
+      const srcAbs = path.join(tmpDir, projectId, 'src.txt');
+      const dstAbs = path.join(tmpDir, projectId, 'dst.txt');
+      fs.chmodSync(srcAbs, 0o600);
+      fs.chmodSync(dstAbs, 0o664);
+
+      await adapter.copyFile('/src.txt', '/dst.txt', true);
+
+      expect(fs.statSync(dstAbs).mode & 0o777).toBe(0o664);
+    });
+  });
+
+  describe('node error translation', () => {
+    it('readFile on a directory throws NOT_A_FILE', async () => {
+      await adapter.mkdir('/dir');
+      await expect(adapter.readFile('/dir')).rejects.toMatchObject({
+        name: 'VfsError',
+        code: 'NOT_A_FILE',
+      });
+      await expect(adapter.readFileWithMeta('/dir')).rejects.toMatchObject({
+        code: 'NOT_A_FILE',
+      });
+    });
+
+    it('readFile on a missing path throws PATH_NOT_FOUND without the host path', async () => {
+      const err = await adapter.readFile('/missing.txt').catch(e => e);
+      expect(err).toBeInstanceOf(VfsError);
+      expect(err.code).toBe('PATH_NOT_FOUND');
+      expect(err.message).not.toContain(tmpDir);
+    });
+
+    it('stat on a missing path throws PATH_NOT_FOUND', async () => {
+      await expect(adapter.stat('/missing.txt')).rejects.toMatchObject({
+        code: 'PATH_NOT_FOUND',
+      });
+    });
+
+    it('strReplace and insert on a directory throw NOT_A_FILE', async () => {
+      await adapter.mkdir('/dir');
+      await expect(adapter.strReplace('/dir', 'a', 'b')).rejects.toMatchObject({
+        code: 'NOT_A_FILE',
+      });
+      await expect(adapter.insert('/dir', 1, 'x')).rejects.toMatchObject({
+        code: 'NOT_A_FILE',
+      });
+    });
+
+    it('deleteFile on a missing path throws PATH_NOT_FOUND', async () => {
+      await expect(adapter.deleteFile('/missing.txt')).rejects.toMatchObject({
+        code: 'PATH_NOT_FOUND',
+      });
     });
   });
 
@@ -326,9 +484,35 @@ describe('FilesystemVfsAdapter', () => {
       expect(await adapter.exists('/dir')).toBe(false);
     });
 
-    it('should no-op for nonexistent path', async () => {
-      await adapter.deletePath('/nope');
-      // Should not throw
+    it('should report PATH_NOT_FOUND for a nonexistent path', async () => {
+      await expect(adapter.deletePath('/nope')).rejects.toMatchObject({ code: 'PATH_NOT_FOUND' });
+    });
+  });
+
+  describe('deletePaths', () => {
+    it('deletes a mixed batch and reports per-path errors', async () => {
+      await adapter.writeFile('/a.txt', 'a');
+      await adapter.writeFile('/dir/b.txt', 'b');
+      await adapter.writeFile('/c.txt', 'c');
+
+      const results = await adapter.deletePaths(['/a.txt', '/dir', '/nope', '/c.txt'], false);
+
+      expect(results.map(r => r.error?.code)).toEqual([
+        undefined,
+        'NOT_A_FILE',
+        'PATH_NOT_FOUND',
+        undefined,
+      ]);
+      expect(await adapter.exists('/a.txt')).toBe(false);
+      expect(await adapter.exists('/dir/b.txt')).toBe(true);
+      expect(await adapter.exists('/c.txt')).toBe(false);
+    });
+
+    it('deletes directories when recursive, nested entries included', async () => {
+      await adapter.writeFile('/dir/sub/b.txt', 'b');
+      const results = await adapter.deletePaths(['/dir/sub/b.txt', '/dir'], true);
+      expect(results.every(r => !r.error)).toBe(true);
+      expect(await adapter.exists('/dir')).toBe(false);
     });
   });
 
@@ -371,6 +555,17 @@ describe('FilesystemVfsAdapter', () => {
   // --------------------------------------------------------------------------
 
   describe('hasVfs / clearVfs', () => {
+    it('does not create the project root just to answer hasVfs', async () => {
+      expect(await adapter.hasVfs()).toBe(false);
+      expect(fs.existsSync(path.join(tmpDir, projectId))).toBe(false);
+    });
+
+    it('recreates the root on the next op after clearVfs', async () => {
+      await adapter.writeFile('/f.txt', 'data');
+      await adapter.clearVfs();
+      expect(await adapter.readDir('/')).toEqual([]);
+    });
+
     it('should report VFS existence', async () => {
       // Before any write, the project root may not exist
       await adapter.writeFile('/f.txt', 'data');
@@ -433,7 +628,7 @@ describe('FilesystemVfsAdapter', () => {
     let extra: string;
     let altAdapter: FilesystemVfsAdapter;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       extra = fs.mkdtempSync(path.join(os.tmpdir(), 'fsvfs-extra-'));
       fs.writeFileSync(path.join(extra, 'shared.txt'), 'shared');
       const accessConfig: VfsAccessConfig = {
@@ -442,6 +637,8 @@ describe('FilesystemVfsAdapter', () => {
         projectAllowedRoots: new Map(),
       };
       altAdapter = new FilesystemVfsAdapter(tmpDir, projectId, accessConfig);
+      // The project root is created on the first adapter call.
+      await altAdapter.exists('/');
       const projectRoot = path.join(tmpDir, projectId);
       fs.symlinkSync(path.join(extra, 'shared.txt'), path.join(projectRoot, 'link.txt'));
     });
@@ -464,7 +661,7 @@ describe('FilesystemVfsAdapter', () => {
     let outside: string;
     let altAdapter: FilesystemVfsAdapter;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       outside = fs.mkdtempSync(path.join(os.tmpdir(), 'fsvfs-outside2-'));
       fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
       const accessConfig: VfsAccessConfig = {
@@ -473,6 +670,7 @@ describe('FilesystemVfsAdapter', () => {
         projectAllowedRoots: new Map(),
       };
       altAdapter = new FilesystemVfsAdapter(tmpDir, projectId, accessConfig);
+      await altAdapter.exists('/');
       const projectRoot = path.join(tmpDir, projectId);
       fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(projectRoot, 'link.txt'));
     });

@@ -11,7 +11,6 @@ import type { Project } from '../../shared/protocol/types';
 import type { BackendDeps } from '../../shared/engine/backendDeps';
 import type { VfsAdapter } from '../../shared/services/vfs/vfsAdapter';
 import { LocalVfsAdapter } from '../../shared/services/vfs/localVfsAdapter';
-import { createVfsService } from '../../shared/services/vfs/vfsService';
 import type { ServerConfig } from '../config';
 import { FilesystemVfsAdapter } from './FilesystemVfsAdapter';
 
@@ -27,8 +26,7 @@ export function makeCreateVfsAdapter(
         serverConfig.vfsAccessConfig
       );
     }
-    // Encrypted mode: reuse the shared VfsService over SQLite
-    const vfsService = createVfsService(deps.storage, deps.encryption);
-    return new LocalVfsAdapter(vfsService, project.id, namespace);
+    // Encrypted mode: the server's shared VfsService over SQLite
+    return new LocalVfsAdapter(deps.vfsService, project.id, namespace);
   };
 }

@@ -16,6 +16,7 @@ import { GremlinServer } from '../GremlinServer';
 import { LoopRegistry } from '../LoopRegistry';
 import type { BackendDeps } from '../backendDeps';
 import { EncryptionCore } from '../../services/encryption/encryptionCore';
+import { createVfsService } from '../../services/vfs/vfsService';
 import { UnifiedStorage } from '../../services/storage/unifiedStorage';
 import { IndexedDBAdapter } from '../../../worker/adapters/IndexedDBAdapter';
 import { Tables } from '../../services/storage/StorageAdapter';
@@ -56,7 +57,15 @@ async function buildServer(): Promise<{
   const toolRegistry = new ClientSideToolRegistry();
   const apiService = new APIService({ storage, toolRegistry, encryption });
   const loopRegistry = new LoopRegistry();
-  const deps: BackendDeps = { storage, encryption, apiService, toolRegistry, loopRegistry };
+  const vfsService = createVfsService(storage, encryption);
+  const deps: BackendDeps = {
+    storage,
+    encryption,
+    vfsService,
+    apiService,
+    toolRegistry,
+    loopRegistry,
+  };
   const server = new GremlinServer(deps);
   await server.handleRequest('init', {});
   return { server, deps, encryption };

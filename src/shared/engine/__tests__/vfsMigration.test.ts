@@ -33,6 +33,7 @@ function createMockAdapter(): VfsAdapter {
     purgeOrphan: vi.fn(),
     copyFile: vi.fn(),
     deletePath: vi.fn(),
+    deletePaths: vi.fn(),
     createFileGuarded: vi.fn(),
     ensureDirAndWrite: vi.fn(),
     writeFileWithHistory: vi.fn(),

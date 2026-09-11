@@ -1,6 +1,11 @@
 import { describe, it, expect, afterEach, vi, type Mock, beforeEach } from 'vitest';
 import { JsVMContext } from '../JsVMContext';
 import type { VfsAdapter } from '../../../vfs/vfsAdapter';
+import { LocalVfsAdapter } from '../../../vfs/localVfsAdapter';
+import { createVfsService } from '../../../vfs/vfsService';
+import type { UnifiedStorage } from '../../../storage/unifiedStorage';
+import type { EncryptionCore } from '../../../encryption/encryptionCore';
+import { buildStubVfsDeps } from '../../../vfs/__tests__/_vfsTestHelpers';
 
 function createMockAdapter(): VfsAdapter {
   return {
@@ -32,6 +37,7 @@ function createMockAdapter(): VfsAdapter {
     purgeOrphan: vi.fn(),
     copyFile: vi.fn(),
     deletePath: vi.fn(),
+    deletePaths: vi.fn(),
     createFileGuarded: vi.fn(),
     ensureDirAndWrite: vi.fn(),
     writeFileWithHistory: vi.fn(),
@@ -845,6 +851,260 @@ describe('JsVMContext', () => {
       expect(result.isError).toBe(false);
       expect(result.value).toContain('EINVAL');
       expect(adapter.writeFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('fs.appendFile / fs.rm / fs.mkdir options', () => {
+    let adapter: VfsAdapter;
+
+    beforeEach(() => {
+      adapter = createMockAdapter();
+      (adapter.isDirectory as Mock).mockResolvedValue(false);
+    });
+
+    async function run(code: string) {
+      vm = await JsVMContext.create(adapter, false, false);
+      return vm.evaluate(`(async () => { ${code} })()`);
+    }
+
+    it('appendFile sends one append call', async () => {
+      (adapter.appendFile as Mock).mockResolvedValue({ created: true });
+      const result = await run(
+        `await fs.appendFile('/logs/run.log', 'line\\n', 'utf-8'); return 'ok';`
+      );
+      expect(result.value).toBe('ok');
+      expect(adapter.appendFile).toHaveBeenCalledWith('/logs/run.log', 'line\n');
+    });
+
+    it('appendFile rejects non-string data and read-only paths', async () => {
+      const result = await run(`
+        const errors = [];
+        for (const args of [['/a', new Uint8Array([1])], ['/memories/x.md', 'x']]) {
+          try { await fs.appendFile(...args); } catch (e) { errors.push(e.message); }
+        }
+        return errors;
+      `);
+      expect(result.value).toEqual([
+        expect.stringContaining('EINVAL'),
+        expect.stringContaining('EROFS'),
+      ]);
+      expect(adapter.appendFile).not.toHaveBeenCalled();
+    });
+
+    it('mkdir passes recursive through', async () => {
+      (adapter.mkdir as Mock).mockResolvedValue(undefined);
+      await run(`await fs.mkdir('/a/b', { recursive: true }); await fs.mkdir('/c');`);
+      expect((adapter.mkdir as Mock).mock.calls).toEqual([
+        ['/a/b', { recursive: true }],
+        ['/c', { recursive: false }],
+      ]);
+    });
+
+    it('rm deletes an array in one call and resolves when all succeed', async () => {
+      (adapter.deletePaths as Mock).mockImplementation(async (paths: string[]) =>
+        paths.map(path => ({ path }))
+      );
+      const result = await run(`await fs.rm(['/a', '/b'], { recursive: true }); return 'ok';`);
+      expect(result.value).toBe('ok');
+      expect(adapter.deletePaths).toHaveBeenCalledTimes(1);
+      expect(adapter.deletePaths).toHaveBeenCalledWith(['/a', '/b'], true);
+    });
+
+    it('rm rejects with the first failure and lists the rest', async () => {
+      (adapter.deletePaths as Mock).mockImplementation(async (paths: string[]) =>
+        paths.map(path =>
+          path === '/ok'
+            ? { path }
+            : path === '/dir'
+              ? { path, error: { code: 'NOT_A_FILE', message: 'dir' } }
+              : { path, error: { code: 'PATH_NOT_FOUND', message: 'missing' } }
+        )
+      );
+      const result = await run(`
+        try { await fs.rm(['/memories/m.md', '/ok', '/dir', '/gone']); return 'no error'; }
+        catch (e) { return e.message; }
+      `);
+      expect(result.value).toBe(
+        "EROFS: read-only file system, rm '/memories/m.md' (also failed: '/dir', '/gone')"
+      );
+      expect(adapter.deletePaths).toHaveBeenCalledWith(['/ok', '/dir', '/gone'], false);
+    });
+
+    it('rm with force ignores missing paths, and a single path works like Node', async () => {
+      (adapter.deletePaths as Mock).mockImplementation(async (paths: string[]) =>
+        paths.map(path => ({ path, error: { code: 'PATH_NOT_FOUND', message: 'missing' } }))
+      );
+      const result = await run(`
+        await fs.rm('/gone', { force: true });
+        try { await fs.rm('/gone'); } catch (e) { return e.message; }
+      `);
+      expect(result.value).toBe("ENOENT: no such file or directory, '/gone'");
+    });
+
+    it('rm validates its target', async () => {
+      const result = await run(`try { await fs.rm([1, 2]); } catch (e) { return e.message; }`);
+      expect(result.value).toContain('EINVAL');
+      expect(adapter.deletePaths).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('fs /memories access', () => {
+    let adapter: VfsAdapter;
+
+    const writeCalls = [
+      `await fs.writeFile('/memories/a.md', 'x')`,
+      `await fs.appendFile('/memories/a.md', 'x')`,
+      `await fs.mkdir('/memories/sub')`,
+      `await fs.unlink('/memories/a.md')`,
+      `await fs.rmdir('/memories/sub')`,
+      `await fs.rm('/memories/a.md')`,
+      `await fs.rename('/memories/a.md', '/a.md')`,
+      `await fs.rename('/a.md', '/memories/a.md')`,
+    ];
+
+    beforeEach(() => {
+      adapter = createMockAdapter();
+      (adapter.isDirectory as Mock).mockResolvedValue(false);
+      (adapter.writeFile as Mock).mockResolvedValue(undefined);
+      (adapter.appendFile as Mock).mockResolvedValue({ created: true });
+      (adapter.mkdir as Mock).mockResolvedValue(undefined);
+      (adapter.deleteFile as Mock).mockResolvedValue(undefined);
+      (adapter.rmdir as Mock).mockResolvedValue(undefined);
+      (adapter.rename as Mock).mockResolvedValue(undefined);
+      (adapter.deletePaths as Mock).mockImplementation(async (paths: string[]) =>
+        paths.map(path => ({ path }))
+      );
+      (adapter.stat as Mock).mockResolvedValue({
+        isFile: true,
+        isDirectory: false,
+        size: 1,
+        updatedAt: 0,
+        isBinary: false,
+      });
+    });
+
+    async function runEach(target: JsVMContext, calls: string[]) {
+      return target.evaluate(`(async () => {
+        const outcomes = [];
+        for (const call of ${JSON.stringify(calls)}) {
+          try { await eval('(async () => { ' + call + ' })()'); outcomes.push('ok'); }
+          catch (e) { outcomes.push(e.message.split(',')[0]); }
+        }
+        return outcomes;
+      })()`);
+    }
+
+    it('refuses every write under /memories by default', async () => {
+      vm = await JsVMContext.create(adapter, false, false);
+      const result = await runEach(vm, writeCalls);
+      expect(result.value).toEqual(writeCalls.map(() => 'EROFS: read-only file system'));
+      for (const method of [
+        'writeFile',
+        'appendFile',
+        'mkdir',
+        'deleteFile',
+        'rmdir',
+        'deletePaths',
+        'rename',
+      ] as const) {
+        expect(adapter[method]).not.toHaveBeenCalled();
+      }
+    });
+
+    it('allows every write under /memories with memoriesWritable', async () => {
+      vm = await JsVMContext.create(adapter, false, false, { memoriesWritable: true });
+      const result = await runEach(vm, writeCalls);
+      expect(result.value).toEqual(writeCalls.map(() => 'ok'));
+      expect(adapter.writeFile).toHaveBeenCalledWith('/memories/a.md', 'x');
+      expect(adapter.rename).toHaveBeenCalledTimes(2);
+    });
+
+    it('stat reports readonly per the option and the namespace', async () => {
+      const readonlyOf = async (target: JsVMContext, path: string) =>
+        (await target.evaluate(`(async () => (await fs.stat('${path}')).readonly)()`)).value;
+
+      const defaults = await JsVMContext.create(adapter, false, false);
+      expect(await readonlyOf(defaults, '/memories/a.md')).toBe(true);
+      expect(await readonlyOf(defaults, '/share/a.md')).toBe(false);
+      defaults.dispose();
+
+      vm = await JsVMContext.create(adapter, false, false, {
+        memoriesWritable: true,
+        namespace: '/minions/coder',
+      });
+      expect(await readonlyOf(vm, '/memories/a.md')).toBe(false);
+      expect(await readonlyOf(vm, '/share/a.md')).toBe(true);
+    });
+
+    it('writes real memory files with memoriesWritable', async () => {
+      const { stubStorage, stubEncryption } = buildStubVfsDeps();
+      const service = createVfsService(
+        stubStorage as unknown as UnifiedStorage,
+        stubEncryption as unknown as EncryptionCore
+      );
+      vm = await JsVMContext.create(new LocalVfsAdapter(service, 'proj_mem'), false, false, {
+        memoriesWritable: true,
+      });
+
+      const result = await vm.evaluate(`(async () => {
+        await fs.writeFile('/memories/README.md', '# Index\\n');
+        await fs.appendFile('/memories/README.md', '- note');
+        return fs.readFile('/memories/README.md', 'utf-8');
+      })()`);
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toBe('# Index\n- note');
+    });
+  });
+
+  describe('fs bridge against the encrypted VFS', () => {
+    it('appends into new nested dirs and batch-deletes them', async () => {
+      const { stubStorage, stubEncryption } = buildStubVfsDeps();
+      const service = createVfsService(
+        stubStorage as unknown as UnifiedStorage,
+        stubEncryption as unknown as EncryptionCore
+      );
+      const adapter = new LocalVfsAdapter(service, 'proj_js');
+      vm = await JsVMContext.create(adapter, false, false);
+
+      const result = await vm.evaluate(`(async () => {
+        for (let i = 0; i < 3; i++) await fs.appendFile('/logs/a/b/run.log', 'line ' + i + '\\n');
+        await fs.writeFile('/logs/c/note.txt', 'n');
+        const text = await fs.readFile('/logs/a/b/run.log', 'utf-8');
+        await fs.rm(['/logs/a', '/logs/c/note.txt'], { recursive: true });
+        return { text, left: await fs.readdir('/logs') };
+      })()`);
+
+      expect(result.isError).toBe(false);
+      expect(result.value).toEqual({ text: 'line 0\nline 1\nline 2\n', left: ['c'] });
+    });
+  });
+
+  describe('event loop throughput', () => {
+    it('runs thousands of awaits without a timer hop per microtask', async () => {
+      vm = await JsVMContext.create();
+      const started = Date.now();
+      const result = await vm.evaluate(`(async () => {
+        let n = 0;
+        for (let i = 0; i < 10000; i++) { await null; n++; }
+        return n;
+      })()`);
+
+      expect(result.value).toBe(10000);
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it('still drains microtasks before firing timers', async () => {
+      vm = await JsVMContext.create();
+      const result = await vm.evaluate(`(async () => {
+        const order = [];
+        setTimeout(() => order.push('timer'), 0);
+        for (let i = 0; i < 500; i++) await null;
+        order.push('microtasks');
+        await new Promise(r => setTimeout(r, 5));
+        return order;
+      })()`);
+      expect(result.value).toEqual(['microtasks', 'timer']);
     });
   });
 });

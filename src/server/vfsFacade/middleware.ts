@@ -57,6 +57,13 @@ export function basicAuth(req: Request, res: Response, next: NextFunction): void
 }
 
 /**
+ * Every VFS call carries an Authorization header, so without a cached
+ * preflight the browser pays an extra OPTIONS round trip per operation.
+ * Browsers cap this (Chromium at 2h, Firefox at 24h).
+ */
+const PREFLIGHT_MAX_AGE_SECONDS = '600';
+
+/**
  * CORS middleware
  */
 export function cors(req: Request, res: Response, next: NextFunction): void {
@@ -73,6 +80,7 @@ export function cors(req: Request, res: Response, next: NextFunction): void {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Max-Age', PREFLIGHT_MAX_AGE_SECONDS);
       res.status(204).end();
       return;
     }
@@ -86,6 +94,7 @@ export function cors(req: Request, res: Response, next: NextFunction): void {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
 
       if (req.method === 'OPTIONS') {
+        res.setHeader('Access-Control-Max-Age', PREFLIGHT_MAX_AGE_SECONDS);
         res.status(204).end();
         return;
       }

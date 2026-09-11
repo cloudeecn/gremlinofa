@@ -177,6 +177,43 @@ describe('Binary file round-trip', () => {
     const readBack = Buffer.from(await res.arrayBuffer());
     expect(readBack).toEqual(binaryData);
   });
+
+  it('read on a directory is 400, not 500', async () => {
+    let res = await api('POST', `/mkdir?projectId=${PROJECT}&path=/a-dir`);
+    expect(res.status).toBe(204);
+
+    res = await api('GET', `/read?projectId=${PROJECT}&path=/a-dir`);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('Is a directory');
+  });
+
+  it('rename with overwrite keeps the source history, drops the destination history', async () => {
+    for (const body of ['a1', 'a2']) {
+      const res = await api('PUT', `/write?projectId=${PROJECT}&path=/mv-src.txt`, {
+        rawBody: Buffer.from(body),
+      });
+      expect(res.status).toBe(204);
+    }
+    for (const body of ['b1', 'b2', 'b3']) {
+      const res = await api('PUT', `/write?projectId=${PROJECT}&path=/mv-dst.txt`, {
+        rawBody: Buffer.from(body),
+      });
+      expect(res.status).toBe(204);
+    }
+
+    let res = await api('POST', `/rename?projectId=${PROJECT}`, {
+      body: { from: '/mv-src.txt', to: '/mv-dst.txt' },
+    });
+    expect(res.status).toBe(204);
+
+    res = await api('GET', `/read?projectId=${PROJECT}&path=/mv-dst.txt`);
+    expect(await res.text()).toBe('a2');
+
+    res = await api('GET', `/versions?projectId=${PROJECT}&path=/mv-dst.txt`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { versions: Array<{ version: number }> };
+    expect(body.versions.map(v => v.version)).toEqual([1, 2]);
+  });
 });
 
 describe('Path traversal', () => {
@@ -612,5 +649,73 @@ describe('ls on root of empty project', () => {
     expect(res2.status).toBe(200);
     const body = await res2.json();
     expect(body.entries).toEqual([]);
+  });
+});
+
+describe('mkdir recursive flag', () => {
+  it('returns 409 DIR_EXISTS without recursive and 204 with it', async () => {
+    let res = await api('POST', `/mkdir?projectId=${PROJECT}&path=/a/b`);
+    expect(res.status).toBe(204);
+
+    res = await api('POST', `/mkdir?projectId=${PROJECT}&path=/a/b`);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'DIR_EXISTS' });
+
+    res = await api('POST', `/mkdir?projectId=${PROJECT}&path=/a/b&recursive=true`);
+    expect(res.status).toBe(204);
+  });
+
+  it('returns 409 FILE_EXISTS when a file is in the way', async () => {
+    await api('PUT', `/write?projectId=${PROJECT}&path=/f`, { rawBody: Buffer.from('x') });
+    const res = await api('POST', `/mkdir?projectId=${PROJECT}&path=/f&recursive=true`);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'FILE_EXISTS' });
+  });
+});
+
+describe('rm-many', () => {
+  it('deletes a batch and returns one result per path, in order', async () => {
+    await api('PUT', `/write?projectId=${PROJECT}&path=/a.txt`, { rawBody: Buffer.from('a') });
+    await api('PUT', `/write?projectId=${PROJECT}&path=/dir/b.txt`, { rawBody: Buffer.from('b') });
+
+    const res = await api('POST', `/rm-many?projectId=${PROJECT}`, {
+      body: { paths: ['/a.txt', '/dir', '/missing'], recursive: true },
+    });
+
+    expect(res.status).toBe(200);
+    const { results } = await res.json();
+    expect(results).toEqual([
+      { path: '/a.txt' },
+      { path: '/dir' },
+      { path: '/missing', error: { code: 'PATH_NOT_FOUND', message: 'Path not found: /missing' } },
+    ]);
+    const ls = await (await api('GET', `/ls?projectId=${PROJECT}&path=/`)).json();
+    expect(ls.entries).toEqual([]);
+  });
+
+  it('keeps directories without recursive', async () => {
+    await api('POST', `/mkdir?projectId=${PROJECT}&path=/dir`);
+    const res = await api('POST', `/rm-many?projectId=${PROJECT}`, { body: { paths: ['/dir'] } });
+    const { results } = await res.json();
+    expect(results[0].error.code).toBe('NOT_A_FILE');
+  });
+
+  it('rejects a malformed body', async () => {
+    const res = await api('POST', `/rm-many?projectId=${PROJECT}`, { body: { paths: '/a' } });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('CORS preflight caching', () => {
+  it('lets browsers cache preflights', async () => {
+    const previous = config.corsOrigins;
+    Object.assign(config, { corsOrigins: '*' });
+    try {
+      const res = await fetch(`${baseUrl}/api/ls?projectId=${PROJECT}`, { method: 'OPTIONS' });
+      expect(res.status).toBe(204);
+      expect(res.headers.get('access-control-max-age')).toBe('600');
+    } finally {
+      Object.assign(config, { corsOrigins: previous });
+    }
   });
 });

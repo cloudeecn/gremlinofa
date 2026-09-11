@@ -32,6 +32,7 @@ function createMockAdapter(): VfsAdapter {
     purgeOrphan: vi.fn(),
     copyFile: vi.fn(),
     deletePath: vi.fn(),
+    deletePaths: vi.fn(),
     createFileGuarded: vi.fn(),
     ensureDirAndWrite: vi.fn(),
     writeFileWithHistory: vi.fn(),
@@ -62,6 +63,24 @@ describe('DummyHookRuntime', () => {
       const runtime = await DummyHookRuntime.load(adapter, 'test-hook');
       expect(runtime).not.toBeNull();
       runtime?.dispose();
+    });
+
+    it('reports /share as readonly to hooks running in a namespace', async () => {
+      (adapter.readFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+        "return async function() { return { text: String((await fs.stat('/share/a')).readonly) }; };"
+      );
+      (adapter.stat as ReturnType<typeof vi.fn>).mockResolvedValue({
+        isFile: true,
+        isDirectory: false,
+        size: 1,
+        updatedAt: 0,
+        isBinary: false,
+      });
+
+      const runtime = await DummyHookRuntime.load(adapter, 'ns-hook', '/minions/coder');
+      const result = await runtime!.run({}, 1);
+      expect(result.value).toEqual({ text: 'true' });
+      runtime!.dispose();
     });
   });
 

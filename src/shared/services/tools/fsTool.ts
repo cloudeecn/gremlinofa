@@ -2,7 +2,8 @@
  * Filesystem Tool
  *
  * Client-side tool that provides Claude with access to the project's virtual filesystem.
- * Similar to memory tool but operates from VFS root (/) with /memories as readonly.
+ * Similar to memory tool but operates from VFS root (/). /memories is readonly
+ * unless the `memoriesWritable` option is on.
  *
  * This is a stateless tool - all state is passed via toolOptions and context.
  * Commands: view, create, str_replace, insert, delete, rename, copy, mkdir, append, append_raw
@@ -21,19 +22,9 @@ import {
   formatFileWithLineNumbers,
   resolveNoLineNumbers,
 } from '../../engine/lib/formatFileContent';
+import { isMemoriesPath } from './memoryTool';
 
 const MAX_LINE_COUNT = 999999;
-
-/** Readonly paths - writes throw EROFS error */
-const READONLY_PATHS = ['/memories'];
-
-/** Check if path is readonly */
-function isReadonly(path: string): boolean {
-  const normalized = normalizePath(path);
-  return READONLY_PATHS.some(
-    roPath => normalized === roPath || normalized.startsWith(roPath + '/')
-  );
-}
 
 /** Filesystem tool command input types */
 interface ViewInput {
@@ -283,14 +274,6 @@ async function handleCreate(
     };
   }
 
-  // Check readonly
-  if (isReadonly(vfsPath)) {
-    return {
-      content: `Error: Cannot write to readonly path ${vfsPath}. The /memories directory is managed by the memory tool.`,
-      isError: true,
-    };
-  }
-
   try {
     // Check for dataUrl format: data:<mime>;base64,<data>
     const dataUrlMatch = fileText.match(/^data:([^;]+);base64,(.+)$/s);
@@ -334,14 +317,6 @@ async function handleStrReplace(
   if (vfsPath === '/') {
     return {
       content: `Error: The path / is a directory, not a file.`,
-      isError: true,
-    };
-  }
-
-  // Check readonly
-  if (isReadonly(vfsPath)) {
-    return {
-      content: `Error: Cannot write to readonly path ${vfsPath}. The /memories directory is managed by the memory tool.`,
       isError: true,
     };
   }
@@ -409,14 +384,6 @@ async function handleInsert(
     };
   }
 
-  // Check readonly
-  if (isReadonly(vfsPath)) {
-    return {
-      content: `Error: Cannot write to readonly path ${vfsPath}. The /memories directory is managed by the memory tool.`,
-      isError: true,
-    };
-  }
-
   try {
     await adapter.insert(vfsPath, insertLine, insertText);
 
@@ -466,14 +433,6 @@ async function handleDelete(adapter: VfsAdapter, path: string): Promise<ToolResu
     };
   }
 
-  // Check readonly
-  if (isReadonly(vfsPath)) {
-    return {
-      content: `Error: Cannot delete readonly path ${vfsPath}. The /memories directory is managed by the memory tool.`,
-      isError: true,
-    };
-  }
-
   try {
     await adapter.deletePath(vfsPath);
     return {
@@ -511,20 +470,6 @@ async function handleRename(
   if (oldVfsPath === '/') {
     return {
       content: `Error: Cannot rename root directory.`,
-      isError: true,
-    };
-  }
-
-  // Check readonly for both source and destination
-  if (isReadonly(oldVfsPath)) {
-    return {
-      content: `Error: Cannot move from readonly path ${oldVfsPath}. The /memories directory is managed by the memory tool.`,
-      isError: true,
-    };
-  }
-  if (isReadonly(newVfsPath)) {
-    return {
-      content: `Error: Cannot move to readonly path ${newVfsPath}. The /memories directory is managed by the memory tool.`,
       isError: true,
     };
   }
@@ -581,14 +526,6 @@ async function handleCopy(
     };
   }
 
-  // Readonly check on destination only (source is a read)
-  if (isReadonly(dstVfsPath)) {
-    return {
-      content: `Error: Cannot write to readonly path ${dstVfsPath}. The /memories directory is managed by the memory tool.`,
-      isError: true,
-    };
-  }
-
   try {
     await adapter.copyFile(srcVfsPath, dstVfsPath, overwrite);
 
@@ -636,14 +573,6 @@ async function handleMkdir(adapter: VfsAdapter, path: string): Promise<ToolResul
   if (vfsPath === '/') {
     return {
       content: 'Error: Cannot create directory at the root path.',
-      isError: true,
-    };
-  }
-
-  // Check readonly
-  if (isReadonly(vfsPath)) {
-    return {
-      content: `Error: Cannot write to readonly path ${vfsPath}. The /memories directory is managed by the memory tool.`,
       isError: true,
     };
   }
@@ -715,14 +644,6 @@ async function handleAppendCore(
     };
   }
 
-  // Check readonly
-  if (isReadonly(vfsPath)) {
-    return {
-      content: `Error: Cannot write to readonly path ${vfsPath}. The /memories directory is managed by the memory tool.`,
-      isError: true,
-    };
-  }
-
   try {
     const { created } = await adapter.appendFile(vfsPath, fileText);
 
@@ -790,11 +711,44 @@ async function handleMultiView(
   };
 }
 
+/**
+ * Refuse writes under /memories unless the `memoriesWritable` option is on.
+ * Reads (view, view-all, the copy source) are always allowed.
+ */
+function checkMemoriesWrite(fsInput: FsInput): ToolResult | null {
+  const blocked = (path: string, verb: string): ToolResult | null =>
+    isMemoriesPath(path)
+      ? {
+          content: `Error: Cannot ${verb} readonly path ${normalizePath(path)}. The /memories directory is managed by the memory tool.`,
+          isError: true,
+        }
+      : null;
+
+  switch (fsInput.command) {
+    case 'create':
+    case 'str_replace':
+    case 'insert':
+    case 'mkdir':
+    case 'append':
+    case 'append_raw':
+      return blocked(fsInput.path, 'write to');
+    case 'delete':
+      return blocked(fsInput.path, 'delete');
+    case 'rename':
+      return blocked(fsInput.old_path, 'move from') ?? blocked(fsInput.new_path, 'move to');
+    case 'copy':
+      return blocked(fsInput.new_path, 'write to');
+    case 'view':
+    case 'view-all':
+      return null;
+  }
+}
+
 /** Execute a filesystem command */
 // eslint-disable-next-line require-yield -- Simple tool: generator for interface compatibility, no streaming events
 async function* executeFsCommand(
   input: Record<string, unknown>,
-  _toolOptions?: ToolOptions,
+  toolOptions?: ToolOptions,
   context?: ToolContext
 ): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
   if (!context?.vfsAdapter) {
@@ -861,6 +815,11 @@ async function* executeFsCommand(
     return { content: 'Error: paths (array) is required for view-all command', isError: true };
   }
 
+  if (toolOptions?.memoriesWritable !== true) {
+    const refusal = checkMemoriesWrite(fsInput);
+    if (refusal) return refusal;
+  }
+
   switch (fsInput.command) {
     case 'view':
       return handleView(adapter, fsInput.path, fsInput.view_range, noLineNumbers, fsInput.depth);
@@ -911,6 +870,16 @@ function renderFsInput(input: Record<string, unknown>): string {
   return lines.join('\n');
 }
 
+/** Command reference shared by both description variants */
+const FS_TOOL_DESCRIPTION_DETAILS = `The view command on a directory lists its contents; pass depth (default 1, max 5) to control how many levels deep to recurse.
+Binary file support: view returns dataUrl format for binary files, create accepts dataUrl format (data:<mime>;base64,<data>) to write binary files. str_replace, insert, and append are blocked on binary files.
+The create command fails if the file already exists. Set overwrite to true to replace existing files.
+The str_replace command replaces text in a file. Requires an exact, unique match of old_str. Omitting new_str deletes the matched text.
+The mkdir command creates a new directory. The append command appends text to an existing file (auto-adds trailing newline), or creates the file if it does not exist. Use append_raw for verbatim append without trailing newline.
+The rename command renames a file or directory. Fails if destination exists unless overwrite is true.
+The copy command copies a file from old_path to new_path. Source must be a file. Fails if destination exists unless overwrite is true. Errors if destination is a directory.
+The view-all command reads multiple files in one call. Takes a paths array, returns concatenated content with === path === headers. No view_range support.`;
+
 /**
  * Filesystem tool definition.
  * Stateless - all configuration passed via toolOptions and context.
@@ -918,18 +887,24 @@ function renderFsInput(input: Record<string, unknown>): string {
 export const fsTool: ClientSideTool = {
   name: 'filesystem',
   displayName: 'Filesystem Access',
-  displaySubtitle: 'Read/write VFS files (/memories readonly)',
+  displaySubtitle: 'Read/write VFS files (/memories readonly by default)',
   claudeAgentBridgeable: true,
-  // No options - just enable/disable
-  description: `Access the project's virtual filesystem. Read/write files anywhere except /memories (readonly, managed by memory tool). Use for: storing code, data files, configuration, scripts.
-The view command on a directory lists its contents; pass depth (default 1, max 5) to control how many levels deep to recurse.
-Binary file support: view returns dataUrl format for binary files, create accepts dataUrl format (data:<mime>;base64,<data>) to write binary files. str_replace, insert, and append are blocked on binary files.
-The create command fails if the file already exists. Set overwrite to true to replace existing files.
-The str_replace command replaces text in a file. Requires an exact, unique match of old_str. Omitting new_str deletes the matched text.
-The mkdir command creates a new directory. The append command appends text to an existing file (auto-adds trailing newline), or creates the file if it does not exist. Use append_raw for verbatim append without trailing newline.
-The rename command renames a file or directory. Fails if destination exists unless overwrite is true.
-The copy command copies a file from old_path to new_path. Source must be a file. Fails if destination exists unless overwrite is true. Errors if destination is a directory.
-The view-all command reads multiple files in one call. Takes a paths array, returns concatenated content with === path === headers. No view_range support.`,
+  optionDefinitions: [
+    {
+      type: 'boolean',
+      id: 'memoriesWritable',
+      label: 'Writable /memories',
+      subtitle:
+        'Let this tool create, edit, rename and delete memory files. Off keeps /memories read-only for the memory tool.',
+      default: false,
+    },
+  ],
+  description: options =>
+    `Access the project's virtual filesystem. ${
+      options.memoriesWritable === true
+        ? 'Read/write files anywhere, including /memories (shared with the memory tool).'
+        : 'Read/write files anywhere except /memories (readonly, managed by memory tool).'
+    } Use for: storing code, data files, configuration, scripts.\n${FS_TOOL_DESCRIPTION_DETAILS}`,
   iconInput: '📁',
   renderInput: renderFsInput,
   inputSchema: {

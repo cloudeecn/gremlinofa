@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
-import { memoryTool } from '../memoryTool';
+import { isMemoriesPath, memoryTool } from '../memoryTool';
 import { VfsError } from '../../vfs';
 import type {
   ToolContext,
@@ -48,6 +48,7 @@ function createMockAdapter(): VfsAdapter {
     purgeOrphan: vi.fn(),
     copyFile: vi.fn(),
     deletePath: vi.fn(),
+    deletePaths: vi.fn(),
     createFileGuarded: vi.fn(),
     ensureDirAndWrite: vi.fn(),
     writeFileWithHistory: vi.fn(),
@@ -56,6 +57,21 @@ function createMockAdapter(): VfsAdapter {
 }
 
 let mockAdapter: VfsAdapter;
+describe('isMemoriesPath', () => {
+  it.each([
+    ['/memories', true],
+    ['/memories/', true],
+    ['/memories/a/b.md', true],
+    ['memories/a.md', true],
+    ['/tmp/../memories/a.md', true],
+    ['/memoriesX/a.md', false],
+    ['/data/memories/a.md', false],
+    ['/', false],
+  ])('%s -> %s', (path, expected) => {
+    expect(isMemoriesPath(path)).toBe(expected);
+  });
+});
+
 describe('memoryTool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -199,6 +215,46 @@ describe('memoryTool', () => {
       expect(result.content).toContain('notes.md');
       expect(result.content).toContain('tasks.md');
       expect(result.content).toMatch(/\d+\t\/memories\/notes\.md/);
+      expect(result.isError).toBeFalsy();
+    });
+
+    it('lists a subdirectory without attempting to read it as a file', async () => {
+      (mockAdapter.isDirectory as Mock).mockResolvedValue(true);
+      (mockAdapter.readDir as Mock).mockResolvedValue([
+        { name: 'plan.md', type: 'file', deleted: false, createdAt: 0, updatedAt: 0, size: 9 },
+      ]);
+
+      const result = await executeMemory({ command: 'view', path: '/memories/project' });
+
+      expect(result.content).toContain(
+        "Here're the files and directories up to 2 levels deep in /memories/project"
+      );
+      expect(result.content).toMatch(/\d+\t\/memories\/project\/plan\.md/);
+      expect(mockAdapter.readFile).not.toHaveBeenCalled();
+      expect(result.isError).toBeFalsy();
+    });
+
+    it('lists an empty subdirectory as (empty)', async () => {
+      (mockAdapter.isDirectory as Mock).mockResolvedValue(true);
+      (mockAdapter.readDir as Mock).mockResolvedValue([]);
+
+      const result = await executeMemory({ command: 'view', path: '/memories/empty' });
+
+      expect(result.content).toContain('/memories/empty');
+      expect(result.content).toContain('(empty)');
+      expect(result.isError).toBeFalsy();
+    });
+
+    it('falls back to a listing when readFile reports NOT_A_FILE', async () => {
+      (mockAdapter.isDirectory as Mock).mockResolvedValue(false);
+      (mockAdapter.readFile as Mock).mockRejectedValue(new VfsError('Not a file', 'NOT_A_FILE'));
+      (mockAdapter.readDir as Mock).mockResolvedValue([
+        { name: 'a.md', type: 'file', deleted: false, createdAt: 0, updatedAt: 0, size: 1 },
+      ]);
+
+      const result = await executeMemory({ command: 'view', path: '/memories/odd' });
+
+      expect(result.content).toContain('/memories/odd/a.md');
       expect(result.isError).toBeFalsy();
     });
 

@@ -107,7 +107,10 @@ async function* executeJavaScript(
   const loadShareLib = toolOptions?.loadShareLib === true;
 
   // Create fresh context for this execution
-  const vm = await JsVMContext.create(context.vfsAdapter, loadLib, loadShareLib);
+  const vm = await JsVMContext.create(context.vfsAdapter, loadLib, loadShareLib, {
+    namespace: context.namespace,
+    memoriesWritable: toolOptions?.memoriesWritable === true,
+  });
 
   try {
     // Wrap code in async IIFE so await works at top level and return value is captured
@@ -165,17 +168,28 @@ export const jsTool: ClientSideTool = {
       subtitle: 'Auto-load .js files from /share/lib (shared across namespaces)',
       default: true,
     },
+    {
+      type: 'boolean',
+      id: 'memoriesWritable',
+      label: 'Writable /memories',
+      subtitle:
+        'Let fs calls create, edit, rename and delete memory files. Off keeps /memories read-only for the memory tool.',
+      default: false,
+    },
   ],
-  description: `
+  description: options => `
 Execute JavaScript in a QuickJS sandbox (ES2023). Code runs inside an async function body, so use \`return\` to output values and \`await\` is supported at top level.
   - Usage: calculations, data transformation, string/JSON processing, algorithm implementation, file operations.
   - Available APIs: ES2023 core, setTimeout (honors the real delay — use it to sleep), TextEncoder/TextDecoder, atob/btoa, console, Promise/async-await, halt.
-  - fs API (async only, use with await): fs.readFile, fs.writeFile, fs.exists, fs.mkdir, fs.readdir, fs.unlink, fs.rmdir, fs.rename, fs.stat.
+  - fs API (async only, use with await): fs.readFile, fs.writeFile, fs.appendFile, fs.exists, fs.mkdir, fs.readdir, fs.unlink, fs.rmdir, fs.rm, fs.rename, fs.stat.
     - readFile(path) returns ArrayBuffer (binary), readFile(path, 'utf-8') returns string.
     - writeFile(path, data) accepts string or ArrayBuffer for binary files.
+    - appendFile(path, text) appends a string in one call — cheaper and race-free compared with read + writeFile.
+    - writeFile, appendFile and mkdir create missing parent directories. mkdir(path, {recursive: true}) also succeeds if the directory exists.
+    - rm(pathOrPaths, {recursive, force}) deletes a path or an array of paths in one call (much faster than looping unlink). Directories need recursive: true; force ignores missing paths. If some fail, the rest are still deleted and the error lists the failures.
     - stat() returns {isFile, isDirectory, size, readonly, mtime, isBinary, mime}.
     - Example: \`const data = await fs.readFile('/data.json', 'utf-8'); return JSON.parse(data);\`
-    - Note: /memories is read-only.
+    - Note: ${options.memoriesWritable === true ? '/memories is writable (shared with the memory tool).' : '/memories is read-only.'}
   - halt(message): Immediately stops execution and outputs message at ERROR level.
   - Limitations: No fetch or DOM. setInterval fires once only (but honors its delay). Total run time is capped at 300s, so a long setTimeout can hit that cap. No ES modules.
   - Each call runs in a fresh context. Variables do NOT persist between calls. To persist data, use the fs API to write to files.

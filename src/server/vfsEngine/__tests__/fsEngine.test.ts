@@ -255,3 +255,112 @@ describe('getAllowedRootsForProject', () => {
     expect(getAllowedRootsForProject(cfg, 'projA', '/proj/root')).toEqual(['/proj/root', '/g1']);
   });
 });
+
+describe('fsEngine batch delete, mkdir, snapshots', () => {
+  let tmpDir: string;
+  let ctx: VfsContext;
+  const abs = (p: string) => path.join(ctx.projectRoot, p);
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fsengine-batch-'));
+    fs.mkdirSync(path.join(tmpDir, 'proj'));
+    ctx = makeCtx({ projectRoot: path.join(tmpDir, 'proj') });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  describe('deletePaths', () => {
+    it('deletes files with their history and directories when recursive', async () => {
+      await engine.write(ctx, '/a.txt', Buffer.from('a'), false);
+      await engine.write(ctx, '/dir/b.txt', Buffer.from('b'), false);
+
+      const results = await engine.deletePaths(ctx, ['/a.txt', '/dir'], true);
+
+      expect(results).toEqual([{ path: '/a.txt' }, { path: '/dir' }]);
+      expect(fs.existsSync(abs('a.txt'))).toBe(false);
+      expect(fs.existsSync(abs('.a.txt.ver'))).toBe(false);
+      expect(fs.existsSync(abs('dir'))).toBe(false);
+    });
+
+    it('reports per-path errors and keeps going', async () => {
+      fs.mkdirSync(abs('dir'));
+      fs.writeFileSync(abs('keep.txt'), 'k');
+      fs.writeFileSync(abs('del.txt'), 'd');
+
+      const results = await engine.deletePaths(ctx, ['/missing', '/dir', '/', '/del.txt'], false);
+
+      expect(results.map(r => r.error?.code)).toEqual([
+        'PATH_NOT_FOUND',
+        'NOT_A_FILE',
+        'INVALID_PATH',
+        undefined,
+      ]);
+      expect(fs.existsSync(abs('dir'))).toBe(true);
+      expect(fs.existsSync(abs('del.txt'))).toBe(false);
+      expect(results[0].error!.message).not.toContain(tmpDir);
+    });
+
+    it('treats paths under an already-deleted directory as deleted', async () => {
+      await engine.write(ctx, '/a/b/c.txt', Buffer.from('c'), false);
+      const results = await engine.deletePaths(ctx, ['/a', '/a/b/c.txt', '/a'], true);
+      expect(results.every(r => !r.error)).toBe(true);
+    });
+
+    it('applies the symlink policy per path', async () => {
+      const outside = path.join(tmpDir, 'outside.txt');
+      fs.writeFileSync(outside, 'secret');
+      fs.symlinkSync(outside, abs('link.txt'));
+
+      const [result] = await engine.deletePaths(ctx, ['/link.txt'], false);
+
+      expect(result.error?.code).toBe('INVALID_PATH');
+      expect(fs.existsSync(outside)).toBe(true);
+    });
+  });
+
+  describe('mkdir', () => {
+    it('creates parents and reports an existing directory unless recursive', async () => {
+      await engine.mkdir(ctx, '/a/b/c');
+      expect(fs.statSync(abs('a/b/c')).isDirectory()).toBe(true);
+
+      await expect(engine.mkdir(ctx, '/a/b/c')).rejects.toMatchObject({
+        status: 409,
+        code: 'DIR_EXISTS',
+      });
+      await expect(engine.mkdir(ctx, '/a/b/c', true)).resolves.toBeUndefined();
+    });
+
+    it('reports a file in the way either way', async () => {
+      fs.writeFileSync(abs('f'), 'x');
+      await expect(engine.mkdir(ctx, '/f', true)).rejects.toMatchObject({ code: 'FILE_EXISTS' });
+      await expect(engine.mkdir(ctx, '/f')).rejects.toMatchObject({ code: 'FILE_EXISTS' });
+    });
+  });
+
+  describe('version snapshots', () => {
+    it('snapshots every append as an independent copy', async () => {
+      await engine.append(ctx, '/log.txt', 'one\n');
+      await engine.append(ctx, '/log.txt', 'two\n');
+      await engine.append(ctx, '/log.txt', 'three\n');
+
+      const versions = await engine.readAllFileVersions(ctx, '/log.txt');
+      const contents = versions.map(v => Buffer.from(v.content, 'base64').toString());
+      expect(contents).toEqual(['one\n', 'one\ntwo\n', 'one\ntwo\nthree\n']);
+
+      // In-place appends to the live file must not leak into saved versions.
+      fs.appendFileSync(abs('log.txt'), 'outside edit\n');
+      const v1 = await engine.fileVersion(ctx, '/log.txt', 1);
+      expect(v1!.toString()).toBe('one\n');
+    });
+  });
+
+  describe('rmdir', () => {
+    it('removes nested files and their version directories', async () => {
+      await engine.write(ctx, '/d/sub/f.txt', Buffer.from('f'), false);
+      await engine.rmdir(ctx, '/d');
+      expect(fs.existsSync(abs('d'))).toBe(false);
+    });
+  });
+});

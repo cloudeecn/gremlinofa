@@ -23,6 +23,7 @@ import type {
   OrphanInfo,
   FileContent,
   VfsService,
+  DeletePathResult,
 } from './vfsService';
 import { withTreeLock } from './treeLock';
 import { VfsError, isBinaryContent } from './vfsService';
@@ -66,8 +67,10 @@ export class LocalVfsAdapter implements VfsAdapter {
     return this.lock(() => this.svc.deleteFile(this.projectId, path, this.namespace));
   }
 
-  async mkdir(path: string): Promise<void> {
-    return this.lock(() => this.svc.mkdir(this.projectId, path, this.namespace));
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
+    return this.lock(() =>
+      this.svc.mkdir(this.projectId, path, this.namespace, options?.recursive ?? false)
+    );
   }
 
   async rmdir(path: string, recursive = false): Promise<void> {
@@ -115,20 +118,7 @@ export class LocalVfsAdapter implements VfsAdapter {
   }
 
   async appendFile(path: string, text: string): Promise<{ created: boolean }> {
-    return this.lock(async () => {
-      const fileExists = await this.svc.exists(this.projectId, path, this.namespace);
-      if (fileExists) {
-        const fileStat = await this.svc.stat(this.projectId, path, this.namespace);
-        if (fileStat.isBinary) {
-          throw new VfsError(`Cannot append to binary file: ${path}`, 'BINARY_FILE');
-        }
-        const content = await this.svc.readFile(this.projectId, path, this.namespace);
-        await this.svc.updateFile(this.projectId, path, content + text, this.namespace);
-        return { created: false };
-      }
-      await this.svc.writeFile(this.projectId, path, text, this.namespace);
-      return { created: true };
-    });
+    return this.lock(() => this.svc.appendFile(this.projectId, path, text, this.namespace));
   }
 
   async writeFileWithHistory(
@@ -198,17 +188,12 @@ export class LocalVfsAdapter implements VfsAdapter {
   }
 
   async deletePath(path: string): Promise<void> {
-    return this.lock(async () => {
-      try {
-        await this.svc.deleteFile(this.projectId, path, this.namespace);
-      } catch (error) {
-        if (error instanceof VfsError && error.code === 'NOT_A_FILE') {
-          await this.svc.rmdir(this.projectId, path, true, this.namespace);
-        } else {
-          throw error;
-        }
-      }
-    });
+    const [result] = await this.deletePaths([path], true);
+    if (result.error) throw new VfsError(result.error.message, result.error.code);
+  }
+
+  async deletePaths(paths: string[], recursive: boolean): Promise<DeletePathResult[]> {
+    return this.lock(() => this.svc.deletePaths(this.projectId, paths, recursive, this.namespace));
   }
 
   async createFileGuarded(path: string, content: FileContent, overwrite?: boolean): Promise<void> {
@@ -234,10 +219,7 @@ export class LocalVfsAdapter implements VfsAdapter {
     files: Array<{ name: string; content: string }>
   ): Promise<void> {
     return this.lock(async () => {
-      const dirExists = await this.svc.isDirectory(this.projectId, dir, this.namespace);
-      if (!dirExists) {
-        await this.svc.mkdir(this.projectId, dir, this.namespace);
-      }
+      await this.svc.mkdir(this.projectId, dir, this.namespace, true);
       for (const file of files) {
         const filePath = dir.endsWith('/') ? `${dir}${file.name}` : `${dir}/${file.name}`;
         await this.svc.writeFile(this.projectId, filePath, file.content, this.namespace);

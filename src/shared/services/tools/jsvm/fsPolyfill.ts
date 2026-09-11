@@ -6,32 +6,27 @@
  *
  * Key features:
  * - Async methods return promises resolved during event loop processing
- * - Readonly paths enforcement (/memories is readonly)
+ * - /memories is readonly unless `memoriesWritable` is set
  * - Aliased to globalThis.fs and globalThis.__fs
  */
 
 import type { QuickJSContext, QuickJSHandle } from 'quickjs-emscripten-core';
 import type { VfsAdapter } from '../../vfs/vfsAdapter';
-import { VfsError, normalizePath, isNamespacedReadonly } from '../../vfs';
+import { VfsError, isNamespacedReadonly } from '../../vfs';
+import { isMemoriesPath } from '../memoryTool';
 
-/** Readonly paths - any write/delete to these paths throws EROFS */
-const READONLY_PATHS = ['/memories'];
+export interface FsBridgeOptions {
+  /** Caller's VFS namespace; only affects the `readonly` flag `stat()` reports for /share */
+  namespace?: string;
+  /** Allow writes under /memories (the javascript tool's `memoriesWritable` option) */
+  memoriesWritable?: boolean;
+}
 
 /** Pending fs operation to be resolved during event loop */
 export interface PendingFsOp {
   execute: () => Promise<unknown>;
   resolve: (value: QuickJSHandle) => void;
   reject: (error: QuickJSHandle) => void;
-}
-
-/**
- * Check if a path is readonly
- */
-function isReadonly(path: string): boolean {
-  const normalized = normalizePath(path);
-  return READONLY_PATHS.some(
-    roPath => normalized === roPath || normalized.startsWith(roPath + '/')
-  );
 }
 
 /**
@@ -63,6 +58,8 @@ function vfsErrorToErrno(error: VfsError, path: string): string {
       return `EINVAL: binary file, '${path}'`;
     case 'READONLY':
       return `EROFS: read-only file system, '${path}'`;
+    case 'IO_ERROR':
+      return error.message; // already errno-styled
     default:
       return `EIO: ${error.message}`;
   }
@@ -77,12 +74,19 @@ export class FsBridge {
   private adapter: VfsAdapter;
   private context: QuickJSContext;
   private namespace?: string;
+  private memoriesWritable: boolean;
   private pendingOps: PendingFsOp[] = [];
 
-  constructor(adapter: VfsAdapter, context: QuickJSContext, namespace?: string) {
+  constructor(adapter: VfsAdapter, context: QuickJSContext, options: FsBridgeOptions = {}) {
     this.adapter = adapter;
     this.context = context;
-    this.namespace = namespace;
+    this.namespace = options.namespace;
+    this.memoriesWritable = options.memoriesWritable === true;
+  }
+
+  /** Writes and deletes to readonly paths fail with EROFS */
+  private isReadonly(path: string): boolean {
+    return !this.memoriesWritable && isMemoriesPath(path);
   }
 
   /**
@@ -144,6 +148,14 @@ export class FsBridge {
     }));
   }
 
+  /** Read a boolean flag from a Node-style options object; anything else is false. */
+  private readBooleanOption(optionsHandle: QuickJSHandle | undefined, name: string): boolean {
+    if (!optionsHandle || this.context.typeof(optionsHandle) !== 'object') return false;
+    const options: unknown = this.context.dump(optionsHandle);
+    if (typeof options !== 'object' || options === null) return false;
+    return Boolean((options as Record<string, unknown>)[name]);
+  }
+
   /**
    * Inject fs object into context as globalThis.fs and globalThis.__fs
    */
@@ -199,8 +211,9 @@ export class FsBridge {
     this.context.setProp(fsObj, 'readFile', readFileFn);
     readFileFn.dispose();
 
-    // fs.writeFile(path, data) -> Promise<void>
-    // data must be string or ArrayBuffer/TypedArray (strict Node.js behavior)
+    // fs.writeFile(path, data, options?) -> Promise<void>
+    // data must be string or ArrayBuffer/TypedArray (strict Node.js behavior).
+    // Missing parent directories are created; options/encoding are ignored.
     const writeFileFn = this.context.newFunction(
       'writeFile',
       (pathHandle: QuickJSHandle, dataHandle: QuickJSHandle) => {
@@ -258,7 +271,7 @@ export class FsBridge {
 
         return this.queueOp(async () => {
           // Check readonly
-          if (isReadonly(path)) {
+          if (this.isReadonly(path)) {
             return { ok: false, error: `EROFS: read-only file system, write '${path}'` };
           }
           try {
@@ -277,6 +290,42 @@ export class FsBridge {
     this.context.setProp(fsObj, 'writeFile', writeFileFn);
     writeFileFn.dispose();
 
+    // fs.appendFile(path, data, options?) -> Promise<void>
+    // Text only. Creates the file (and missing parents) when absent; one
+    // backend call, so concurrent appenders can't lose each other's writes.
+    const appendFileFn = this.context.newFunction(
+      'appendFile',
+      (pathHandle: QuickJSHandle, dataHandle: QuickJSHandle) => {
+        if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'appendFile');
+        if (this.isUndefinedArg(dataHandle)) return this.missingArgError('data', 'appendFile');
+        const path = this.context.getString(pathHandle);
+        if (this.context.typeof(dataHandle) !== 'string') {
+          return this.queueOp(async () => ({
+            ok: false,
+            error: `EINVAL: invalid argument, appendFile data must be a string, '${path}'`,
+          }));
+        }
+        const data = this.context.getString(dataHandle);
+
+        return this.queueOp(async () => {
+          if (this.isReadonly(path)) {
+            return { ok: false, error: `EROFS: read-only file system, append '${path}'` };
+          }
+          try {
+            await this.adapter.appendFile(path, data);
+            return { ok: true, value: undefined };
+          } catch (error) {
+            if (error instanceof VfsError) {
+              return { ok: false, error: vfsErrorToErrno(error, path) };
+            }
+            throw error;
+          }
+        });
+      }
+    );
+    this.context.setProp(fsObj, 'appendFile', appendFileFn);
+    appendFileFn.dispose();
+
     // fs.exists(path) -> Promise<boolean>
     const existsFn = this.context.newFunction('exists', (pathHandle: QuickJSHandle) => {
       if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'exists');
@@ -289,26 +338,32 @@ export class FsBridge {
     this.context.setProp(fsObj, 'exists', existsFn);
     existsFn.dispose();
 
-    // fs.mkdir(path) -> Promise<void>
-    const mkdirFn = this.context.newFunction('mkdir', (pathHandle: QuickJSHandle) => {
-      if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'mkdir');
-      const path = this.context.getString(pathHandle);
-      return this.queueOp(async () => {
-        // Check readonly
-        if (isReadonly(path)) {
-          return { ok: false, error: `EROFS: read-only file system, mkdir '${path}'` };
-        }
-        try {
-          await this.adapter.mkdir(path);
-          return { ok: true, value: undefined };
-        } catch (error) {
-          if (error instanceof VfsError) {
-            return { ok: false, error: vfsErrorToErrno(error, path) };
+    // fs.mkdir(path, { recursive }?) -> Promise<void>
+    // Missing parents are always created; `recursive` also makes an existing
+    // directory a no-op instead of EEXIST.
+    const mkdirFn = this.context.newFunction(
+      'mkdir',
+      (pathHandle: QuickJSHandle, optionsHandle?: QuickJSHandle) => {
+        if (this.isUndefinedArg(pathHandle)) return this.missingArgError('path', 'mkdir');
+        const path = this.context.getString(pathHandle);
+        const recursive = this.readBooleanOption(optionsHandle, 'recursive');
+        return this.queueOp(async () => {
+          // Check readonly
+          if (this.isReadonly(path)) {
+            return { ok: false, error: `EROFS: read-only file system, mkdir '${path}'` };
           }
-          throw error;
-        }
-      });
-    });
+          try {
+            await this.adapter.mkdir(path, { recursive });
+            return { ok: true, value: undefined };
+          } catch (error) {
+            if (error instanceof VfsError) {
+              return { ok: false, error: vfsErrorToErrno(error, path) };
+            }
+            throw error;
+          }
+        });
+      }
+    );
     this.context.setProp(fsObj, 'mkdir', mkdirFn);
     mkdirFn.dispose();
 
@@ -338,7 +393,7 @@ export class FsBridge {
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         // Check readonly
-        if (isReadonly(path)) {
+        if (this.isReadonly(path)) {
           return { ok: false, error: `EROFS: read-only file system, unlink '${path}'` };
         }
         try {
@@ -361,7 +416,7 @@ export class FsBridge {
       const path = this.context.getString(pathHandle);
       return this.queueOp(async () => {
         // Check readonly
-        if (isReadonly(path)) {
+        if (this.isReadonly(path)) {
           return { ok: false, error: `EROFS: read-only file system, rmdir '${path}'` };
         }
         try {
@@ -378,6 +433,31 @@ export class FsBridge {
     this.context.setProp(fsObj, 'rmdir', rmdirFn);
     rmdirFn.dispose();
 
+    // fs.rm(path | paths, { recursive, force }?) -> Promise<void>
+    // Node semantics, plus an array form that deletes everything in one
+    // backend call. Directories need `recursive`; `force` ignores missing
+    // paths. Best-effort: on failure the other paths are still deleted, and
+    // the rejection names the first failure and lists the rest.
+    const rmFn = this.context.newFunction(
+      'rm',
+      (targetHandle: QuickJSHandle, optionsHandle?: QuickJSHandle) => {
+        if (this.isUndefinedArg(targetHandle)) return this.missingArgError('path', 'rm');
+        const target: unknown = this.context.dump(targetHandle);
+        const paths = typeof target === 'string' ? [target] : target;
+        if (!Array.isArray(paths) || !paths.every(p => typeof p === 'string')) {
+          return this.queueOp(async () => ({
+            ok: false,
+            error: 'EINVAL: invalid argument, rm path must be a string or an array of strings',
+          }));
+        }
+        const recursive = this.readBooleanOption(optionsHandle, 'recursive');
+        const force = this.readBooleanOption(optionsHandle, 'force');
+        return this.queueOp(() => this.rmPaths(paths as string[], recursive, force));
+      }
+    );
+    this.context.setProp(fsObj, 'rm', rmFn);
+    rmFn.dispose();
+
     // fs.rename(oldPath, newPath) -> Promise<void>
     const renameFn = this.context.newFunction(
       'rename',
@@ -388,10 +468,10 @@ export class FsBridge {
         const newPath = this.context.getString(newPathHandle);
         return this.queueOp(async () => {
           // Check readonly for both source and destination
-          if (isReadonly(oldPath)) {
+          if (this.isReadonly(oldPath)) {
             return { ok: false, error: `EROFS: read-only file system, rename '${oldPath}'` };
           }
-          if (isReadonly(newPath)) {
+          if (this.isReadonly(newPath)) {
             return { ok: false, error: `EROFS: read-only file system, rename '${newPath}'` };
           }
           try {
@@ -422,7 +502,7 @@ export class FsBridge {
               isFile: st.isFile,
               isDirectory: st.isDirectory,
               size: st.size,
-              readonly: isReadonly(path) || isNamespacedReadonly(path, this.namespace),
+              readonly: this.isReadonly(path) || isNamespacedReadonly(path, this.namespace),
               mtime: st.updatedAt,
               isBinary: st.isBinary,
               mime: st.mime,
@@ -443,6 +523,63 @@ export class FsBridge {
     this.context.setProp(this.context.global, 'fs', fsObj);
     this.context.setProp(this.context.global, '__fs', fsObj);
     fsObj.dispose();
+  }
+
+  private async rmPaths(
+    paths: string[],
+    recursive: boolean,
+    force: boolean
+  ): Promise<{ ok: boolean; value?: undefined; error?: string }> {
+    const errors: Array<string | undefined> = new Array(paths.length);
+    const sendIndexes: number[] = [];
+    paths.forEach((path, i) => {
+      if (this.isReadonly(path)) {
+        errors[i] = `EROFS: read-only file system, rm '${path}'`;
+      } else {
+        sendIndexes.push(i);
+      }
+    });
+
+    if (sendIndexes.length > 0) {
+      try {
+        const results = await this.adapter.deletePaths(
+          sendIndexes.map(i => paths[i]),
+          recursive
+        );
+        results.forEach((result, k) => {
+          if (!result.error) return;
+          const notFound =
+            result.error.code === 'PATH_NOT_FOUND' || result.error.code === 'IS_DELETED';
+          if (force && notFound) return;
+          const index = sendIndexes[k];
+          errors[index] = vfsErrorToErrno(
+            new VfsError(result.error.message, result.error.code),
+            paths[index]
+          );
+        });
+      } catch (error) {
+        if (error instanceof VfsError) {
+          return { ok: false, error: vfsErrorToErrno(error, paths[sendIndexes[0]]) };
+        }
+        throw error;
+      }
+    }
+
+    const failedIndexes = paths.flatMap((_, i) => (errors[i] ? [i] : []));
+    if (failedIndexes.length === 0) return { ok: true, value: undefined };
+
+    let message = errors[failedIndexes[0]]!;
+    if (failedIndexes.length > 1) {
+      const LISTED = 5;
+      const others = failedIndexes
+        .slice(1, 1 + LISTED)
+        .map(i => `'${paths[i]}'`)
+        .join(', ');
+      const unlisted = failedIndexes.length - 1 - LISTED;
+      const tail = unlisted > 0 ? ` and ${unlisted} more` : '';
+      message += ` (also failed: ${others}${tail})`;
+    }
+    return { ok: false, error: message };
   }
 
   /**

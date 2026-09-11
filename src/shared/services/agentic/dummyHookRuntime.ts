@@ -56,8 +56,14 @@ export class DummyHookRuntime {
 
   /**
    * Load a hook from VFS. Returns null if the hook file doesn't exist.
+   * `namespace` must match the adapter's so `fs.stat` reports /share as readonly
+   * for namespaced minions.
    */
-  static async load(adapter: VfsAdapter, hookName: string): Promise<DummyHookRuntime | null> {
+  static async load(
+    adapter: VfsAdapter,
+    hookName: string,
+    namespace?: string
+  ): Promise<DummyHookRuntime | null> {
     const hookPath = `/hooks/${hookName}.js`;
 
     // Check if hook file exists
@@ -66,7 +72,7 @@ export class DummyHookRuntime {
       if (!content) return null;
 
       // Create VM without lib loading — hooks are self-contained
-      const vm = await JsVMContext.create(adapter, false, false);
+      const vm = await JsVMContext.create(adapter, false, false, { namespace });
 
       return new DummyHookRuntime(vm, content);
     } catch {

@@ -81,6 +81,30 @@ components:
           type: number
         mime:
           type: string
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          description: VFS error code when the failure has one (e.g. DIR_EXISTS, FILE_EXISTS)
+    DeletePathResult:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: The path as sent in the request
+        error:
+          type: object
+          description: Absent when the path was deleted
+          properties:
+            code:
+              type: string
+              enum: [PATH_NOT_FOUND, NOT_A_FILE, INVALID_PATH, IO_ERROR]
+            message:
+              type: string
 
 paths:
   /health:
@@ -216,13 +240,68 @@ paths:
 
   /api/mkdir:
     post:
-      summary: Create directory (recursive)
+      summary: Create directory
+      description: |
+        Missing parent directories are always created. `recursive` only
+        decides what happens when the directory already exists.
       parameters:
         - $ref: '#/components/parameters/projectId'
         - $ref: '#/components/parameters/path'
+        - name: recursive
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: When true, an existing directory is a no-op (`mkdir -p`)
       responses:
         '204':
-          description: Created
+          description: Created (or already a directory, with recursive=true)
+        '409':
+          description: Directory exists (code DIR_EXISTS, recursive=false) or a file is in the way (code FILE_EXISTS)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/rm-many:
+    post:
+      summary: Delete many files / directories in one call
+      description: |
+        Best-effort: every path gets its own result and one failure doesn't
+        stop the rest. A path under one already deleted in the same batch
+        counts as deleted. The project root can't be deleted this way.
+      parameters:
+        - $ref: '#/components/parameters/projectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paths]
+              properties:
+                paths:
+                  type: array
+                  items:
+                    type: string
+                recursive:
+                  type: boolean
+                  default: false
+                  description: Allow deleting directories (with their contents)
+      responses:
+        '200':
+          description: One result per requested path, in request order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DeletePathResult'
+        '400':
+          description: paths missing or not an array of strings
 
   /api/rmdir:
     delete:

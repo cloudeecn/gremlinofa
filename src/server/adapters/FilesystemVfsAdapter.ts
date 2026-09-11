@@ -11,19 +11,20 @@
  */
 
 import fs from 'node:fs/promises';
-import fsSync from 'node:fs';
 import path from 'node:path';
 import type { VfsAdapter } from '../../shared/services/vfs/vfsAdapter';
 import type {
   CompactOptions,
   CompactProgress,
   CompactResult,
+  DeletePathResult,
   DirEntry,
   FileContent,
   InsertResult,
   OrphanInfo,
   ReadFileResult,
   StrReplaceResult,
+  VfsErrorCode,
   VfsStat,
   VersionInfo,
 } from '../../shared/services/vfs/vfsService';
@@ -31,12 +32,50 @@ import { VfsError, detectMimeFromBuffer } from '../../shared/services/vfs/vfsSer
 import * as engine from '../vfsEngine/fsEngine.js';
 import type { VfsContext } from '../vfsEngine/fsEngine.js';
 import { type VfsAccessConfig, getAllowedRootsForProject } from '../vfsEngine/accessConfig.js';
-import { isVersionDir, saveVersion } from '../vfsEngine/versioning.js';
+import {
+  cloneFile,
+  isVersionDir,
+  removeVersionDir,
+  renameVersionDir,
+  saveVersion,
+} from '../vfsEngine/versioning.js';
 import { withFileLock } from '../vfsEngine/fileLock.js';
 
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Map raw Node fs errors onto the `VfsError` codes the memory / fs tools
+ * branch on. Worker-mode `vfsService` throws these codes in the same
+ * situations; without the mapping every such branch is dead in server mode
+ * and the model sees `ENOENT: ... open '/srv/...'` with the host path in it.
+ */
+const NODE_TO_VFS_ERROR: Record<string, { code: VfsErrorCode; describe: (p: string) => string }> = {
+  ENOENT: { code: 'PATH_NOT_FOUND', describe: p => `Path not found: ${p}` },
+  ENOTDIR: { code: 'PATH_NOT_FOUND', describe: p => `Path not found: ${p}` },
+  EISDIR: { code: 'NOT_A_FILE', describe: p => `Not a file (is a directory): ${p}` },
+  EEXIST: { code: 'FILE_EXISTS', describe: p => `File already exists: ${p}` },
+  ENOTEMPTY: { code: 'DESTINATION_EXISTS', describe: p => `Destination already exists: ${p}` },
+};
+
+function translateNodeError(e: unknown, vfsPath: string): never {
+  const nodeCode = (e as { code?: string }).code;
+  const mapped = nodeCode ? NODE_TO_VFS_ERROR[nodeCode] : undefined;
+  if (mapped) {
+    throw new VfsError(mapped.describe(vfsPath), mapped.code);
+  }
+  throw e;
+}
+
+async function withNodeErrors<T>(vfsPath: string, op: () => Promise<T>): Promise<T> {
+  try {
+    return await op();
+  } catch (e) {
+    if (e instanceof VfsError) throw e;
+    translateNodeError(e, vfsPath);
+  }
+}
 
 async function pathExists(p: string): Promise<boolean> {
   try {
@@ -84,12 +123,15 @@ function fileContentToBuffer(content: FileContent): Buffer | string {
   throw new VfsError('Unsupported file content type', 'INVALID_PATH');
 }
 
-function isBinaryBuffer(buf: Buffer): boolean {
+// ignoreBOM keeps a leading BOM in the text, matching Buffer#toString.
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/** The buffer as text, or null when it isn't valid UTF-8 (a binary file). */
+function decodeText(buf: Buffer): string | null {
   try {
-    new TextDecoder('utf-8', { fatal: true }).decode(buf);
-    return false;
+    return strictUtf8.decode(buf);
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -109,7 +151,7 @@ function bufferToArrayBufferCopy(buf: Buffer): ArrayBuffer {
  */
 function translateError(e: unknown): never {
   if (e instanceof engine.FsError) {
-    throw new VfsError(e.message, 'INVALID_PATH');
+    throw new VfsError(e.message, e.code ?? 'INVALID_PATH');
   }
   throw e;
 }
@@ -120,26 +162,46 @@ function translateError(e: unknown): never {
 
 export class FilesystemVfsAdapter implements VfsAdapter {
   private readonly root: string;
-  private readonly ctx: VfsContext;
+  private readonly projectId: string;
+  private readonly accessConfig: VfsAccessConfig;
+  private ctxPromise: Promise<VfsContext> | null = null;
 
   constructor(basePath: string, projectId: string, accessConfig: VfsAccessConfig) {
     this.root = path.join(basePath, projectId);
-    // Ensure project root exists so realpath works, then canonicalize. This
-    // also keeps the prior "auto-create on first touch" UX without making
-    // readDir responsible for it.
-    fsSync.mkdirSync(this.root, { recursive: true });
-    const projectRoot = fsSync.realpathSync(this.root);
-    this.ctx = {
-      projectRoot,
-      allowedRoots: getAllowedRootsForProject(accessConfig, projectId, projectRoot),
-      followSymlinks: accessConfig.followSymlinks,
-    };
-    console.debug('[FilesystemVfs] Adapter created, root:', projectRoot);
+    this.projectId = projectId;
+    this.accessConfig = accessConfig;
+  }
+
+  /**
+   * Create the project root on first use (the "auto-create on first touch"
+   * UX) and canonicalize it so allow-list comparisons see real paths. Async
+   * and lazy because some tools build an adapter per call, and sync fs
+   * calls there would stall the server's event loop.
+   */
+  private getCtx(): Promise<VfsContext> {
+    if (!this.ctxPromise) {
+      const pending = (async () => {
+        await fs.mkdir(this.root, { recursive: true });
+        const projectRoot = await fs.realpath(this.root);
+        console.debug('[FilesystemVfs] Project root ready:', projectRoot);
+        return {
+          projectRoot,
+          allowedRoots: getAllowedRootsForProject(this.accessConfig, this.projectId, projectRoot),
+          followSymlinks: this.accessConfig.followSymlinks,
+        };
+      })();
+      this.ctxPromise = pending;
+      pending.catch(() => {
+        if (this.ctxPromise === pending) this.ctxPromise = null;
+      });
+    }
+    return this.ctxPromise;
   }
 
   private async resolveCanonical(vfsPath: string, opts?: { forWrite?: boolean }): Promise<string> {
+    const ctx = await this.getCtx();
     try {
-      return await engine.resolveCanonicalPath(vfsPath, this.ctx, opts);
+      return await engine.resolveCanonicalPath(vfsPath, ctx, opts);
     } catch (e) {
       translateError(e);
     }
@@ -151,31 +213,32 @@ export class FilesystemVfsAdapter implements VfsAdapter {
 
   async readDir(dirPath: string, _includeDeleted?: boolean): Promise<DirEntry[]> {
     const abs = await this.resolveCanonical(dirPath);
+    const { followSymlinks } = await this.getCtx();
 
-    const entries = await fs.readdir(abs, { withFileTypes: true });
-    const results: DirEntry[] = [];
+    const entries = await withNodeErrors(dirPath, () => fs.readdir(abs, { withFileTypes: true }));
 
-    for (const entry of entries) {
-      // Hide all dotfiles (version dirs and other hidden files)
-      if (entry.name.startsWith('.')) continue;
-      // In follow=off mode, drop symlinks entirely — they're refused at access
-      // time, so listing them would be a lie. In follow=on mode the per-op
-      // resolveCanonicalPath handles allow-list enforcement on individual reads.
-      if (!this.ctx.followSymlinks && entry.isSymbolicLink()) continue;
+    // Hide all dotfiles (version dirs and other hidden files). In follow=off
+    // mode, drop symlinks entirely — they're refused at access time, so
+    // listing them would be a lie. In follow=on mode the per-op
+    // resolveCanonicalPath handles allow-list enforcement on individual reads.
+    const visible = entries.filter(
+      entry => !entry.name.startsWith('.') && (followSymlinks || !entry.isSymbolicLink())
+    );
 
-      const fullPath = path.join(abs, entry.name);
-      const stat = await fs.stat(fullPath);
-      const isDirectory = entry.isDirectory() || (entry.isSymbolicLink() && stat.isDirectory());
-
-      results.push({
-        name: entry.name,
-        type: isDirectory ? 'dir' : 'file',
-        deleted: false,
-        createdAt: stat.mtimeMs,
-        updatedAt: stat.mtimeMs,
-        size: isDirectory ? undefined : stat.size,
-      });
-    }
+    const results: DirEntry[] = await Promise.all(
+      visible.map(async entry => {
+        const stat = await fs.stat(path.join(abs, entry.name));
+        const isDirectory = entry.isDirectory() || (entry.isSymbolicLink() && stat.isDirectory());
+        return {
+          name: entry.name,
+          type: isDirectory ? 'dir' : 'file',
+          deleted: false,
+          createdAt: stat.mtimeMs,
+          updatedAt: stat.mtimeMs,
+          size: isDirectory ? undefined : stat.size,
+        } satisfies DirEntry;
+      })
+    );
 
     // Sort: directories first, then alphabetical
     results.sort((a, b) => {
@@ -188,17 +251,19 @@ export class FilesystemVfsAdapter implements VfsAdapter {
 
   async readFile(filePath: string): Promise<string> {
     const abs = await this.resolveCanonical(filePath);
-    const buf = await fs.readFile(abs);
-    if (isBinaryBuffer(buf)) {
+    const buf = await withNodeErrors(filePath, () => fs.readFile(abs));
+    const text = decodeText(buf);
+    if (text === null) {
       throw new VfsError(`Cannot read binary file as text: ${filePath}`, 'BINARY_FILE');
     }
-    return buf.toString('utf-8');
+    return text;
   }
 
   async readFileWithMeta(filePath: string): Promise<ReadFileResult> {
     const abs = await this.resolveCanonical(filePath);
-    const buf = await fs.readFile(abs);
-    if (isBinaryBuffer(buf)) {
+    const buf = await withNodeErrors(filePath, () => fs.readFile(abs));
+    const text = decodeText(buf);
+    if (text === null) {
       const arrayBuffer = bufferToArrayBufferCopy(buf);
       const sniffed = detectMimeFromBuffer(arrayBuffer);
       const mime =
@@ -211,7 +276,7 @@ export class FilesystemVfsAdapter implements VfsAdapter {
       };
     }
     return {
-      content: buf.toString('utf-8'),
+      content: text,
       isBinary: false,
       mime: 'text/plain',
     };
@@ -219,44 +284,55 @@ export class FilesystemVfsAdapter implements VfsAdapter {
 
   async writeFile(filePath: string, content: FileContent): Promise<void> {
     const abs = await this.resolveCanonical(filePath, { forWrite: true });
-    await withFileLock(abs, async () => {
-      await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, fileContentToBuffer(content));
-      await saveVersion(abs);
-    });
+    await withFileLock(abs, () =>
+      withNodeErrors(filePath, async () => {
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, fileContentToBuffer(content));
+        await saveVersion(abs);
+      })
+    );
   }
 
   async createFile(filePath: string, content: string): Promise<void> {
     const abs = await this.resolveCanonical(filePath, { forWrite: true });
     if (await pathExists(abs)) {
-      throw new Error(`File already exists: ${filePath}`);
+      throw new VfsError(`File already exists: ${filePath}`, 'FILE_EXISTS');
     }
-    await withFileLock(abs, async () => {
-      await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, content, 'utf-8');
-      await saveVersion(abs);
-    });
+    await withFileLock(abs, () =>
+      withNodeErrors(filePath, async () => {
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, content, 'utf-8');
+        await saveVersion(abs);
+      })
+    );
   }
 
   async deleteFile(filePath: string): Promise<void> {
     const abs = await this.resolveCanonical(filePath);
-    await withFileLock(abs, async () => {
-      await fs.unlink(abs);
-      // Clean up version directory
-      const vd = verDir(abs);
-      if (await pathExists(vd)) {
-        await fs.rm(vd, { recursive: true });
-      }
-    });
+    await withFileLock(abs, () =>
+      withNodeErrors(filePath, async () => {
+        await fs.unlink(abs);
+        await removeVersionDir(abs);
+      })
+    );
   }
 
-  async mkdir(dirPath: string): Promise<void> {
-    const abs = await this.resolveCanonical(dirPath, { forWrite: true });
-    await fs.mkdir(abs, { recursive: true });
+  async mkdir(dirPath: string, options?: { recursive?: boolean }): Promise<void> {
+    const ctx = await this.getCtx();
+    try {
+      await engine.mkdir(ctx, dirPath, options?.recursive ?? false);
+    } catch (e) {
+      if (e instanceof engine.FsError) translateError(e);
+      translateNodeError(e, dirPath);
+    }
   }
 
   async rmdir(dirPath: string, recursive?: boolean): Promise<void> {
     const abs = await this.resolveCanonical(dirPath);
+    if (abs === (await this.getCtx()).projectRoot) {
+      // clearVfs is the way to wipe a project; rmdir('/') must not be.
+      throw new VfsError('Cannot delete root directory', 'INVALID_PATH');
+    }
     if (recursive) {
       await fs.rm(abs, { recursive: true });
     } else {
@@ -267,17 +343,17 @@ export class FilesystemVfsAdapter implements VfsAdapter {
   async rename(oldPath: string, newPath: string, overwrite?: boolean): Promise<void> {
     const absOld = await this.resolveCanonical(oldPath);
     const absNew = await this.resolveCanonical(newPath, { forWrite: true });
+    if (!(await pathExists(absOld))) {
+      throw new VfsError(`Path not found: ${oldPath}`, 'PATH_NOT_FOUND');
+    }
     if (!overwrite && (await pathExists(absNew))) {
-      throw new Error(`Target already exists: ${newPath}`);
+      throw new VfsError(`Destination already exists: ${newPath}`, 'DESTINATION_EXISTS');
     }
-    await fs.mkdir(path.dirname(absNew), { recursive: true });
-    await fs.rename(absOld, absNew);
-    // Move version directory too
-    const oldVd = verDir(absOld);
-    if (await pathExists(oldVd)) {
-      const newVd = verDir(absNew);
-      await fs.rename(oldVd, newVd);
-    }
+    await withNodeErrors(newPath, async () => {
+      await fs.mkdir(path.dirname(absNew), { recursive: true });
+      await fs.rename(absOld, absNew);
+      await renameVersionDir(absOld, absNew);
+    });
   }
 
   async exists(filePath: string): Promise<boolean> {
@@ -298,7 +374,7 @@ export class FilesystemVfsAdapter implements VfsAdapter {
 
   async stat(filePath: string): Promise<VfsStat> {
     const abs = await this.resolveCanonical(filePath);
-    const st = await fs.stat(abs);
+    const st = await withNodeErrors(filePath, () => fs.stat(abs));
     return {
       isFile: st.isFile(),
       isDirectory: st.isDirectory(),
@@ -311,13 +387,17 @@ export class FilesystemVfsAdapter implements VfsAdapter {
   }
 
   async hasVfs(): Promise<boolean> {
-    return isDir(this.ctx.projectRoot);
+    // Checked directly: going through getCtx would create the root.
+    return isDir(this.root);
   }
 
   async clearVfs(): Promise<void> {
-    if (await pathExists(this.ctx.projectRoot)) {
-      await fs.rm(this.ctx.projectRoot, { recursive: true });
+    const { projectRoot } = await this.getCtx();
+    if (await pathExists(projectRoot)) {
+      await fs.rm(projectRoot, { recursive: true });
     }
+    // The next op recreates the root.
+    this.ctxPromise = null;
   }
 
   // --------------------------------------------------------------------------
@@ -327,14 +407,14 @@ export class FilesystemVfsAdapter implements VfsAdapter {
   async strReplace(filePath: string, oldStr: string, newStr: string): Promise<StrReplaceResult> {
     const abs = await this.resolveCanonical(filePath);
     return withFileLock(abs, async () => {
-      const content = await fs.readFile(abs, 'utf-8');
+      const content = await withNodeErrors(filePath, () => fs.readFile(abs, 'utf-8'));
       const idx = content.indexOf(oldStr);
       if (idx === -1) {
-        throw new Error(`String not found in ${filePath}`);
+        throw new VfsError(`String not found in ${filePath}`, 'STRING_NOT_FOUND');
       }
       // Check uniqueness
       if (content.indexOf(oldStr, idx + 1) !== -1) {
-        throw new Error(`String is not unique in ${filePath}`);
+        throw new VfsError(`String is not unique in ${filePath}`, 'STRING_NOT_UNIQUE');
       }
       const updated = content.slice(0, idx) + newStr + content.slice(idx + oldStr.length);
       await fs.writeFile(abs, updated, 'utf-8');
@@ -353,7 +433,7 @@ export class FilesystemVfsAdapter implements VfsAdapter {
   async insert(filePath: string, line: number, text: string): Promise<InsertResult> {
     const abs = await this.resolveCanonical(filePath);
     return withFileLock(abs, async () => {
-      const content = await fs.readFile(abs, 'utf-8');
+      const content = await withNodeErrors(filePath, () => fs.readFile(abs, 'utf-8'));
       const lines = content.split('\n');
       const insertAt = Math.max(0, Math.min(line - 1, lines.length));
       lines.splice(insertAt, 0, text);
@@ -366,11 +446,13 @@ export class FilesystemVfsAdapter implements VfsAdapter {
   async appendFile(filePath: string, text: string): Promise<{ created: boolean }> {
     const abs = await this.resolveCanonical(filePath, { forWrite: true });
     const fileExists = await pathExists(abs);
-    await withFileLock(abs, async () => {
-      await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.appendFile(abs, text, 'utf-8');
-      await saveVersion(abs);
-    });
+    await withFileLock(abs, () =>
+      withNodeErrors(filePath, async () => {
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.appendFile(abs, text, 'utf-8');
+        await saveVersion(abs);
+      })
+    );
     return { created: !fileExists };
   }
 
@@ -406,10 +488,9 @@ export class FilesystemVfsAdapter implements VfsAdapter {
     // Write current content as actual file
     await fs.writeFile(abs, fileContentToBuffer(currentContent));
 
-    // Copy current to version slot + write meta once
+    // Snapshot current into its version slot + write meta once
     const totalVersion = versions.length + 1;
-    await fs.copyFile(abs, path.join(vd, String(totalVersion)));
-    await fs.mkdir(vd, { recursive: true });
+    await cloneFile(abs, path.join(vd, String(totalVersion)));
     await fs.writeFile(
       path.join(vd, 'meta.json'),
       JSON.stringify({
@@ -510,7 +591,7 @@ export class FilesystemVfsAdapter implements VfsAdapter {
     const versionPath = path.join(verDir(abs), String(version));
     try {
       const buf = await fs.readFile(versionPath);
-      return isBinaryBuffer(buf) ? buf.toString('base64') : buf.toString('utf-8');
+      return decodeText(buf) ?? buf.toString('base64');
     } catch {
       return null;
     }
@@ -566,26 +647,33 @@ export class FilesystemVfsAdapter implements VfsAdapter {
   async copyFile(src: string, dst: string, overwrite?: boolean): Promise<void> {
     const absSrc = await this.resolveCanonical(src);
     const absDst = await this.resolveCanonical(dst, { forWrite: true });
-    if (!overwrite && (await pathExists(absDst))) {
-      throw new Error(`Target already exists: ${dst}`);
+    if (await isDir(absDst)) {
+      throw new VfsError(`Destination is a directory: ${dst}`, 'NOT_A_FILE');
     }
-    await fs.mkdir(path.dirname(absDst), { recursive: true });
-    await fs.copyFile(absSrc, absDst);
-    await saveVersion(absDst);
+    if (!overwrite && (await pathExists(absDst))) {
+      throw new VfsError(`Destination already exists: ${dst}`, 'DESTINATION_EXISTS');
+    }
+    if (!(await pathExists(absSrc))) {
+      throw new VfsError(`Path not found: ${src}`, 'PATH_NOT_FOUND');
+    }
+    await withFileLock(absDst, () =>
+      withNodeErrors(dst, async () => {
+        await fs.mkdir(path.dirname(absDst), { recursive: true });
+        // Reflink into a fresh destination; an existing one keeps its inode
+        // via a truncating write (see cloneFile / copyFileContents).
+        await cloneFile(absSrc, absDst);
+        await saveVersion(absDst);
+      })
+    );
   }
 
   async deletePath(filePath: string): Promise<void> {
-    const abs = await this.resolveCanonical(filePath);
-    try {
-      const st = await fs.stat(abs);
-      if (st.isDirectory()) {
-        await fs.rm(abs, { recursive: true });
-      } else {
-        await this.deleteFile(filePath);
-      }
-    } catch {
-      // Path doesn't exist — no-op
-    }
+    const [result] = await this.deletePaths([filePath], true);
+    if (result.error) throw new VfsError(result.error.message, result.error.code);
+  }
+
+  async deletePaths(paths: string[], recursive: boolean): Promise<DeletePathResult[]> {
+    return engine.deletePaths(await this.getCtx(), paths, recursive);
   }
 
   async createFileGuarded(
@@ -608,7 +696,7 @@ export class FilesystemVfsAdapter implements VfsAdapter {
     dir: string,
     files: Array<{ name: string; content: string }>
   ): Promise<void> {
-    await this.mkdir(dir);
+    await this.mkdir(dir, { recursive: true });
     for (const file of files) {
       const filePath = dir.endsWith('/') ? `${dir}${file.name}` : `${dir}/${file.name}`;
       await this.writeFile(filePath, file.content);
@@ -635,7 +723,8 @@ export class FilesystemVfsAdapter implements VfsAdapter {
 
     onProgress?.({ phase: 'scanning', current: 0, total: 0 });
 
-    if (!(await pathExists(this.ctx.projectRoot))) {
+    const { projectRoot } = await this.getCtx();
+    if (!(await pathExists(projectRoot))) {
       onProgress?.({ phase: 'done', current: 0, total: 0 });
       return result;
     }
@@ -681,7 +770,7 @@ export class FilesystemVfsAdapter implements VfsAdapter {
     };
 
     onProgress?.({ phase: 'pruning-revisions', current: 0, total: 0 });
-    await walk(this.ctx.projectRoot);
+    await walk(projectRoot);
 
     onProgress?.({ phase: 'done', current: result.fileCount, total: result.fileCount });
     return result;

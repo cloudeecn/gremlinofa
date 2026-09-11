@@ -16,23 +16,12 @@
  */
 
 import { compressString, decompressString } from '../compression/compressionService';
+import { base64ToUint8Array, uint8ArrayToBase64 } from '../../protocol/binaryEncoding';
 
 // Base32 alphabet (RFC 4648, lowercase for readability)
 const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 
 const KEY_LENGTH = 32; // 256 bits for AES-256
-
-/** Encode Uint8Array to base64. Used internally for ciphertext serialization. */
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  const binaryString = Array.from(bytes, byte => String.fromCharCode(byte)).join('');
-  return btoa(binaryString);
-}
-
-/** Decode base64 to Uint8Array. */
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binaryString = atob(base64);
-  return Uint8Array.from(binaryString, char => char.charCodeAt(0));
-}
 
 /** Decode base32 (case-insensitive) to Uint8Array. */
 function base32ToUint8Array(base32: string): Uint8Array {
@@ -75,7 +64,8 @@ export function decodeCEKString(encoded: string): Uint8Array {
   if (isBase32(trimmed)) {
     return base32ToUint8Array(trimmed);
   } else {
-    return base64ToUint8Array(trimmed);
+    // Copy out of Node's shared Buffer pool — the key lives for the whole session.
+    return base64ToUint8Array(trimmed).slice();
   }
 }
 
@@ -93,6 +83,9 @@ export class EncryptionCore {
    */
   protected derivedKey: Uint8Array | null = null;
 
+  /** AES-GCM key imported from `derivedKey` on first use; reset whenever the key changes. */
+  private aesKey: Promise<CryptoKey> | null = null;
+
   /**
    * Initialize the core with a specific CEK. Accepts both base32 and
    * base64 formats. The CEK is held only in memory — `EncryptionCore`
@@ -100,6 +93,7 @@ export class EncryptionCore {
    */
   async initializeWithCEK(cek: string): Promise<void> {
     this.derivedKey = decodeCEKString(cek);
+    this.aesKey = null;
   }
 
   /** Returns true iff a key has been loaded into memory. */
@@ -114,6 +108,25 @@ export class EncryptionCore {
    */
   forget(): void {
     this.derivedKey = null;
+    this.aesKey = null;
+  }
+
+  private getAesKey(derivedKey: Uint8Array): Promise<CryptoKey> {
+    if (!this.aesKey) {
+      const pending = crypto.subtle.importKey(
+        'raw',
+        new Uint8Array(derivedKey),
+        { name: 'AES-GCM' },
+        false,
+        ['encrypt', 'decrypt']
+      );
+      this.aesKey = pending;
+      // A failed import must not poison every later call.
+      pending.catch(() => {
+        if (this.aesKey === pending) this.aesKey = null;
+      });
+    }
+    return this.aesKey;
   }
 
   /** Encrypt UTF-8 plaintext to a base64-encoded `nonce + ciphertext` string. */
@@ -125,11 +138,7 @@ export class EncryptionCore {
     try {
       const nonce = getRandomBytes(12);
       const plaintextBytes = new TextEncoder().encode(plaintext);
-      const keyBytes = new Uint8Array(this.derivedKey);
-
-      const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [
-        'encrypt',
-      ]);
+      const cryptoKey = await this.getAesKey(this.derivedKey);
 
       const ciphertext = await crypto.subtle.encrypt(
         {
@@ -162,11 +171,7 @@ export class EncryptionCore {
       const combined = base64ToUint8Array(ciphertext);
       const nonce = combined.subarray(0, 12);
       const encryptedData = combined.subarray(12);
-      const keyBytes = new Uint8Array(this.derivedKey);
-
-      const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [
-        'decrypt',
-      ]);
+      const cryptoKey = await this.getAesKey(this.derivedKey);
 
       const plaintextBuffer = await crypto.subtle.decrypt(
         {
@@ -197,11 +202,7 @@ export class EncryptionCore {
 
     try {
       const nonce = getRandomBytes(12);
-      const keyBytes = new Uint8Array(this.derivedKey);
-
-      const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [
-        'encrypt',
-      ]);
+      const cryptoKey = await this.getAesKey(this.derivedKey);
 
       const ciphertext = await crypto.subtle.encrypt(
         { name: 'AES-GCM', iv: new Uint8Array(nonce) },
@@ -234,11 +235,7 @@ export class EncryptionCore {
       const combined = base64ToUint8Array(ciphertext);
       const nonce = combined.subarray(0, 12);
       const encryptedData = combined.subarray(12);
-      const keyBytes = new Uint8Array(this.derivedKey);
-
-      const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, [
-        'decrypt',
-      ]);
+      const cryptoKey = await this.getAesKey(this.derivedKey);
 
       const plaintextBuffer = await crypto.subtle.decrypt(
         { name: 'AES-GCM', iv: new Uint8Array(nonce) },

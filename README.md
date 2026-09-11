@@ -350,15 +350,16 @@ Implements Anthropic's memory tool spec, so Claude already knows how to use it. 
 
 **JavaScript Execution** — Run code in a secure QuickJS sandbox:
 
-- **Isolated environment** — Fresh context per call, no DOM access, no network, 60s timeout
-- **Filesystem access** — `fs` API reads/writes to the project's virtual filesystem
+- **Isolated environment** — Fresh context per call, no DOM access, no network, 300s timeout
+- **Filesystem access** — Node-flavored `fs` API over the project's virtual filesystem, including `appendFile` for logs and an array-taking `rm` that deletes a whole batch in one call instead of one round trip per file
 - **Library preloading** — Drop UMD/IIFE builds in `/lib` and they load automatically
+- **Memories opt-in** — `/memories` stays read-only from JS unless you turn on the tool's own "Writable /memories" option. Bulk-rewriting your agent's memory with a script is now a checkbox away
 
 **Filesystem Tool** — Full VFS access for storing code, data, and artifacts:
 
 - **Text and binary files** — Create images, PDFs, whatever (via dataUrl)
 - **Tree operations** — Create, view, edit, rename, delete, recursive directory ops
-- **Readonly `/memories`** — Memory tool's space is protected, filesystem tool can read but not write
+- **Readonly `/memories`, by default** — The memory tool's space is look-don't-touch for the filesystem tool. Flip its "Writable /memories" option when you want the agent to edit memories with the full toolbox
 
 All tools persist data in the project's encrypted VFS. **Filesystem Manager** lets you peek behind the curtain — view files, diff versions, or wipe the slate clean.
 
@@ -430,7 +431,7 @@ Want your AI's memory files on a real filesystem instead of encrypted blobs? The
 
 - **Real files** — Your AI's files are actual files on a server. `ls` them. `cat` them. Edit them in vim. We won't judge.
 - **Per-file locking** — Two writes to different files run in parallel. Server-side, so the frontend doesn't need to think about it.
-- **Server-side versioning** — Hidden `.ver/` directories track revision history. Rollback when your AI rewrites that config file for the fifth time.
+- **Server-side versioning** — Hidden `.ver/` directories track revision history. Rollback when your AI rewrites that config file for the fifth time. On a copy-on-write filesystem (btrfs, XFS with reflink, bcachefs, OpenZFS 2.2+) each snapshot is a reflink, so a log that gets appended to all day costs blocks for the new lines, not a full copy per append.
 - **Compound operations** — `str-replace`, `insert`, `append` are atomic server-side. No TOCTOU races.
 - **Plaintext on disk** — The flip side of `grep`-able: files and their paths sit unencrypted on the server. Anyone with disk access can read them, and it's single-tenant by nature, so **deploy this for yourself** on hardware you trust. (Legacy content-only E2E exists but is deprecated — read-only, migration use.)
 

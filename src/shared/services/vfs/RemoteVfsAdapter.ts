@@ -20,6 +20,8 @@ import type {
   CompactOptions,
   OrphanInfo,
   FileContent,
+  DeletePathResult,
+  VfsErrorCode,
 } from './vfsService';
 import {
   VfsError,
@@ -28,6 +30,8 @@ import {
   resolveNamespacedPath,
   assertWritable,
 } from './vfsService';
+import { base64ToUint8Array, uint8ArrayToBase64 } from '../../protocol/binaryEncoding';
+import { isCoveredByDeleted, isRootPath, normalizePath } from '../../engine/lib/vfsPaths';
 
 export interface RemoteVfsAdapterOptions {
   baseUrl: string;
@@ -115,11 +119,7 @@ export class RemoteVfsAdapter implements VfsAdapter {
       // Binary content
       const mime = detectMimeFromBuffer(buffer);
       // Base64 encode for consistency with local VFS
-      let binary = '';
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      return { content: btoa(binary), isBinary: true, mime, buffer };
+      return { content: uint8ArrayToBase64(bytes), isBinary: true, mime, buffer };
     }
   }
 
@@ -165,23 +165,42 @@ export class RemoteVfsAdapter implements VfsAdapter {
     if (!res.ok) throw new VfsError(`rm failed: ${res.status}`, 'PATH_NOT_FOUND');
   }
 
-  async mkdir(path: string): Promise<void> {
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
     assertWritable(path, this.namespace);
     const resolved = this.resolve(path);
-    const res = await this.fetch(this.url('/mkdir', { path: resolved }), { method: 'POST' });
-    if (!res.ok) throw new VfsError(`mkdir failed: ${res.status}`, 'INVALID_PATH');
+    const params: Record<string, string> = { path: resolved };
+    if (options?.recursive) params.recursive = 'true';
+    const res = await this.fetch(this.url('/mkdir', params), { method: 'POST' });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const code: VfsErrorCode =
+        errBody.code ?? (res.status === 409 ? 'DIR_EXISTS' : 'INVALID_PATH');
+      throw new VfsError(errBody.error || `mkdir failed: ${res.status}`, code);
+    }
   }
 
   async rmdir(path: string, _recursive = false): Promise<void> {
     assertWritable(path, this.namespace);
-    const resolved = this.resolve(path);
+    if (isRootPath(path)) {
+      // clearVfs is the way to wipe a project; rmdir('/') must not be.
+      throw new VfsError('Cannot delete root directory', 'INVALID_PATH');
+    }
+    await this.removeTree(this.resolve(path));
+  }
+
+  private async removeTree(resolved: string): Promise<void> {
     const res = await this.fetch(this.url('/rmdir', { path: resolved }), { method: 'DELETE' });
     if (!res.ok) throw new VfsError(`rmdir failed: ${res.status}`, 'PATH_NOT_FOUND');
   }
 
-  async rename(oldPath: string, newPath: string, _overwrite?: boolean): Promise<void> {
+  async rename(oldPath: string, newPath: string, overwrite?: boolean): Promise<void> {
     assertWritable(oldPath, this.namespace);
     assertWritable(newPath, this.namespace);
+    // The /rename route always clobbers, so the overwrite guard lives here
+    // (same check-then-act as copyFile).
+    if (!overwrite && (await this.exists(newPath))) {
+      throw new VfsError(`Destination already exists: ${newPath}`, 'DESTINATION_EXISTS');
+    }
     const resolvedOld = this.resolve(oldPath);
     const resolvedNew = this.resolve(newPath);
     const res = await this.fetch(this.url('/rename'), {
@@ -241,8 +260,8 @@ export class RemoteVfsAdapter implements VfsAdapter {
   }
 
   async clearVfs(): Promise<void> {
-    // Remove everything under project root
-    await this.rmdir('/', true);
+    // Remove everything under project root (the namespace root when namespaced)
+    await this.removeTree(this.resolve('/'));
   }
 
   // ============================
@@ -373,7 +392,7 @@ export class RemoteVfsAdapter implements VfsAdapter {
     const decoder = new TextDecoder();
     return raw.map(v => ({
       version: v.version,
-      content: decoder.decode(Uint8Array.from(atob(v.content), c => c.charCodeAt(0))),
+      content: decoder.decode(base64ToUint8Array(v.content)),
     }));
   }
 
@@ -428,17 +447,108 @@ export class RemoteVfsAdapter implements VfsAdapter {
   }
 
   async deletePath(path: string): Promise<void> {
-    // deleteFile/rmdir already resolve and assertWritable
-    try {
-      await this.deleteFile(path);
-    } catch (error) {
-      if (error instanceof VfsError && error.code === 'PATH_NOT_FOUND') {
-        // Might be a directory — try rmdir
-        await this.rmdir(path, true);
+    const [result] = await this.deletePaths([path], true);
+    if (result.error) throw new VfsError(result.error.message, result.error.code);
+  }
+
+  async deletePaths(paths: string[], recursive: boolean): Promise<DeletePathResult[]> {
+    const results: DeletePathResult[] = new Array(paths.length);
+    const sendIndexes: number[] = [];
+    const sendPaths: string[] = [];
+    paths.forEach((path, i) => {
+      try {
+        assertWritable(path, this.namespace);
+        if (isRootPath(path)) {
+          throw new VfsError('Cannot delete root directory', 'INVALID_PATH');
+        }
+        sendIndexes.push(i);
+        sendPaths.push(this.resolve(path));
+      } catch (error) {
+        if (!(error instanceof VfsError)) throw error;
+        results[i] = { path, error: { code: error.code, message: error.message } };
+      }
+    });
+    if (sendPaths.length === 0) return results;
+
+    const res = await this.fetch(this.url('/rm-many'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: sendPaths, recursive }),
+    });
+    let serverResults: DeletePathResult[];
+    if (res.status === 404) {
+      // VFS server predating /rm-many
+      serverResults = await this.deletePathsOneByOne(sendPaths, recursive);
+    } else if (res.ok) {
+      serverResults = (await res.json()).results;
+    } else {
+      const errBody = await res.json().catch(() => ({}));
+      throw new VfsError(errBody.error || `rm-many failed: ${res.status}`, 'INVALID_PATH');
+    }
+
+    sendIndexes.forEach((originalIndex, i) => {
+      // Report against the caller's path, not the namespace-resolved one.
+      results[originalIndex] = { ...serverResults[i], path: paths[originalIndex] };
+    });
+    return results;
+  }
+
+  /** `/rm-many` semantics on top of the per-path endpoints, for older servers. */
+  private async deletePathsOneByOne(
+    resolvedPaths: string[],
+    recursive: boolean
+  ): Promise<DeletePathResult[]> {
+    const deleted = new Set<string>();
+    const results: DeletePathResult[] = [];
+    for (const path of resolvedPaths) {
+      const normalized = normalizePath(path);
+      if (isCoveredByDeleted(normalized, deleted)) {
+        results.push({ path });
+        continue;
+      }
+      const statRes = await this.fetch(this.url('/stat', { path: normalized }));
+      if (!statRes.ok) {
+        results.push({
+          path,
+          error: { code: 'PATH_NOT_FOUND', message: `Path not found: ${normalized}` },
+        });
+        continue;
+      }
+      const isDirectory = (await statRes.json()).type === 'dir';
+      if (isDirectory && !recursive) {
+        results.push({
+          path,
+          error: { code: 'NOT_A_FILE', message: `Is a directory: ${normalized}` },
+        });
+        continue;
+      }
+      if (isDirectory && isRootPath(normalized)) {
+        results.push({
+          path,
+          error: { code: 'INVALID_PATH', message: 'Cannot delete root directory' },
+        });
+        continue;
+      }
+      const rmRes = await this.fetch(
+        this.url(isDirectory ? '/rmdir' : '/rm', { path: normalized }),
+        {
+          method: 'DELETE',
+        }
+      );
+      if (rmRes.ok) {
+        deleted.add(normalized);
+        results.push({ path });
       } else {
-        throw error;
+        results.push({
+          path,
+          error: {
+            code: 'IO_ERROR',
+            message: `EIO: delete failed (${rmRes.status}), '${normalized}'`,
+          },
+        });
       }
     }
+    return results;
   }
 
   async createFileGuarded(path: string, content: FileContent, overwrite?: boolean): Promise<void> {
@@ -462,11 +572,8 @@ export class RemoteVfsAdapter implements VfsAdapter {
     dir: string,
     files: Array<{ name: string; content: string }>
   ): Promise<void> {
-    // mkdir/isDirectory/writeFile already resolve and assertWritable
-    const dirExists = await this.isDirectory(dir);
-    if (!dirExists) {
-      await this.mkdir(dir);
-    }
+    // mkdir/writeFile already resolve and assertWritable
+    await this.mkdir(dir, { recursive: true });
     for (const file of files) {
       const filePath = dir.endsWith('/') ? `${dir}${file.name}` : `${dir}/${file.name}`;
       await this.writeFile(filePath, file.content);

@@ -24,4 +24,5 @@ export type {
   CompactOptions,
   FileContent,
   VfsErrorCode,
+  DeletePathResult,
 } from '../../services/vfs/vfsService';

@@ -4,7 +4,7 @@
  * Provides a browser-like JavaScript execution environment in QuickJS:
  * - Event loop that drains microtasks, then fires host-scheduled timers
  * - setTimeout/setInterval honor real delays (bounded by the 300s cap)
- * - Promise/async-await support via executePendingJobs(1) per tick
+ * - Promise/async-await support via batched executePendingJobs
  * - Common polyfills (TextEncoder, atob, etc.)
  * - Console output capture
  * - 300s execution timeout via interrupt handler
@@ -18,7 +18,7 @@ import {
 } from 'quickjs-emscripten-core';
 import variant from '@jitl/quickjs-ng-wasmfile-release-sync';
 import { injectPolyfills } from './polyfills';
-import { FsBridge } from './fsPolyfill';
+import { FsBridge, type FsBridgeOptions } from './fsPolyfill';
 import type { VfsAdapter } from '../../vfs/vfsAdapter';
 
 export type ConsoleLevel = 'LOG' | 'WARN' | 'ERROR' | 'INFO' | 'DEBUG';
@@ -35,6 +35,30 @@ export interface EvalResult {
 }
 
 const TIMEOUT_MS = 300_000;
+
+/** Microtasks run per `executePendingJobs` call before the loop looks around again. */
+const JOB_BATCH_SIZE = 256;
+/** Longest stretch of microtask work between host yields. */
+const YIELD_INTERVAL_MS = 10;
+
+/**
+ * Hand control back to the host for one macrotask. Not `setTimeout(0)`:
+ * that clamps to ~1 ms in Node and 4 ms for nested browser timers, which a
+ * per-microtask yield used to pay on every `await`.
+ */
+function yieldToHost(): Promise<void> {
+  if (typeof globalThis.setImmediate === 'function') {
+    return new Promise(resolve => globalThis.setImmediate(resolve));
+  }
+  return new Promise(resolve => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
+}
 
 // Module singleton - loaded once, reused across all contexts
 let modulePromise: Promise<QuickJSWASMModule> | null = null;
@@ -78,11 +102,13 @@ export class JsVMContext {
    * @param adapter - Optional VfsAdapter to enable fs operations
    * @param loadLib - Whether to load /lib scripts on session start (default: true)
    * @param loadShareLib - Whether to load /share/lib scripts (default: true)
+   * @param fsOptions - fs bridge options; omitted keeps /memories readonly
    */
   static async create(
     adapter?: VfsAdapter,
     loadLib = true,
-    loadShareLib = true
+    loadShareLib = true,
+    fsOptions?: FsBridgeOptions
   ): Promise<JsVMContext> {
     const module = await getModule();
     const context = module.newContext();
@@ -94,7 +120,7 @@ export class JsVMContext {
 
     // Set up fs bridge if adapter provided
     if (adapter) {
-      vm.fsBridge = new FsBridge(adapter, context);
+      vm.fsBridge = new FsBridge(adapter, context, fsOptions);
       vm.fsBridge.injectFs();
 
       // Load /share/lib first (shared across namespaces), then /lib (per-project)
@@ -248,7 +274,7 @@ export class JsVMContext {
         };
       }
 
-      // Process pending jobs one at a time with browser yields
+      // Run the event loop (microtasks, fs ops, timers) to completion
       const loopError = await this.drainPendingJobs(deadline);
       if (loopError) {
         result.value.dispose();
@@ -377,15 +403,17 @@ export class JsVMContext {
   }
 
   /**
-   * Run the event loop until there is no more work: drains microtasks one at a
-   * time (yielding to the host between each), processes pending fs operations,
-   * then — once microtasks are quiet — sleeps until the earliest scheduled
-   * timer is due and fires every timer that has come due. Microtasks always
-   * drain before any timer fires, matching real event-loop ordering.
+   * Run the event loop until there is no more work: processes pending fs
+   * operations, drains microtasks in batches (yielding to the host at most
+   * every YIELD_INTERVAL_MS), then — once microtasks are quiet — sleeps until
+   * the earliest scheduled timer is due and fires every timer that has come
+   * due. Microtasks always drain before any timer fires, matching real
+   * event-loop ordering. Runaway jobs are cut off by the interrupt handler.
    *
    * Returns an error message if something goes wrong, undefined on success.
    */
   private async drainPendingJobs(deadline: number): Promise<string | undefined> {
+    let lastYield = Date.now();
     while (
       this.context.runtime.hasPendingJob() ||
       (this.fsBridge && this.fsBridge.hasPendingOps()) ||
@@ -404,10 +432,12 @@ export class JsVMContext {
 
       // Drain microtasks before advancing to timers
       if (this.context.runtime.hasPendingJob()) {
-        // Yield to host
-        await new Promise(resolve => globalThis.setTimeout(resolve, 0));
+        if (Date.now() - lastYield >= YIELD_INTERVAL_MS) {
+          await yieldToHost();
+          lastYield = Date.now();
+        }
 
-        const pendingResult = this.context.runtime.executePendingJobs(1);
+        const pendingResult = this.context.runtime.executePendingJobs(JOB_BATCH_SIZE);
         if (pendingResult.error) {
           const errorValue = this.context.dump(pendingResult.error);
           pendingResult.error.dispose();

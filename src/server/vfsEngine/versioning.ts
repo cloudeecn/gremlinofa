@@ -6,6 +6,7 @@
  * A `meta.json` tracks `{currentVersion, createdAt}`.
  */
 
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -39,10 +40,48 @@ async function readMeta(filePath: string): Promise<VersionMeta | null> {
   }
 }
 
+/** Caller must have created the version directory. */
 async function writeMeta(filePath: string, meta: VersionMeta): Promise<void> {
-  const vd = verDir(filePath);
-  await fs.mkdir(vd, { recursive: true });
   await fs.writeFile(metaPath(filePath), JSON.stringify(meta));
+}
+
+/**
+ * Copy file contents by read + truncating write, never `fs.copyFile`.
+ *
+ * `fs.copyFile` fchmod()s the destination to mirror the source and, if that
+ * fails, unlinks the destination it just opened. On a group-shared tree where
+ * the destination belongs to another user, fchmod is EPERM even with group
+ * write, so the copy fails *and* the existing file is gone. A plain write
+ * opens with O_TRUNC, which keeps the destination's inode, owner and mode and
+ * only needs write permission.
+ */
+export async function copyFileContents(src: string, dst: string): Promise<void> {
+  await fs.writeFile(dst, await fs.readFile(src));
+}
+
+/**
+ * Copy `src` to `dst` without pulling its bytes into JS.
+ *
+ * `COPYFILE_FICLONE` makes this a reflink on copy-on-write filesystems
+ * (btrfs, XFS with reflink, bcachefs, OpenZFS 2.2+): the copy shares blocks
+ * with the source, and a later in-place append to either allocates only the
+ * new blocks — so a version snapshot costs metadata, not file size.
+ * Elsewhere libuv falls back to an in-kernel copy. A hard link would be
+ * cheaper still but wrong: appends and outside editors write the live inode
+ * in place, which would rewrite the "saved" version too.
+ *
+ * `COPYFILE_EXCL` keeps clear of the fchmod hazard described on
+ * `copyFileContents`: the fast path only ever writes a file it created. An
+ * existing destination (an overwrite, or a lost meta.json restarting the
+ * version numbering) gets the inode-preserving truncating write instead.
+ */
+export async function cloneFile(src: string, dst: string): Promise<void> {
+  try {
+    await fs.copyFile(src, dst, fsConstants.COPYFILE_EXCL | fsConstants.COPYFILE_FICLONE);
+  } catch (e) {
+    if ((e as { code?: string }).code !== 'EEXIST') throw e;
+    await copyFileContents(src, dst);
+  }
 }
 
 /**
@@ -59,7 +98,7 @@ export async function saveVersion(filePath: string): Promise<number> {
 
   meta.currentVersion += 1;
   await fs.mkdir(vd, { recursive: true });
-  await fs.copyFile(filePath, path.join(vd, String(meta.currentVersion)));
+  await cloneFile(filePath, path.join(vd, String(meta.currentVersion)));
   await writeMeta(filePath, meta);
   return meta.currentVersion;
 }
@@ -187,17 +226,26 @@ export async function removeVersionDir(filePath: string): Promise<void> {
 
 /**
  * Move version directory alongside a renamed file.
+ *
+ * An overwrite-rename replaces the destination file, so its history goes
+ * too (worker mode orphans it the same way). Without that removal
+ * `fs.rename` onto the non-empty `.ver` directory fails with ENOTEMPTY and
+ * leaves the source's history stranded at the old name.
  */
 export async function renameVersionDir(oldPath: string, newPath: string): Promise<void> {
   const oldVd = verDir(oldPath);
   const newVd = verDir(newPath);
   try {
     await fs.access(oldVd);
-    await fs.mkdir(path.dirname(newVd), { recursive: true });
-    await fs.rename(oldVd, newVd);
   } catch {
-    // No version dir to move
+    // Source never had versions; the destination's stale history still
+    // must not outlive the file it belonged to.
+    await removeVersionDir(newPath);
+    return;
   }
+  await removeVersionDir(newPath);
+  await fs.mkdir(path.dirname(newVd), { recursive: true });
+  await fs.rename(oldVd, newVd);
 }
 
 /**

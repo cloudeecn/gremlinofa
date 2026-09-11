@@ -21,12 +21,14 @@ import type { EncryptionCore } from '../encryption/encryptionCore';
 import type { UnifiedStorage } from '../storage/unifiedStorage';
 import { Tables } from '../storage/StorageAdapter';
 import { generateUniqueId } from '../../protocol/idGenerator';
+import { base64ToArrayBuffer, uint8ArrayToBase64 } from '../../protocol/binaryEncoding';
 import {
   normalizePath,
   getParentDir,
   getBasename,
   getPathSegments,
   isRootPath,
+  isCoveredByDeleted,
 } from '../../engine/lib/vfsPaths';
 
 // ============================================================================
@@ -223,7 +225,9 @@ export type VfsErrorCode =
   | 'STRING_NOT_UNIQUE'
   | 'INVALID_LINE'
   | 'BINARY_FILE'
-  | 'READONLY';
+  | 'READONLY'
+  /** Host filesystem failure (permissions, busy); the message is errno-styled. */
+  | 'IO_ERROR';
 
 export class VfsError extends Error {
   code: VfsErrorCode;
@@ -299,29 +303,11 @@ export function isBinaryContent(content: FileContent): content is ArrayBuffer | 
   return content instanceof ArrayBuffer || content instanceof Uint8Array;
 }
 
-/**
- * Convert ArrayBuffer/Uint8Array to base64 string
- */
 function bufferToBase64(data: ArrayBuffer | Uint8Array): string {
-  const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
+  return uint8ArrayToBase64(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
 }
 
-/**
- * Convert base64 string to ArrayBuffer
- */
-export function base64ToBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer;
-}
+export const base64ToBuffer = base64ToArrayBuffer;
 
 // ============================================================================
 // Stat / Version / Orphan Result Types
@@ -355,6 +341,12 @@ export interface StrReplaceResult {
 
 export interface InsertResult {
   insertedAt: number;
+}
+
+/** Per-path outcome of a batch delete; `error` is absent when the path was deleted. */
+export interface DeletePathResult {
+  path: string;
+  error?: { code: VfsErrorCode; message: string };
 }
 
 export interface CompactProgress {
@@ -483,6 +475,26 @@ export function selectVersionsToKeep(
  * the design intent and the only thing that exists.
  */
 export function createVfsService(storage: UnifiedStorage, encryptionService: EncryptionCore) {
+  /**
+   * Decrypted tree JSON per project, keyed by the ciphertext it came from.
+   * A load whose record still carries that exact ciphertext skips base64,
+   * AES and gunzip. Any other writer (another device on remote storage, a
+   * key rotation, an import) produces new ciphertext, so the entry simply
+   * misses — no invalidation hooks needed. The JSON string is cached rather
+   * than the parsed tree because every op mutates the tree it loads.
+   */
+  const treeCache = new Map<string, { cipher: string; json: string }>();
+  const TREE_CACHE_MAX_PROJECTS = 32;
+
+  function rememberTree(projectId: string, cipher: string, json: string): void {
+    treeCache.delete(projectId);
+    treeCache.set(projectId, { cipher, json });
+    if (treeCache.size > TREE_CACHE_MAX_PROJECTS) {
+      const oldest = treeCache.keys().next().value;
+      if (oldest !== undefined) treeCache.delete(oldest);
+    }
+  }
+
   // ==========================================================================
   // Storage Helpers
   // ==========================================================================
@@ -496,11 +508,19 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     const record = await adapter.get(Tables.VFS_META, metaId);
 
     if (!record) {
+      treeCache.delete(projectId);
       return { children: {}, orphans: [] };
     }
 
     try {
-      const json = await encryptionService.decryptWithDecompression(record.encryptedData);
+      const cached = treeCache.get(projectId);
+      let json: string;
+      if (cached && cached.cipher === record.encryptedData) {
+        json = cached.json;
+      } else {
+        json = await encryptionService.decryptWithDecompression(record.encryptedData);
+        rememberTree(projectId, record.encryptedData, json);
+      }
       const tree = JSON.parse(json) as VfsTree;
 
       // Validate structure
@@ -522,12 +542,14 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
   async function saveTree(projectId: string, tree: VfsTree): Promise<void> {
     const metaId = `vfs_meta_${projectId}`;
     const adapter = storage.getAdapter();
-    const encrypted = await encryptionService.encryptWithCompression(JSON.stringify(tree), true);
+    const json = JSON.stringify(tree);
+    const encrypted = await encryptionService.encryptWithCompression(json, true);
 
     await adapter.save(Tables.VFS_META, metaId, encrypted, {
       timestamp: new Date().toISOString(),
       parentId: projectId,
     });
+    rememberTree(projectId, encrypted, json);
   }
 
   /**
@@ -667,6 +689,7 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
       deleted: false,
       createdAt: now,
       updatedAt: now,
+      size: content.length,
     };
 
     // Save file content (version 1)
@@ -754,12 +777,13 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
       version: currentFile.version + 1,
       createdAt: currentFile.createdAt,
       updatedAt: now,
+      minStoredVersion: currentFile.minStoredVersion,
     };
 
     await saveFile(fileId, newFile, projectId);
 
-    // Update node timestamp in tree
     node.updatedAt = now;
+    node.size = content.length;
     await saveTree(projectId, tree);
   }
 
@@ -816,6 +840,7 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
         node.isBinary = isBinary;
         node.mime = newMime;
         node.updatedAt = now;
+        node.size = storedContent.length;
 
         const fileData: VfsFile = {
           content: storedContent,
@@ -844,10 +869,12 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
         version: currentFile.version + 1,
         createdAt: currentFile.createdAt,
         updatedAt: now,
+        minStoredVersion: currentFile.minStoredVersion,
       };
 
       await saveFile(fileId, newFile, projectId);
       node.updatedAt = now;
+      node.size = storedContent.length;
       await saveTree(projectId, tree);
       return;
     }
@@ -874,6 +901,7 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
       updatedAt: now,
       isBinary,
       mime: newMime,
+      size: storedContent.length,
     };
 
     const fileData: VfsFile = {
@@ -938,6 +966,91 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
   }
 
   /**
+   * Append text to a file in a single tree + content load, creating the file
+   * (and any missing parent directories) when it doesn't exist. The
+   * pre-append content is kept as a version, like any other update.
+   * @throws VfsError on binary files, directories, or a non-directory parent
+   */
+  async function appendFile(
+    projectId: string,
+    path: string,
+    text: string,
+    namespace?: string
+  ): Promise<{ created: boolean }> {
+    assertWritable(path, namespace);
+    const tree = await loadTree(projectId);
+    const normalized = resolveNamespacedPath(path, namespace);
+    const basename = getBasename(normalized);
+
+    if (!basename) {
+      throw new VfsError('Cannot write file at root path', 'INVALID_PATH');
+    }
+
+    const { node } = navigateToNode(tree, normalized);
+    const now = Date.now();
+
+    if (node && !node.deleted) {
+      if (node.type !== 'file') {
+        throw new VfsError(`Not a file: ${normalized}`, 'NOT_A_FILE');
+      }
+      if (node.isBinary) {
+        throw new VfsError(`Cannot append to binary file: ${normalized}`, 'BINARY_FILE');
+      }
+
+      const fileId = node.fileId!;
+      const currentFile = await loadFile(fileId);
+      if (!currentFile) {
+        throw new VfsError(`File content not found: ${normalized}`, 'PATH_NOT_FOUND');
+      }
+
+      await saveVersion(fileId, currentFile.version, currentFile.content, currentFile.updatedAt);
+
+      const content = currentFile.content + text;
+      await saveFile(
+        fileId,
+        {
+          content,
+          version: currentFile.version + 1,
+          createdAt: currentFile.createdAt,
+          updatedAt: now,
+          minStoredVersion: currentFile.minStoredVersion,
+        },
+        projectId
+      );
+      node.updatedAt = now;
+      node.size = content.length;
+      await saveTree(projectId, tree);
+      return { created: false };
+    }
+
+    const parent = ensureParentExists(tree, normalized);
+    const children = parent && ('children' in parent ? parent.children : undefined);
+    if (!children) {
+      throw new VfsError(`Parent path is not a directory`, 'NOT_A_DIRECTORY');
+    }
+
+    const fileId = generateUniqueId('vfs_file');
+    children[basename] = {
+      type: 'file',
+      fileId,
+      deleted: false,
+      createdAt: now,
+      updatedAt: now,
+      isBinary: false,
+      mime: 'text/plain',
+      size: text.length,
+    };
+
+    await saveFile(
+      fileId,
+      { content: text, version: 1, createdAt: now, updatedAt: now },
+      projectId
+    );
+    await saveTree(projectId, tree);
+    return { created: true };
+  }
+
+  /**
    * Soft-delete a file (marks as deleted, content preserved)
    * @throws VfsError if file not found
    */
@@ -972,16 +1085,23 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
   // ============================================================================
 
   /**
-   * Create a directory
-   * @throws VfsError if path exists
+   * Create a directory, creating missing parents along the way.
+   * @param recursive If true, an existing directory is a no-op (like `mkdir -p`)
+   * @throws VfsError if a file sits at the path, or the directory exists and !recursive
    */
-  async function mkdir(projectId: string, path: string, namespace?: string): Promise<void> {
+  async function mkdir(
+    projectId: string,
+    path: string,
+    namespace?: string,
+    recursive = false
+  ): Promise<void> {
     assertWritable(path, namespace);
     const tree = await loadTree(projectId);
     const normalized = resolveNamespacedPath(path, namespace);
     const basename = getBasename(normalized);
 
     if (!basename) {
+      if (recursive) return; // root always exists
       throw new VfsError('Cannot create directory at root', 'INVALID_PATH');
     }
 
@@ -989,6 +1109,7 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     const { node } = navigateToNode(tree, normalized);
     if (node && !node.deleted) {
       if (node.type === 'dir') {
+        if (recursive) return;
         throw new VfsError(`Directory already exists: ${normalized}`, 'DIR_EXISTS');
       } else {
         throw new VfsError(`File exists at path: ${normalized}`, 'FILE_EXISTS');
@@ -1113,6 +1234,7 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     }
 
     const entries: DirEntry[] = [];
+    let backfilled = false;
 
     for (const [name, child] of Object.entries(children)) {
       if (!includeDeleted && child.deleted) continue;
@@ -1125,16 +1247,22 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
         updatedAt: child.updatedAt,
       };
 
-      // For files, try to get content length
       if (child.type === 'file' && child.fileId) {
-        const file = await loadFile(child.fileId);
-        if (file && file.content) {
-          entry.size = file.content.length;
+        if (child.size === undefined) {
+          // Node predates `size`: read it once and remember it in the tree.
+          const file = await loadFile(child.fileId);
+          if (file) {
+            child.size = file.content.length;
+            backfilled = true;
+          }
         }
+        if (child.size) entry.size = child.size;
       }
 
       entries.push(entry);
     }
+
+    if (backfilled) await saveTree(projectId, tree);
 
     // Sort: directories first, then by name
     entries.sort((a, b) => {
@@ -1145,6 +1273,68 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     });
 
     return entries;
+  }
+
+  /**
+   * Soft-delete many paths with one tree load and one tree save.
+   *
+   * Best-effort: each path gets its own result, and a failure doesn't stop
+   * the rest. A path under one already deleted in this batch counts as
+   * deleted. Missing and previously soft-deleted paths are PATH_NOT_FOUND;
+   * a directory without `recursive` is NOT_A_FILE.
+   */
+  async function deletePaths(
+    projectId: string,
+    paths: string[],
+    recursive: boolean,
+    namespace?: string
+  ): Promise<DeletePathResult[]> {
+    const tree = await loadTree(projectId);
+    const deletedNow = new Set<string>();
+    const now = Date.now();
+    const results: DeletePathResult[] = [];
+
+    const markDeleted = (n: VfsNode) => {
+      n.deleted = true;
+      n.updatedAt = now;
+      if (n.children) {
+        for (const child of Object.values(n.children)) markDeleted(child);
+      }
+    };
+
+    for (const path of paths) {
+      try {
+        assertWritable(path, namespace);
+        const normalized = resolveNamespacedPath(path, namespace);
+        if (isCoveredByDeleted(normalized, deletedNow)) {
+          results.push({ path });
+          continue;
+        }
+        // The caller's root — the namespace root when namespaced — stays put.
+        if (isRootPath(path) || isRootPath(normalized)) {
+          throw new VfsError('Cannot delete root directory', 'INVALID_PATH');
+        }
+        assertNotMountRoot(normalized);
+
+        const { node } = navigateToNode(tree, normalized);
+        if (!node || node.deleted) {
+          throw new VfsError(`Path not found: ${normalized}`, 'PATH_NOT_FOUND');
+        }
+        if (node.type === 'dir' && !recursive) {
+          throw new VfsError(`Is a directory: ${normalized}`, 'NOT_A_FILE');
+        }
+
+        markDeleted(node);
+        deletedNow.add(normalized);
+        results.push({ path });
+      } catch (error) {
+        if (!(error instanceof VfsError)) throw error;
+        results.push({ path, error: { code: error.code, message: error.message } });
+      }
+    }
+
+    if (deletedNow.size > 0) await saveTree(projectId, tree);
+    return results;
   }
 
   // ============================================================================
@@ -1409,6 +1599,7 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     await adapter.deleteMany(Tables.VFS_FILES, { parentId: projectId });
     const metaId = `vfs_meta_${projectId}`;
     await adapter.delete(Tables.VFS_META, metaId);
+    treeCache.delete(projectId);
   }
 
   /**
@@ -1461,9 +1652,11 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
 
     let size = 0;
     if (isFileNode && node.fileId) {
-      const file = await loadFile(node.fileId);
-      if (file) {
-        size = file.content.length;
+      if (node.size !== undefined) {
+        size = node.size;
+      } else {
+        const file = await loadFile(node.fileId);
+        if (file) size = file.content.length;
       }
     }
 
@@ -1727,6 +1920,7 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
       deleted: false,
       createdAt: file.createdAt,
       updatedAt: now,
+      size: file.content.length,
     };
 
     // Remove from orphans list
@@ -1870,10 +2064,12 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
       version: currentFile.version + 1,
       createdAt: currentFile.createdAt,
       updatedAt: now,
+      minStoredVersion: currentFile.minStoredVersion,
     };
 
     await saveFile(fileId, newFile, projectId);
     node.updatedAt = now;
+    node.size = newContent.length;
     await saveTree(projectId, tree);
 
     return {
@@ -1948,10 +2144,12 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
       version: currentFile.version + 1,
       createdAt: currentFile.createdAt,
       updatedAt: now,
+      minStoredVersion: currentFile.minStoredVersion,
     };
 
     await saveFile(fileId, newFile, projectId);
     node.updatedAt = now;
+    node.size = newContent.length;
     await saveTree(projectId, tree);
 
     return {
@@ -2369,7 +2567,9 @@ export function createVfsService(storage: UnifiedStorage, encryptionService: Enc
     updateFile,
     writeFile,
     readFileWithMeta,
+    appendFile,
     deleteFile,
+    deletePaths,
     mkdir,
     rmdir,
     readDir,

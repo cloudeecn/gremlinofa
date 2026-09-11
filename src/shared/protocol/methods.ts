@@ -38,6 +38,7 @@ export interface PromptSegment {
 
 import type {
   CompactOptions,
+  DeletePathResult,
   DirEntry,
   FileContent,
   InsertResult,
@@ -640,7 +641,7 @@ export interface GremlinMethods {
     streams: never;
   };
   vfsMkdir: {
-    params: { projectId: string; path: string };
+    params: { projectId: string; path: string; recursive?: boolean };
     result: { ok: true };
     streams: never;
   };
@@ -755,6 +756,11 @@ export interface GremlinMethods {
   vfsDeletePath: {
     params: { projectId: string; path: string };
     result: { ok: true };
+    streams: never;
+  };
+  vfsDeletePaths: {
+    params: { projectId: string; paths: string[]; recursive: boolean };
+    result: DeletePathResult[];
     streams: never;
   };
   vfsCreateFileGuarded: {

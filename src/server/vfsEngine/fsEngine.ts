@@ -16,6 +16,8 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { DeletePathResult, VfsErrorCode } from '../../shared/services/vfs/vfsService';
+import { isCoveredByDeleted, normalizePath } from '../../shared/engine/lib/vfsPaths';
 import { withFileLock } from './fileLock.js';
 import * as versioning from './versioning.js';
 
@@ -46,10 +48,13 @@ export function projectRoot(dataDir: string, userId: string, projectId: string):
 
 export class FsError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** VFS error code for callers that need more than the HTTP status. */
+  code?: VfsErrorCode;
+  constructor(message: string, status: number, code?: VfsErrorCode) {
     super(message);
     this.name = 'FsError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -312,41 +317,96 @@ export async function rm(ctx: VfsContext, filePath: string): Promise<void> {
   });
 }
 
-export async function mkdir(ctx: VfsContext, dirPath: string): Promise<void> {
+/**
+ * Create a directory and any missing parents. An existing directory is a
+ * 409 DIR_EXISTS unless `recursive` is set (`mkdir -p`); a file in the way
+ * is always 409 FILE_EXISTS.
+ */
+export async function mkdir(ctx: VfsContext, dirPath: string, recursive = false): Promise<void> {
   const resolved = await resolveCanonicalPath(dirPath, ctx, { forWrite: true });
-  await fs.mkdir(resolved, { recursive: true });
+  try {
+    if (recursive) {
+      await fs.mkdir(resolved, { recursive: true });
+    } else {
+      await fs.mkdir(path.dirname(resolved), { recursive: true });
+      await fs.mkdir(resolved);
+    }
+  } catch (e) {
+    if ((e as { code?: string }).code !== 'EEXIST') throw e;
+    const isDirectory = await fs.stat(resolved).then(
+      st => st.isDirectory(),
+      () => false
+    );
+    if (isDirectory) throw new FsError('Directory already exists', 409, 'DIR_EXISTS');
+    throw new FsError('File exists at path', 409, 'FILE_EXISTS');
+  }
 }
 
 export async function rmdir(ctx: VfsContext, dirPath: string): Promise<void> {
   const resolved = await resolveCanonicalPath(dirPath, ctx);
-  // Recursively clean up version dirs inside
-  await removeVersionDirsRecursive(resolved);
+  // Version dirs sit next to their files, so they go with the tree.
   await fs.rm(resolved, { recursive: true, force: true });
 }
 
-async function removeVersionDirsRecursive(dirPath: string): Promise<void> {
-  try {
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      // Don't recurse through symlinks — risk of loops / accidental traversal
-      // into external mounts. We're cleaning up *this* project's versioning,
-      // not somewhere a symlink points.
-      if (entry.isSymbolicLink()) continue;
-      const fullPath = path.join(dirPath, entry.name);
-      if (entry.isDirectory()) {
-        if (versioning.isVersionDir(entry.name)) {
-          await fs.rm(fullPath, { recursive: true, force: true });
-        } else {
-          await removeVersionDirsRecursive(fullPath);
-        }
-      } else {
-        // Remove version dirs for files
-        await versioning.removeVersionDir(fullPath);
-      }
-    }
-  } catch {
-    // Directory might not exist
+const DELETE_ERRORS: Record<string, { code: VfsErrorCode; describe: (p: string) => string }> = {
+  ENOENT: { code: 'PATH_NOT_FOUND', describe: p => `Path not found: ${p}` },
+  ENOTDIR: { code: 'PATH_NOT_FOUND', describe: p => `Path not found: ${p}` },
+  EACCES: { code: 'IO_ERROR', describe: p => `EACCES: permission denied, '${p}'` },
+  EPERM: { code: 'IO_ERROR', describe: p => `EPERM: operation not permitted, '${p}'` },
+  EBUSY: { code: 'IO_ERROR', describe: p => `EBUSY: resource busy or locked, '${p}'` },
+};
+
+function toDeleteError(e: unknown, vfsPath: string): NonNullable<DeletePathResult['error']> {
+  if (e instanceof FsError) return { code: e.code ?? 'INVALID_PATH', message: e.message };
+  const nodeCode = (e as { code?: string }).code;
+  const mapped = nodeCode ? DELETE_ERRORS[nodeCode] : undefined;
+  if (mapped) return { code: mapped.code, message: mapped.describe(vfsPath) };
+  // Never echo raw fs messages — they carry host paths.
+  return { code: 'IO_ERROR', message: `${nodeCode ?? 'EIO'}: delete failed, '${vfsPath}'` };
+}
+
+async function deleteOne(ctx: VfsContext, vfsPath: string, recursive: boolean): Promise<void> {
+  if (vfsPath === '/') throw new FsError('Cannot delete root directory', 400, 'INVALID_PATH');
+  const resolved = await resolveCanonicalPath(vfsPath, ctx);
+  const st = await fs.stat(resolved);
+  if (st.isDirectory()) {
+    if (!recursive) throw new FsError(`Is a directory: ${vfsPath}`, 400, 'NOT_A_FILE');
+    await fs.rm(resolved, { recursive: true });
+    return;
   }
+  await withFileLock(resolved, async () => {
+    await fs.unlink(resolved);
+    await versioning.removeVersionDir(resolved);
+  });
+}
+
+/**
+ * Best-effort batch delete with one result per requested path (see
+ * `VfsAdapter.deletePaths`). Paths are VFS paths relative to the project
+ * root; a path under one already deleted in this batch counts as deleted.
+ */
+export async function deletePaths(
+  ctx: VfsContext,
+  paths: string[],
+  recursive: boolean
+): Promise<DeletePathResult[]> {
+  const deleted = new Set<string>();
+  const results: DeletePathResult[] = [];
+  for (const requested of paths) {
+    const vfsPath = normalizePath(requested);
+    if (isCoveredByDeleted(vfsPath, deleted)) {
+      results.push({ path: requested });
+      continue;
+    }
+    try {
+      await deleteOne(ctx, vfsPath, recursive);
+      deleted.add(vfsPath);
+      results.push({ path: requested });
+    } catch (e) {
+      results.push({ path: requested, error: toDeleteError(e, vfsPath) });
+    }
+  }
+  return results;
 }
 
 export async function rename(ctx: VfsContext, fromPath: string, toPath: string): Promise<void> {

@@ -1547,6 +1547,7 @@ export async function* runAgenticLoop(
     // fields instead of importing the singletons directly.
     storage: options.deps.storage,
     encryption: options.deps.encryption,
+    vfsService: options.deps.vfsService,
     apiService: options.deps.apiService,
     toolRegistry: options.deps.toolRegistry,
     // Tools that spawn child loops (minionTool) read this to register +
@@ -1603,7 +1604,9 @@ export async function* runAgenticLoop(
 
   // DUMMY System: load hook runtime if active (mutable — register/unregister can swap at runtime)
   let activeHookName: string | null = options.activeHook ?? null;
-  let hookRuntime = activeHookName ? await DummyHookRuntime.load(vfsAdapter, activeHookName) : null;
+  let hookRuntime = activeHookName
+    ? await DummyHookRuntime.load(vfsAdapter, activeHookName, options.namespace)
+    : null;
   const hookContextDepth = (toolOptions.dummy?.hookContextDepth as number) ?? 0;
 
   // In-flight assembler tracker. The catch block reads this to synthesize a
@@ -1645,7 +1648,7 @@ export async function* runAgenticLoop(
         hookRuntime?.dispose();
         activeHookName = breakResult.activeHook;
         hookRuntime = activeHookName
-          ? await DummyHookRuntime.load(vfsAdapter, activeHookName)
+          ? await DummyHookRuntime.load(vfsAdapter, activeHookName, options.namespace)
           : null;
         yield { type: 'active_hook_changed', hookName: activeHookName };
       } else if (breakResult?.breakLoop) {
@@ -2009,7 +2012,7 @@ export async function* runAgenticLoop(
           hookRuntime?.dispose();
           activeHookName = nextHook;
           hookRuntime = activeHookName
-            ? await DummyHookRuntime.load(vfsAdapter, activeHookName)
+            ? await DummyHookRuntime.load(vfsAdapter, activeHookName, options.namespace)
             : null;
           yield { type: 'active_hook_changed', hookName: activeHookName };
         }
@@ -2199,7 +2202,7 @@ export async function* runAgenticLoop(
         hookRuntime?.dispose();
         activeHookName = breakResult.activeHook;
         hookRuntime = activeHookName
-          ? await DummyHookRuntime.load(vfsAdapter, activeHookName)
+          ? await DummyHookRuntime.load(vfsAdapter, activeHookName, options.namespace)
           : null;
         yield { type: 'active_hook_changed', hookName: activeHookName };
       } else if (breakResult?.breakLoop) {

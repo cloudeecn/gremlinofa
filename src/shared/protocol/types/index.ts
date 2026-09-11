@@ -1051,6 +1051,7 @@ export interface ToolContext {
    */
   storage: import('../../services/storage/unifiedStorage').UnifiedStorage;
   encryption: import('../../services/encryption/encryptionCore').EncryptionCore;
+  vfsService: import('../../services/vfs/vfsService').VfsService;
   apiService: import('../../services/api/apiService').APIService;
   toolRegistry: import('../../services/tools/clientSideTools').ClientSideToolRegistry;
   /**
@@ -1286,6 +1287,11 @@ export interface VfsNode {
   children?: Record<string, VfsNode>; // only for type: 'dir'
   isBinary?: boolean; // true for binary files, false for text, undefined for legacy
   mime?: string; // MIME type (text/plain for text, detected or application/octet-stream for binary)
+  /**
+   * Stored content length (base64 length for binary files) — what readDir /
+   * stat report. Absent on nodes written before it existed; readDir backfills.
+   */
+  size?: number;
 }
 
 export interface VfsOrphan {

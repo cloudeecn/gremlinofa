@@ -197,6 +197,7 @@ const createMockDeps = (): import('../../../engine/backendDeps').BackendDeps => 
     getAttachments: vi.fn(async () => []),
   } as unknown as import('../../storage/unifiedStorage').UnifiedStorage,
   encryption: {} as unknown as import('../../encryption/encryptionCore').EncryptionCore,
+  vfsService: {} as unknown as import('../../vfs/vfsService').VfsService,
   apiService: apiService as unknown as import('../../api/apiService').APIService,
   toolRegistry:
     toolRegistryStub as unknown as import('../../tools/clientSideTools').ClientSideToolRegistry,

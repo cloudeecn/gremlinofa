@@ -19,6 +19,7 @@ import type {
   CompactOptions,
   OrphanInfo,
   FileContent,
+  DeletePathResult,
 } from './vfsService';
 
 export interface VfsAdapter {
@@ -26,10 +27,15 @@ export interface VfsAdapter {
   readDir(path: string, includeDeleted?: boolean): Promise<DirEntry[]>;
   readFile(path: string): Promise<string>;
   readFileWithMeta(path: string): Promise<ReadFileResult>;
+  /** Creates missing parent directories. */
   writeFile(path: string, content: FileContent): Promise<void>;
   createFile(path: string, content: string): Promise<void>;
   deleteFile(path: string): Promise<void>;
-  mkdir(path: string): Promise<void>;
+  /**
+   * Creates missing parent directories. An existing directory is DIR_EXISTS
+   * unless `recursive` is set, which makes it a no-op (`mkdir -p`).
+   */
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   rmdir(path: string, recursive?: boolean): Promise<void>;
   rename(oldPath: string, newPath: string, overwrite?: boolean): Promise<void>;
   exists(path: string): Promise<boolean>;
@@ -42,6 +48,7 @@ export interface VfsAdapter {
   // Text editing operations
   strReplace(path: string, oldStr: string, newStr: string): Promise<StrReplaceResult>;
   insert(path: string, line: number, text: string): Promise<InsertResult>;
+  /** Text files only; creates the file and missing parents when absent. */
   appendFile(path: string, text: string): Promise<{ created: boolean }>;
 
   // Versioning
@@ -76,6 +83,12 @@ export interface VfsAdapter {
   // Compound operations
   copyFile(src: string, dst: string, overwrite?: boolean): Promise<void>;
   deletePath(path: string): Promise<void>;
+  /**
+   * Best-effort batch delete with one result per path. Missing paths are
+   * PATH_NOT_FOUND, directories without `recursive` are NOT_A_FILE, and a
+   * path under one already deleted in the same batch counts as deleted.
+   */
+  deletePaths(paths: string[], recursive: boolean): Promise<DeletePathResult[]>;
   createFileGuarded(path: string, content: FileContent, overwrite?: boolean): Promise<void>;
   ensureDirAndWrite(dir: string, files: Array<{ name: string; content: string }>): Promise<void>;
 

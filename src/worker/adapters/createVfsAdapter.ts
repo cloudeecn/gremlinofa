@@ -13,7 +13,6 @@ import type { Project } from '../../shared/protocol/types';
 import type { BackendDeps } from '../../shared/engine/backendDeps';
 import type { VfsAdapter } from '../../shared/services/vfs/vfsAdapter';
 import { LocalVfsAdapter } from '../../shared/services/vfs/localVfsAdapter';
-import { createVfsService } from '../../shared/services/vfs/vfsService';
 import { RemoteVfsAdapter } from '../../shared/services/vfs/RemoteVfsAdapter';
 
 export function createVfsAdapter(
@@ -31,6 +30,5 @@ export function createVfsAdapter(
       namespace,
     });
   }
-  const vfsService = createVfsService(deps.storage, deps.encryption);
-  return new LocalVfsAdapter(vfsService, project.id, namespace);
+  return new LocalVfsAdapter(deps.vfsService, project.id, namespace);
 }

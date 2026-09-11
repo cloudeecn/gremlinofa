@@ -22,7 +22,7 @@ import type {
   ToolStreamEvent,
 } from '../../protocol/types';
 import type { VfsAdapter } from '../vfs/vfsAdapter';
-import { VfsError } from '../vfs';
+import { VfsError, normalizePath } from '../vfs';
 import {
   formatFileWithLineNumbers,
   resolveNoLineNumbers,
@@ -30,7 +30,7 @@ import {
 
 const MEMORIES_ROOT = '/memories';
 const MAX_LINE_COUNT = 999999;
-const README_MAX_CHARS = 32000; // 32k limit for README.md content
+const README_MAX_CHARS = 64000; // README.md injection cap, line-aligned truncation
 
 /** Memory tool command input types */
 interface ViewInput {
@@ -117,6 +117,15 @@ type MemoryInput =
   | ViewAllInput;
 
 /**
+ * True for `/memories` and anything under it. The filesystem and JavaScript
+ * tools treat these paths as read-only unless their `memoriesWritable` option is on.
+ */
+export function isMemoriesPath(path: string): boolean {
+  const normalized = normalizePath(path);
+  return normalized === MEMORIES_ROOT || normalized.startsWith(MEMORIES_ROOT + '/');
+}
+
+/**
  * Normalizes a user-provided path to a VFS path.
  * User paths like "/memories/file.md", "file.md", "/file.md" all become "/memories/file.md"
  */
@@ -191,6 +200,18 @@ async function listTwoLevels(adapter: VfsAdapter, basePath: string): Promise<Lis
 // Command Handlers (stateless - receive adapter explicitly)
 // ============================================================================
 
+function formatDirectoryListing(dirPath: string, entries: ListingEntry[]): ToolResult {
+  const listing = entries
+    .map(entry => {
+      const size = entry.size !== undefined ? formatSize(entry.size) : '0';
+      return `${size}\t${entry.path}`;
+    })
+    .join('\n');
+  return {
+    content: `Here're the files and directories up to 2 levels deep in ${dirPath}, excluding hidden items and node_modules:\n${listing || '(empty)'}`,
+  };
+}
+
 /** Handle view command */
 async function handleView(
   adapter: VfsAdapter,
@@ -206,37 +227,22 @@ async function handleView(
       // Ensure the /memories directory exists
       const memoriesExists = await adapter.exists(MEMORIES_ROOT);
       if (!memoriesExists) {
-        return {
-          content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
-        };
+        return formatDirectoryListing(MEMORIES_ROOT, []);
       }
-
-      const entries = await listTwoLevels(adapter, MEMORIES_ROOT);
-
-      if (entries.length === 0) {
-        return {
-          content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
-        };
-      }
-
-      const listing = entries
-        .map(entry => {
-          const size = entry.size !== undefined ? formatSize(entry.size) : '0';
-          return `${size}\t${entry.path}`;
-        })
-        .join('\n');
-
-      return {
-        content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n${listing}`,
-      };
+      return formatDirectoryListing(MEMORIES_ROOT, await listTwoLevels(adapter, MEMORIES_ROOT));
     } catch (error) {
       if (error instanceof VfsError && error.code === 'PATH_NOT_FOUND') {
-        return {
-          content: `Here're the files and directories up to 2 levels deep in ${MEMORIES_ROOT}, excluding hidden items and node_modules:\n(empty)`,
-        };
+        return formatDirectoryListing(MEMORIES_ROOT, []);
       }
       throw error;
     }
+  }
+
+  // Directory listing (subdirectory). Ask first instead of relying on
+  // readFile to throw NOT_A_FILE: the filesystem adapter surfaces a raw
+  // EISDIR there, which the catch below cannot recognize.
+  if (await adapter.isDirectory(vfsPath)) {
+    return formatDirectoryListing(vfsPath, await listTwoLevels(adapter, vfsPath));
   }
 
   // File content
@@ -285,18 +291,8 @@ async function handleView(
         };
       }
       if (error.code === 'NOT_A_FILE') {
-        // It's a directory, list its contents (2 levels deep)
-        const entries = await listTwoLevels(adapter, vfsPath);
-        const listing = entries
-          .map(entry => {
-            const size = entry.size !== undefined ? formatSize(entry.size) : '0';
-            return `${size}\t${entry.path}`;
-          })
-          .join('\n');
-
-        return {
-          content: `Here're the files and directories up to 2 levels deep in ${vfsPath}, excluding hidden items and node_modules:\n${listing || '(empty)'}`,
-        };
+        // Adapter's isDirectory and readFile disagreed; trust readFile.
+        return formatDirectoryListing(vfsPath, await listTwoLevels(adapter, vfsPath));
       }
     }
     throw error;
@@ -967,7 +963,7 @@ ${content}
 const MEMORY_TOOL_DESCRIPTION = `Tool for reading, writing, and managing files in a memory system that lives under /memories. This system records your own memory, and is initialized as an empty folder when the task started. This tool can only change files under /memories. This is your memory, you are free to structure this directory as you see fit.
 * The view command supports the following cases:
   - Directories: Lists files and directories up to 2 levels deep, ignoring hidden items and node_modules
-  - Text files: Displays numbered lines. Lines are determined from Python's .splitlines() method, which recognizes all standard line breaks. If the file contains more than 16000 characters, the output will be truncated.
+  - Text files: Displays numbered lines. Lines are determined from Python's .splitlines() method, which recognizes all standard line breaks.
 * The create command creates a new text file with the content specified in the file_text parameter. It will fail if the file already exists. Set overwrite to true to replace existing files.
 * The str_replace command replaces text in a file. Requires an exact, unique match of old_str (whitespace sensitive).
   - Will fail if old_str doesn't exist or appears multiple times

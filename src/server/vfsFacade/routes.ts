@@ -2,7 +2,7 @@
  * HTTP route handlers for VFS CRUD, compound operations, and versioning.
  */
 
-import fsSync from 'node:fs';
+import fs from 'node:fs/promises';
 import { Router } from 'express';
 import express from 'express';
 import * as fsOps from '../vfsEngine/fsEngine.js';
@@ -20,12 +20,15 @@ function getString(value: unknown): string | undefined {
   return undefined;
 }
 
-function getProjectContext(
+type ResLike = { status: (code: number) => { json: (body: unknown) => void } };
+
+async function getProjectContextFor(
   req: { userId?: string; query: Record<string, unknown> },
-  res: { status: (code: number) => { json: (body: unknown) => void } },
+  res: ResLike,
   dataDir: string,
-  accessConfig: VfsAccessConfig
-): VfsContext | null {
+  accessConfig: VfsAccessConfig,
+  realRoots: Map<string, string>
+): Promise<VfsContext | null> {
   const projectId = getString(req.query.projectId);
   if (!projectId) {
     res.status(400).json({ error: 'projectId query parameter required' });
@@ -35,16 +38,26 @@ function getProjectContext(
     res.status(401).json({ error: 'userId not available' });
     return null;
   }
-  const root = fsOps.projectRoot(dataDir, req.userId, projectId);
-  // Materialize + canonicalize the project root. mkdirSync handles first-touch
-  // projects; realpathSync makes downstream allow-list comparisons canonical.
-  fsSync.mkdirSync(root, { recursive: true });
-  const canonicalRoot = fsSync.realpathSync(root);
-  return {
-    projectRoot: canonicalRoot,
-    allowedRoots: getAllowedRootsForProject(accessConfig, projectId, canonicalRoot),
-    followSymlinks: accessConfig.followSymlinks,
-  };
+  try {
+    const root = fsOps.projectRoot(dataDir, req.userId, projectId);
+    // mkdir runs every request: it's one syscall, and clearing a project
+    // removes the root, which the next `ls /` must find again. realpath
+    // (canonical root for the allow-list checks) is stable, so remember it.
+    await fs.mkdir(root, { recursive: true });
+    let canonicalRoot = realRoots.get(root);
+    if (!canonicalRoot) {
+      canonicalRoot = await fs.realpath(root);
+      realRoots.set(root, canonicalRoot);
+    }
+    return {
+      projectRoot: canonicalRoot,
+      allowedRoots: getAllowedRootsForProject(accessConfig, projectId, canonicalRoot),
+      followSymlinks: accessConfig.followSymlinks,
+    };
+  } catch (e) {
+    handleError(res, e, 'project');
+    return null;
+  }
 }
 
 function getPath(
@@ -64,13 +77,16 @@ function getPath(
  */
 export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Router {
   const r = Router();
+  const realRoots = new Map<string, string>();
+  const getProjectContext = (req: Parameters<typeof getProjectContextFor>[0], res: ResLike) =>
+    getProjectContextFor(req, res, dataDir, accessConfig, realRoots);
 
   // ============================================================================
   // Basic CRUD
   // ============================================================================
 
   r.get('/ls', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const dirPath = (req.query.path as string) || '/';
 
@@ -83,7 +99,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.get('/stat', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -97,7 +113,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.get('/exists', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -111,7 +127,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.get('/read', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -126,7 +142,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.put('/write', rawBody, async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -142,7 +158,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.delete('/rm', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -155,14 +171,33 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
     }
   });
 
+  r.post('/rm-many', jsonBody, async (req, res) => {
+    const ctx = await getProjectContext(req, res);
+    if (!ctx) return;
+
+    const body = req.body as { paths?: unknown; recursive?: unknown } | undefined;
+    const paths = body?.paths;
+    if (!Array.isArray(paths) || !paths.every(p => typeof p === 'string' && p)) {
+      res.status(400).json({ error: 'paths must be an array of non-empty strings' });
+      return;
+    }
+
+    try {
+      const results = await fsOps.deletePaths(ctx, paths, body?.recursive === true);
+      res.json({ results });
+    } catch (e) {
+      handleError(res, e, 'rm-many');
+    }
+  });
+
   r.post('/mkdir', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
 
     try {
-      await fsOps.mkdir(ctx, filePath);
+      await fsOps.mkdir(ctx, filePath, req.query.recursive === 'true');
       res.status(204).end();
     } catch (e) {
       handleError(res, e, 'mkdir');
@@ -170,7 +205,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.delete('/rmdir', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -184,7 +219,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.post('/rename', jsonBody, async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
 
     // Read JSON body
@@ -207,7 +242,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   // ============================================================================
 
   r.post('/str-replace', jsonBody, async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -227,7 +262,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.post('/insert', jsonBody, async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -247,7 +282,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.post('/append', jsonBody, async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -271,7 +306,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   // ============================================================================
 
   r.get('/versions', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -285,7 +320,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.get('/versions/bulk', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -299,7 +334,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.get('/version', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -324,7 +359,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.delete('/versions', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -344,7 +379,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.get('/file-meta', async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
     const filePath = getPath(req, res);
     if (!filePath) return;
@@ -362,7 +397,7 @@ export function createRouter(dataDir: string, accessConfig: VfsAccessConfig): Ro
   });
 
   r.post('/compact', jsonBody, async (req, res) => {
-    const ctx = getProjectContext(req, res, dataDir, accessConfig);
+    const ctx = await getProjectContext(req, res);
     if (!ctx) return;
 
     const body = req.body as { keepCount?: number } | undefined;
@@ -389,7 +424,7 @@ function handleError(
   operation: string
 ): void {
   if (error instanceof fsOps.FsError) {
-    res.status(error.status).json({ error: error.message });
+    res.status(error.status).json({ error: error.message, code: error.code });
     return;
   }
 
@@ -400,6 +435,14 @@ function handleError(
   }
   if (nodeError.code === 'ENOTDIR') {
     res.status(400).json({ error: `Not a directory (${operation})` });
+    return;
+  }
+  if (nodeError.code === 'EISDIR') {
+    res.status(400).json({ error: `Is a directory (${operation})` });
+    return;
+  }
+  if (nodeError.code === 'EEXIST') {
+    res.status(409).json({ error: `Already exists (${operation})` });
     return;
   }
 

@@ -78,6 +78,11 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [ ] Data migration between localStorage and remote storage
 - [x] Server: CEK oracle verification on init — encrypted oracle in metadata table, verified before any data writes; wrong-CEK init returns `CEK_MISMATCH` and server stays dormant
 - [x] VFS migration during cross-backend import (see design below)
+- [x] VFS performance pass (see "Encrypted-mode hot paths" under the Memory Tool's VFS Architecture): decrypted-tree cache, `VfsNode.size`, single-pass `appendFile`, batch `deletePaths` (+ `/api/rm-many`), `mkdir({ recursive })`, fast base64 + cached AES key, reflink version snapshots on CoW filesystems, JS `fs.appendFile` / `fs.rm`, batched QuickJS microtasks
+- [ ] VFS: writing a file / dir over a soft-deleted node (`createFile`, `writeFile`, `appendFile`, `mkdir` in `vfsService`) replaces the node without orphaning its `fileId`s, so that content and its versions stay in storage with nothing pointing at them. `rename` already orphans a displaced destination; the same should happen here (recursively for a deleted directory)
+- [ ] VFS: `restoreOrphan` recreates the node without `isBinary` / `mime` (the orphan record doesn't carry them), so a restored binary file reads back as base64 text
+- [ ] VFS server: `/rmdir` ignores `recursive` and always `rm -rf`s with `force`, so `RemoteVfsAdapter.rmdir(path, false)` deletes non-empty directories and never reports a missing one
+- [ ] VFS: still multi-load on the encrypted path — `LocalVfsAdapter.copyFile` (4 tree loads), `writeFileWithHistory` (one locked write per version), the VFS Manager ZIP upload (`mkdir` per parent per file). `/lib` scripts are re-decrypted on every JS tool call; a ciphertext-keyed content cache like the tree's would fix that if it shows up in measurements
 - [x] Remote storage bulk operations (for faster export/import):
   - [x] Add `exportPaginated()` and `batchSave()` to `StorageAdapter` interface
   - [x] Implement in `RemoteStorageAdapter` (calls `/_export` and `/_batch` endpoints)
@@ -109,6 +114,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] Disable Math toggle (⋯ menu: renders `$...$` as literal text instead of KaTeX)
 - [x] Always Auto Scroll (⋯ menu: keeps auto-scroll active regardless of scroll position)
 - [x] DUMMY System (LLM-registered JS hooks intercept the agentic loop before API calls — synthetic responses, user handoff, or passthrough; async hooks and top-level await supported)
+- [x] `memoriesWritable` option on the filesystem and JavaScript tools (off by default) — lets each tool write, rename and delete under `/memories`. Same pass fixed `fs.stat().readonly` ignoring `/share` for namespaced JS tool / DUMMY hook callers (`FsBridge` never got the namespace)
 - [x] Remote human minion ("Touch Grass") — delegates minion tasks to a human via `touch-grass-backend/`. Minion tool gains `remote` parameter + `remoteEndpoint`/`remotePassword` options. Backend provides web UI for human operators with session list, chat view, and long-poll delivery.
 - [x] Nested minions (`allowNesting` minion option, off by default; `maxNestingDepth` hard cap, default 3) — a minion can spawn sub-minions. Depth threaded via `ToolContext.minionDepth`; sidebar loop tree + minion-chat overlay stack render arbitrary depth. Final rendering recursive; live streaming at depth ≥ 2 is a Phase 2 follow-up (see Minion Tool → Nested minions).
 - [x] Attach-file support for claude-agent — image attachments and `injectFiles` / `injectFilesAfter` ride the SDK's streaming-input prompt as content blocks (see Claude Agent Provider → Supported knobs); `as-file` and `mock-tool-call` downgrade to `separate-block`
@@ -1002,7 +1008,7 @@ When `chat.apiType !== message.modelFamily`, the message was created by a differ
   - **OpenAI/Responses**: `{ type: 'function', function: { name, description, parameters } }`
 - `memory` tool provides persistent virtual filesystem (see Memory Tool section below), dynamically registered/unregistered per project; two modes:
   - **Native mode (default)**: Uses Anthropic's `memory_20250818` shorthand via `apiOverrides`
-  - **System prompt mode**: Injects memory listing + README.md into system prompt (toggle in Project Settings)
+  - **System prompt mode**: Injects memory listing + README.md into system prompt (toggle in Project Settings). README.md is capped at 64k chars (`README_MAX_CHARS`), truncated on a line boundary with a note pointing at `view` + `view_range` for the rest. The listing is depth-bounded (2 levels), not char-bounded.
   - **No Hand Holding option**: Skips the usage manual from system prompt injection, only emits file listing + README (for capable models that already know the tool)
 - Agentic loop in `useChat.ts` handles `stop_reason: 'tool_use'`:
   1. Extract `tool_use` blocks from `fullContent`
@@ -1305,10 +1311,12 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 
 **Files:**
 
-- `src/services/tools/memoryTool.ts` - Tool implementation with `MemoryToolInstance` class
-- `src/services/vfs/index.ts` - Barrel re-export (all callers import from here)
-- `src/services/vfs/vfsFacade.ts` - Locked wrappers + compound operations (`appendFile`, `copyFile`, `deletePath`, `createFileGuarded`, `ensureDirAndWrite`)
-- `src/services/vfs/vfsService.ts` - Unlocked VFS internals with tree structure and versioning
+- `src/shared/services/tools/memoryTool.ts` - Tool implementation
+- `src/shared/services/vfs/index.ts` - Barrel re-export
+- `src/shared/services/vfs/localVfsAdapter.ts` - Locked wrappers + compound operations (`copyFile`, `createFileGuarded`, `ensureDirAndWrite`) over the service
+- `src/shared/services/vfs/vfsService.ts` - Unlocked VFS internals with tree structure and versioning, built once per server (`BackendDeps.vfsService`)
+
+Other tools see `/memories` as read-only unless their own `memoriesWritable` option is on (filesystem and JavaScript; see their Readonly Enforcement notes). `isMemoriesPath()` in `memoryTool.ts` is the shared path check.
 
 **Commands (Anthropic spec compliant):**
 
@@ -1328,17 +1336,31 @@ Implements Anthropic's memory tool specification - a persistent virtual filesyst
 **VFS Architecture:**
 
 - Root path: `/memories` (all paths normalized to this)
-- Tree-structured filesystem stored in `vfs_meta` table (JSON tree per project)
+- Tree-structured filesystem stored in `vfs_meta` table (JSON tree per project, one encrypted blob)
 - Files stored in `vfs_files` table with stable UUID (`fileId`) that survives renames
 - Per-file versioning in `vfs_versions` table (auto-versioned on every update)
 - Soft-delete with orphan tracking for displaced files during renames
 - 999,999 line limit per file (returns error if exceeded)
+- `view` on any directory (root or nested) lists 2 levels deep. The handler asks `adapter.isDirectory` first; the `NOT_A_FILE` catch is only a fallback for adapters whose `isDirectory` and `readFile` disagree.
+- **Server mode (`FilesystemVfsAdapter`) error parity**: raw Node fs errors are translated to the `VfsError` codes the tools branch on (`ENOENT`/`ENOTDIR` → `PATH_NOT_FOUND`, `EISDIR` → `NOT_A_FILE`, `EEXIST` → `FILE_EXISTS`, `ENOTEMPTY` → `DESTINATION_EXISTS`) via `withNodeErrors`. Without it the model saw `ENOENT: ... open '/srv/...'` with the host path in it. The HTTP facade maps `EISDIR` → 400 for the remote path.
+- **Server mode copies: reflink into fresh files, truncating write onto existing ones**: `fs.copyFile` fchmod()s the destination to mirror the source and unlinks it when that fails. On a group-shared tree where the destination belongs to another user that is EPERM, so the copy failed _and_ deleted the file. `cloneFile` in `vfsEngine/versioning.ts` calls `fs.copyFile` with `COPYFILE_EXCL | COPYFILE_FICLONE`, so it only ever writes a file it just created (our own, fchmod is safe); `EEXIST` falls back to `copyFileContents` (read + `fs.writeFile`), which keeps the existing inode, owner and mode. On CoW filesystems (btrfs, XFS reflink, bcachefs, OpenZFS 2.2+) `FICLONE` makes every version snapshot a block-sharing clone, so an append costs O(delta) plus metadata instead of a full re-read and copy; elsewhere libuv does an in-kernel copy. `saveVersion`, `writeFileWithHistory` and `copyFile` use it. Hard links were rejected: appends and outside editors write the live inode in place, which would rewrite the saved version.
+- **Server mode overwrite-rename**: `renameVersionDir` removes the destination's `.ver/` before moving the source's, matching worker mode (which orphans the destination node). Previously `fs.rename` onto the non-empty `.ver/` failed with ENOTEMPTY (adapter: raw error after the file already moved; engine: swallowed silently), leaving the source history stranded and the destination's stale history attached to the moved file. `fs.rename` itself is left alone: it swaps directory entries, never chmods, and is atomic, so it has none of the copy quirk. Two caveats: the moved file keeps the source's owner (it is the source inode), and a directory cannot be overwrite-renamed onto a non-empty directory (surfaces as `DESTINATION_EXISTS`). The HTTP `/rename` route has no overwrite flag and always clobbers; `RemoteVfsAdapter.rename` enforces the guard client-side via `/exists`, same check-then-act as its `copyFile`.
 - **Namespace isolation**: `VfsAdapter` instances are bound to a namespace at creation time. `LocalVfsAdapter(projectId, namespace)` resolves paths through the namespace (e.g., `/minions/coder` + `/memories/note.md` → `/minions/coder/memories/note.md`). `resolveNamespacedPath()` handles resolution with path traversal mitigation. Tool handlers receive a pre-bound adapter via `ToolContext.vfsAdapter`.
 - **Cross-namespace mounts**: Two shared paths bypass namespace prefixing:
   - `/share` — read-only for namespaced callers (main agent has write access). Enforced via `assertWritable()` in VFS core, throws `VfsError('READONLY')`.
   - `/sharerw` — read-write for all, including namespaced callers. Enables minion-to-minion collaboration.
 - **Mount root protection**: `/share` directory root cannot be deleted or renamed (throws `INVALID_PATH`). `/sharerw` has no root protection — the main agent can delete it if needed.
-- **Concurrency control**: Facade layer (`vfsFacade.ts`) acquires a per-project promise chain (`treeLock.ts`) once per operation, including compound multi-step operations like `appendFile`, `copyFile`, `deletePath`. All callers import from `vfs/index.ts` barrel (never `vfsService` directly). `vfsService.ts` contains unlocked internal functions. Prevents lost-update race conditions and TOCTOU bugs.
+- **Concurrency control**: `LocalVfsAdapter` acquires a per-project promise chain (`treeLock.ts`) once per operation, including compound multi-step operations like `copyFile` and `ensureDirAndWrite`. `vfsService.ts` contains unlocked internal functions. Prevents lost-update race conditions and TOCTOU bugs.
+- **Encrypted-mode hot paths** (`vfsService.ts`):
+  - **Tree cache**: `loadTree` keeps the decrypted tree JSON per project, keyed by the ciphertext it came from (32 projects max). A load whose record still has that exact ciphertext skips base64 + AES + gunzip; any other writer (another device, key rotation, import) produces new ciphertext and simply misses. JSON (not the parsed tree) is cached because ops mutate the tree they load. `saveTree` refills it, `clearVfs` drops it.
+  - **`VfsNode.size`**: stored-content length, kept on the node by every write path, so `readDir` / `stat` never decrypt file content. Legacy nodes without it are read once and backfilled by `readDir`.
+  - **`appendFile`** is one tree load + one content load (it was exists → stat → read → update: 4 tree loads, 3 content decrypts — slower than read + write from JS). Every append still snapshots the old content as a version.
+  - **`deletePaths(paths, recursive)`**: one tree load, per-path soft delete, one tree save. Best-effort with per-path `{ path, error? }` results; a path under one already deleted in the batch counts as deleted (`isCoveredByDeleted` in `vfsPaths.ts`, shared by all backends). Missing / soft-deleted → `PATH_NOT_FOUND`, directory without `recursive` → `NOT_A_FILE`, the caller's root (namespace root when namespaced) and `/share` → `INVALID_PATH`. `deletePath` is a one-path batch on every adapter, so a missing path now throws `PATH_NOT_FOUND` in server / remote mode too (it used to be a silent no-op there).
+  - **`mkdir(path, { recursive })`**: parents are always created (as `writeFile` / `appendFile` always did); `recursive` turns an existing directory into a no-op instead of `DIR_EXISTS`. Filesystem and remote mode now return `DIR_EXISTS` too (they used to succeed silently).
+  - Updates keep `minStoredVersion` (it was dropped on every write after `dropOldVersions`).
+  - `EncryptionCore` imports the AES key once per CEK and uses the chunked / `Buffer` base64 codec from `protocol/binaryEncoding.ts`; the per-byte codec was roughly half of each encrypt/decrypt.
+- **Batch delete over HTTP**: `POST /api/rm-many` (`{ paths, recursive }` → `{ results }`), implemented once in `fsEngine.deletePaths` and shared by `FilesystemVfsAdapter`. `RemoteVfsAdapter` falls back to per-path `/stat` + `/rm` / `/rmdir` when an older VFS server answers 404. `rmdir('/')` is refused on every adapter; `RemoteVfsAdapter.clearVfs` calls `/rmdir` on the root directly.
+- **VFS server per-request cost**: project-root mkdir is async (still per request — clearing a project removes the root), realpath is memoized per router; preflights are cached (`Access-Control-Max-Age: 600`). `FilesystemVfsAdapter` creates/canonicalizes its root lazily on first use instead of with sync calls in the constructor; `hasVfs` checks without creating it.
 
 **Storage Tables:**
 
@@ -1380,7 +1402,7 @@ rename:      "Successfully renamed {old_path} to {new_path}"
 
 **Overview:**
 
-Client-side tool that provides LLM access to the project's virtual filesystem. Similar to the memory tool but operates from VFS root (`/`) with `/memories` as readonly. Useful for storing code, data files, configuration, and scripts. Supports both text and binary files.
+Client-side tool that provides LLM access to the project's virtual filesystem. Similar to the memory tool but operates from VFS root (`/`) with `/memories` as readonly unless the `memoriesWritable` option is on. Useful for storing code, data files, configuration, and scripts. Supports both text and binary files.
 
 **Files:**
 
@@ -1419,8 +1441,9 @@ Minion `injectFiles` formatting follows the same override, minus the per-call la
 
 **Readonly Enforcement:**
 
-- `/memories` path and all its contents are readonly (tool-level, fsTool blocks writes to /memories which is managed by the memory tool)
-- `/share` is read-only for namespaced callers (VFS-level, enforced by `assertWritable()` in VFS core)
+- `/memories` path and all its contents are readonly by default (tool-level). `checkMemoriesWrite()` runs once in the dispatcher before any handler: `create` / `str_replace` / `insert` / `mkdir` / `append` / `append_raw` / `delete` check `path`, `rename` checks both ends, `copy` only the destination. Reads, including copying out of `/memories`, always work.
+- `memoriesWritable` tool option (default `false`) skips that check. The description's first sentence switches with it ("except /memories (readonly…)" vs "including /memories (shared with the memory tool)"). With the option off, the description is byte-identical to the pre-option text, so existing projects keep their prompt cache.
+- `/share` is read-only for namespaced callers (VFS-level, enforced by `assertWritable()` in VFS core) regardless of the option
 - Write operations to readonly paths return user-friendly error messages
 
 **Instance Management:**
@@ -1487,7 +1510,7 @@ If no console output and result is undefined: `undefined`
 
 The `JsVMContext` class provides a browser-like JavaScript execution environment:
 
-- **Event Loop**: microtasks drained via `executePendingJobs(1)` per tick (with host yields), then host-scheduled timers fired
+- **Event Loop**: microtasks drained via `executePendingJobs(256)` batches, yielding to the host at most every 10 ms (`setImmediate` / `MessageChannel`), then host-scheduled timers fired
 - **Timeout**: 300s execution limit via `setInterruptHandler()` (kills infinite loops mid-execution); also caps total real timer sleep
 - **Console Capture**: All console methods (log, warn, error, info, debug) captured
 
@@ -1497,7 +1520,7 @@ The `JsVMContext` class provides a browser-like JavaScript execution environment
 2. While there are pending jobs, fs ops, or scheduled timers:
    - Check 300s timeout deadline
    - Drain pending fs operations
-   - If a microtask is pending: yield to host (`setTimeout(0)`), run one with `executePendingJobs(1)`, loop
+   - If a microtask is pending: if 10 ms passed since the last yield, yield to host (`setImmediate` in Node, `MessageChannel` in the worker), then run up to 256 with `executePendingJobs(256)`, loop. The old per-job `setTimeout(0)` hop cost ~1.2 ms per `await` in Node (4 ms once browsers clamp nested timers): 10k awaits took 11.6 s, now 62 ms.
    - Else sleep (via the host's real `setTimeout`) until the earliest timer is due, then fire every due timer in `(wakeAt, insertion)` order
 3. Microtasks always fully drain before any timer fires (real event-loop ordering)
 4. `setTimeout`/`setInterval` register host-side timers honoring the real delay; the drain loop owns the registry (`clearTimeout`/`clearInterval` remove entries)
@@ -1530,27 +1553,31 @@ UMD/IIFE Library can be loaded because:
 
 Node.js-like async filesystem operations backed by the project's VFS. All methods return Promises (must use `await`). Available as both `fs` and `__fs` on globalThis.
 
-| Method                     | Returns                | Description                               |
-| -------------------------- | ---------------------- | ----------------------------------------- |
-| `readFile(path)`           | `Promise<ArrayBuffer>` | Read file as binary (Node.js Buffer-like) |
-| `readFile(path, encoding)` | `Promise<string>`      | Read file as string with encoding         |
-| `writeFile(path, data)`    | `Promise<void>`        | Create/overwrite file (string or binary)  |
-| `exists(path)`             | `Promise<boolean>`     | Check if path exists                      |
-| `mkdir(path)`              | `Promise<void>`        | Create directory                          |
-| `readdir(path)`            | `Promise<string[]>`    | List directory entries                    |
-| `unlink(path)`             | `Promise<void>`        | Delete file                               |
-| `rmdir(path)`              | `Promise<void>`        | Delete directory (recursive)              |
-| `rename(oldPath, newPath)` | `Promise<void>`        | Move/rename file or directory             |
-| `stat(path)`               | `Promise<StatResult>`  | Get file/directory info                   |
+| Method                                     | Returns                | Description                                                                                                                                                                   |
+| ------------------------------------------ | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `readFile(path)`                           | `Promise<ArrayBuffer>` | Read file as binary (Node.js Buffer-like)                                                                                                                                     |
+| `readFile(path, encoding)`                 | `Promise<string>`      | Read file as string with encoding                                                                                                                                             |
+| `writeFile(path, data, options?)`          | `Promise<void>`        | Create/overwrite file (string or binary); creates missing parents; options ignored                                                                                            |
+| `appendFile(path, text, options?)`         | `Promise<void>`        | Append a string in one backend call (atomic, no read round trip); creates file + parents                                                                                      |
+| `exists(path)`                             | `Promise<boolean>`     | Check if path exists                                                                                                                                                          |
+| `mkdir(path, { recursive }?)`              | `Promise<void>`        | Create directory and missing parents; `recursive` makes an existing dir a no-op                                                                                               |
+| `readdir(path)`                            | `Promise<string[]>`    | List directory entries                                                                                                                                                        |
+| `unlink(path)`                             | `Promise<void>`        | Delete file                                                                                                                                                                   |
+| `rmdir(path)`                              | `Promise<void>`        | Delete directory (recursive)                                                                                                                                                  |
+| `rm(path \| paths, { recursive, force }?)` | `Promise<void>`        | Node-style delete; an array is one `deletePaths` batch. Dirs need `recursive`, `force` ignores missing. Best-effort: rejects with the first failure plus a list of the others |
+| `rename(oldPath, newPath)`                 | `Promise<void>`        | Move/rename file or directory                                                                                                                                                 |
+| `stat(path)`                               | `Promise<StatResult>`  | Get file/directory info                                                                                                                                                       |
 
 `StatResult` type: `{ isFile: boolean, isDirectory: boolean, size: number, readonly: boolean, mtime: Date, isBinary: boolean, mime: string }`
 
 **fs Readonly Enforcement:**
 
-- `/memories` path and all its contents are read-only (tool-level check)
+- `/memories` path and all its contents are read-only by default (tool-level check in `FsBridge.isReadonly`)
+- The javascript tool's `memoriesWritable` option (default `false`) lifts that; the description's `Note: /memories is read-only.` line switches to "writable" with it. It reaches the bridge as `JsVMContext.create(adapter, loadLib, loadShareLib, { namespace, memoriesWritable })` (`FsBridgeOptions`)
+- DUMMY hooks and minion `verifyHook`s don't pass the option, so `/memories` stays read-only for them. They're system-run code, not the javascript tool
 - `/share` is read-only for namespaced callers (VFS-level, throws `READONLY` → mapped to `EROFS`)
-- Write operations (`writeFile`, `mkdir`, `unlink`, `rmdir`, `rename`) throw `EROFS` error
-- `stat()` returns `readonly: true` for paths under `/memories` and for `/share` paths when namespaced
+- Write operations (`writeFile`, `appendFile`, `mkdir`, `unlink`, `rmdir`, `rm`, `rename`) throw `EROFS` error (`rm` reports it per path, even with `force`)
+- `stat()` returns `readonly: true` for read-only `/memories` paths and for `/share` paths when namespaced. The namespace comes from `FsBridgeOptions.namespace`: the javascript tool passes `context.namespace` and DUMMY hooks pass the loop's namespace (before that, nobody passed it and `/share` always reported writable)
 
 **fs Binary File Support:**
 

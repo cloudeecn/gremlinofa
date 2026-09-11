@@ -207,6 +207,7 @@ export function buildTreeFromEntries(entries: BundleFileEntry[]): {
           deleted: false,
           createdAt: now,
           updatedAt: now,
+          size: (entry.content ?? '').length,
         };
         if (entry.isBinary) fileNode.isBinary = true;
         if (entry.mime) fileNode.mime = entry.mime;

@@ -37,6 +37,7 @@ function createMockAdapter(): VfsAdapter {
     purgeOrphan: vi.fn(),
     copyFile: vi.fn(),
     deletePath: vi.fn(),
+    deletePaths: vi.fn(),
     createFileGuarded: vi.fn(),
     ensureDirAndWrite: vi.fn(),
     writeFileWithHistory: vi.fn(),
@@ -963,5 +964,126 @@ describe('fsTool view line-number precedence', () => {
     );
     expect(result.content).not.toContain('     1\talpha');
     expect(result.content).toContain('alpha\nbeta');
+  });
+});
+
+describe('fsTool /memories write access', () => {
+  beforeEach(() => {
+    mockAdapter = createMockAdapter();
+    (mockAdapter.createFileGuarded as Mock).mockResolvedValue(undefined);
+    (mockAdapter.strReplace as Mock).mockResolvedValue({ snippet: '' });
+    (mockAdapter.insert as Mock).mockResolvedValue(undefined);
+    (mockAdapter.deletePath as Mock).mockResolvedValue(undefined);
+    (mockAdapter.rename as Mock).mockResolvedValue(undefined);
+    (mockAdapter.copyFile as Mock).mockResolvedValue(undefined);
+    (mockAdapter.mkdir as Mock).mockResolvedValue(undefined);
+    (mockAdapter.appendFile as Mock).mockResolvedValue({ created: false });
+  });
+
+  const writes: Array<{
+    name: string;
+    input: Record<string, unknown>;
+    adapterMethod: keyof VfsAdapter;
+    message: string;
+  }> = [
+    {
+      name: 'create',
+      input: { command: 'create', path: '/memories/a.md', file_text: 'x' },
+      adapterMethod: 'createFileGuarded',
+      message: 'Cannot write to readonly path /memories/a.md',
+    },
+    {
+      name: 'str_replace',
+      input: { command: 'str_replace', path: '/memories/a.md', old_str: 'a', new_str: 'b' },
+      adapterMethod: 'strReplace',
+      message: 'Cannot write to readonly path /memories/a.md',
+    },
+    {
+      name: 'insert',
+      input: { command: 'insert', path: '/memories/a.md', insert_line: 0, insert_text: 'x' },
+      adapterMethod: 'insert',
+      message: 'Cannot write to readonly path /memories/a.md',
+    },
+    {
+      name: 'append',
+      input: { command: 'append', path: '/memories/a.md', file_text: 'x' },
+      adapterMethod: 'appendFile',
+      message: 'Cannot write to readonly path /memories/a.md',
+    },
+    {
+      name: 'append_raw',
+      input: { command: 'append_raw', path: '/memories/a.md', file_text: 'x' },
+      adapterMethod: 'appendFile',
+      message: 'Cannot write to readonly path /memories/a.md',
+    },
+    {
+      name: 'mkdir',
+      input: { command: 'mkdir', path: '/memories/sub' },
+      adapterMethod: 'mkdir',
+      message: 'Cannot write to readonly path /memories/sub',
+    },
+    {
+      name: 'delete',
+      input: { command: 'delete', path: '/memories/a.md' },
+      adapterMethod: 'deletePath',
+      message: 'Cannot delete readonly path /memories/a.md',
+    },
+    {
+      name: 'rename out of /memories',
+      input: { command: 'rename', old_path: '/memories/a.md', new_path: '/a.md' },
+      adapterMethod: 'rename',
+      message: 'Cannot move from readonly path /memories/a.md',
+    },
+    {
+      name: 'rename into /memories',
+      input: { command: 'rename', old_path: '/a.md', new_path: '/memories/a.md' },
+      adapterMethod: 'rename',
+      message: 'Cannot move to readonly path /memories/a.md',
+    },
+    {
+      name: 'copy into /memories',
+      input: { command: 'copy', old_path: '/a.md', new_path: '/memories/a.md' },
+      adapterMethod: 'copyFile',
+      message: 'Cannot write to readonly path /memories/a.md',
+    },
+  ];
+
+  it.each(writes)('refuses $name by default', async ({ input, adapterMethod, message }) => {
+    const result = await executeFs(input);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain(message);
+    expect(result.content).toContain('managed by the memory tool');
+    expect(mockAdapter[adapterMethod]).not.toHaveBeenCalled();
+  });
+
+  it.each(writes)('allows $name with memoriesWritable', async ({ input, adapterMethod }) => {
+    const result = await executeFs(input, 'test-project', { memoriesWritable: true });
+    expect(result.isError).toBeFalsy();
+    expect(mockAdapter[adapterMethod]).toHaveBeenCalled();
+  });
+
+  it('allows copying out of /memories without the option', async () => {
+    const result = await executeFs({
+      command: 'copy',
+      old_path: '/memories/a.md',
+      new_path: '/a.md',
+    });
+    expect(result.isError).toBeFalsy();
+    expect(mockAdapter.copyFile).toHaveBeenCalledWith('/memories/a.md', '/a.md', undefined);
+  });
+
+  it('does not treat lookalike paths as /memories', async () => {
+    const result = await executeFs({ command: 'create', path: '/memoriesX/a.md', file_text: 'x' });
+    expect(result.isError).toBeFalsy();
+    expect(mockAdapter.createFileGuarded).toHaveBeenCalled();
+  });
+
+  it('describes /memories as readonly by default and writable with the option', () => {
+    const resolveDescription = fsTool.description as (options: ToolOptions) => string;
+    expect(resolveDescription({})).toContain('except /memories (readonly, managed by memory tool)');
+    const writable = resolveDescription({ memoriesWritable: true });
+    expect(writable).toContain('including /memories');
+    expect(writable).not.toContain('readonly, managed by memory tool');
+    expect(writable).toContain('The view-all command reads multiple files');
   });
 });

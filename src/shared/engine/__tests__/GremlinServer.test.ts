@@ -4,6 +4,7 @@ import { LoopRegistry } from '../LoopRegistry';
 import type { BackendDeps } from '../backendDeps';
 import type { APIService } from '../../services/api/apiService';
 import type { EncryptionCore } from '../../services/encryption/encryptionCore';
+import { createVfsService } from '../../services/vfs/vfsService';
 import type { UnifiedStorage } from '../../services/storage/unifiedStorage';
 import type { ClientSideToolRegistry } from '../../services/tools/clientSideTools';
 import type { APIDefinition, Chat, Project, RenderingBlockGroup } from '../../protocol/types';
@@ -121,6 +122,7 @@ function makeBackendDepsStub(storage: UnifiedStorage): BackendDeps {
   return {
     storage,
     encryption: encryptionStub,
+    vfsService: createVfsService(storage, encryptionStub),
     apiService: apiServiceStub,
     toolRegistry: toolRegistryStub,
     // The server constructor reuses this instance as `this.registry` so

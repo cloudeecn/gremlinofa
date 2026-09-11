@@ -20,6 +20,7 @@ import { GremlinServer } from '../GremlinServer';
 import { LoopRegistry } from '../LoopRegistry';
 import type { BackendDeps } from '../backendDeps';
 import { EncryptionCore } from '../../services/encryption/encryptionCore';
+import { createVfsService } from '../../services/vfs/vfsService';
 import { UnifiedStorage } from '../../services/storage/unifiedStorage';
 import { IndexedDBAdapter } from '../../../worker/adapters/IndexedDBAdapter';
 import { Tables } from '../../services/storage/StorageAdapter';
@@ -49,6 +50,7 @@ async function buildServer(): Promise<{
   const deps: BackendDeps = {
     storage,
     encryption,
+    vfsService: createVfsService(storage, encryption),
     apiService,
     toolRegistry,
     loopRegistry,

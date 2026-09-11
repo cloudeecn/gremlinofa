@@ -19,11 +19,13 @@ import { LoopRegistry } from '../../../engine/LoopRegistry';
 import type { APIService } from '../../api/apiService';
 import type { EncryptionCore } from '../../encryption/encryptionCore';
 import type { UnifiedStorage } from '../../storage/unifiedStorage';
+import type { VfsService } from '../../vfs/vfsService';
 import type { ClientSideToolRegistry } from '../clientSideTools';
 
 export const stubBackendDeps = {
   storage: {} as unknown as UnifiedStorage,
   encryption: {} as unknown as EncryptionCore,
+  vfsService: {} as unknown as VfsService,
   apiService: {} as unknown as APIService,
   toolRegistry: {} as unknown as ClientSideToolRegistry,
   loopRegistry: new LoopRegistry(),

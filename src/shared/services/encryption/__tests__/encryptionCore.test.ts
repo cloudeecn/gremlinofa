@@ -5,7 +5,7 @@
  * state.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { EncryptionCore, decodeCEKString } from '../encryptionCore';
 import { Buffer } from 'buffer';
 
@@ -186,6 +186,51 @@ describe('EncryptionCore — pure crypto', () => {
       const bytes = decodeCEKString('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
       expect(bytes).toBeInstanceOf(Uint8Array);
       expect(bytes.length).toBe(32);
+    });
+  });
+
+  describe('large payloads and key reuse', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('round-trips payloads larger than one base64 chunk', async () => {
+      const core = new EncryptionCore();
+      await core.initializeWithCEK(BASE32_KEY);
+      const bytes = Uint8Array.from({ length: 200_000 }, (_, i) => (i * 7919) & 0xff);
+      const text = 'é漢🙂'.repeat(40_000);
+
+      expect(await core.decryptToBytes(await core.encryptBytes(bytes))).toEqual(bytes);
+      expect(await core.decrypt(await core.encrypt(text))).toBe(text);
+      expect(await core.decryptWithDecompression(await core.encryptWithCompression(text))).toBe(
+        text
+      );
+    });
+
+    it('imports the AES key once per CEK', async () => {
+      const importKey = vi.spyOn(crypto.subtle, 'importKey');
+      const core = new EncryptionCore();
+      await core.initializeWithCEK(BASE32_KEY);
+
+      const sealed = await Promise.all(['a', 'b', 'c'].map(t => core.encrypt(t)));
+      await Promise.all(sealed.map(c => core.decrypt(c)));
+      expect(importKey).toHaveBeenCalledTimes(1);
+
+      await core.initializeWithCEK(ALT_BASE32_KEY);
+      await core.encrypt('d');
+      expect(importKey).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops using the old key after re-initialization', async () => {
+      const core = new EncryptionCore();
+      await core.initializeWithCEK(BASE32_KEY);
+      const sealed = await core.encrypt('secret');
+
+      await core.initializeWithCEK(ALT_BASE32_KEY);
+      await expect(core.decrypt(sealed)).rejects.toThrow();
+
+      core.forget();
+      await expect(core.encrypt('x')).rejects.toThrow('Encryption not initialized');
     });
   });
 });

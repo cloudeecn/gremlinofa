@@ -18,6 +18,7 @@ import type { UnifiedStorage } from '../services/storage/unifiedStorage';
 import type { CachedStorageAdapter } from '../services/storage/adapters/CachedStorageAdapter';
 import type { ClientSideToolRegistry } from '../services/tools/clientSideTools';
 import type { VfsAdapter } from '../services/vfs/vfsAdapter';
+import type { VfsService } from '../services/vfs/vfsService';
 import type { Project } from '../protocol/types';
 import type { StorageConfig } from '../protocol/types/storageConfig';
 import type { LoopRegistry } from './LoopRegistry';
@@ -60,6 +61,12 @@ export interface BackendDeps {
    * from the CEK bytes that crossed the boundary in `init({cek})`.
    */
   encryption: EncryptionCore;
+  /**
+   * The encrypted-VFS engine over `storage` + `encryption`. One per server so
+   * its decrypted-tree cache is shared by every `LocalVfsAdapter` the
+   * factories hand out.
+   */
+  vfsService: VfsService;
   apiService: APIService;
   toolRegistry: ClientSideToolRegistry;
   /**

@@ -73,3 +73,20 @@ export function getPathSegments(path: string): string[] {
 export function isRootPath(path: string): boolean {
   return normalizePath(path) === '/';
 }
+
+/**
+ * Batch-delete bookkeeping shared by every VFS backend: true when `path`
+ * itself or one of its ancestors was already deleted earlier in the same
+ * batch. Lets `rm(['/a', '/a/b'], {recursive})` report both as deleted
+ * whatever order they arrive in, instead of `/a/b` failing with "not found"
+ * on one backend and succeeding on another. Both arguments are normalized.
+ */
+export function isCoveredByDeleted(path: string, deleted: ReadonlySet<string>): boolean {
+  if (deleted.size === 0) return false;
+  let current = path;
+  while (true) {
+    if (deleted.has(current)) return true;
+    if (current === '/') return false;
+    current = getParentDir(current);
+  }
+}

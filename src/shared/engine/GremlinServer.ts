@@ -46,6 +46,7 @@ import { loadChatLoopContext } from './buildLoopOptions';
 import { resolveChatAgentSettings } from './lib/resolveChatAgentConfig';
 import type { PromptSegment } from '../protocol/methods';
 import type { VfsAdapter } from '../services/vfs/vfsAdapter';
+import { createVfsService } from '../services/vfs/vfsService';
 import { generateUniqueId } from '../protocol/idGenerator';
 import { apiKeyOptional } from '../protocol/apiDefinition';
 import { bytesToBase32, convertCEKToBase32 } from './lib/cekFormat';
@@ -651,7 +652,7 @@ export class GremlinServer {
       }
       case 'vfsMkdir': {
         const adapter = await this.getProjectVfsAdapter(params.projectId);
-        await adapter.mkdir(params.path);
+        await adapter.mkdir(params.path, { recursive: params.recursive });
         return { ok: true };
       }
       case 'vfsRmdir': {
@@ -746,6 +747,10 @@ export class GremlinServer {
         const adapter = await this.getProjectVfsAdapter(params.projectId);
         await adapter.deletePath(params.path);
         return { ok: true };
+      }
+      case 'vfsDeletePaths': {
+        const adapter = await this.getProjectVfsAdapter(params.projectId);
+        return adapter.deletePaths(params.paths, params.recursive);
       }
       case 'vfsCreateFileGuarded': {
         const adapter = await this.getProjectVfsAdapter(params.projectId);
@@ -1617,6 +1622,7 @@ export class GremlinServer {
         this.bootstrapAdapterFactories.createStorageAdapter(storageConfig),
         encryption
       );
+      const vfsService = createVfsService(storage, encryption);
 
       // Tool registry: per-server instance with the standard tool set.
       const toolRegistry = new ClientSideToolRegistry();
@@ -1651,6 +1657,7 @@ export class GremlinServer {
       this._deps = {
         storage,
         encryption,
+        vfsService,
         apiService,
         toolRegistry,
         loopRegistry: this.registry,

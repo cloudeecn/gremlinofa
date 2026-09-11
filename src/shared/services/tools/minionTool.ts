@@ -2250,6 +2250,7 @@ async function* executeMinionInner(
     deps: {
       storage: context.storage,
       encryption: context.encryption,
+      vfsService: context.vfsService,
       apiService: context.apiService,
       toolRegistry: context.toolRegistry,
       loopRegistry: context.loopRegistry,

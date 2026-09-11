@@ -13,6 +13,7 @@ import { LoopRegistry } from '../LoopRegistry';
 import type { BackendDeps } from '../backendDeps';
 import type { APIService } from '../../services/api/apiService';
 import type { EncryptionCore } from '../../services/encryption/encryptionCore';
+import type { VfsService } from '../../services/vfs/vfsService';
 import { UnifiedStorage } from '../../services/storage/unifiedStorage';
 import {
   createMockAdapter,
@@ -184,6 +185,7 @@ function makeBackendDepsStub(storage: UnifiedStorage, loopRegistry: LoopRegistry
   return {
     storage,
     encryption: {} as unknown as EncryptionCore,
+    vfsService: {} as unknown as VfsService,
     apiService: { deleteProviderSession: vi.fn(async () => {}) } as unknown as APIService,
     toolRegistry: {} as unknown as ClientSideToolRegistry,
     loopRegistry,

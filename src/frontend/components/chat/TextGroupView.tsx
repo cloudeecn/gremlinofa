@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import type {
   RenderingContentBlock,
   TextRenderBlock,
@@ -6,12 +6,14 @@ import type {
   FallbackRenderBlock,
   NotifyRenderBlock,
 } from '../../../shared/protocol/types/content';
+import { copyText } from '../../lib/clipboard';
 import { renderMarkdownSafe } from '../../lib/markdownRenderer';
 
 export interface TextGroupViewProps {
   blocks: RenderingContentBlock[];
-  isVisible?: boolean;
   disableMath?: boolean;
+  /** Live reply: render without storing each partial text in the markdown cache */
+  streaming?: boolean;
 }
 
 /**
@@ -19,13 +21,13 @@ export interface TextGroupViewProps {
  * Handles both text and error blocks.
  * Syntax highlighting is done during markdown parsing (marked → hljs → DOMPurify).
  */
-export default function TextGroupView({ blocks, disableMath }: TextGroupViewProps) {
+export default function TextGroupView({ blocks, disableMath, streaming }: TextGroupViewProps) {
   if (blocks.length === 0) return null;
 
   return (
     <div className="text-group-view">
       {blocks.map((block, index) => (
-        <TextBlock key={index} block={block} disableMath={disableMath} />
+        <TextBlock key={index} block={block} disableMath={disableMath} streaming={streaming} />
       ))}
     </div>
   );
@@ -34,12 +36,13 @@ export default function TextGroupView({ blocks, disableMath }: TextGroupViewProp
 interface TextBlockProps {
   block: RenderingContentBlock;
   disableMath?: boolean;
+  streaming?: boolean;
 }
 
-function TextBlock({ block, disableMath }: TextBlockProps) {
+function TextBlock({ block, disableMath, streaming }: TextBlockProps) {
   switch (block.type) {
     case 'text':
-      return <TextSegment block={block} disableMath={disableMath} />;
+      return <TextSegment block={block} disableMath={disableMath} streaming={streaming} />;
     case 'error':
       return <ErrorSegment block={block} />;
     case 'fallback':
@@ -62,32 +65,42 @@ function TextBlock({ block, disableMath }: TextBlockProps) {
 interface TextSegmentProps {
   block: TextRenderBlock;
   disableMath?: boolean;
+  streaming?: boolean;
 }
 
-function TextSegment({ block, disableMath }: TextSegmentProps) {
+function TextSegment({ block, disableMath, streaming }: TextSegmentProps) {
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
-    if (target.classList.contains('code-copy-button')) {
-      e.preventDefault();
-      const code = target.dataset.code || '';
-      navigator.clipboard.writeText(code).then(() => {
-        // Show "Copied!" feedback
-        const originalText = target.textContent;
-        target.textContent = '✓';
-        target.classList.add('copied');
-        setTimeout(() => {
-          target.textContent = originalText;
-          target.classList.remove('copied');
-        }, 1500);
-      });
-    }
+    if (!target.classList.contains('code-copy-button')) return;
+    e.preventDefault();
+    // Still showing feedback from the last click
+    if (target.classList.contains('copied') || target.classList.contains('failed')) return;
+    void copyText(target.dataset.code || '').then(copied => {
+      const originalText = target.textContent;
+      const feedbackClass = copied ? 'copied' : 'failed';
+      target.textContent = copied ? '✓' : '✗';
+      target.classList.add(feedbackClass);
+      setTimeout(() => {
+        target.textContent = originalText;
+        target.classList.remove(feedbackClass);
+      }, 1500);
+    });
   }, []);
+
+  // Memoize the wrapper object, not just the string: React 19 compares
+  // `dangerouslySetInnerHTML` by object identity and reassigns innerHTML on any
+  // new object — re-parsing the whole message and wiping selection and the
+  // code-copy ✓ on every re-render.
+  const innerHtml = useMemo(
+    () => ({ __html: renderMarkdownSafe(block.text, { disableMath, cache: !streaming }) }),
+    [block.text, disableMath, streaming]
+  );
 
   return (
     <div
       className="prose prose-sm max-w-none text-[15px] leading-relaxed"
       onClick={handleClick}
-      dangerouslySetInnerHTML={{ __html: renderMarkdownSafe(block.text, { disableMath }) }}
+      dangerouslySetInnerHTML={innerHtml}
     />
   );
 }

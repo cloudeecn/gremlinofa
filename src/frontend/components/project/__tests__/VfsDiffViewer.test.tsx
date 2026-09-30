@@ -486,6 +486,58 @@ describe('VfsDiffViewer', () => {
     });
   });
 
+  describe('Line Number Gutter', () => {
+    // v2 → v3: insert INSERTED after line 4 and drop line 40, so old and new
+    // numbering drift apart by one between the two edits and re-converge after.
+    const createShiftedAdapter = () =>
+      createMockAdapter({
+        getVersion: vi.fn().mockImplementation(async (_fileId: string, version: number) => {
+          const lines = Array.from({ length: 50 }, (_, i) => `line ${i}`);
+          if (version === 3) {
+            lines.splice(40, 1);
+            lines.splice(5, 0, 'INSERTED');
+          }
+          return lines.join('\n');
+        }),
+      });
+
+    const gutterOf = (text: string) => {
+      const row = screen.getByText(text).parentElement!;
+      return [row.children[0].textContent, row.children[1].textContent];
+    };
+
+    it('shows old and new file line numbers in full mode', async () => {
+      mockAdapter = createShiftedAdapter();
+      render(<VfsDiffViewer {...getDefaultProps()} />);
+
+      await waitFor(() => expect(screen.getByText('INSERTED')).toBeInTheDocument());
+
+      expect(gutterOf('line 0')).toEqual(['1', '1']);
+      expect(gutterOf('INSERTED')).toEqual(['', '6']);
+      expect(gutterOf('line 20')).toEqual(['21', '22']);
+      expect(gutterOf('line 40')).toEqual(['41', '']);
+      expect(gutterOf('line 49')).toEqual(['50', '50']);
+    });
+
+    it('keeps file line numbers inside context hunks', async () => {
+      mockAdapter = createShiftedAdapter();
+      render(<VfsDiffViewer {...getDefaultProps()} />);
+
+      await waitFor(() => expect(screen.getByText('INSERTED')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('±10'));
+
+      await waitFor(() => expect(screen.queryByText('line 20')).not.toBeInTheDocument());
+
+      // First hunk
+      expect(gutterOf('INSERTED')).toEqual(['', '6']);
+      expect(gutterOf('line 10')).toEqual(['11', '12']);
+      // Second hunk, looked up by startLine + offset
+      expect(gutterOf('line 35')).toEqual(['36', '37']);
+      expect(gutterOf('line 40')).toEqual(['41', '']);
+      expect(gutterOf('line 45')).toEqual(['46', '46']);
+    });
+  });
+
   describe('Close Action', () => {
     it('calls onClose when Close button clicked', async () => {
       const onClose = vi.fn();

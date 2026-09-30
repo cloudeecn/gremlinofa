@@ -1,35 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 
 /**
- * Hook to detect mobile screen size (< 768px) with real-time updates on resize
- * Uses window.matchMedia for efficient responsive behavior
+ * Exact complement of Tailwind v4's `md` breakpoint (`width >= 48rem`).
+ * Layout gated by this hook sits next to `md:` classes, so both must flip at
+ * the same width: rem in a media query follows the browser's default font
+ * size (Large = 20px puts md at 960px), and a px query also leaves a gap at
+ * fractional widths under zoom.
  */
-export function useIsMobile(breakpoint: number = 768): boolean {
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    return window.innerWidth < breakpoint;
-  });
+const MOBILE_QUERY = '(width < 48rem)';
 
-  useEffect(() => {
-    // Use matchMedia for better performance
-    const mediaQuery = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+function subscribe(onChange: () => void): () => void {
+  const mediaQuery = window.matchMedia(MOBILE_QUERY);
+  mediaQuery.addEventListener('change', onChange);
+  return () => mediaQuery.removeEventListener('change', onChange);
+}
 
-    // Update state based on media query
-    const handleChange = (e: MediaQueryListEvent | MediaQueryList) => {
-      setIsMobile(e.matches);
-    };
+function getSnapshot(): boolean {
+  return window.matchMedia(MOBILE_QUERY).matches;
+}
 
-    // Set initial value
-    handleChange(mediaQuery);
+function getServerSnapshot(): boolean {
+  return false;
+}
 
-    // Listen for changes
-    mediaQuery.addEventListener('change', handleChange);
-
-    // Cleanup
-    return () => {
-      mediaQuery.removeEventListener('change', handleChange);
-    };
-  }, [breakpoint]);
-
-  return isMobile;
+/** True below Tailwind's `md` breakpoint; updates live on resize. */
+export function useIsMobile(): boolean {
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }

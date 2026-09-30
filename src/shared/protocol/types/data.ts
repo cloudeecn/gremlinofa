@@ -8,8 +8,9 @@
  */
 
 /**
- * Progress callback for streaming export. Called once per persisted record
- * (excluding the CSV header row).
+ * Progress callback for streaming export. Receives the number of records
+ * exported so far (excluding the CSV header row): for the first record, then
+ * at most every 100 ms, then once with the final count before the export ends.
  */
 export type ExportProgressCallback = (count: number) => void;
 

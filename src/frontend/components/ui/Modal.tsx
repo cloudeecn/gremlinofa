@@ -1,12 +1,15 @@
-import React, { useEffect } from 'react';
+import React, { useRef } from 'react';
+import { useOverlay } from '../../hooks/useOverlay';
 
 interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
   children: React.ReactNode;
-  size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
+  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | 'full';
   position?: 'center' | 'bottom';
   className?: string;
+  /** Accessible name for the dialog when its content has no obvious title. */
+  ariaLabel?: string;
 }
 
 export default function Modal({
@@ -16,13 +19,16 @@ export default function Modal({
   size = 'md',
   position = 'center',
   className = '',
+  ariaLabel,
 }: ModalProps) {
-  // [iOS-diag] Trace modal lifecycle to confirm no stray overlay outlives close.
-  useEffect(() => {
-    if (!isOpen) return;
-    console.debug('[Modal] mount size=%s position=%s', size, position);
-    return () => console.debug('[Modal] unmount');
-  }, [isOpen, size, position]);
+  const contentRef = useRef<HTMLDivElement>(null);
+  useOverlay({
+    active: isOpen,
+    onEscape: onClose,
+    containerRef: contentRef,
+    trapFocus: true,
+    restoreFocus: true,
+  });
 
   if (!isOpen) return null;
 
@@ -31,6 +37,7 @@ export default function Modal({
     md: 'max-w-md',
     lg: 'max-w-lg',
     xl: 'max-w-xl',
+    '2xl': 'max-w-2xl',
     full: 'max-w-full',
   };
 
@@ -51,11 +58,16 @@ export default function Modal({
   // pointer events at stale layout-viewport coordinates.
   return (
     <div
-      className={`animate-fade-in fixed inset-0 z-50 flex ${positionClasses[position]} safe-area-inset-bottom p-4`}
+      className={`animate-fade-in fixed inset-0 z-50 flex ${positionClasses[position]} p-4 pb-[max(1rem,env(safe-area-inset-bottom))]`}
     >
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div
-        className={`relative w-full ${sizeClasses[size]} ${
+        ref={contentRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={ariaLabel}
+        tabIndex={-1}
+        className={`relative w-full outline-none ${sizeClasses[size]} ${
           position === 'bottom' ? 'md:max-w-2xl' : ''
         } ${contentAnimationClasses[position]} ${className}`}
       >

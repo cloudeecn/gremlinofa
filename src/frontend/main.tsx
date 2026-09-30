@@ -16,8 +16,9 @@ import { bootstrap } from './client/bootstrapClient';
 // gremlinClient.init itself once the user picks a flow.
 //
 // On a hard error (corrupted CEK, mismatched remote storage), we mount
-// anyway so the user can reach Data Manager → Detach. AppContext surfaces
-// the error to the rest of the app via its existing error UI.
+// anyway. AppProvider's own `init` call fails the same way and AppContent
+// shows a "Couldn't start" screen with the message, a Reload button and, in
+// server mode, a way into Data Manager (whose Disconnect needs no backend).
 async function main() {
   try {
     const result = await bootstrap();

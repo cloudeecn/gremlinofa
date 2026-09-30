@@ -1,13 +1,11 @@
 import { useState } from 'react';
 import type { RenderingBlockGroup } from '../../../shared/protocol/types/content';
 import { stripMetadata, formatContextWindow } from '../../lib/messageFormatters';
-import { showAlert } from '../../lib/alerts';
 import { coerceToString } from '../../../shared/lib/coerceToString';
+import CopyButton from '../ui/CopyButton';
 import type { AssistantMessageBubbleProps } from './types';
-import BackstageView from './BackstageView';
+import AssistantGroups from './AssistantGroups';
 import ClaudeAgentDebugModal from './ClaudeAgentDebugModal';
-import ErrorBlockView from './ErrorBlockView';
-import TextGroupView from './TextGroupView';
 import StopReasonBadge from './StopReasonBadge';
 import MessageInfoBar, { INFO_BAR_BUTTON } from './MessageInfoBar';
 
@@ -15,37 +13,14 @@ export default function AssistantMessageBubble({
   message,
   onAction,
   onDeleteMessage,
-  isVisible,
   focusMode,
   disableMath,
   isLastMessage,
+  expandedGroups,
 }: AssistantMessageBubbleProps) {
   const renderingContent = (message.content.renderingContent ?? []) as RenderingBlockGroup[];
   const [showAgentDebug, setShowAgentDebug] = useState(false);
   const claudeAgentUuid = message.metadata?.claudeAgentMessageUuid;
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(stripMetadata(message.content.content));
-      showAlert('Copied', 'Message copied to clipboard');
-    } catch (_error) {
-      showAlert('Error', 'Failed to copy message');
-    }
-  };
-
-  const handleDumpMessage = async () => {
-    try {
-      const messageJson = JSON.stringify(message, null, 2);
-      await navigator.clipboard.writeText(messageJson);
-      showAlert('Copied', 'Message JSON copied to clipboard');
-    } catch (_error) {
-      showAlert('Error', 'Failed to copy message JSON');
-    }
-  };
-
-  const visibleGroups = focusMode
-    ? renderingContent.filter(g => g.category !== 'backstage')
-    : renderingContent;
 
   const isDummy = message.content.modelFamily === 'ds01-dummy-system';
   const dummyBrief = isDummy
@@ -60,23 +35,12 @@ export default function AssistantMessageBubble({
         {isDummy && dummyBrief && (
           <div className="mb-1 text-xs text-green-700">✨ DUMMY System: {dummyBrief}</div>
         )}
-        {visibleGroups.map((group, index) => (
-          <div key={index} className="mb-2 last:mb-0">
-            {group.category === 'backstage' ? (
-              <BackstageView blocks={group.blocks} />
-            ) : group.category === 'error' ? (
-              <ErrorBlockView blocks={group.blocks} />
-            ) : (
-              <div className="w-full bg-transparent py-2 text-gray-900">
-                <TextGroupView
-                  blocks={group.blocks}
-                  isVisible={isVisible}
-                  disableMath={disableMath}
-                />
-              </div>
-            )}
-          </div>
-        ))}
+        <AssistantGroups
+          groups={renderingContent}
+          focusMode={focusMode}
+          disableMath={disableMath}
+          expandedGroups={expandedGroups}
+        />
       </div>
 
       {/* Assistant info bar (hidden in focus mode) */}
@@ -102,22 +66,22 @@ export default function AssistantMessageBubble({
               <StopReasonBadge stopReason={message.content.stopReason} />
             ) : undefined
           }
+          quickActions={
+            <CopyButton
+              getText={() => stripMetadata(message.content.content)}
+              label="📋"
+              title="Copy message"
+              className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+            />
+          }
           actions={
             <>
-              <button
-                onClick={handleCopy}
-                className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-                title="Copy message"
-              >
-                📋
-              </button>
-              <button
-                onClick={handleDumpMessage}
-                className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+              <CopyButton
+                getText={() => JSON.stringify(message, null, 2)}
+                label="🔍"
                 title="Copy message JSON"
-              >
-                🔍
-              </button>
+                className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+              />
               {claudeAgentUuid && (
                 <button
                   onClick={() => setShowAgentDebug(true)}

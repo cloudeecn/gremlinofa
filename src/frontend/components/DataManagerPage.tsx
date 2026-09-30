@@ -7,6 +7,7 @@ import { useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { useApp } from '../hooks/useApp';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { showAlert, showDestructiveConfirm } from '../lib/alerts';
+import { copyText } from '../lib/clipboard';
 import {
   getStorageConfig,
   clearStorageConfig,
@@ -144,11 +145,19 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
     }
   };
 
+  const cekInputRef = useRef<HTMLInputElement>(null);
+  // Losing the key loses the data, so a failed copy must never read as a success
   const copyCEK = async () => {
-    if (displayCEK) {
-      navigator.clipboard.writeText(displayCEK);
+    if (!displayCEK) return;
+    if (await copyText(displayCEK)) {
       await showAlert('Copied', 'Encryption key copied to clipboard!');
+      return;
     }
+    cekInputRef.current?.select();
+    await showAlert(
+      'Copy failed',
+      'The browser blocked clipboard access. The key is selected in the field; copy it by hand.'
+    );
   };
 
   const handleDetachRemoteStorage = async () => {
@@ -200,6 +209,7 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
           {isMobile && onMenuPress && (
             <button
               onClick={onMenuPress}
+              aria-label="Open menu"
               className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
             >
               <span className="text-2xl text-gray-700">☰</span>
@@ -212,7 +222,7 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
       </div>
 
       {/* Content */}
-      <div className="ios-scroll scroll-safe-bottom flex-1 overflow-y-auto overscroll-y-contain p-4">
+      <div className="ios-scroll flex-1 overflow-y-auto overscroll-y-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto max-w-2xl space-y-6">
           {/* Encryption Key Section */}
           <section className="rounded-lg border border-gray-200 bg-white p-4">
@@ -222,9 +232,11 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
             </p>
             <div className="flex gap-2">
               <input
+                ref={cekInputRef}
                 type="text"
                 value={displayCEK || 'Loading...'}
                 readOnly
+                aria-label="Encryption key"
                 className="flex-1 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 font-mono text-base"
               />
               <button

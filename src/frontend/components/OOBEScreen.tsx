@@ -17,6 +17,7 @@ import {
   type StorageConfig,
 } from '../lib/localStorageBoot';
 import { normalizeWsUrl, probeGremlinServer } from '../lib/wsProbe';
+import { showDestructiveConfirm } from '../lib/alerts';
 import { ProtocolError } from '../../shared/protocol/protocolError';
 
 type StorageType = 'indexeddb' | 'remote' | 'server';
@@ -35,6 +36,29 @@ interface OOBEResult {
 
 interface OOBEScreenProps {
   onComplete: (result: OOBEResult) => void;
+}
+
+/** Thrown when the user declines to restore a backup over existing data. */
+class RestoreCancelled extends Error {}
+
+/** Two confirms, like ImportDataModal's migration mode: a restore wipes the storage first. */
+async function confirmReplaceExistingData(): Promise<boolean> {
+  const confirmed = await showDestructiveConfirm(
+    '⚠️ THIS STORAGE ALREADY HAS DATA',
+    'Your key opens data that is already stored here. Restoring the backup will:\n' +
+      '• DELETE all current projects, chats, and messages\n' +
+      '• RESTORE the complete backup from the CSV file\n\n' +
+      'This action is IRREVERSIBLE!\n\n' +
+      'Are you absolutely sure you want to proceed?',
+    'Proceed'
+  );
+  if (!confirmed) return false;
+  return showDestructiveConfirm(
+    'FINAL CONFIRMATION',
+    'You are about to permanently erase the data already in this storage.\n\n' +
+      'Click Replace to restore the backup over it, or Cancel to abort.',
+    'Replace'
+  );
 }
 
 /**
@@ -325,6 +349,13 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
       }
       await gremlinClient.init({ cek: normalizedCek });
 
+      // 'replace' clears the storage first. Data here opened with this key
+      // (another key fails init with CEK_MISMATCH), so it's the user's own:
+      // ask before erasing it.
+      if (!(await gremlinClient.isStorageEmpty()) && !(await confirmReplaceExistingData())) {
+        throw new RestoreCancelled();
+      }
+
       // Persist CEK only after init succeeds.
       setCachedCEKString(normalizedCek);
 
@@ -367,7 +398,7 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
         importStats: result,
       });
     } catch (err) {
-      console.error('[OOBE] Error:', err);
+      if (!(err instanceof RestoreCancelled)) console.error('[OOBE] Error:', err);
       // Defense-in-depth: clear any CEK that may have been persisted
       // before the failure (e.g. by a code path added later), and put the
       // storage config back to its pre-attempt state so nothing
@@ -378,7 +409,9 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
       } else {
         clearStorageConfig();
       }
-      if (
+      if (err instanceof RestoreCancelled) {
+        // Nothing to report: the setup screen is back where it was
+      } else if (
         err instanceof ProtocolError &&
         (err.code === 'CEK_MISMATCH' || err.code === 'CEK_REQUIRED')
       ) {
@@ -403,7 +436,7 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
       (initMode === 'existing' && importCEK.trim()));
 
   return (
-    <div className="safe-area-inset-x safe-area-inset-top safe-area-inset-bottom flex min-h-dvh items-center justify-center bg-gray-50 p-4">
+    <div className="flex min-h-dvh items-center justify-center bg-gray-50 pt-[max(1rem,env(safe-area-inset-top))] pr-[max(1rem,env(safe-area-inset-right))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))]">
       <div className="w-full max-w-lg rounded-2xl bg-white p-8 shadow-xl">
         {/* Header */}
         <div className="mb-8 text-center">
@@ -432,6 +465,8 @@ export function OOBEScreen({ onComplete }: OOBEScreenProps) {
                 checked={storageType === 'indexeddb'}
                 onChange={() => {
                   setStorageType('indexeddb');
+                  // "Use Existing Data" isn't offered for local storage
+                  if (initMode === 'existing') setInitMode('fresh');
                   setConnectionStatus('idle');
                   setError(null);
                 }}

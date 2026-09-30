@@ -39,9 +39,13 @@ export function showAlert(title: string, message: string): Promise<void> {
  * Show a confirmation dialog
  * @returns Promise<boolean> - true if user confirmed, false if cancelled
  */
-export async function showConfirm(title: string, message: string): Promise<boolean> {
+export async function showConfirm(
+  title: string,
+  message: string,
+  confirmLabel?: string
+): Promise<boolean> {
   if (alertContext) {
-    return alertContext.showConfirm(title, message);
+    return alertContext.showConfirm(title, message, confirmLabel);
   }
   // Fallback to native confirm
   const result = window.confirm(`${title}\n\n${message}`);

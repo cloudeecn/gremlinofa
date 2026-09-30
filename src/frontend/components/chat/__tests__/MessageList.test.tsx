@@ -1,6 +1,8 @@
+import { act, createRef } from 'react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import MessageList from '../MessageList';
+import type { MessageListHandle } from '../types';
 import type { Message, MessageRole } from '../../../../shared/protocol/types';
 import type { RenderingBlockGroup } from '../../../../shared/protocol/types/content';
 
@@ -12,13 +14,17 @@ let mockObserver: {
 };
 
 beforeEach(() => {
+  // jsdom has no Element.scrollTo
+  HTMLElement.prototype.scrollTo = vi.fn() as unknown as typeof HTMLElement.prototype.scrollTo;
+
   mockObserver = {
     observe: vi.fn(),
     unobserve: vi.fn(),
     disconnect: vi.fn(),
   };
 
-  global.IntersectionObserver = vi.fn(() => {
+  // A function, not an arrow: the window's sentinels construct it with `new`
+  global.IntersectionObserver = vi.fn(function () {
     return mockObserver as unknown as IntersectionObserver;
   }) as unknown as typeof IntersectionObserver;
 });
@@ -27,17 +33,30 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+const bubbleRenders = vi.hoisted(() => ({ count: 0 }));
+const scrubber = vi.hoisted(() => ({ props: null as any }));
+
 // Mock child components
+vi.mock('../ChatScrubber', () => ({
+  default: (props: any) => {
+    scrubber.props = props;
+    return <div data-testid="chat-scrubber" />;
+  },
+}));
+
 vi.mock('../MessageBubble', () => ({
-  default: ({ message, isVisible, cachedHeight }: any) => (
-    <div
-      data-testid={`message-bubble-${message.id}`}
-      data-visible={isVisible}
-      data-cached-height={cachedHeight}
-    >
-      Message: {message.id}
-    </div>
-  ),
+  default: ({ message, isHidden, getHeight }: any) => {
+    bubbleRenders.count++;
+    return (
+      <div
+        data-testid={`message-bubble-${message.id}`}
+        data-hidden={isHidden}
+        data-cached-height={getHeight(message.id)}
+      >
+        Message: {message.id}
+      </div>
+    );
+  },
 }));
 
 vi.mock('../StreamingMessage', () => ({
@@ -64,10 +83,11 @@ vi.mock('../CacheWarning', () => ({
 
 vi.mock('../../../hooks/useVirtualScroll', () => ({
   useVirtualScroll: () => ({
-    visibleMessageIds: new Set(['msg-1', 'msg-2']),
+    hiddenMessageIds: new Set(['msg-3']),
     registerMessage: vi.fn(),
     measureHeight: vi.fn(),
     getHeight: (id: string) => (id === 'msg-1' ? 150 : undefined),
+    getElement: () => undefined,
   }),
 }));
 
@@ -435,7 +455,7 @@ describe('MessageList', () => {
   });
 
   describe('Virtual Scrolling Integration', () => {
-    it('should pass isVisible prop based on visibleMessageIds.has(message.id)', () => {
+    it('should pass isHidden prop based on hiddenMessageIds.has(message.id)', () => {
       const messages = [createMessage('msg-1'), createMessage('msg-2'), createMessage('msg-3')];
 
       render(
@@ -449,13 +469,13 @@ describe('MessageList', () => {
         />
       );
 
-      // msg-1 and msg-2 are in visibleMessageIds (from mock), msg-3 is not
-      expect(screen.getByTestId('message-bubble-msg-1')).toHaveAttribute('data-visible', 'true');
-      expect(screen.getByTestId('message-bubble-msg-2')).toHaveAttribute('data-visible', 'true');
-      expect(screen.getByTestId('message-bubble-msg-3')).toHaveAttribute('data-visible', 'false');
+      // Only msg-3 is in hiddenMessageIds (from mock)
+      expect(screen.getByTestId('message-bubble-msg-1')).toHaveAttribute('data-hidden', 'false');
+      expect(screen.getByTestId('message-bubble-msg-2')).toHaveAttribute('data-hidden', 'false');
+      expect(screen.getByTestId('message-bubble-msg-3')).toHaveAttribute('data-hidden', 'true');
     });
 
-    it('should pass cachedHeight from getHeight to MessageBubble', () => {
+    it('should pass getHeight to MessageBubble', () => {
       const messages = [createMessage('msg-1'), createMessage('msg-2')];
 
       render(
@@ -494,8 +514,36 @@ describe('MessageList', () => {
       );
 
       const bubble = screen.getByTestId('message-bubble-msg-1');
-      expect(bubble).toHaveAttribute('data-visible');
+      expect(bubble).toHaveAttribute('data-hidden');
       expect(bubble).toHaveAttribute('data-cached-height');
+    });
+
+    it('shows a loading indicator while the initial snapshot replays', () => {
+      const { rerender } = render(
+        <MessageList
+          messages={[]}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+          snapshotLoading={true}
+        />
+      );
+      expect(screen.getByTestId('snapshot-loading')).toBeInTheDocument();
+
+      rerender(
+        <MessageList
+          messages={[createMessage('msg-1')]}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+          snapshotLoading={false}
+        />
+      );
+      expect(screen.queryByTestId('snapshot-loading')).not.toBeInTheDocument();
     });
   });
 
@@ -597,60 +645,20 @@ describe('MessageList', () => {
     });
   });
 
-  describe('Scroll Button Throttle Cleanup', () => {
-    it('should clear pending timeout on unmount (no state updates after unmount)', () => {
-      vi.useFakeTimers();
-      const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+  describe('Scrubber', () => {
+    const manyMessages = (count: number) =>
+      Array.from({ length: count }, (_, i) => createMessage(`msg-${i}`));
 
-      const { container, unmount } = render(
-        <MessageList
-          messages={[createMessage('msg-1')]}
-          onAction={mockOnAction}
-          isLoading={false}
-          streamingGroups={[]}
-          currentApiDefId={null}
-          currentModelId={null}
-        />
-      );
+    const fakeScrollMetrics = (scrollContainer: HTMLElement) => {
+      Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, writable: true });
+      Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, writable: true });
+      Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, writable: true });
+    };
 
-      // Get scroll container and trigger scroll events to create a pending timeout
-      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
-      if (scrollContainer) {
-        // Mock scroll position to be "not at bottom" to trigger button show logic
-        Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, writable: true });
-        Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, writable: true });
-        Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, writable: true });
-
-        // First scroll - triggers immediate update (no timeout yet)
-        fireEvent.scroll(scrollContainer);
-
-        // Advance less than throttle interval
-        vi.advanceTimersByTime(50);
-
-        // Second scroll - will schedule a timeout since we're within throttle window
-        fireEvent.scroll(scrollContainer);
-      }
-
-      // Unmount while timeout is pending
-      unmount();
-
-      // Verify clearTimeout was called (for cleanup)
-      expect(clearTimeoutSpy).toHaveBeenCalled();
-
-      // Advance time - should not cause errors
-      vi.advanceTimersByTime(500);
-
-      clearTimeoutSpy.mockRestore();
-      vi.useRealTimers();
-    });
-
-    it('should clear pending timeout when scroll-to-bottom button is clicked', () => {
-      vi.useFakeTimers();
-      const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
-
+    it('replaces the scroll-to-bottom button and gets the mounted window', () => {
       const { container } = render(
         <MessageList
-          messages={[createMessage('msg-1')]}
+          messages={manyMessages(3)}
           onAction={mockOnAction}
           isLoading={false}
           streamingGroups={[]}
@@ -659,33 +667,105 @@ describe('MessageList', () => {
         />
       );
 
-      // Get scroll container and trigger scroll to show the button
+      expect(screen.getByTestId('chat-scrubber')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Scroll to bottom' })).not.toBeInTheDocument();
+      expect(scrubber.props).toMatchObject({ start: 0, end: 3, followingTail: true });
+      // Native scrollbar hidden; the rail controls the list
       const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
-      if (scrollContainer) {
-        Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, writable: true });
-        Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, writable: true });
-        Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, writable: true });
+      expect(scrollContainer).toHaveClass('scrollbar-none');
+      expect(scrubber.props.scrollContainerId).toBe(scrollContainer.id);
+    });
 
-        // Fire multiple scroll events to potentially queue a pending timeout
-        fireEvent.scroll(scrollContainer);
-        vi.advanceTimersByTime(50); // Advance less than throttle interval
+    it('scrolling does not re-render the list', () => {
+      const { container } = render(
+        <MessageList
+          messages={manyMessages(3)}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+        />
+      );
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+      fakeScrollMetrics(scrollContainer);
+      bubbleRenders.count = 0;
+
+      for (const top of [400, 200, 0]) {
+        scrollContainer.scrollTop = top;
         fireEvent.scroll(scrollContainer);
       }
 
-      // Advance time to allow button to appear
-      vi.advanceTimersByTime(250);
+      expect(bubbleRenders.count).toBe(0);
+    });
 
-      // Click the scroll-to-bottom button if it appeared
-      const scrollButton = container.querySelector('.scroll-to-bottom-button');
-      if (scrollButton) {
-        const callCountBefore = clearTimeoutSpy.mock.calls.length;
-        fireEvent.click(scrollButton);
-        // Verify clearTimeout was called when button was clicked
-        expect(clearTimeoutSpy.mock.calls.length).toBeGreaterThanOrEqual(callCountBefore);
-      }
+    it('a jump into history mounts a window there and hides live output', () => {
+      render(
+        <MessageList
+          messages={manyMessages(100)}
+          onAction={mockOnAction}
+          isLoading={true}
+          streamingGroups={createStreamingGroups('live')}
+          currentApiDefId={null}
+          currentModelId={null}
+        />
+      );
+      expect(screen.getByTestId('streaming-message')).toBeInTheDocument();
 
-      clearTimeoutSpy.mockRestore();
-      vi.useRealTimers();
+      act(() => scrubber.props.onJump(0));
+
+      expect(scrubber.props).toMatchObject({ start: 0, end: 30, followingTail: false });
+      expect(screen.getByTestId('message-bubble-msg-0')).toBeInTheDocument();
+      expect(screen.queryByTestId('message-bubble-msg-99')).not.toBeInTheDocument();
+      // Streaming output belongs after the last message, which isn't mounted
+      expect(screen.queryByTestId('streaming-message')).not.toBeInTheDocument();
+    });
+
+    it('a jump stops auto-follow; jumpToLatest through the ref resumes it', () => {
+      const ref = createRef<MessageListHandle>();
+      const props = {
+        onAction: mockOnAction,
+        isLoading: false,
+        streamingGroups: [],
+        currentApiDefId: null,
+        currentModelId: null,
+      };
+      const { container, rerender } = render(
+        <MessageList ref={ref} messages={manyMessages(3)} {...props} />
+      );
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+      fakeScrollMetrics(scrollContainer);
+
+      // Jump to a message that's already mounted: the window stays on the tail
+      act(() => scrubber.props.onJump(0));
+      expect(scrubber.props.followingTail).toBe(true);
+      rerender(<MessageList ref={ref} messages={manyMessages(4)} {...props} />);
+      expect(scrollContainer.scrollTop).toBe(0);
+
+      act(() => ref.current!.jumpToLatest());
+      expect(scrollContainer.scrollTop).toBe(1000);
+      scrollContainer.scrollTop = 0;
+      rerender(<MessageList ref={ref} messages={manyMessages(5)} {...props} />);
+      expect(scrollContainer.scrollTop).toBe(1000);
+    });
+
+    it('the latest pill animates when the tail is already mounted', () => {
+      const { container } = render(
+        <MessageList
+          messages={manyMessages(3)}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+        />
+      );
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+      fakeScrollMetrics(scrollContainer);
+
+      act(() => scrubber.props.onJumpToLatest('smooth'));
+
+      expect(scrollContainer.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' });
     });
   });
 

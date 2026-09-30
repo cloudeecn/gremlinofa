@@ -126,9 +126,23 @@ describe('MessageInfoBar', () => {
   it('right-aligns both rows for align="end"', async () => {
     render(<MessageInfoBar timestamp={timestamp} align="end" actions={<span>act</span>} />);
 
-    expect(trigger()).toHaveClass('justify-end');
+    expect(trigger().parentElement).toHaveClass('justify-end');
     await userEvent.click(trigger());
     expect(screen.getByText('act').parentElement).toHaveClass('justify-end');
+  });
+
+  it('shows quick actions on the trigger row, before expanding', () => {
+    render(
+      <MessageInfoBar
+        timestamp={timestamp}
+        actions={<span>expanded-only</span>}
+        quickActions={<button type="button">quick</button>}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'quick' })).toBeInTheDocument();
+    expect(screen.queryByText('expanded-only')).not.toBeInTheDocument();
+    expect(trigger().parentElement).toContainElement(screen.getByRole('button', { name: 'quick' }));
   });
 
   it('renders the badge at the tail of the trigger row', () => {

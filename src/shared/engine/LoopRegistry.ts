@@ -22,6 +22,7 @@ import type { ToolResultRenderBlock } from '../protocol/types/content';
 import type { Message, RenderingBlockGroup, ToolResultBlock } from '../protocol/types';
 import type { ActiveLoop, ActiveLoopsChange, LoopEvent, LoopId } from '../protocol/protocol';
 import { applyGroupsDelta, type ToolGroupsState } from '../services/tools/toolGroupsDelta';
+import { applyStreamingGroupsOps } from '../services/streaming/streamingGroupsOps';
 
 /** Internal record — adds the controller and a soft-stop flag. */
 interface RegistryEntry {
@@ -111,19 +112,20 @@ export class LoopRegistry {
   >();
 
   /**
-   * Per-chat snapshot of the latest in-flight `streaming_chunk` groups — the
-   * partially-assembled assistant message. Same problem and lifecycle as
-   * `pendingToolResults`: the assembled groups are never persisted until the
-   * turn's `message_created`, and the live broadcast drops on the floor when no
-   * one is subscribed. Caching the latest groups lets `attachChat` replay them
-   * via `streaming_snapshot` so a reconnecting / re-navigating subscriber sees
-   * the in-flight bubble immediately instead of staring at a blank one until
-   * the next token.
+   * Per-chat in-flight assistant groups — the partially-assembled assistant
+   * message, rebuilt by applying every `streaming_delta`. Same problem and
+   * lifecycle as `pendingToolResults`: the assembled groups are never
+   * persisted until the turn's `message_created`, and the live broadcast drops
+   * on the floor when no one is subscribed. Caching them lets `attachChat`
+   * replay them via `streaming_snapshot` so a reconnecting / re-navigating
+   * subscriber sees the in-flight bubble immediately instead of staring at a
+   * blank one until the next token.
    *
-   * Each `streaming_chunk` already carries the full accumulated state (not a
-   * delta), so latest-wins overwrite is correct — no merge needed. Cleared when
-   * the assistant `message_created` supersedes it (mirrors `useChat`'s own
-   * clear) and on `loop_ended` as the abort/no-message safety net.
+   * `applyStreamingGroupsOps` is copy-on-write, so an array this map held
+   * earlier never changes: a snapshot handed to `attachChat` stays exactly as
+   * it was when read. Cleared when the assistant `message_created` supersedes
+   * it (mirrors `useChat`'s own clear) and on `loop_ended` as the
+   * abort/no-message safety net.
    *
    * This is the single rehydration path for the claude-agent provider's whole
    * in-flight UI: its text, thinking, and bridged tool results all live in
@@ -334,6 +336,10 @@ export class LoopRegistry {
    * `getPendingToolResults`. Cache updates happen unconditionally — they
    * don't depend on whether anyone is currently subscribed, since the
    * whole point is to remember state for subscribers that join later.
+   *
+   * The caches are updated before the synchronous fan-out, so any event a
+   * subscriber has received is already folded in. `attachChat` relies on
+   * that to drop the deltas it queued before its cache read.
    */
   broadcastChatEvent(chatId: string, event: LoopEvent): void {
     this.recordPendingToolResultEvent(chatId, event);
@@ -380,22 +386,22 @@ export class LoopRegistry {
   }
 
   /**
-   * Latest cached in-flight `streaming_chunk` groups for a chat, or `undefined`
-   * when no turn is mid-stream. Used by `GremlinServer.attachChat` to replay the
-   * partially-streamed assistant bubble as a `streaming_snapshot`. Returns a
-   * shallow copy of the outer array so callers don't hold a live reference.
+   * Cached in-flight assistant groups for a chat, or `undefined` when no turn
+   * is mid-stream. Used by `GremlinServer.attachChat` to replay the
+   * partially-streamed assistant bubble as a `streaming_snapshot`. The array
+   * is never mutated after it is stored (later deltas replace it), so it is
+   * safe to hand out as is.
    */
   getStreamingGroups(chatId: string): RenderingBlockGroup[] | undefined {
-    const groups = this.streamingGroupsByChat.get(chatId);
-    return groups ? groups.slice() : undefined;
+    return this.streamingGroupsByChat.get(chatId);
   }
 
   /**
    * Update the per-chat replay caches (pending tool results + in-flight
    * streaming groups) from a broadcast LoopEvent. Event types that matter:
    *
-   *   - `streaming_chunk`: overwrite the chat's cached assistant groups with
-   *     the latest full accumulated state (replayed as `streaming_snapshot`).
+   *   - `streaming_delta`: apply the ops to the chat's cached assistant groups
+   *     (replayed as `streaming_snapshot`).
    *   - `pending_tool_result`: insert/replace one entry per `toolUseId`
    *     referenced by the placeholder message's `content.toolResults`.
    *     `mergedBlock` starts empty — the first `tool_block_update` for
@@ -413,11 +419,9 @@ export class LoopRegistry {
    *     cleanup for paths that never produced a `message_created` (abort, etc.).
    */
   private recordPendingToolResultEvent(chatId: string, event: LoopEvent): void {
-    if (event.type === 'streaming_chunk') {
-      // Latest accumulated assistant groups — overwrite (each chunk is the full
-      // state, not a delta). `getGroups()` returns a fresh outer array, so the
-      // stored reference is safe to keep.
-      this.streamingGroupsByChat.set(chatId, event.groups);
+    if (event.type === 'streaming_delta') {
+      const prior = this.streamingGroupsByChat.get(chatId) ?? [];
+      this.streamingGroupsByChat.set(chatId, applyStreamingGroupsOps(prior, event.ops));
       return;
     }
 
@@ -454,11 +458,11 @@ export class LoopRegistry {
       if (!inner) return;
       const existing = inner.get(event.toolUseId);
       if (!existing) return;
-      // `applyGroupsDelta` returns `undefined` only when an `append` /
-      // `replace_streaming` / `message_finalized` arrives without a prior
-      // `init`. That can't happen mid-run because the emitter always fires
-      // `init` first, but stay defensive — drop the delta on the floor and
-      // let the next `init` (or `tool_groups_snapshot` on attach) resync.
+      // `applyGroupsDelta` returns `undefined` only when a `streaming_ops` /
+      // `message_finalized` arrives without a prior `init`. That can't
+      // happen mid-run because the emitter always fires `init` first, but
+      // stay defensive — drop the delta on the floor and let the next
+      // `init` (or `tool_groups_snapshot` on attach) resync.
       existing.groupsState = applyGroupsDelta(existing.groupsState, event.delta);
       return;
     }

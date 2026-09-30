@@ -10,6 +10,7 @@ import type {
   Message,
   Project,
   RenderingBlockGroup,
+  StreamingGroupsOp,
   TokenTotals,
   ToolGroupsDelta,
 } from './types';
@@ -60,14 +61,22 @@ export type LoopEvent =
    */
   | { type: 'reconnect_start' }
   | { type: 'streaming_start' }
-  | { type: 'streaming_chunk'; groups: RenderingBlockGroup[] }
+  /**
+   * Edits to the in-flight assistant reply's groups since the previous
+   * delta (see `StreamingGroupsOp`). Receivers apply every delta in order
+   * with `applyStreamingGroupsOps`; skipping one desyncs them until the next
+   * `reset` op or `streaming_snapshot`. Each loop iteration opens with a
+   * `reset`.
+   */
+  | { type: 'streaming_delta'; ops: StreamingGroupsOp[] }
   | { type: 'streaming_end' }
   /**
    * Full assembled streaming state for the in-flight assistant turn, fired
    * during `attachChat` replay so a reconnecting/joining subscriber rehydrates
    * the partially-streamed bubble without waiting for the next live
-   * `streaming_chunk`. The one-shot rehydration counterpart to
-   * `streaming_chunk` (mirrors `tool_groups_snapshot` ↔ `tool_groups_delta`).
+   * `streaming_delta`, and as the base later deltas apply to. The one-shot
+   * rehydration counterpart to `streaming_delta` (mirrors
+   * `tool_groups_snapshot` ↔ `tool_groups_delta`).
    * Steady-state never emits this. Matters most for the claude-agent provider,
    * whose single `sendMessageStream` spans a whole multi-tool SDK turn with
    * long no-token gaps where nothing else would repaint the bubble.

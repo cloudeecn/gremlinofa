@@ -10,8 +10,12 @@ import type {
 } from '../../../../shared/protocol/types/content';
 
 // Mock the markdown renderer
+const renderMarkdownSafe = vi.fn(
+  (content: string, _options?: { disableMath?: boolean; cache?: boolean }) => `<p>${content}</p>`
+);
 vi.mock('../../../lib/markdownRenderer', () => ({
-  renderMarkdownSafe: (content: string) => `<p>${content}</p>`,
+  renderMarkdownSafe: (content: string, options?: { disableMath?: boolean; cache?: boolean }) =>
+    renderMarkdownSafe(content, options),
 }));
 
 // Mock clipboard API
@@ -174,24 +178,57 @@ describe('TextGroupView', () => {
     });
   });
 
-  describe('visibility handling', () => {
-    it('accepts isVisible prop', () => {
-      const blocks: RenderingContentBlock[] = [
-        { type: 'text', text: 'Visible text' } as TextRenderBlock,
-      ];
-
-      // Should render without errors
-      const { container } = render(<TextGroupView blocks={blocks} isVisible={false} />);
-      expect(container.firstChild).toBeInTheDocument();
+  describe('markdown memoization', () => {
+    beforeEach(() => {
+      renderMarkdownSafe.mockClear();
     });
 
-    it('defaults to isVisible=true', () => {
-      const blocks: RenderingContentBlock[] = [
-        { type: 'text', text: 'Default visible' } as TextRenderBlock,
-      ];
-      const { container } = render(<TextGroupView blocks={blocks} />);
+    it('does not re-render markdown when the text is unchanged', () => {
+      const blocks: RenderingContentBlock[] = [{ type: 'text', text: 'Stable' } as TextRenderBlock];
+      const { rerender } = render(<TextGroupView blocks={blocks} />);
+      rerender(<TextGroupView blocks={[...blocks]} />);
+      rerender(<TextGroupView blocks={[{ type: 'text', text: 'Stable' } as TextRenderBlock]} />);
 
-      expect(container.firstChild).toBeInTheDocument();
+      expect(renderMarkdownSafe).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the rendered DOM across re-renders (no innerHTML reassignment)', () => {
+      const { container, rerender } = render(
+        <TextGroupView blocks={[{ type: 'text', text: 'Keep me' } as TextRenderBlock]} />
+      );
+      // Stand-in for DOM state a reassignment would wipe (selection, code-copy ✓)
+      container.querySelector('p')!.setAttribute('data-marker', 'alive');
+
+      rerender(<TextGroupView blocks={[{ type: 'text', text: 'Keep me' } as TextRenderBlock]} />);
+
+      expect(container.querySelector('p')!.getAttribute('data-marker')).toBe('alive');
+    });
+
+    it('re-renders markdown when the text or disableMath changes', () => {
+      const { rerender } = render(
+        <TextGroupView blocks={[{ type: 'text', text: 'One' } as TextRenderBlock]} />
+      );
+      rerender(<TextGroupView blocks={[{ type: 'text', text: 'Two' } as TextRenderBlock]} />);
+      rerender(
+        <TextGroupView blocks={[{ type: 'text', text: 'Two' } as TextRenderBlock]} disableMath />
+      );
+
+      expect(renderMarkdownSafe).toHaveBeenCalledTimes(3);
+      expect(renderMarkdownSafe).toHaveBeenLastCalledWith('Two', {
+        disableMath: true,
+        cache: true,
+      });
+    });
+
+    it('keeps a live reply out of the markdown cache', () => {
+      render(
+        <TextGroupView blocks={[{ type: 'text', text: 'Partial' } as TextRenderBlock]} streaming />
+      );
+
+      expect(renderMarkdownSafe).toHaveBeenLastCalledWith('Partial', {
+        disableMath: undefined,
+        cache: false,
+      });
     });
   });
 
@@ -228,38 +265,33 @@ describe('TextGroupView', () => {
       mockWriteText.mockClear();
     });
 
-    it('copies code to clipboard when copy button is clicked', async () => {
-      // Render a div with the copy button structure directly
-      const { container } = render(
-        <div
-          className="prose"
-          onClick={(e: React.MouseEvent<HTMLDivElement>) => {
-            const target = e.target as HTMLElement;
-            if (target.classList.contains('code-copy-button')) {
-              const code = target.dataset.code || '';
-              navigator.clipboard.writeText(code);
-            }
-          }}
-        >
-          <div className="code-block-container">
-            <button className="code-copy-button" data-code="console.log(1)">
-              📋
-            </button>
-            <pre>
-              <code>console.log(1)</code>
-            </pre>
-          </div>
-        </div>
-      );
+    // The mocked renderer wraps the text in <p>, so a button in the text is
+    // what the real renderer's code-copy button looks like to the click handler
+    const codeBlock: TextRenderBlock = {
+      type: 'text',
+      text: '<button class="code-copy-button" data-code="console.log(1)">📋</button>',
+    };
 
-      const copyButton = container.querySelector('.code-copy-button');
-      expect(copyButton).toBeInTheDocument();
+    it('copies the code and shows ✓', async () => {
+      const { container } = render(<TextGroupView blocks={[codeBlock]} />);
+      const copyButton = container.querySelector<HTMLElement>('.code-copy-button')!;
 
-      fireEvent.click(copyButton!);
+      fireEvent.click(copyButton);
 
-      await waitFor(() => {
-        expect(mockWriteText).toHaveBeenCalledWith('console.log(1)');
-      });
+      await waitFor(() => expect(copyButton).toHaveTextContent('✓'));
+      expect(mockWriteText).toHaveBeenCalledWith('console.log(1)');
+      expect(copyButton).toHaveClass('copied');
+    });
+
+    it('shows ✗ when the copy fails', async () => {
+      mockWriteText.mockRejectedValueOnce(new Error('denied'));
+      const { container } = render(<TextGroupView blocks={[codeBlock]} />);
+      const copyButton = container.querySelector<HTMLElement>('.code-copy-button')!;
+
+      fireEvent.click(copyButton);
+
+      await waitFor(() => expect(copyButton).toHaveTextContent('✗'));
+      expect(copyButton).toHaveClass('failed');
     });
 
     it('does not trigger copy for non-copy-button clicks', () => {

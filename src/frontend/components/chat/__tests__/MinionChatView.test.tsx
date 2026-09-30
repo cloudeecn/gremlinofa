@@ -21,21 +21,27 @@ vi.mock('../MessageList', () => ({
   default: ({
     messages,
     onAction,
+    actions,
     onDeleteMessage,
     isClaudeAgentChat,
+    disableMath,
   }: {
     messages: Message<unknown>[];
     onAction?: unknown;
+    actions?: ReadonlySet<string>;
     onDeleteMessage?: (messageId: string) => void;
     isClaudeAgentChat?: boolean;
+    disableMath?: boolean;
   }) => {
     capturedOnDeleteMessage = onDeleteMessage;
     return (
       <div data-testid="message-list">
         <span data-testid="message-count">{messages.length}</span>
         <span data-testid="has-on-action">{onAction ? 'true' : 'false'}</span>
+        <span data-testid="actions">{actions ? [...actions].join(',') : 'all'}</span>
         <span data-testid="has-on-delete">{onDeleteMessage ? 'true' : 'false'}</span>
         <span data-testid="is-claude-agent">{isClaudeAgentChat ? 'true' : 'false'}</span>
+        <span data-testid="disable-math">{disableMath ? 'true' : 'false'}</span>
       </div>
     );
   },
@@ -77,10 +83,20 @@ const mockDeleteMessage = vi.fn();
 const mockRollbackToMessage = vi.fn();
 const mockCloneToChat = vi.fn();
 
-function renderView(minionChatId = 'mc_test', onMenuPress?: () => void, onClose?: () => void) {
+function renderView(
+  minionChatId = 'mc_test',
+  onMenuPress?: () => void,
+  onClose?: () => void,
+  live?: boolean
+) {
   return render(
     <MemoryRouter>
-      <MinionChatView minionChatId={minionChatId} onMenuPress={onMenuPress} onClose={onClose} />
+      <MinionChatView
+        minionChatId={minionChatId}
+        onMenuPress={onMenuPress}
+        onClose={onClose}
+        live={live}
+      />
     </MemoryRouter>
   );
 }
@@ -104,10 +120,42 @@ describe('MinionChatView', () => {
     });
   });
 
-  it('renders header with title and chat ID', () => {
+  it('titles an unnamed minion "Minion chat", with the id as a tooltip', () => {
     renderView();
-    expect(screen.getByText('Minion Chat')).toBeInTheDocument();
-    expect(screen.getByText('mc_test')).toBeInTheDocument();
+    const title = screen.getByRole('heading', { name: 'Minion chat' });
+    expect(title).toHaveAttribute('title', 'mc_test');
+    expect(screen.queryByText('mc_test')).not.toBeInTheDocument();
+  });
+
+  it('titles a named minion by its display name, with the persona below', () => {
+    mockUseMinionChat.mockReturnValue({
+      ...mockUseMinionChat(),
+      minionChat: { ...mockMinionChat, displayName: 'Researcher', persona: 'scout' },
+    });
+    renderView();
+    expect(screen.getByRole('heading', { name: 'Researcher' })).toBeInTheDocument();
+    expect(screen.getByText('Minion chat · scout')).toBeInTheDocument();
+  });
+
+  it('offers only rollback to the message list (Edit and Fork have no minion flow)', () => {
+    renderView();
+    expect(screen.getByTestId('actions').textContent).toBe('rollback');
+  });
+
+  it("passes the parent chat's Disable Math option to the message list", () => {
+    render(
+      <MemoryRouter>
+        <MinionChatView minionChatId="mc_test" disableMath />
+      </MemoryRouter>
+    );
+    expect(screen.getByTestId('disable-math').textContent).toBe('true');
+  });
+
+  it('closes on Escape when shown as an overlay', () => {
+    const onClose = vi.fn();
+    renderView('mc_test', undefined, onClose);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
   });
 
   it('renders token usage info bar', () => {
@@ -141,8 +189,8 @@ describe('MinionChatView', () => {
   });
 
   it('passes minionChatId to useMinionChat hook', () => {
-    renderView('mc_custom');
-    expect(mockUseMinionChat).toHaveBeenCalledWith('mc_custom');
+    renderView('mc_custom', undefined, undefined, true);
+    expect(mockUseMinionChat).toHaveBeenCalledWith('mc_custom', { live: true });
   });
 
   it('shows unreliable cost indicator when set', () => {

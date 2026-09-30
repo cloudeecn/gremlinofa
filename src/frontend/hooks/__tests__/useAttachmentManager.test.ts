@@ -18,6 +18,14 @@ vi.mock('../../client', () => ({
 
 import { gremlinClient } from '../../client';
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(res => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 describe('useAttachmentManager', () => {
   const mockSections: AttachmentSection[] = [
     {
@@ -200,6 +208,148 @@ describe('useAttachmentManager', () => {
 
       // Should only call once despite duplicate IDs
       expect(gremlinClient.getAttachments).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not start a second fetch while one is in flight', async () => {
+      const pending = deferred<MessageAttachment[]>();
+      vi.mocked(gremlinClient.getAttachments).mockReturnValueOnce(pending.promise);
+      const { result } = renderHook(() => useAttachmentManager());
+      await act(async () => {
+        await result.current.loadSections();
+      });
+
+      let first!: Promise<void>;
+      let second!: Promise<void>;
+      act(() => {
+        first = result.current.loadSectionData('chat_1', ['msg_1']);
+        second = result.current.loadSectionData('chat_1', ['msg_1']);
+      });
+      await act(async () => {
+        pending.resolve(mockAttachments);
+        await Promise.all([first, second]);
+      });
+
+      expect(gremlinClient.getAttachments).toHaveBeenCalledTimes(1);
+      expect(result.current.loadedData.get('chat_1')).toHaveLength(2);
+    });
+
+    it('should drop the result of a section unloaded mid-fetch', async () => {
+      const pending = deferred<MessageAttachment[]>();
+      vi.mocked(gremlinClient.getAttachments).mockReturnValueOnce(pending.promise);
+      const { result } = renderHook(() => useAttachmentManager());
+      await act(async () => {
+        await result.current.loadSections();
+      });
+
+      let load!: Promise<void>;
+      act(() => {
+        load = result.current.loadSectionData('chat_1', ['msg_1']);
+      });
+      act(() => {
+        result.current.unloadSectionData('chat_1');
+      });
+      await act(async () => {
+        pending.resolve(mockAttachments);
+        await load;
+      });
+
+      expect(result.current.loadedData.has('chat_1')).toBe(false);
+
+      // Scrolling back in starts a fresh fetch
+      await act(async () => {
+        await result.current.loadSectionData('chat_1', ['msg_1']);
+      });
+      expect(gremlinClient.getAttachments).toHaveBeenCalledTimes(2);
+      expect(result.current.loadedData.has('chat_1')).toBe(true);
+    });
+
+    it('should reuse the in-flight fetch when a section leaves and comes back', async () => {
+      const pending = deferred<MessageAttachment[]>();
+      vi.mocked(gremlinClient.getAttachments).mockReturnValueOnce(pending.promise);
+      const { result } = renderHook(() => useAttachmentManager());
+      await act(async () => {
+        await result.current.loadSections();
+      });
+
+      let load!: Promise<void>;
+      act(() => {
+        load = result.current.loadSectionData('chat_1', ['msg_1']);
+        result.current.unloadSectionData('chat_1');
+        void result.current.loadSectionData('chat_1', ['msg_1']);
+      });
+      await act(async () => {
+        pending.resolve(mockAttachments);
+        await load;
+      });
+
+      expect(gremlinClient.getAttachments).toHaveBeenCalledTimes(1);
+      expect(result.current.loadedData.has('chat_1')).toBe(true);
+    });
+
+    it('should drop a fetch that started before loadSections reloaded', async () => {
+      const pending = deferred<MessageAttachment[]>();
+      vi.mocked(gremlinClient.getAttachments).mockReturnValueOnce(pending.promise);
+      const { result } = renderHook(() => useAttachmentManager());
+      await act(async () => {
+        await result.current.loadSections();
+      });
+
+      let load!: Promise<void>;
+      act(() => {
+        load = result.current.loadSectionData('chat_1', ['msg_1']);
+      });
+      await act(async () => {
+        await result.current.loadSections();
+      });
+      await act(async () => {
+        pending.resolve(mockAttachments);
+        await load;
+      });
+
+      expect(result.current.loadedData.has('chat_1')).toBe(false);
+    });
+
+    it('should fetch each message once across repeated visibility callbacks', async () => {
+      // 6 sections x 3 messages, each section reported visible 4 times before any
+      // fetch resolves (what recreated observers used to do)
+      const manySections: AttachmentSection[] = Array.from({ length: 6 }, (_, s) => ({
+        ...mockSections[0],
+        chatId: `chat_${s}`,
+        attachments: [0, 1, 2].map(m => ({
+          id: `att_${s}_${m}`,
+          messageId: `msg_${s}_${m}`,
+          timestamp: new Date('2024-01-10'),
+        })),
+      }));
+      vi.mocked(gremlinClient.getAllAttachmentSections).mockResolvedValue(manySections);
+      vi.mocked(gremlinClient.getAttachments).mockImplementation(async messageId => [
+        { id: messageId.replace('msg', 'att'), type: 'image', mimeType: 'image/png', data: 'x' },
+      ]);
+      const { result } = renderHook(() => useAttachmentManager());
+      await act(async () => {
+        await result.current.loadSections();
+      });
+
+      const loadAll = () =>
+        Promise.all(
+          manySections.map(section =>
+            result.current.loadSectionData(
+              section.chatId,
+              section.attachments.map(att => att.messageId)
+            )
+          )
+        );
+
+      await act(async () => {
+        await Promise.all([loadAll(), loadAll(), loadAll(), loadAll()]);
+      });
+      expect(gremlinClient.getAttachments).toHaveBeenCalledTimes(18);
+      expect(result.current.loadedData.size).toBe(6);
+
+      await act(async () => {
+        await loadAll();
+      });
+      expect(gremlinClient.getAttachments).toHaveBeenCalledTimes(18);
     });
   });
 

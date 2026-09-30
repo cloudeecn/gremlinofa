@@ -6,7 +6,7 @@
  * returns results to the caller.
  *
  * Key features:
- * - Real-time streaming via generator yields (groups_update events)
+ * - Real-time streaming via generator yields (groups_delta events)
  * - Scoped tool access (minion can't spawn other minions)
  * - Separate minion chat storage for debugging/visibility
  * - Return tool support for explicit result signaling
@@ -49,15 +49,21 @@ import { NORMAL_STOP_REASONS } from '../../engine/lib/apiHelpers';
 import { formatFileWithLineNumbers } from '../../engine/lib/formatFileContent';
 import type { InjectedFile, InjectionMode } from '../api/fileInjectionHelper';
 import {
+  buildInlineContent,
   buildInlineSection,
+  buildMockToolCallPair,
   effectiveInjectionMode,
   hasCustomFraming,
-  wrapInjectedFile,
 } from '../api/fileInjectionHelper';
 import { NUDGE_THINKING_DEFAULT } from '../api/apiService';
 import { JsVMContext } from './jsvm/JsVMContext';
 import type { HookInputMessage } from '../agentic/dummyHookRuntime';
-import { makeEmitterState, nextStreamingDelta, finalizeMessageDelta } from './toolGroupsDelta';
+import {
+  makeEmitterState,
+  nextStreamingOpsDelta,
+  streamingResetDelta,
+  finalizeMessageDelta,
+} from './toolGroupsDelta';
 import { shouldForkSession } from '../../engine/lib/claudeAgentSessionSharing';
 import {
   findAssistantAnchorAtOrBefore,
@@ -443,22 +449,6 @@ export function hasInjectSpecs(input: {
   injectFilesAfter?: unknown[];
 }): boolean {
   return Boolean(input.injectFiles?.length || input.injectFilesAfter?.length);
-}
-
-/**
- * Inline assembly: leading files, end marker, message, trailing files. With
- * no message text the separators around it would leave the payload starting
- * or ending in blank lines, so an inject-only call is trimmed; a real message
- * keeps its exact bytes.
- */
-export function buildInlineContent(
-  prefix: string,
-  endMarker: string,
-  message: string,
-  suffix: string
-): string {
-  const assembled = prefix + endMarker + message + suffix;
-  return message === '' ? assembled.trim() : assembled;
 }
 
 /** True when a retry stash carries injected files that a re-send can rebuild. */
@@ -1060,7 +1050,7 @@ async function* executeMinion(
 
 /**
  * Creates or continues a minion chat, runs an agentic loop with scoped tools,
- * yields groups_update events for real-time streaming, and returns the final
+ * yields groups_delta events for real-time streaming, and returns the final
  * result with renderingGroups for nested display.
  */
 async function* executeMinionInner(
@@ -1927,54 +1917,13 @@ async function* executeMinionInner(
     // Leading batch first, then the trailing one — same order the inline text uses.
     if (isMockToolCall) {
       for (const file of [...effectiveFiles, ...effectiveFilesAfter]) {
-        const toolUseId = generateUniqueId('toolu');
         // file.content is already formatted per injectFileLineNumbers (inline
         // seam above / stashed on retry) — re-formatting would double the line
-        // numbers. Custom preamble/postamble framing wraps the content inside
-        // the synthetic tool result.
-        const formattedContent = wrapInjectedFile(file);
-
-        // Synthetic assistant message with tool_use (via toolCalls for cross-model reconstruction)
-        const assistantMsg: Message<string> = {
-          id: generateUniqueId('msg_assistant'),
-          role: 'assistant',
-          content: {
-            type: 'text',
-            content: '',
-            renderingContent: [
-              { category: 'backstage', blocks: [toInjectedFileBlock(file, injectFileLabel)] },
-            ],
-            toolCalls: [
-              {
-                type: 'tool_use',
-                id: toolUseId,
-                name: 'filesystem',
-                input: { action: 'readFile', path: file.path },
-              },
-            ],
-          },
-          timestamp: new Date(),
-        };
-
-        // Synthetic user message with tool_result
-        const resultMsg: Message<string> = {
-          id: generateUniqueId('msg_user'),
-          role: 'user',
-          content: {
-            type: 'text',
-            content: '',
-            renderingContent: [],
-            toolResults: [
-              {
-                type: 'tool_result',
-                tool_use_id: toolUseId,
-                content: formattedContent,
-              },
-            ],
-          },
-          timestamp: new Date(),
-        };
-
+        // numbers.
+        const [assistantMsg, resultMsg] = buildMockToolCallPair(
+          file,
+          buildInjectedFileDisplay(file, injectFileLabel)
+        );
         await storage.saveMinionMessage(minionChat.id, assistantMsg);
         await storage.saveMinionMessage(minionChat.id, resultMsg);
         minionContext.push(assistantMsg, resultMsg);
@@ -2262,9 +2211,8 @@ async function* executeMinionInner(
 
   // Delta-encoding emitter state. The minion ships `tool_groups_delta`
   // events instead of full per-chunk snapshots; this closure-state object
-  // tracks `streamingGroups` across yield sites so `nextStreamingDelta`
-  // can pick `append` vs `replace_streaming`. Init fires lazily on the
-  // first streaming yield (or on a `message_finalized` if the minion
+  // tracks what the receivers hold across yield sites. Init fires lazily on
+  // the first streaming yield (or on a `message_finalized` if the minion
   // finishes before producing a streaming chunk).
   const deltaState = makeEmitterState(infoGroup);
 
@@ -2309,19 +2257,20 @@ async function* executeMinionInner(
           const event = iterResult.value;
 
           switch (event.type) {
-            case 'streaming_chunk': {
-              // Diff the new streaming groups against the prior emitter
-              // state and yield a delta. The first chunk fires an `init`;
-              // subsequent chunks pick `append` whenever only the trailing
-              // text/thinking block grew (the ~95% case), otherwise
-              // `replace_streaming`. `null` means no observable change
-              // (identical to prior) — skip the yield.
-              const delta = nextStreamingDelta(deltaState, event.groups);
+            case 'streaming_start': {
+              // A new child iteration streams a new reply from empty groups.
+              const delta = streamingResetDelta(deltaState);
               if (delta) {
                 yield { type: 'groups_delta', delta };
               }
               break;
             }
+
+            case 'streaming_delta':
+              // The child's ops pass straight through; the first one
+              // becomes the `init` carrying the full state.
+              yield { type: 'groups_delta', delta: nextStreamingOpsDelta(deltaState, event.ops) };
+              break;
 
             case 'message_created':
               // Save message to minion chat
@@ -2370,7 +2319,6 @@ async function* executeMinionInner(
               break;
             }
 
-            case 'streaming_start':
             case 'streaming_end':
             case 'first_chunk':
             case 'pending_tool_result':

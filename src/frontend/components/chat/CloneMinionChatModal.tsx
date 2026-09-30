@@ -13,6 +13,8 @@ interface CloneMinionChatModalProps {
 /** Matches `useProject.createNewChat`'s cap so the preview can't promise more. */
 const MAX_NAME_LENGTH = 50;
 
+const ignoreClose = () => {};
+
 function defaultName(minionChat: MinionChat | null): string {
   const base = minionChat?.displayName ?? minionChat?.persona ?? 'Minion';
   return `${base} (clone)`.slice(0, MAX_NAME_LENGTH);
@@ -43,20 +45,22 @@ export default function CloneMinionChatModal({
   }, [minionChat, messageCount]);
 
   return (
-    <Modal isOpen onClose={onCancel} size="lg" position="bottom">
+    // A clone in flight can't be called back, so every close path waits for it
+    <Modal isOpen onClose={isCloning ? ignoreClose : onCancel} size="lg" position="bottom">
       <div className="flex max-h-[85dvh] flex-col rounded-t-2xl bg-white md:max-h-[700px] md:rounded-2xl">
         <div className="flex items-center justify-between border-b border-gray-200 p-4">
           <h2 className="text-lg font-semibold text-gray-900">Clone to a Chat</h2>
           <button
             onClick={onCancel}
+            disabled={isCloning}
             aria-label="Close"
-            className="flex h-11 w-11 items-center justify-center text-gray-600 transition-colors hover:text-gray-900"
+            className="flex h-11 w-11 items-center justify-center text-gray-600 transition-colors hover:text-gray-900 disabled:opacity-50"
           >
             <span className="text-2xl leading-none">✕</span>
           </button>
         </div>
 
-        <div className="safe-area-inset-bottom min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4">
           <p className="text-sm text-gray-600">
             Copies this transcript into a chat you drive yourself, keeping the minion&apos;s
             persona, namespace, tools and model instead of the project&apos;s.
@@ -100,7 +104,7 @@ export default function CloneMinionChatModal({
           )}
         </div>
 
-        <div className="safe-area-inset-bottom flex justify-end gap-2 border-t border-gray-200 p-4">
+        <div className="flex justify-end gap-2 border-t border-gray-200 p-4">
           <button
             onClick={onCancel}
             disabled={isCloning}

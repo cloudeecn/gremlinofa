@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import Modal from '../ui/Modal';
-import { useApp } from '../../hooks/useApp';
+import { useApiDefinitions, useModels } from '../../hooks/useApp';
 import { getApiTypeDisplayName, getApiDefinitionIcon } from '../../lib/apiTypeUtils';
 import type { Model, APIDefinition } from '../../../shared/protocol/types';
 import {
@@ -53,7 +53,8 @@ function ModelSelectorContent({
 }: Omit<ModelSelectorProps, 'isOpen' | 'parentModelId'> & {
   parentApiDefinitionId: string | null;
 }) {
-  const { apiDefinitions, models } = useApp();
+  const apiDefinitions = useApiDefinitions();
+  const models = useModels();
 
   // Initial selection: use current, fall back to parent
   const initialApiDefId = currentApiDefinitionId ?? parentApiDefinitionId;
@@ -89,7 +90,11 @@ function ModelSelectorContent({
     setSelectedModelId(modelId);
   };
 
+  // Applying a provider without a model pairs it with the old model id (a new
+  // chat then fails with "model not found") and, in project settings, hides
+  // every section. "Remove" is the way back to the parent's model.
   const handleApply = () => {
+    if (!selectedModelId) return;
     onSelect(selectedApiDefId, selectedModelId);
     onClose();
   };
@@ -329,7 +334,8 @@ function ModelSelectorContent({
             </button>
             <button
               onClick={handleApply}
-              className="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700"
+              disabled={!selectedModelId}
+              className="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
             >
               Apply
             </button>
@@ -345,7 +351,8 @@ function ModelSelectorContent({
             </button>
             <button
               onClick={handleApply}
-              className="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700"
+              disabled={!selectedModelId}
+              className="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
             >
               Apply
             </button>

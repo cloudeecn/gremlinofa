@@ -142,6 +142,14 @@ describe('fromDraft — tools', () => {
   });
 });
 
+describe('fromDraft — overrides with no value', () => {
+  it('emits nothing for an effort or verbosity override left on the default', () => {
+    expect(
+      fromDraft({ ...toDraft(undefined), hasReasoningEffort: true, hasVerbosity: true })
+    ).toBeUndefined();
+  });
+});
+
 describe('toDraft / fromDraft — full fidelity', () => {
   it('round-trips every field without loss', () => {
     const cfg: ChatAgentConfig = {

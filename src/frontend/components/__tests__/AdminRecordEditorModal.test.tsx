@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import AdminRecordEditorModal from '../AdminRecordEditorModal';
 
@@ -21,6 +21,11 @@ describe('AdminRecordEditorModal', () => {
     vi.clearAllMocks();
   });
 
+  // Restores the JSON.parse spies even when an assertion fails first
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   const loadRecord = async () => {
     vi.mocked(gremlinClient.adminGetRecord).mockResolvedValue({
       json: '{"name":"Broken Chat"}',
@@ -28,12 +33,15 @@ describe('AdminRecordEditorModal', () => {
       encrypted: true,
       timestamp: '2026-08-22T00:00:00.000Z',
     });
-    render(<AdminRecordEditorModal isOpen onClose={vi.fn()} hasRunningLoops={false} />);
+    const view = render(
+      <AdminRecordEditorModal isOpen onClose={vi.fn()} hasRunningLoops={false} />
+    );
     fireEvent.change(screen.getByPlaceholderText('record id'), {
       target: { value: 'chat_1' },
     });
     fireEvent.click(screen.getByText('Load'));
     await waitFor(() => expect(document.querySelector('textarea')).toBeTruthy());
+    return view;
   };
 
   it('loads and pretty-prints the record JSON', async () => {
@@ -50,6 +58,70 @@ describe('AdminRecordEditorModal', () => {
     fireEvent.change(textarea, { target: { value: '{broken' } });
     expect(screen.getByText(/Invalid JSON/)).toBeTruthy();
     expect((screen.getByText('Overwrite Record') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  /**
+   * Records every "Invalid JSON" box React commits, including ones a later
+   * render removes before any assertion could see them.
+   */
+  const watchInvalidJsonWarnings = () => {
+    const warnings: string[] = [];
+    const collect = (mutations: MutationRecord[]) => {
+      for (const mutation of mutations) {
+        const touched =
+          mutation.type === 'characterData' ? [mutation.target] : [...mutation.addedNodes];
+        for (const node of touched) {
+          if (node.textContent?.includes('Invalid JSON')) warnings.push(node.textContent);
+        }
+      }
+    };
+    const observer = new MutationObserver(collect);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    return () => {
+      collect(observer.takeRecords());
+      observer.disconnect();
+      return warnings;
+    };
+  };
+
+  it('never flags a freshly loaded record as invalid', async () => {
+    const stopWatching = watchInvalidJsonWarnings();
+    await loadRecord();
+    expect(stopWatching()).toEqual([]);
+  });
+
+  it('does not validate a newly loaded record against the previous text', async () => {
+    await loadRecord();
+    const textarea = document.querySelector('textarea')!;
+    fireEvent.change(textarea, { target: { value: '{broken' } });
+    expect(screen.getByText(/Invalid JSON/)).toBeTruthy();
+
+    vi.mocked(gremlinClient.adminGetRecord).mockResolvedValue({
+      json: '{"name":"Other Chat"}',
+      compressed: false,
+      encrypted: true,
+    });
+    const parseSpy = vi.spyOn(JSON, 'parse');
+    const stopWatching = watchInvalidJsonWarnings();
+    fireEvent.change(screen.getByPlaceholderText('record id'), { target: { value: 'chat_2' } });
+    fireEvent.click(screen.getByText('Load'));
+    await waitFor(() => expect(document.querySelector('textarea')!.value).toContain('Other Chat'));
+
+    expect(stopWatching()).toEqual([]);
+    expect(parseSpy).not.toHaveBeenCalledWith('{broken');
+  });
+
+  it('does not re-parse the JSON on unrelated re-renders or while closed', async () => {
+    const onClose = vi.fn();
+    const { rerender } = await loadRecord();
+    const parseSpy = vi.spyOn(JSON, 'parse');
+
+    rerender(<AdminRecordEditorModal isOpen onClose={onClose} hasRunningLoops />);
+    rerender(<AdminRecordEditorModal isOpen onClose={onClose} hasRunningLoops={false} />);
+    rerender(<AdminRecordEditorModal isOpen={false} onClose={onClose} hasRunningLoops />);
+    rerender(<AdminRecordEditorModal isOpen={false} onClose={onClose} hasRunningLoops={false} />);
+
+    expect(parseSpy).not.toHaveBeenCalled();
   });
 
   it('saves compacted JSON after confirmation', async () => {

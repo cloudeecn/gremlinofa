@@ -4,7 +4,8 @@
  * User must click button to reload and launch the app
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { copyText } from '../lib/clipboard';
 
 interface OOBECompleteProps {
   mode: 'fresh' | 'import' | 'existing';
@@ -18,16 +19,19 @@ interface OOBECompleteProps {
 }
 
 export function OOBEComplete({ mode, cek, storageType, importStats }: OOBECompleteProps) {
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const cekRef = useRef<HTMLElement>(null);
 
+  // A key the user believes they saved but didn't is lost data: on failure,
+  // select it for a manual copy and say so
   const handleCopyCEK = async () => {
-    try {
-      await navigator.clipboard.writeText(cek);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy CEK:', err);
+    if (await copyText(cek)) {
+      setCopyStatus('copied');
+      setTimeout(() => setCopyStatus('idle'), 2000);
+      return;
     }
+    setCopyStatus('failed');
+    if (cekRef.current) window.getSelection()?.selectAllChildren(cekRef.current);
   };
 
   const handleLaunchApp = () => {
@@ -70,16 +74,24 @@ export function OOBEComplete({ mode, cek, storageType, importStats }: OOBEComple
           </h2>
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
             <div className="flex items-center gap-2">
-              <code className="flex-1 overflow-x-auto font-mono text-sm whitespace-nowrap text-gray-800">
+              <code
+                ref={cekRef}
+                className="flex-1 overflow-x-auto font-mono text-sm whitespace-nowrap text-gray-800"
+              >
                 {cek}
               </code>
               <button
                 onClick={handleCopyCEK}
                 className="shrink-0 rounded-lg bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300"
               >
-                {copied ? '✓ Copied' : 'Copy'}
+                {copyStatus === 'copied' ? '✓ Copied' : 'Copy'}
               </button>
             </div>
+            {copyStatus === 'failed' && (
+              <p role="alert" className="mt-2 text-sm text-red-700">
+                Couldn&apos;t copy automatically. The key is selected; copy it by hand.
+              </p>
+            )}
           </div>
         </div>
 

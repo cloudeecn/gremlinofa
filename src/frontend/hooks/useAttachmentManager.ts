@@ -3,7 +3,7 @@
  * Loads attachment sections grouped by chat, with lazy loading of image data
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { gremlinClient } from '../client';
 import type { AttachmentSection } from '../../shared/protocol/types';
 
@@ -42,6 +42,16 @@ export function useAttachmentManager(): UseAttachmentManagerReturn {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Bookkeeping for the lazy loader lives in refs so loadSectionData stays stable
+  // and never reads a stale closure. `wanted`: sections currently in the observer's
+  // buffer zone. `inFlight`: chatId -> token of the fetch that owns it; a reload
+  // or unload makes older fetches' results fall on the floor. `loaded` mirrors
+  // loadedData's keys.
+  const sectionsRef = useRef<AttachmentSection[]>([]);
+  const wantedRef = useRef(new Set<string>());
+  const inFlightRef = useRef(new Map<string, object>());
+  const loadedRef = useRef(new Set<string>());
+
   /**
    * Load all attachment sections (metadata only, no image data)
    */
@@ -51,6 +61,10 @@ export function useAttachmentManager(): UseAttachmentManagerReturn {
 
     try {
       const allSections = await gremlinClient.getAllAttachmentSections();
+      sectionsRef.current = allSections;
+      wantedRef.current.clear();
+      inFlightRef.current.clear();
+      loadedRef.current.clear();
       setSections(allSections);
       // Clear loaded data and selection when reloading sections
       setLoadedData(new Map());
@@ -64,52 +78,59 @@ export function useAttachmentManager(): UseAttachmentManagerReturn {
   }, []);
 
   /**
-   * Load attachment data for a specific section (decrypt and load images)
+   * Load attachment data for a specific section (decrypt and load images).
+   * No-op while the section is loaded or already being fetched.
    */
-  const loadSectionData = useCallback(
-    async (chatId: string, messageIds: string[]) => {
-      // Skip if already loaded
-      if (loadedData.has(chatId)) {
-        return;
-      }
+  const loadSectionData = useCallback(async (chatId: string, messageIds: string[]) => {
+    wantedRef.current.add(chatId);
+    if (loadedRef.current.has(chatId) || inFlightRef.current.has(chatId)) return;
 
-      try {
-        const attachmentsWithData: AttachmentWithData[] = [];
-        const uniqueMessageIds = [...new Set(messageIds)];
+    const token = {};
+    inFlightRef.current.set(chatId, token);
+    const isStillWanted = () =>
+      inFlightRef.current.get(chatId) === token && wantedRef.current.has(chatId);
 
-        for (const messageId of uniqueMessageIds) {
-          const attachments = await gremlinClient.getAttachments(messageId);
+    const section = sectionsRef.current.find(s => s.chatId === chatId);
+    const timestamps = new Map(section?.attachments.map(att => [att.id, att.timestamp]));
 
-          // Find corresponding section to get timestamps
-          const section = sections.find(s => s.chatId === chatId);
-          const sectionAttachments = section?.attachments || [];
-
-          for (const att of attachments) {
-            // Find the timestamp from section metadata
-            const sectionAtt = sectionAttachments.find(sa => sa.id === att.id);
-
-            attachmentsWithData.push({
-              id: att.id,
-              messageId: messageId,
-              timestamp: sectionAtt?.timestamp || new Date(),
-              mimeType: att.mimeType,
-              data: att.data,
-            });
-          }
+    try {
+      const attachmentsWithData: AttachmentWithData[] = [];
+      for (const messageId of new Set(messageIds)) {
+        const attachments = await gremlinClient.getAttachments(messageId);
+        if (!isStillWanted()) {
+          console.debug(
+            '[useAttachmentManager] Dropping data for %s: unloaded or reloaded mid-fetch',
+            chatId
+          );
+          return;
         }
 
-        setLoadedData(prev => new Map(prev).set(chatId, attachmentsWithData));
-      } catch (err) {
-        console.error('[useAttachmentManager] Failed to load section data:', err);
+        for (const att of attachments) {
+          attachmentsWithData.push({
+            id: att.id,
+            messageId,
+            timestamp: timestamps.get(att.id) ?? new Date(),
+            mimeType: att.mimeType,
+            data: att.data,
+          });
+        }
       }
-    },
-    [loadedData, sections]
-  );
+
+      loadedRef.current.add(chatId);
+      setLoadedData(prev => new Map(prev).set(chatId, attachmentsWithData));
+    } catch (err) {
+      console.error('[useAttachmentManager] Failed to load section data:', err);
+    } finally {
+      if (inFlightRef.current.get(chatId) === token) inFlightRef.current.delete(chatId);
+    }
+  }, []);
 
   /**
    * Unload attachment data for a specific section to free memory
    */
   const unloadSectionData = useCallback((chatId: string) => {
+    wantedRef.current.delete(chatId);
+    loadedRef.current.delete(chatId);
     setLoadedData(prev => {
       if (!prev.has(chatId)) return prev;
       const next = new Map(prev);

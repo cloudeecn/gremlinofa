@@ -5,15 +5,18 @@ import type {
 } from '../../../shared/protocol/types/content';
 import type { Message } from '../../../shared/protocol/types';
 import { usePreferences } from '../../hooks/usePreferences';
+import { tailPreview } from '../../lib/messageFormatters';
 import ToolResultView, { FocusedMinionView } from './ToolResultView';
 import MessageInfoBar, { INFO_BAR_BUTTON } from './MessageInfoBar';
+import type { MessageAction } from './types';
 
 export interface ToolResultBubbleProps {
   message: Message<unknown>;
-  onAction?: (action: 'copy' | 'fork' | 'edit' | 'delete' | 'rollback', messageId: string) => void;
+  onAction?: (action: MessageAction, messageId: string) => void;
   onDeleteMessage?: (messageId: string) => void;
   focusMode?: boolean;
   expandMinions?: boolean;
+  disableMath?: boolean;
   isLastMessage?: boolean;
 }
 
@@ -30,6 +33,7 @@ export default function ToolResultBubble({
   onDeleteMessage,
   focusMode,
   expandMinions,
+  disableMath,
   isLastMessage,
 }: ToolResultBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -58,7 +62,7 @@ export default function ToolResultBubble({
   // For simple results header display
   const lastSimple = simpleResults[simpleResults.length - 1];
   const simpleIcon = lastSimple?.icon ?? (hasError ? '❌' : '✅');
-  const simplePreviewText = lastSimple?.renderedContent ?? lastSimple?.content ?? '';
+  const simplePreviewText = tailPreview(lastSimple?.renderedContent ?? lastSimple?.content ?? '');
 
   // Status-aware summary for multiple results
   const getStatusSummary = (): string => {
@@ -105,7 +109,7 @@ export default function ToolResultBubble({
                   <span className="flex shrink-0 items-center gap-1">
                     {iconOnRight ? (
                       <>
-                        <span className="text-shadow-[0 0] tracking-[-0.5em] opacity-50 text-shadow-white">
+                        <span className="tracking-[-0.5em] opacity-50 text-shadow-[0_0_2px_white]">
                           {simpleResults
                             .slice(0, -1)
                             .map(r => r.icon ?? (r.is_error ? '❌' : '✅'))}
@@ -113,7 +117,7 @@ export default function ToolResultBubble({
                         <span className="mr-2">{simpleIcon}</span>
                       </>
                     ) : (
-                      <span className="text-shadow-[0 0] mr-2 tracking-[-0.5em] opacity-50 text-shadow-white">
+                      <span className="mr-2 tracking-[-0.5em] opacity-50 text-shadow-[0_0_2px_white]">
                         {simpleResults.slice(0, -1).map(r => r.icon ?? (r.is_error ? '❌' : '✅'))}
                       </span>
                     )}
@@ -156,7 +160,11 @@ export default function ToolResultBubble({
       {/* Complex results (with renderingGroups) */}
       {complexResults.map(result => (
         <div key={result.tool_use_id} className="mb-2 w-full">
-          {expandMinions ? <FocusedMinionView block={result} /> : <ToolResultView block={result} />}
+          {expandMinions ? (
+            <FocusedMinionView block={result} />
+          ) : (
+            <ToolResultView block={result} disableMath={disableMath} />
+          )}
         </div>
       ))}
 

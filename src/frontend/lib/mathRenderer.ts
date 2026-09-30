@@ -27,6 +27,13 @@ export interface MathRenderer {
 }
 
 /**
+ * KaTeX output skips the markdown sanitizer (it needs inline `style`), so cap
+ * what a model can make it draw: `maxSize` bounds `\rule` / spacing in em, and
+ * `maxExpand` bounds macro expansion.
+ */
+const RENDER_LIMITS = { maxSize: 20, maxExpand: 1000 };
+
+/**
  * KaTeX implementation of MathRenderer.
  * Fast, lightweight, and handles most common LaTeX math.
  */
@@ -40,6 +47,7 @@ export const katexRenderer: MathRenderer = {
         strict: false,
         trust: false,
         output: 'html',
+        ...RENDER_LIMITS,
       });
     } catch {
       // Fallback: show the original LaTeX in a styled span
@@ -56,6 +64,7 @@ export const katexRenderer: MathRenderer = {
         strict: false,
         trust: false,
         output: 'html',
+        ...RENDER_LIMITS,
       });
     } catch {
       // Fallback: show the original LaTeX in a styled span
@@ -82,19 +91,8 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#039;');
 }
 
-/**
- * Represents an extracted math block with its placeholder.
- */
-export interface MathBlock {
-  /** Unique placeholder string to insert in text */
-  placeholder: string;
-  /** The LaTeX expression (without delimiters) */
-  latex: string;
-  /** Whether this is display mode ($$) or inline ($) */
-  displayMode: boolean;
-}
-
-const MATH_FULL_MATCHES = /^([a-zA-Z]|(0-9)+)$/;
+/** A single letter (a variable) or a plain integer */
+const MATH_FULL_MATCHES = /^([a-zA-Z]|[0-9]+)$/;
 
 /**
  * Pattern to detect math/LaTeX indicator characters (excluding minus).
@@ -119,13 +117,12 @@ const MATH_MINUS = /-( |[0-9]|\.)/;
  * This is an inverted bailout: if NO indicators, it's definitely not math.
  *
  * @param content - The content between $ delimiters
- * @returns true if content might be math (has indicators or is single char)
+ * @returns true if content might be math (has indicators, a single letter or an integer)
  */
 export function hasMathIndicators(content: string): boolean {
   const trimmed = content.trim();
 
-  // Single characters, all numbers
-  if (MATH_FULL_MATCHES.test(content)) {
+  if (MATH_FULL_MATCHES.test(trimmed)) {
     return true;
   }
 
@@ -172,176 +169,4 @@ export function shouldExtractAsMath(content: string): boolean {
 
   // Stage 2: Validate with KaTeX
   return isValidLatex(trimmed);
-}
-
-/**
- * Find the next unescaped $ in text starting from position.
- * Skips escaped \$ sequences.
- *
- * @param text - The text to search
- * @param start - Starting position
- * @returns Position of $ or -1 if not found
- */
-function findUnescapedDollar(text: string, start: number): number {
-  for (let i = start; i < text.length; i++) {
-    if (text[i] === '$') {
-      // Check if escaped (preceded by \)
-      if (i > 0 && text[i - 1] === '\\') {
-        continue;
-      }
-      return i;
-    }
-  }
-  return -1;
-}
-
-/**
- * Extract math expressions from text, replacing them with placeholders.
- * This protects math from markdown processing.
- *
- * Uses try-and-skip algorithm for inline math:
- * - Find first $, find second $
- * - If content is valid math, extract it and continue after second $
- * - If content is NOT valid, skip first $ and try again from first $ + 1
- *
- * This correctly handles cases like "$1.5, $(real math)$" by skipping
- * the invalid "$1.5, $" and finding the valid "$(real math)$".
- *
- * @param text - The input text containing math expressions
- * @returns Object with processed text and extracted blocks
- */
-export function extractMath(text: string): { processed: string; blocks: MathBlock[] } {
-  const blocks: MathBlock[] = [];
-  let id = 0;
-
-  // Step 1: Extract display math ($$...$$) first
-  // Uses regex since $$ is less ambiguous than single $
-  let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (match, latex: string) => {
-    const trimmed = latex.trim();
-    // Validate display math
-    if (!isValidLatex(trimmed)) {
-      return match; // Leave original text unchanged
-    }
-    const placeholder = `%%MATH_DISPLAY_${id}%%`;
-    blocks.push({
-      placeholder,
-      latex: trimmed,
-      displayMode: true,
-    });
-    id++;
-    return placeholder;
-  });
-
-  // Step 2: Extract inline math ($...$) using try-and-skip algorithm
-  // This handles cases like "$1.5, $(x^2)$" correctly
-  const extractedRanges: Array<{ start: number; end: number; placeholder: string }> = [];
-  let pos = 0;
-
-  while (pos < processed.length) {
-    // Find first unescaped $
-    const firstDollar = findUnescapedDollar(processed, pos);
-    if (firstDollar === -1) break;
-
-    // Skip if this is part of $$ (already handled)
-    if (processed[firstDollar + 1] === '$') {
-      pos = firstDollar + 2;
-      continue;
-    }
-
-    // Find second unescaped $ (closing)
-    const secondDollar = findUnescapedDollar(processed, firstDollar + 1);
-    if (secondDollar === -1) break;
-
-    // Skip if second $ is part of $$ or if there's a newline between
-    if (processed[secondDollar + 1] === '$') {
-      pos = firstDollar + 1;
-      continue;
-    }
-
-    const content = processed.slice(firstDollar + 1, secondDollar);
-
-    // No newlines allowed in inline math
-    if (content.includes('\n')) {
-      pos = firstDollar + 1;
-      continue;
-    }
-
-    const trimmed = content.trim();
-
-    // Try to extract as math
-    if (shouldExtractAsMath(trimmed)) {
-      // Valid math - record this extraction
-      const placeholder = `%%MATH_INLINE_${id}%%`;
-      blocks.push({
-        placeholder,
-        latex: trimmed,
-        displayMode: false,
-      });
-      extractedRanges.push({
-        start: firstDollar,
-        end: secondDollar,
-        placeholder,
-      });
-      id++;
-      // Continue after the second $
-      pos = secondDollar + 1;
-    } else {
-      // Not valid math - skip only the first $ and try again
-      // This allows "$1.5, $(x^2)$" to find the valid math
-      pos = firstDollar + 1;
-    }
-  }
-
-  // Apply extractions in reverse order to preserve indices
-  for (let i = extractedRanges.length - 1; i >= 0; i--) {
-    const { start, end, placeholder } = extractedRanges[i];
-    processed = processed.slice(0, start) + placeholder + processed.slice(end + 1);
-  }
-
-  return { processed, blocks };
-}
-
-/**
- * Restore math blocks by replacing placeholders with rendered HTML.
- *
- * @param html - The HTML string containing placeholders
- * @param blocks - The math blocks to restore
- * @param renderer - The math renderer to use (defaults to active renderer)
- * @returns HTML string with rendered math
- */
-export function restoreMath(
-  html: string,
-  blocks: MathBlock[],
-  renderer: MathRenderer = mathRenderer
-): string {
-  let result = html;
-
-  for (const block of blocks) {
-    const rendered = block.displayMode
-      ? renderer.renderDisplay(block.latex)
-      : renderer.renderInline(block.latex);
-
-    result = result.replace(block.placeholder, rendered);
-  }
-
-  return result;
-}
-
-/**
- * Process text with math extraction and restoration.
- * Convenience function that combines extract and restore.
- *
- * @param text - Input text with LaTeX math
- * @param markdownProcessor - Function to process the text (e.g., marked.parse)
- * @param renderer - Math renderer to use
- * @returns Processed HTML with rendered math
- */
-export function processWithMath(
-  text: string,
-  markdownProcessor: (text: string) => string,
-  renderer: MathRenderer = mathRenderer
-): string {
-  const { processed, blocks } = extractMath(text);
-  const html = markdownProcessor(processed);
-  return restoreMath(html, blocks, renderer);
 }

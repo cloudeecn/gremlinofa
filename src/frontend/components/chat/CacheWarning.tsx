@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
-import { gremlinClient } from '../../client';
-import type { Message, APIDefinition } from '../../../shared/protocol/types';
+import { useApiDefinitions, useModels } from '../../hooks/useApp';
+import type { Message } from '../../../shared/protocol/types';
+
+/** Anthropic's default prompt-cache lifetime. */
+const CACHE_TTL_MS = 5 * 60 * 1000;
+/** setTimeout's ceiling; a skewed future timestamp must not overflow to "now". */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 interface CacheWarningProps {
   messages: Message<unknown>[];
@@ -8,71 +13,49 @@ interface CacheWarningProps {
   currentModelId: string | null;
 }
 
+/**
+ * Warns before a send that has to write the whole context back into
+ * Anthropic's prompt cache: the last message is older than the cache TTL, or
+ * came from another provider. Reads the API definitions and model prices the
+ * app context already holds, so it costs no RPC per messages update.
+ */
 export default function CacheWarning({
   messages,
   currentApiDefId,
   currentModelId,
 }: CacheWarningProps) {
-  const [shouldShowWarning, setShouldShowWarning] = useState(false);
-  const [estimatedCost, setEstimatedCost] = useState<number>(0);
+  const apiDefinitions = useApiDefinitions();
+  const models = useModels();
+  const lastMessage = messages.at(-1);
+  const expiresAt = lastMessage ? lastMessage.timestamp.getTime() + CACHE_TTL_MS : null;
 
+  // Set by a timer at the expiry time, so the warning appears while the chat
+  // sits open. Compared against the current expiry: a newer last message
+  // moves it, and the warning clears.
+  const [expiredAt, setExpiredAt] = useState<number | null>(null);
   useEffect(() => {
-    const checkCacheInvalidation = async () => {
-      // Reset state
-      setShouldShowWarning(false);
-      setEstimatedCost(0);
+    if (expiresAt === null) return;
+    const delay = Math.min(Math.max(0, expiresAt - Date.now()), MAX_TIMER_MS);
+    const timer = setTimeout(() => setExpiredAt(expiresAt), delay);
+    return () => clearTimeout(timer);
+  }, [expiresAt]);
 
-      // Need messages and API definition
-      if (messages.length === 0 || !currentApiDefId || !currentModelId) {
-        return;
-      }
+  if (!lastMessage || !currentApiDefId || !currentModelId) return null;
 
-      // Load API definition to check if it's Anthropic
-      const apiDef: APIDefinition | null = await gremlinClient.getAPIDefinition(currentApiDefId);
-      if (!apiDef || apiDef.apiType !== 'anthropic') {
-        return;
-      }
+  const apiDef = apiDefinitions.find(d => d.id === currentApiDefId);
+  if (apiDef?.apiType !== 'anthropic') return null;
 
-      // Get last message
-      const lastMessage = messages[messages.length - 1];
-      if (!lastMessage) {
-        return;
-      }
+  const isExpired = expiredAt === expiresAt;
+  const isNotFromAnthropic = lastMessage.content.modelFamily !== 'anthropic';
+  if (!isExpired && !isNotFromAnthropic) return null;
 
-      // Check conditions for cache invalidation
-      const now = Date.now();
-      const lastMessageTime = lastMessage.timestamp.getTime();
-      const fiveMinutesInMs = 5 * 60 * 1000;
-      const isOlderThan5Minutes = now - lastMessageTime > fiveMinutesInMs;
-      const isNotFromAnthropic = lastMessage.content.modelFamily !== 'anthropic';
+  const contextWindowUsage = lastMessage.metadata?.contextWindowUsage || 0;
+  if (contextWindowUsage <= 0) return null;
 
-      // Show warning if either condition is met
-      if (isOlderThan5Minutes || isNotFromAnthropic) {
-        // Calculate estimated cost using context window usage from last message
-        const contextWindowUsage = lastMessage.metadata?.contextWindowUsage || 0;
-
-        if (contextWindowUsage > 0) {
-          // Get model pricing info via the cached models list (already-fetched
-          // backend data, no extra discovery round-trip).
-          const cached = await gremlinClient.getModelsCache(currentApiDefId);
-          const model = cached.models.find(m => m.id === currentModelId);
-
-          // Cost = (tokens / 1M) * cacheWritePrice
-          const cost =
-            (contextWindowUsage / 1_000_000) * (model?.cacheWritePrice ?? model?.inputPrice ?? 0);
-
-          setShouldShowWarning(true);
-          setEstimatedCost(cost);
-        }
-      }
-    };
-
-    checkCacheInvalidation();
-  }, [messages, currentApiDefId, currentModelId]);
-
-  if (!shouldShowWarning) {
-    return null;
-  }
+  const model = models.get(currentApiDefId)?.find(m => m.id === currentModelId);
+  // Cost = (tokens / 1M) * cacheWritePrice
+  const estimatedCost =
+    (contextWindowUsage / 1_000_000) * (model?.cacheWritePrice ?? model?.inputPrice ?? 0);
 
   return (
     <div className="mx-4 mb-4 text-xs text-gray-500">

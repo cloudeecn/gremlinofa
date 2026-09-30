@@ -1,4 +1,5 @@
 import { act, renderHook } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearAllDrafts,
@@ -305,6 +306,96 @@ describe('useDraftPersistence', () => {
 
       expect(chatOnChange).toHaveBeenCalledWith('chat message');
       expect(projectOnChange).toHaveBeenCalledWith('project message');
+    });
+  });
+
+  describe('hook - switching keys and leaving', () => {
+    function useComposer(contextId: string, initial = '') {
+      const [value, setValue] = useState(initial);
+      useDraftPersistence({ place: 'project-chat', contextId, value, onChange: setValue });
+      return { value, setValue };
+    }
+
+    const stored = (contextId: string) => {
+      const raw = localStorage.getItem(`draft_project-chat_${contextId}`);
+      return raw ? (JSON.parse(raw) as { content: string }).content : null;
+    };
+
+    it("restores B's draft when the context changes from A to B, without writing A's text under B", () => {
+      localStorage.setItem(
+        'draft_project-chat_B',
+        JSON.stringify({ content: 'draft B', createdAt: Date.now() })
+      );
+      const { result, rerender } = renderHook(({ id }) => useComposer(id), {
+        initialProps: { id: 'A' },
+      });
+      act(() => result.current.setValue('typed in A'));
+
+      rerender({ id: 'B' });
+
+      expect(result.current.value).toBe('draft B');
+      // A's pending write was flushed under A, not dropped
+      expect(stored('A')).toBe('typed in A');
+      act(() => vi.advanceTimersByTime(600));
+      expect(stored('B')).toBe('draft B');
+    });
+
+    it('keeps an inherited value out of the new key until it changes', () => {
+      const { result, rerender } = renderHook(({ id }) => useComposer(id), {
+        initialProps: { id: 'A' },
+      });
+      act(() => result.current.setValue('typed in A'));
+      rerender({ id: 'B' });
+      act(() => vi.advanceTimersByTime(600));
+      expect(stored('B')).toBeNull();
+
+      act(() => result.current.setValue('typed in A, then B'));
+      act(() => vi.advanceTimersByTime(600));
+      expect(stored('B')).toBe('typed in A, then B');
+    });
+
+    it('deletes a restored draft when the box is cleared', () => {
+      localStorage.setItem(
+        'draft_project-chat_A',
+        JSON.stringify({ content: 'draft A', createdAt: Date.now() })
+      );
+      const { result } = renderHook(() => useComposer('A'));
+      expect(result.current.value).toBe('draft A');
+
+      act(() => result.current.setValue(''));
+      act(() => vi.advanceTimersByTime(600));
+
+      expect(stored('A')).toBeNull();
+    });
+
+    it('writes a pending draft right away on unmount', () => {
+      const { result, unmount } = renderHook(() => useComposer('A'));
+      act(() => result.current.setValue('last words'));
+      act(() => vi.advanceTimersByTime(100));
+
+      unmount();
+
+      expect(stored('A')).toBe('last words');
+    });
+
+    it('clearDraft cancels a pending write', () => {
+      const { result, unmount } = renderHook(() => useComposer('A'));
+      act(() => result.current.setValue('about to send'));
+
+      clearDraft('project-chat', 'A');
+      unmount();
+      act(() => vi.advanceTimersByTime(600));
+
+      expect(stored('A')).toBeNull();
+    });
+
+    it('writes pending drafts when the page is hidden or closed', () => {
+      const { result } = renderHook(() => useComposer('A'));
+      act(() => result.current.setValue('closing the tab'));
+
+      window.dispatchEvent(new Event('pagehide'));
+
+      expect(stored('A')).toBe('closing the tab');
     });
   });
 

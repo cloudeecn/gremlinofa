@@ -8,13 +8,28 @@ body {
   overscroll-behavior: none;
 }
 
-/* iOS-style momentum scrolling with scroll containment */
+/* iOS-style momentum scrolling with scroll containment.
+   No scroll-behavior: smooth here — it animates every programmatic scrollTop
+   write (chat auto-follow during streaming) and races the content it follows.
+   Animate explicitly with scrollTo({ behavior: 'smooth' }) where wanted. */
 .ios-scroll {
   -webkit-overflow-scrolling: touch;
-  scroll-behavior: smooth;
 }
 
-/* Safe area inset utilities for iOS devices with notch/home indicator */
+/* The chat list draws its own scrubber (ChatScrubber); the native bar would
+   only cover the mounted slice of the chat. Wheel/touch/keys still scroll. */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Safe area inset utilities for iOS devices with notch/home indicator.
+   Unlayered, so they beat Tailwind's p-* utilities: use them only on elements
+   with no padding of their own on that side (spacers, the root). Elsewhere
+   write pb-[max(1rem,env(safe-area-inset-bottom))] and the like — env()
+   falls back to 0 on devices without a notch and would wipe the padding. */
 .safe-area-inset-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -31,6 +46,12 @@ body {
 /* Scrollable content that reaches viewport edge - add safe area bottom padding */
 .scroll-safe-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* The connection banner sits above the page header and takes the notch area
+   itself, so the header's notch spacer would double the gap. */
+.connection-banner[data-visible] ~ * .safe-area-inset-top {
+  padding-top: 0;
 }
 
 /* Markdown prose styles for message content */
@@ -96,8 +117,16 @@ body {
   z-index: 10;
 }
 
-.code-block-container:hover .code-copy-button {
+.code-block-container:hover .code-copy-button,
+.code-copy-button:focus-visible {
   opacity: 1;
+}
+
+/* No hover on touch screens: keep the button visible */
+@media (hover: none) {
+  .code-copy-button {
+    opacity: 1;
+  }
 }
 
 .code-copy-button:hover {
@@ -111,6 +140,11 @@ body {
 .code-copy-button.copied {
   background-color: #d1fae5;
   border-color: #6ee7b7;
+}
+
+.code-copy-button.failed {
+  background-color: #fee2e2;
+  border-color: #fca5a5;
 }
 
 .prose ul {
@@ -348,10 +382,6 @@ body {
 /* Floating button animations */
 .error-floating-button {
   animation: floating-button-appear 0.3s ease-out;
-}
-
-.scroll-to-bottom-button {
-  animation: floating-button-appear 0.2s ease-out;
 }
 
 @keyframes floating-button-appear {

@@ -68,11 +68,12 @@ export class WebSocketTransportServer {
 
   constructor(opts: WebSocketTransportOptions) {
     this.gremlinServer = opts.server;
-    // permessage-deflate compresses outgoing frames. Streaming events
-    // (especially the per-SSE-chunk minion `groups_update` payloads) carry
-    // repetitive JSON that gzips ~5-10x — a big win on mobile networks.
-    // `threshold: 256` skips compressing tiny frames (pings/pongs/cancels)
-    // where the header overhead would dwarf the savings.
+    // permessage-deflate compresses outgoing frames. Streaming deltas are
+    // small, but snapshots (attach replay, minion `init` /
+    // `message_finalized`) and message payloads carry repetitive JSON that
+    // gzips ~5-10x — a big win on mobile networks. `threshold: 256` skips
+    // compressing tiny frames (pings/pongs/cancels, most deltas) where the
+    // header overhead would dwarf the savings.
     this.wss = new WebSocketServer({
       port: opts.port,
       host: opts.host,

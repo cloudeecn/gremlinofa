@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Modal from '../ui/Modal';
 import VfsFileViewer from './VfsFileViewer';
 import VfsFileEditor from './VfsFileEditor';
@@ -11,6 +11,7 @@ const basename = (path: string): string => path.split('/').filter(Boolean).pop()
 
 export interface VfsFileModalProps {
   adapter: VfsAdapter;
+  projectId: string;
   path: string;
   isOpen: boolean;
   onClose: () => void;
@@ -21,6 +22,7 @@ type Mode = 'view' | 'edit' | 'diff';
 
 export default function VfsFileModal({
   adapter,
+  projectId,
   path,
   isOpen,
   onClose,
@@ -31,8 +33,13 @@ export default function VfsFileModal({
   const [contentVersion, setContentVersion] = useState(0);
   const { showDestructiveConfirm } = useAlert();
 
+  // Bumped whenever the modal opens, closes or switches file, so an edit load
+  // started before that can tell it's stale.
+  const sessionSeqRef = useRef(0);
+
   // Reset to view mode when path changes or modal opens
   useEffect(() => {
+    sessionSeqRef.current++;
     if (isOpen) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on modal open/path change
       setMode('view');
@@ -42,8 +49,11 @@ export default function VfsFileModal({
 
   // Load initial content for editor
   const handleEdit = useCallback(async () => {
+    const sessionSeq = sessionSeqRef.current;
     try {
       const content = await adapter.readFile(path);
+      // Reopened on another file mid-read: its editor must not get this content
+      if (sessionSeqRef.current !== sessionSeq) return;
       setInitialContent(content);
       setMode('edit');
     } catch (error) {
@@ -111,6 +121,7 @@ export default function VfsFileModal({
         {mode === 'edit' && (
           <VfsFileEditor
             adapter={adapter}
+            projectId={projectId}
             path={path}
             initialContent={initialContent}
             onSave={handleSave}

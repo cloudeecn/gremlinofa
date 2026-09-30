@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { VfsAdapter } from '../../../../shared/protocol/types/vfs';
 import VfsPathPickerModal from '../../project/VfsPathPickerModal';
 
@@ -24,12 +24,12 @@ const EXISTS_DEBOUNCE_MS = 400;
 export default function PromptFileList({ paths, adapter, onChange }: PromptFileListProps) {
   const [pickerIndex, setPickerIndex] = useState<number | null>(null);
   const [exists, setExists] = useState<Record<string, boolean>>({});
-  const pending = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    window.clearTimeout(pending.current);
-    pending.current = window.setTimeout(() => {
-      let cancelled = false;
+    // A batch that resolves after the paths changed again is stale: letting it
+    // land would overwrite the newer batch and leave its badges on `·`.
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
       Promise.all(
         paths
           .filter(p => p.trim())
@@ -37,11 +37,11 @@ export default function PromptFileList({ paths, adapter, onChange }: PromptFileL
       ).then(results => {
         if (!cancelled) setExists(Object.fromEntries(results));
       });
-      return () => {
-        cancelled = true;
-      };
     }, EXISTS_DEBOUNCE_MS);
-    return () => window.clearTimeout(pending.current);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [paths, adapter]);
 
   const replaceAt = (index: number, value: string) =>

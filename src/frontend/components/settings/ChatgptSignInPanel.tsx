@@ -4,6 +4,7 @@ import { gremlinClient } from '../../client';
 import type { APIDefinition } from '../../../shared/protocol/types';
 import type { ChatgptOAuthOutcome } from '../../../shared/protocol/methods';
 import { isChatgptSignedIn } from '../../../shared/protocol/apiDefinition';
+import { safeHref } from '../../lib/safeHref';
 
 /** Matches the Codex CLI's give-up window for the device flow. */
 const DEVICE_FLOW_TIMEOUT_MS = 15 * 60 * 1000;
@@ -192,7 +193,7 @@ export default function ChatgptSignInPanel({ apiDef, onChanged }: ChatgptSignInP
           <p className="mb-2 text-sm text-gray-700">
             Open{' '}
             <a
-              href={device.verificationUrl}
+              href={safeHref(device.verificationUrl)}
               target="_blank"
               rel="noreferrer"
               className="text-blue-600 underline"
@@ -215,7 +216,7 @@ export default function ChatgptSignInPanel({ apiDef, onChanged }: ChatgptSignInP
           <p className="mb-2 text-sm text-gray-700">
             1.{' '}
             <a
-              href={paste.url}
+              href={safeHref(paste.url)}
               target="_blank"
               rel="noreferrer"
               className="text-blue-600 underline"

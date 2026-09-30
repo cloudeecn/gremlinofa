@@ -1,8 +1,9 @@
 /**
  * Wraps `streamExportCSVLines` into a stream of `ExportEvent`s for the
  * `exportData` RPC. The runner buffers CSV lines into roughly-sized byte
- * chunks and emits one `chunk` event per buffer flush, plus a `progress`
- * event per record and a final `done` event with the suggested filename.
+ * chunks and emits one `chunk` event per buffer flush, `progress` events
+ * (the first record, then at most one per 100 ms, then the final count
+ * before `done`), and a final `done` event with the suggested filename.
  *
  * The frontend reassembles the chunks into a `Blob` and triggers the
  * download anchor — the DOM stays on the main thread even though the CSV
@@ -17,6 +18,13 @@ import type { ExportEvent } from '../protocol/protocol';
 /** Soft cap on bytes per chunk. Larger chunks reduce envelope overhead. */
 const CHUNK_BYTE_TARGET = 64 * 1024;
 
+/**
+ * Minimum gap between `progress` events. Each one crosses the worker/WebSocket
+ * boundary and re-renders the Data Manager page; the UI can't show more than a
+ * few updates a second anyway.
+ */
+const PROGRESS_INTERVAL_MS = 100;
+
 export async function* runExport(
   storage: UnifiedStorage,
   encryption: EncryptionCore
@@ -25,17 +33,25 @@ export async function* runExport(
   const encoder = new TextEncoder();
   let buffered: Uint8Array[] = [];
   let bufferedBytes = 0;
-  let processed = 0;
+  let lines = 0;
+  let reportedRecords = 0;
+  let lastProgressAt = -Infinity;
 
   for await (const line of streamExportCSVLines(adapter, encryption)) {
     const bytes = encoder.encode(line);
     buffered.push(bytes);
     bufferedBytes += bytes.byteLength;
-    processed++;
+    lines++;
 
     // Skip the header line in the count we report to the UI.
-    if (processed > 1) {
-      yield { type: 'progress', processed: processed - 1 };
+    const records = lines - 1;
+    if (records > 0) {
+      const now = Date.now();
+      if (now - lastProgressAt >= PROGRESS_INTERVAL_MS) {
+        lastProgressAt = now;
+        reportedRecords = records;
+        yield { type: 'progress', processed: records };
+      }
     }
 
     if (bufferedBytes >= CHUNK_BYTE_TARGET) {
@@ -43,6 +59,11 @@ export async function* runExport(
       buffered = [];
       bufferedBytes = 0;
     }
+  }
+
+  const totalRecords = Math.max(0, lines - 1);
+  if (totalRecords > reportedRecords) {
+    yield { type: 'progress', processed: totalRecords };
   }
 
   if (bufferedBytes > 0) {

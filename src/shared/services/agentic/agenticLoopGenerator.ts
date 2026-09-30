@@ -31,6 +31,7 @@ import type {
   MessageAttachment,
   Model,
   RenderingBlockGroup,
+  StreamingGroupsOp,
   ToolContext,
   ToolGroupsDelta,
   ToolOptions,
@@ -249,7 +250,8 @@ export interface AgenticLoopOptions {
  */
 export type AgenticLoopEvent =
   | { type: 'streaming_start' }
-  | { type: 'streaming_chunk'; groups: RenderingBlockGroup[] }
+  /** What changed in this iteration's reply since the previous delta; see `StreamingGroupsOp`. */
+  | { type: 'streaming_delta'; ops: StreamingGroupsOp[] }
   | { type: 'streaming_end' }
   | { type: 'message_created'; message: Message<unknown> }
   | { type: 'tokens_consumed'; tokens: TokenTotals; isToolCost?: boolean }
@@ -1019,26 +1021,15 @@ async function* executeToolsParallel(
         block: renderBlock,
       };
     } else {
-      const event = resolved.result.value as ToolStreamEvent;
-      if (event.type === 'groups_update') {
-        yield {
-          type: 'tool_block_update',
-          toolUseId: ag.toolUse.id,
-          block: { renderingGroups: event.groups, status: 'running' as const },
-        };
-      } else if (event.type === 'groups_delta') {
-        // Delta-encoded streaming path (minion tool). LoopRegistry consumes
-        // the same event server-side to maintain a per-tool-call
-        // `groupsState` cache that `attachChat` replays as a single
-        // `tool_groups_snapshot`. The placeholder message's
-        // `renderingContent` is populated client-side from these deltas;
-        // we no longer round-trip the full assembled snapshot per chunk.
-        yield {
-          type: 'tool_groups_delta',
-          toolUseId: ag.toolUse.id,
-          delta: event.delta,
-        };
-      }
+      // `groups_delta` is the only `ToolStreamEvent` (minion streaming).
+      // LoopRegistry consumes the forwarded event server-side to maintain a
+      // per-tool-call `groupsState` cache that `attachChat` replays as a
+      // single `tool_groups_snapshot`. The placeholder message's
+      // `renderingContent` is populated client-side from these deltas. A new
+      // variant without `delta` fails to compile here instead of being
+      // silently dropped.
+      const { delta } = resolved.result.value;
+      yield { type: 'tool_groups_delta', toolUseId: ag.toolUse.id, delta };
       ag.pendingNext = safeGenNext(ag);
     }
   }
@@ -1869,7 +1860,12 @@ export async function* runAgenticLoop(
             isFirstContentChunk = false;
           }
 
-          yield { type: 'streaming_chunk', groups: assembler.getGroups() };
+          // Chunks that change nothing visible (token_usage, a citation
+          // held until content.end) produce no ops and no event.
+          const ops = assembler.takeOps();
+          if (ops.length > 0) {
+            yield { type: 'streaming_delta', ops };
+          }
           options.signal.throwIfAborted();
           streamNext = await stream.next();
         }

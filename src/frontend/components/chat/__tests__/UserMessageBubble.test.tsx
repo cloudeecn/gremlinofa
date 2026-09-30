@@ -143,17 +143,21 @@ describe('UserMessageBubble', () => {
   });
 
   describe('Action Buttons', () => {
-    it('hides action buttons until the trigger row is clicked', async () => {
+    it('keeps Copy and Edit on the trigger row and the rest behind it', async () => {
       render(<UserMessageBubble {...createProps()} />);
-      expect(screen.queryByTitle('Edit message')).not.toBeInTheDocument();
-      await expandInfoBar();
+      expect(screen.getByTitle('Copy message')).toBeInTheDocument();
       expect(screen.getByTitle('Edit message')).toBeInTheDocument();
+      expect(screen.queryByTitle('Fork chat from here')).not.toBeInTheDocument();
+      await expandInfoBar();
+      expect(screen.getByTitle('Fork chat from here')).toBeInTheDocument();
     });
 
-    it('shows Edit button', async () => {
-      render(<UserMessageBubble {...createProps()} />);
+    it('offers only the actions the list supports', async () => {
+      render(<UserMessageBubble {...createProps({ actions: new Set(['rollback'] as const) })} />);
       await expandInfoBar();
-      expect(screen.getByTitle('Edit message')).toBeInTheDocument();
+      expect(screen.queryByTitle('Edit message')).not.toBeInTheDocument();
+      expect(screen.queryByTitle('Fork chat from here')).not.toBeInTheDocument();
+      expect(screen.getByTitle('Copy message')).toBeInTheDocument();
     });
 
     it('shows Fork button', async () => {
@@ -204,11 +208,11 @@ describe('UserMessageBubble', () => {
         }),
       });
       render(<UserMessageBubble {...props} />);
-      await expandInfoBar();
 
       await userEvent.click(screen.getByTitle('Copy message'));
 
       expect(mockClipboard.writeText).toHaveBeenCalledWith('Copy this text');
+      expect(await screen.findByTitle('Copied')).toHaveTextContent('✓');
     });
   });
 
@@ -374,6 +378,27 @@ describe('UserMessageBubble', () => {
 
       const bubble = container.querySelector('.max-w-\\[90\\%\\]');
       expect(bubble).toBeInTheDocument();
+    });
+  });
+
+  describe('attachment placeholders', () => {
+    it('reserves a tile per attachment while they load', () => {
+      render(
+        <UserMessageBubble {...createProps({ attachments: [], loadingAttachmentCount: 2 })} />
+      );
+
+      expect(screen.getAllByTestId('attachment-placeholder')).toHaveLength(2);
+      expect(screen.queryByAltText('Attachment')).not.toBeInTheDocument();
+    });
+
+    it('shows the images and no placeholders once loaded', () => {
+      const attachments: MessageAttachment[] = [
+        { id: 'att_1', type: 'image', mimeType: 'image/png', data: 'AAAA' },
+      ];
+      render(<UserMessageBubble {...createProps({ attachments, loadingAttachmentCount: 0 })} />);
+
+      expect(screen.getByAltText('Attachment')).toBeInTheDocument();
+      expect(screen.queryByTestId('attachment-placeholder')).not.toBeInTheDocument();
     });
   });
 });

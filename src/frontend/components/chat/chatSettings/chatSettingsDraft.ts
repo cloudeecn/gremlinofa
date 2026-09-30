@@ -118,8 +118,12 @@ export function fromDraft(draft: ChatSettingsDraft): ChatAgentConfig | undefined
   if (draft.enableReasoning !== undefined) cfg.enableReasoning = draft.enableReasoning;
   const budget = asNumber(draft.reasoningBudgetTokens);
   if (budget !== undefined) cfg.reasoningBudgetTokens = budget;
-  if (draft.hasReasoningEffort) cfg.reasoningEffort = draft.reasoningEffort;
-  if (draft.hasVerbosity) cfg.verbosity = draft.verbosity;
+  // An override left on "(default)" has no value to store: the wire drops an
+  // undefined key, so emitting one would only make an unchanged form look dirty
+  if (draft.hasReasoningEffort && draft.reasoningEffort !== undefined) {
+    cfg.reasoningEffort = draft.reasoningEffort;
+  }
+  if (draft.hasVerbosity && draft.verbosity !== undefined) cfg.verbosity = draft.verbosity;
   if (draft.webSearchEnabled !== undefined) cfg.webSearchEnabled = draft.webSearchEnabled;
   if (draft.fileLineNumbers !== undefined) cfg.fileLineNumbers = draft.fileLineNumbers;
   // '' here disables the nudge even when the API definition enables it, so it

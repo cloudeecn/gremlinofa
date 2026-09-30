@@ -237,24 +237,15 @@ describe('OOBEComplete', () => {
       );
     });
 
-    it('should handle clipboard error gracefully', async () => {
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    it('says so and selects the key when the copy fails', async () => {
       mockClipboard.writeText.mockRejectedValueOnce(new Error('Clipboard error'));
 
       render(<OOBEComplete mode="fresh" cek={mockCEK} storageType="indexeddb" />);
+      fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
 
-      const copyButton = screen.getByRole('button', { name: 'Copy' });
-      fireEvent.click(copyButton);
-
-      // Wait for the rejection to be handled
-      await waitFor(
-        () => {
-          expect(consoleError).toHaveBeenCalledWith('Failed to copy CEK:', expect.any(Error));
-        },
-        { timeout: 1000 }
-      );
-
-      consoleError.mockRestore();
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Couldn.t copy automatically/);
+      expect(screen.queryByRole('button', { name: '✓ Copied' })).not.toBeInTheDocument();
+      expect(window.getSelection()?.toString()).toBe(mockCEK);
     });
   });
 

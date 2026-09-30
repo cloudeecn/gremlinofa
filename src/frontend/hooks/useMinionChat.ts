@@ -1,6 +1,16 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { gremlinClient } from '../client';
 import type { MinionChat, Message, TokenUsage } from '../../shared/protocol/types';
+
+/** How often an open minion chat refetches while the parent chat's loop runs. */
+export const LIVE_REFRESH_MS = 2000;
+
+/** Keeps the previous objects for known ids so memoized bubbles don't re-render. */
+function reconcileMessages(prev: Message<unknown>[], next: Message<unknown>[]) {
+  if (prev.length === next.length && prev.every((m, i) => m.id === next[i].id)) return prev;
+  const byId = new Map(prev.map(m => [m.id, m]));
+  return next.map(m => byId.get(m.id) ?? m);
+}
 
 export interface UseMinionChatResult {
   minionChat: MinionChat | null;
@@ -14,11 +24,35 @@ export interface UseMinionChatResult {
   isCloning: boolean;
 }
 
-export function useMinionChat(minionChatId: string): UseMinionChatResult {
+/**
+ * Loads a minion chat. There is no event stream for minion chats (their loops
+ * register under the parent chat), so with `live` set — the parent's loop is
+ * running — it refetches every LIVE_REFRESH_MS, and once more when `live`
+ * turns off to catch the final messages.
+ */
+export function useMinionChat(
+  minionChatId: string,
+  { live = false }: { live?: boolean } = {}
+): UseMinionChatResult {
   const [minionChat, setMinionChat] = useState<MinionChat | null>(null);
   const [messages, setMessages] = useState<Message<unknown>[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCloning, setIsCloning] = useState(false);
+  // A refresh whose snapshot may predate a local delete would bring the deleted
+  // messages back, so it is dropped if a delete ran at any point during it:
+  // one still in flight, or an epoch change (bumped as each delete starts and ends).
+  const pendingDeletesRef = useRef(0);
+  const deleteEpochRef = useRef(0);
+  const trackDelete = useCallback(async (runDelete: () => Promise<void>) => {
+    pendingDeletesRef.current++;
+    deleteEpochRef.current++;
+    try {
+      await runDelete();
+    } finally {
+      pendingDeletesRef.current--;
+      deleteEpochRef.current++;
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,6 +80,32 @@ export function useMinionChat(minionChatId: string): UseMinionChatResult {
     };
   }, [minionChatId]);
 
+  const refresh = useCallback(async () => {
+    const epoch = deleteEpochRef.current;
+    try {
+      const [chat, msgs] = await Promise.all([
+        gremlinClient.getMinionChat(minionChatId),
+        gremlinClient.getMinionMessages(minionChatId),
+      ]);
+      if (epoch !== deleteEpochRef.current || pendingDeletesRef.current > 0) return;
+      setMinionChat(chat);
+      setMessages(prev => reconcileMessages(prev, msgs));
+    } catch (error) {
+      console.debug('[useMinionChat] Refresh failed:', error);
+    }
+  }, [minionChatId]);
+
+  const wasLiveRef = useRef(live);
+  useEffect(() => {
+    const wasLive = wasLiveRef.current;
+    wasLiveRef.current = live;
+    if (live) {
+      const timer = setInterval(() => void refresh(), LIVE_REFRESH_MS);
+      return () => clearInterval(timer);
+    }
+    if (wasLive) void refresh();
+  }, [live, refresh]);
+
   const tokenUsage: TokenUsage = useMemo(() => {
     if (!minionChat) return { input: 0, output: 0, cost: 0 };
     return {
@@ -63,20 +123,26 @@ export function useMinionChat(minionChatId: string): UseMinionChatResult {
     };
   }, [minionChat]);
 
-  const deleteMessage = useCallback(async (messageId: string) => {
-    setMessages(prev => prev.filter(m => m.id !== messageId));
-    await gremlinClient.deleteSingleMessage(messageId);
-  }, []);
+  const deleteMessage = useCallback(
+    (messageId: string) =>
+      trackDelete(async () => {
+        setMessages(prev => prev.filter(m => m.id !== messageId));
+        await gremlinClient.deleteSingleMessage(messageId);
+      }),
+    [trackDelete]
+  );
 
   const rollbackToMessage = useCallback(
     async (messageId: string) => {
       const messageIndex = messages.findIndex(m => m.id === messageId);
       if (messageIndex === -1 || messageIndex === messages.length - 1) return;
       const nextMessageId = messages[messageIndex + 1].id;
-      setMessages(prev => prev.slice(0, messageIndex + 1));
-      await gremlinClient.deleteMessageAndAfter(minionChatId, nextMessageId);
+      await trackDelete(async () => {
+        setMessages(prev => prev.slice(0, messageIndex + 1));
+        await gremlinClient.deleteMessageAndAfter(minionChatId, nextMessageId);
+      });
     },
-    [messages, minionChatId]
+    [messages, minionChatId, trackDelete]
   );
 
   const cloneToChat = useCallback(

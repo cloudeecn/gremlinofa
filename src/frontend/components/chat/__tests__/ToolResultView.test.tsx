@@ -9,43 +9,51 @@ import type {
 
 // Mock BackstageView
 vi.mock('../BackstageView', () => ({
-  default: ({ blocks }: { blocks: unknown[] }) => (
-    <div data-testid="backstage-view">Backstage: {blocks.length} blocks</div>
+  default: ({ blocks, disableMath }: { blocks: unknown[]; disableMath?: boolean }) => (
+    <div data-testid="backstage-view" data-disable-math={String(!!disableMath)}>
+      Backstage: {blocks.length} blocks
+    </div>
   ),
 }));
 
 // Mock TextGroupView
 vi.mock('../TextGroupView', () => ({
-  default: ({ blocks }: { blocks: { type: string; text: string }[] }) => (
-    <div data-testid="text-group-view">{blocks.map(b => b.text).join('')}</div>
+  default: ({
+    blocks,
+    disableMath,
+  }: {
+    blocks: { type: string; text: string }[];
+    disableMath?: boolean;
+  }) => (
+    <div data-testid="text-group-view" data-disable-math={String(!!disableMath)}>
+      {blocks.map(b => b.text).join('')}
+    </div>
   ),
 }));
 
-// Mock useApp to provide apiDefinitions
+// Mock the app context to provide apiDefinitions
 vi.mock('../../../hooks/useApp', () => ({
-  useApp: () => ({
-    apiDefinitions: [
-      {
-        id: 'api_1',
-        apiType: 'anthropic',
-        name: 'Anthropic',
-        icon: '✨',
-        baseUrl: '',
-        apiKey: '',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      {
-        id: 'api_2',
-        apiType: 'chatgpt',
-        name: 'OpenAI',
-        baseUrl: '',
-        apiKey: '',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    ],
-  }),
+  useApiDefinitions: () => [
+    {
+      id: 'api_1',
+      apiType: 'anthropic',
+      name: 'Anthropic',
+      icon: '✨',
+      baseUrl: '',
+      apiKey: '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    {
+      id: 'api_2',
+      apiType: 'chatgpt',
+      name: 'OpenAI',
+      baseUrl: '',
+      apiKey: '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+  ],
 }));
 
 const mockViewMinionChat = vi.fn();
@@ -270,6 +278,14 @@ describe('ToolResultView', () => {
 
       expect(screen.getByTestId('backstage-view')).toBeInTheDocument();
       expect(screen.getByTestId('text-group-view')).toBeInTheDocument();
+    });
+
+    it('passes Disable Math to the activity groups', () => {
+      renderWithOverlay(<ToolResultView block={complexBlock} disableMath />);
+      fireEvent.click(screen.getByRole('button', { name: /🤖/ }));
+
+      expect(screen.getByTestId('backstage-view').dataset.disableMath).toBe('true');
+      expect(screen.getByTestId('text-group-view').dataset.disableMath).toBe('true');
     });
 
     it('shows View Chat button when chatId and overlay context are present', () => {

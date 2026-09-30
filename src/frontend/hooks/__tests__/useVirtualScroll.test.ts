@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useVirtualScroll } from '../useVirtualScroll';
 import type { RefObject } from 'react';
@@ -16,13 +16,15 @@ interface CapturedObserver {
 
 describe('useVirtualScroll', () => {
   let capturedObservers: CapturedObserver[];
+  let resizeCallbacks: ResizeObserverCallback[];
+  let containerHeight: number;
   let mockScrollContainer: HTMLDivElement;
   let mockScrollContainerRef: RefObject<HTMLDivElement>;
 
-  /** Get outer observer (first created, larger rootMargin) */
-  const getOuterObserver = () => capturedObservers[0];
-  /** Get inner observer (second created, smaller rootMargin) */
-  const getInnerObserver = () => capturedObservers[1];
+  /** Outer observer of the latest build (larger rootMargin) */
+  const getOuterObserver = () => capturedObservers[capturedObservers.length - 2];
+  /** Inner observer of the latest build (smaller rootMargin) */
+  const getInnerObserver = () => capturedObservers[capturedObservers.length - 1];
 
   /** Fire an intersection entry on a specific observer */
   const fireEntry = (observer: CapturedObserver, element: HTMLElement, isIntersecting: boolean) => {
@@ -32,11 +34,33 @@ describe('useVirtualScroll', () => {
     );
   };
 
+  /** Register an element and move it out of the outer zone, waiting for the flush */
+  const registerAndHide = async (
+    result: { current: ReturnType<typeof useVirtualScroll> },
+    messageId: string
+  ) => {
+    const element = document.createElement('div');
+    act(() => result.current.registerMessage(messageId, element));
+    fireEntry(getOuterObserver(), element, true); // initial detection
+    fireEntry(getOuterObserver(), element, false); // scrolled far away
+    await waitFor(() => expect(result.current.hiddenMessageIds.has(messageId)).toBe(true));
+    return element;
+  };
+
+  const resizeContainer = (height: number) => {
+    containerHeight = height;
+    act(() => {
+      resizeCallbacks.forEach(callback => callback([], {} as ResizeObserver));
+    });
+  };
+
   beforeEach(() => {
     capturedObservers = [];
+    resizeCallbacks = [];
+    containerHeight = 800;
 
     mockScrollContainer = document.createElement('div');
-    Object.defineProperty(mockScrollContainer, 'clientHeight', { value: 800 });
+    Object.defineProperty(mockScrollContainer, 'clientHeight', { get: () => containerHeight });
     mockScrollContainerRef = { current: mockScrollContainer };
 
     global.IntersectionObserver = class IntersectionObserver {
@@ -61,18 +85,27 @@ describe('useVirtualScroll', () => {
       rootMargin = '';
       thresholds = [];
     } as unknown as typeof IntersectionObserver;
+
+    global.ResizeObserver = class ResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallbacks.push(callback);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   describe('Basic Functionality', () => {
-    it('should return correct initial state (empty visibleMessageIds Set)', () => {
+    it('starts with nothing hidden', () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
-      expect(result.current.visibleMessageIds).toBeInstanceOf(Set);
-      expect(result.current.visibleMessageIds.size).toBe(0);
+      expect(result.current.hiddenMessageIds.size).toBe(0);
       expect(typeof result.current.registerMessage).toBe('function');
       expect(typeof result.current.measureHeight).toBe('function');
       expect(typeof result.current.getHeight).toBe('function');
@@ -95,7 +128,7 @@ describe('useVirtualScroll', () => {
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
 
-      result.current.registerMessage('msg-1', null);
+      act(() => result.current.registerMessage('msg-1', null));
       expect(getOuterObserver().unobserve).toHaveBeenCalledWith(mockElement);
       expect(getInnerObserver().unobserve).toHaveBeenCalledWith(mockElement);
     });
@@ -115,14 +148,7 @@ describe('useVirtualScroll', () => {
       expect(getInnerObserver().observe).toHaveBeenCalledWith(newElement);
     });
 
-    it('should store height in cache when measureHeight is called', () => {
-      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
-
-      result.current.measureHeight('msg-1', 150);
-      expect(result.current.getHeight('msg-1')).toBe(150);
-    });
-
-    it('should retrieve cached height correctly with getHeight', () => {
+    it('should store and retrieve heights', () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
       result.current.measureHeight('msg-1', 200);
@@ -130,12 +156,18 @@ describe('useVirtualScroll', () => {
 
       expect(result.current.getHeight('msg-1')).toBe(200);
       expect(result.current.getHeight('msg-2')).toBe(300);
+      expect(result.current.getHeight('non-existent')).toBeUndefined();
     });
 
-    it('should return undefined for unmeasured messages with getHeight', () => {
+    it('returns the registered element of a mounted message', () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+      const element = document.createElement('div');
 
-      expect(result.current.getHeight('non-existent')).toBeUndefined();
+      act(() => result.current.registerMessage('msg-1', element));
+      expect(result.current.getElement('msg-1')).toBe(element);
+
+      act(() => result.current.registerMessage('msg-1', null));
+      expect(result.current.getElement('msg-1')).toBeUndefined();
     });
   });
 
@@ -180,11 +212,9 @@ describe('useVirtualScroll', () => {
     });
 
     it('should use minimum height (600) when container clientHeight is smaller', () => {
-      const smallContainer = document.createElement('div');
-      Object.defineProperty(smallContainer, 'clientHeight', { value: 400 });
-      const smallRef = { current: smallContainer };
+      containerHeight = 400;
 
-      renderHook(() => useVirtualScroll(smallRef, 1));
+      renderHook(() => useVirtualScroll(mockScrollContainerRef, 1));
 
       expect(getOuterObserver().options?.rootMargin).toBe('600px 0px'); // MIN_VIEWPORT_HEIGHT * 1
       expect(getInnerObserver().options?.rootMargin).toBe('0px 0px'); // MIN_VIEWPORT_HEIGHT * 0
@@ -198,30 +228,41 @@ describe('useVirtualScroll', () => {
     });
   });
 
-  describe('Visibility via Inner Observer', () => {
-    it('should add elements entering inner zone to visibleMessageIds', async () => {
+  describe('Hiding via Outer Observer', () => {
+    it('hides elements leaving the outer zone', async () => {
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+      await registerAndHide(result, 'msg-1');
+    });
+
+    it('never hides a message that was only detected inside the buffer', async () => {
+      vi.useFakeTimers();
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
-
+      fireEntry(getOuterObserver(), mockElement, true);
       fireEntry(getInnerObserver(), mockElement, true);
+      act(() => vi.advanceTimersByTime(250));
 
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
+      expect(result.current.hiddenMessageIds.has('msg-1')).toBe(false);
+    });
+  });
+
+  describe('Showing via Inner Observer', () => {
+    it('shows a hidden element again when it enters the inner zone', async () => {
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+      const element = await registerAndHide(result, 'msg-1');
+
+      fireEntry(getInnerObserver(), element, true);
+      await waitFor(() => expect(result.current.hiddenMessageIds.has('msg-1')).toBe(false));
     });
 
     it('should handle multiple elements entering inner zone', async () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
-
-      const el1 = document.createElement('div');
-      const el2 = document.createElement('div');
-      const el3 = document.createElement('div');
-
-      result.current.registerMessage('msg-1', el1);
-      result.current.registerMessage('msg-2', el2);
-      result.current.registerMessage('msg-3', el3);
+      const el1 = await registerAndHide(result, 'msg-1');
+      const el2 = await registerAndHide(result, 'msg-2');
+      const el3 = await registerAndHide(result, 'msg-3');
+      expect(result.current.hiddenMessageIds.size).toBe(3);
 
       getInnerObserver().callback(
         [
@@ -232,154 +273,142 @@ describe('useVirtualScroll', () => {
         {} as IntersectionObserver
       );
 
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.size).toBe(3);
-      });
-    });
-  });
-
-  describe('Virtualization via Outer Observer', () => {
-    it('should remove elements leaving outer zone from visibleMessageIds', async () => {
-      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
-
-      const mockElement = document.createElement('div');
-      result.current.registerMessage('msg-1', mockElement);
-
-      // Make visible via inner observer
-      fireEntry(getInnerObserver(), mockElement, true);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
-
-      // Virtualize via outer observer
-      fireEntry(getOuterObserver(), mockElement, false);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
-      });
-    });
-
-    it('should make initially detected messages visible (first mount in 4–5 screen zone)', async () => {
-      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
-
-      const mockElement = document.createElement('div');
-      result.current.registerMessage('msg-1', mockElement);
-
-      // Outer observer fires true for the first time → initial detection
-      fireEntry(getOuterObserver(), mockElement, true);
-
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
+      await waitFor(() => expect(result.current.hiddenMessageIds.size).toBe(0));
     });
   });
 
   describe('Hysteresis Behavior', () => {
     it('should ignore re-entry into outer zone after initialization (bounce protection)', async () => {
+      vi.useFakeTimers();
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
-
-      // 1. Initial mount in inner zone → visible
       fireEntry(getInnerObserver(), mockElement, true);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
-
-      // 2. Scroll away — leaves outer zone → virtualized
       fireEntry(getOuterObserver(), mockElement, false);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
-      });
+      act(() => vi.advanceTimersByTime(250));
+      expect(result.current.hiddenMessageIds.has('msg-1')).toBe(true);
 
-      // 3. Scroll back to 4–5 screen range — outer fires true, but already initialized → ignored
+      // Back in the 4–5 screen range: outer fires true, but already initialized → ignored
       fireEntry(getOuterObserver(), mockElement, true);
-
-      // Wait a tick and verify it stayed invisible
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
-      });
-    });
-
-    it('should re-render when re-entering inner zone after virtualization', async () => {
-      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
-
-      const mockElement = document.createElement('div');
-      result.current.registerMessage('msg-1', mockElement);
-
-      // 1. Make visible
-      fireEntry(getInnerObserver(), mockElement, true);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
-
-      // 2. Virtualize
-      fireEntry(getOuterObserver(), mockElement, false);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
-      });
-
-      // 3. Re-enter inner zone → visible again
-      fireEntry(getInnerObserver(), mockElement, true);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
+      act(() => vi.advanceTimersByTime(250));
+      expect(result.current.hiddenMessageIds.has('msg-1')).toBe(true);
     });
 
     it('should not toggle state when rapidly bouncing at outer boundary', async () => {
+      vi.useFakeTimers();
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
-
-      // Initial detection
       fireEntry(getInnerObserver(), mockElement, true);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
-
-      // Virtualize
       fireEntry(getOuterObserver(), mockElement, false);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
+      act(() => vi.advanceTimersByTime(250));
+
+      // Rapid bounce within one batch: the trues are ignored (initialized)
+      fireEntry(getOuterObserver(), mockElement, true);
+      fireEntry(getOuterObserver(), mockElement, false);
+      fireEntry(getOuterObserver(), mockElement, true);
+      act(() => vi.advanceTimersByTime(250));
+
+      expect(result.current.hiddenMessageIds.has('msg-1')).toBe(true);
+    });
+  });
+
+  describe('Batching', () => {
+    it('keeps the same Set when a flush changes nothing (no re-render)', () => {
+      vi.useFakeTimers();
+      let renders = 0;
+      const { result } = renderHook(() => {
+        renders++;
+        return useVirtualScroll(mockScrollContainerRef);
       });
 
-      // Rapid bounce: outer true → outer false → outer true (all within one batch)
-      fireEntry(getOuterObserver(), mockElement, true); // ignored (initialized)
-      fireEntry(getOuterObserver(), mockElement, false); // virtualize
-      fireEntry(getOuterObserver(), mockElement, true); // ignored (initialized)
+      const mockElement = document.createElement('div');
+      result.current.registerMessage('msg-1', mockElement);
+      const before = result.current.hiddenMessageIds;
+      const rendersBefore = renders;
 
-      // The last effective update was the false, but the true after it is ignored,
-      // so the pending update should be false
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(false);
+      // Visible → visible: nothing to change
+      fireEntry(getOuterObserver(), mockElement, true);
+      fireEntry(getInnerObserver(), mockElement, true);
+      act(() => vi.advanceTimersByTime(250));
+
+      expect(result.current.hiddenMessageIds).toBe(before);
+      expect(renders).toBe(rendersBefore);
+    });
+  });
+
+  describe('Unregistering', () => {
+    it('forgets height, hidden flag and initialization of an unmounted message', async () => {
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+      await registerAndHide(result, 'msg-1');
+      result.current.measureHeight('msg-1', 150);
+
+      act(() => result.current.registerMessage('msg-1', null));
+
+      expect(result.current.hiddenMessageIds.has('msg-1')).toBe(false);
+      expect(result.current.getHeight('msg-1')).toBeUndefined();
+
+      // A message coming back with the same id is detected from scratch
+      const newElement = document.createElement('div');
+      act(() => result.current.registerMessage('msg-1', newElement));
+      fireEntry(getOuterObserver(), newElement, true);
+      fireEntry(getOuterObserver(), newElement, false);
+      await waitFor(() => expect(result.current.hiddenMessageIds.has('msg-1')).toBe(true));
+    });
+
+    it('drops pending updates for an unmounted message', () => {
+      vi.useFakeTimers();
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+
+      const mockElement = document.createElement('div');
+      result.current.registerMessage('msg-1', mockElement);
+      fireEntry(getOuterObserver(), mockElement, false);
+      act(() => result.current.registerMessage('msg-1', null));
+      act(() => vi.advanceTimersByTime(250));
+
+      expect(result.current.hiddenMessageIds.has('msg-1')).toBe(false);
+    });
+  });
+
+  describe('Rebuilds', () => {
+    it('rebuilds the observers with new margins when the container resizes past the threshold', () => {
+      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+      const elements = [document.createElement('div'), document.createElement('div')];
+      elements.forEach((element, i) => result.current.registerMessage(`msg-${i}`, element));
+      expect(capturedObservers).toHaveLength(2);
+
+      // 800 → 880 is within 15%: no rebuild
+      resizeContainer(880);
+      expect(capturedObservers).toHaveLength(2);
+
+      // 800 → 1200: rebuild with new margins, re-observing every element
+      resizeContainer(1200);
+      expect(capturedObservers).toHaveLength(4);
+      expect(getOuterObserver().options?.rootMargin).toBe('6000px 0px');
+      expect(getInnerObserver().options?.rootMargin).toBe('4800px 0px');
+      elements.forEach(element => {
+        expect(getOuterObserver().observe).toHaveBeenCalledWith(element);
+        expect(getInnerObserver().observe).toHaveBeenCalledWith(element);
       });
     });
 
-    it('should reset initialization tracking when unregistering a message', async () => {
-      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
+    it('un-hides everything and re-classifies when resetKey changes', async () => {
+      const { result, rerender } = renderHook(
+        ({ resetKey }) => useVirtualScroll(mockScrollContainerRef, 5, resetKey),
+        { initialProps: { resetKey: 'a' } }
+      );
+      const element = await registerAndHide(result, 'msg-1');
 
-      const mockElement = document.createElement('div');
-      result.current.registerMessage('msg-1', mockElement);
+      rerender({ resetKey: 'b' });
 
-      // Initialize
-      fireEntry(getOuterObserver(), mockElement, true);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
-
-      // Unregister — clears initialization tracking
-      result.current.registerMessage('msg-1', null);
-
-      // Re-register with new element
-      const newElement = document.createElement('div');
-      result.current.registerMessage('msg-1', newElement);
-
-      // Outer true should work as initial detection again (not ignored)
-      fireEntry(getOuterObserver(), newElement, true);
-      await waitFor(() => {
-        expect(result.current.visibleMessageIds.has('msg-1')).toBe(true);
-      });
+      expect(result.current.hiddenMessageIds.size).toBe(0);
+      expect(getOuterObserver().observe).toHaveBeenCalledWith(element);
+      // Fresh classification: first outer detection counts as initial again
+      fireEntry(getOuterObserver(), element, true);
+      fireEntry(getOuterObserver(), element, false);
+      await waitFor(() => expect(result.current.hiddenMessageIds.has('msg-1')).toBe(true));
     });
   });
 
@@ -401,14 +430,12 @@ describe('useVirtualScroll', () => {
       const mockElement = document.createElement('div');
       result.current.registerMessage('msg-1', mockElement);
 
-      fireEntry(getInnerObserver(), mockElement, true);
+      fireEntry(getOuterObserver(), mockElement, false);
 
       unmount();
 
       // Advance past the sync interval — should not cause errors
       vi.advanceTimersByTime(500);
-
-      vi.useRealTimers();
     });
 
     it('should clear and recreate observers when bufferScreens changes', () => {
@@ -419,7 +446,6 @@ describe('useVirtualScroll', () => {
         initialProps: { ref: mockScrollContainerRef, buffer: 2 },
       });
 
-      // Should have 2 observers initially
       expect(capturedObservers).toHaveLength(2);
 
       rerender({ ref: mockScrollContainerRef, buffer: 3 });
@@ -429,7 +455,6 @@ describe('useVirtualScroll', () => {
       expect(capturedObservers).toHaveLength(4);
 
       clearIntervalSpy.mockRestore();
-      vi.useRealTimers();
     });
 
     it('should wait for scroll container ref before creating observers', () => {
@@ -442,17 +467,6 @@ describe('useVirtualScroll', () => {
   });
 
   describe('Pending Registration Queue', () => {
-    it('should observe elements registered after observers are ready', () => {
-      const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
-
-      const mockElement = document.createElement('div');
-      result.current.registerMessage('msg-1', mockElement);
-
-      expect(getOuterObserver().observe).toHaveBeenCalledWith(mockElement);
-      expect(getInnerObserver().observe).toHaveBeenCalledWith(mockElement);
-      expect(mockElement.getAttribute('data-message-id')).toBe('msg-1');
-    });
-
     it('should observe multiple elements registered sequentially', () => {
       const { result } = renderHook(() => useVirtualScroll(mockScrollContainerRef));
 

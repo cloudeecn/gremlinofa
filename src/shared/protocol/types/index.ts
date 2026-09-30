@@ -19,7 +19,7 @@ export type {
   TokenTotals,
 } from './content';
 export { categorizeBlock, groupAndConsolidateBlocks } from './content';
-import type { RenderingBlockGroup, MessageStopReason } from './content';
+import type { RenderingBlockGroup, RenderingContentBlock, MessageStopReason } from './content';
 
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ChatCompletionTool } from 'openai/resources/index.mjs';
@@ -598,14 +598,41 @@ export interface MessageContent<T> {
   attachmentIds?: string[]; // References to attachment records
   originalAttachmentCount?: number; // Number of attachments when message was sent (for tracking deleted attachments)
   stopReason?: MessageStopReason; // Why message ended (end_turn, max_tokens, etc.)
-  injectedFiles?: Array<{ path: string; content: string; preamble?: string; postamble?: string }>; // Files for API-client-level block construction, placed before the text; preamble/postamble replace the default framing
-  injectedFilesAfter?: Array<{
-    path: string;
-    content: string;
-    preamble?: string;
-    postamble?: string;
-  }>; // Same, but placed after the text block
-  injectionMode?: 'inline' | 'separate-block' | 'as-file' | 'mock-tool-call'; // How API client should render both injected-file arrays
+  injectedFiles?: StoredInjectedFile[]; // Files for API-client-level block construction, placed before the text
+  injectedFilesAfter?: StoredInjectedFile[]; // Same, but placed after the text block
+  injectionMode?: InjectionMode; // How API client should render both injected-file arrays
+}
+
+export type InjectionMode = 'inline' | 'separate-block' | 'as-file' | 'mock-tool-call';
+
+/** Injected file as stored on a message; preamble/postamble replace the default framing. */
+export interface StoredInjectedFile {
+  path: string;
+  content: string;
+  preamble?: string;
+  postamble?: string;
+}
+
+/** One injected file an edit carries from the original message into its replacement. */
+export interface CarriedInjectedFile {
+  path: string;
+  /** The file bar's text. For `inline` it is also exactly what the model read. */
+  display: string;
+  /** Raw entry the API client frames itself; absent for `inline`. */
+  entry?: StoredInjectedFile;
+}
+
+/**
+ * The injected files of a message being edited, as the composer holds them.
+ * Sent with the replacement message so it reaches the model the way the
+ * original did.
+ */
+export interface CarriedInjection {
+  mode: InjectionMode;
+  before: CarriedInjectedFile[];
+  after: CarriedInjectedFile[];
+  /** `inline` only: the original put `=== end of files ===` after the leading batch. */
+  endMarker: boolean;
 }
 
 // Attachment types
@@ -731,6 +758,31 @@ export interface ToolResult {
 }
 
 /**
+ * One edit to an in-flight assistant reply's `RenderingBlockGroup[]`, as
+ * journaled by `StreamingContentAssembler.takeOps()` and applied by
+ * `applyStreamingGroupsOps`. A batch of ops carries only what changed since
+ * the previous batch, so a streaming update costs the chunk, not the reply.
+ *
+ *   - `reset` empties the groups (a new loop iteration starts a new reply).
+ *   - `add` opens group `g` when `g === groups.length`, or pushes onto the
+ *     last group when `g === groups.length - 1`. `block` is the full block.
+ *   - `append` extends `.text` (text block) or `.thinking` (thinking block)
+ *     of block `b` in group `g`, which need not be the last block.
+ *   - `put` replaces block `b` in group `g` wholesale (web search results,
+ *     fetch titles, tool-result annotations).
+ */
+export type StreamingGroupsOp =
+  | { op: 'reset' }
+  | {
+      op: 'add';
+      g: number;
+      category: RenderingBlockGroup['category'];
+      block: RenderingContentBlock;
+    }
+  | { op: 'append'; g: number; b: number; text: string }
+  | { op: 'put'; g: number; b: number; block: RenderingContentBlock };
+
+/**
  * Discriminated delta payload describing how a tool's `renderingGroups` change
  * frame-over-frame. The minion tool emits these instead of full per-chunk
  * snapshots; `agenticLoopGenerator` forwards them onto the wire as
@@ -740,15 +792,13 @@ export interface ToolResult {
  *   - `init` carries the static `infoGroup` plus any seed state. Emitted once
  *     per tool call. The other delta kinds assume the receiver has applied an
  *     `init` first (or a `snapshot` from attach replay).
- *   - `append` is the bandwidth fast-path — only the trailing text/thinking
- *     block of `streamingGroups` grew, so we ship the suffix and nothing else.
- *   - `replace_streaming` covers structural changes (block count/type
- *     mismatch, block list shrunk) by re-shipping just the streaming portion.
- *     `accumulatedGroups` and `infoGroup` stay stable.
+ *   - `streaming_ops` edits `streamingGroups` with the child loop's own
+ *     streaming ops (see `StreamingGroupsOp`). `accumulatedGroups` and
+ *     `infoGroup` stay stable.
  *   - `message_finalized` rolls the in-flight `streamingGroups` into
  *     `accumulatedGroups` when a sub-message finalizes. Carries the
  *     authoritative `accumulatedGroups` and the next `streamingGroups`
- *     (usually empty — the next chunk will repopulate via `append`).
+ *     (usually empty — the next ops rebuild it from scratch).
  */
 export type ToolGroupsDelta =
   | {
@@ -757,8 +807,7 @@ export type ToolGroupsDelta =
       accumulatedGroups: RenderingBlockGroup[];
       streamingGroups: RenderingBlockGroup[];
     }
-  | { kind: 'append'; target: 'last_text' | 'last_thinking'; text: string }
-  | { kind: 'replace_streaming'; streamingGroups: RenderingBlockGroup[] }
+  | { kind: 'streaming_ops'; ops: StreamingGroupsOp[] }
   | {
       kind: 'message_finalized';
       accumulatedGroups: RenderingBlockGroup[];
@@ -766,18 +815,12 @@ export type ToolGroupsDelta =
     };
 
 /**
- * Event yielded by tool generators during execution.
- *
- *   - `groups_update` is the legacy full-snapshot path, kept for tools that
- *     don't justify the delta surface.
- *   - `groups_delta` is the bandwidth-conscious path used by the minion tool.
- *     `agenticLoopGenerator` translates these into wire-level
- *     `tool_groups_delta` events and `LoopRegistry` replays the assembled
- *     state on attach via `tool_groups_snapshot`.
+ * Event yielded by tool generators during execution. `groups_delta` is the
+ * streaming path used by the minion tool: `agenticLoopGenerator` translates
+ * it into a wire-level `tool_groups_delta` event and `LoopRegistry` replays
+ * the assembled state on attach via `tool_groups_snapshot`.
  */
-export type ToolStreamEvent =
-  | { type: 'groups_update'; groups: RenderingBlockGroup[] }
-  | { type: 'groups_delta'; delta: ToolGroupsDelta };
+export type ToolStreamEvent = { type: 'groups_delta'; delta: ToolGroupsDelta };
 
 /**
  * Return type for ClientSideTool.execute.

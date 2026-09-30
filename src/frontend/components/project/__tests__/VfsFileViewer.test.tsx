@@ -3,6 +3,13 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import VfsFileViewer from '../VfsFileViewer';
 import type { VfsAdapter } from '../../../../shared/protocol/types/vfs';
 
+const mockConfirm = vi.fn();
+const mockAlert = vi.fn();
+vi.mock('../../../lib/alerts', () => ({
+  showDestructiveConfirm: (...args: unknown[]) => mockConfirm(...args),
+  showAlert: (...args: unknown[]) => mockAlert(...args),
+}));
+
 function createMockAdapter(overrides?: Partial<VfsAdapter>): VfsAdapter {
   return {
     readDir: vi.fn().mockResolvedValue([]),
@@ -389,6 +396,55 @@ describe('VfsFileViewer', () => {
 
       expect(adapterA.readFileWithMeta).toHaveBeenCalledTimes(1);
       expect(adapterB.readFileWithMeta).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Drop old versions', () => {
+    const manyVersions = {
+      version: 15,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      minStoredVersion: 1,
+      storedVersionCount: 15,
+    };
+
+    async function clickDrop() {
+      vi.mocked(mockAdapter.getFileMeta).mockResolvedValue(manyVersions);
+      render(<VfsFileViewer {...getDefaultProps()} />);
+      const button = await screen.findByTitle('Drop old versions (keep last 10)');
+      fireEvent.click(button);
+    }
+
+    it('asks first, naming how many go', async () => {
+      mockConfirm.mockResolvedValue(true);
+      vi.mocked(mockAdapter.dropOldVersions).mockResolvedValue(5);
+
+      await clickDrop();
+
+      await waitFor(() => expect(mockAdapter.dropOldVersions).toHaveBeenCalledWith('file-id', 10));
+      expect(mockConfirm).toHaveBeenCalledWith(
+        'Drop old versions',
+        'Drop 5 old versions of notes.txt? The last 10 are kept.',
+        'Drop'
+      );
+    });
+
+    it('drops nothing when the confirm is cancelled', async () => {
+      mockConfirm.mockResolvedValue(false);
+
+      await clickDrop();
+
+      await waitFor(() => expect(mockConfirm).toHaveBeenCalled());
+      expect(mockAdapter.dropOldVersions).not.toHaveBeenCalled();
+    });
+
+    it('alerts when the drop fails', async () => {
+      mockConfirm.mockResolvedValue(true);
+      vi.mocked(mockAdapter.dropOldVersions).mockRejectedValue(new Error('locked'));
+
+      await clickDrop();
+
+      await waitFor(() => expect(mockAlert).toHaveBeenCalledWith('Versions not dropped', 'locked'));
     });
   });
 });

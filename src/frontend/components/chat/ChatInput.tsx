@@ -1,13 +1,51 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import type { MessageAttachment } from '../../../shared/protocol/types';
+import { useImeSafeEnter } from '../../hooks/useImeSafeEnter';
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice';
+import { useStableCallback } from '../../hooks/useStableCallback';
+import { clipboardImageFiles, pickImageFiles } from '../../lib/imageFiles';
 import Spinner from '../ui/Spinner';
 import type { ChatInputProps } from './types';
 
+/**
+ * Memoized so a keystroke doesn't rebuild (and React doesn't re-compare) a
+ * multi-megabyte `data:` URL for every staged image.
+ */
+const AttachmentThumbnail = memo(function AttachmentThumbnail({
+  attachment,
+  onRemove,
+}: {
+  attachment: MessageAttachment;
+  onRemove: (id: string) => void;
+}) {
+  return (
+    <div className="relative h-20 w-20 overflow-hidden rounded-lg border border-gray-300">
+      <img
+        src={`data:${attachment.mimeType};base64,${attachment.data}`}
+        alt="Attachment preview"
+        className="h-full w-full object-cover"
+      />
+      <button
+        onClick={() => onRemove(attachment.id)}
+        className="absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-xs text-white hover:bg-red-600"
+        title="Remove image"
+      >
+        ✕
+      </button>
+    </div>
+  );
+});
+
+// Keeps a click on Send/Stop from moving focus out of the textarea, so the
+// cursor (and a phone's keyboard) stays put across a send.
+const keepTextareaFocus = (e: React.MouseEvent) => e.preventDefault();
+
 export default function ChatInput({
+  ref,
   value,
   onChange,
   onSend,
-  disabled,
+  sendDisabled,
   attachments,
   onFilesAdded,
   onRemoveAttachment,
@@ -15,51 +53,71 @@ export default function ChatInput({
   isProcessing = false,
   showSendSpinner = false,
   hasPendingToolCalls = false,
+  hasCarriedFiles = false,
   softStopRequested = false,
   onRequestSoftStop,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isTouchDevice = useIsTouchDevice();
-  const compositionJustEndedRef = useRef(false);
+  const { onCompositionEnd, isImeEnter } = useImeSafeEnter();
   const [validationError, setValidationError] = useState<string>('');
 
-  // Auto-resize textarea based on content
+  // Auto-resize to the content; the max-h classes cap it (taller on desktop)
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
+      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
     }
   }, [value]);
 
-  // Chrome fires keydown with isComposing:false AFTER compositionend,
-  // so the isComposing check alone misses the Enter that confirmed the IME candidate.
-  // This flag stays true for one frame after compositionend to catch that keydown.
+  // The textarea stays enabled through a reply, so focus normally never
+  // leaves it. If it did (the Send button swapped for Stop under the pointer),
+  // bring it back when sending unblocks — on keyboard devices only, since
+  // focusing on a phone would pop the keyboard.
+  const wasSendDisabledRef = useRef(sendDisabled);
   useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const onCompositionEnd = () => {
-      compositionJustEndedRef.current = true;
-      requestAnimationFrame(() => {
-        compositionJustEndedRef.current = false;
-      });
-    };
-    textarea.addEventListener('compositionend', onCompositionEnd);
-    return () => textarea.removeEventListener('compositionend', onCompositionEnd);
-  }, []);
+    const unblocked = wasSendDisabledRef.current && !sendDisabled;
+    wasSendDisabledRef.current = sendDisabled;
+    if (unblocked && !isTouchDevice && document.activeElement === document.body) {
+      textareaRef.current?.focus();
+    }
+  }, [sendDisabled, isTouchDevice]);
+
+  // One rule for Enter and the Send button
+  const canSend =
+    (value.trim() !== '' || attachments.length > 0 || hasPendingToolCalls || hasCarriedFiles) &&
+    !sendDisabled &&
+    !isProcessing &&
+    !showSendSpinner;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Ignore Enter during IME composition (Safari: isComposing, Chrome: compositionend guard)
-    if (e.nativeEvent.isComposing || compositionJustEndedRef.current) return;
+    if (isImeEnter(e)) return;
 
     // Touch devices (phone/tablet without keyboard): Enter inserts newline, send button to send
     // Keyboard devices (desktop, iPad + Magic Keyboard): Enter sends, Shift+Enter for newline
     if (e.key === 'Enter' && !e.shiftKey && !isTouchDevice) {
       e.preventDefault();
-      if (value.trim() && !disabled && !isProcessing) {
+      if (canSend) {
         onSend();
       }
     }
+  };
+
+  const addFiles = useStableCallback((files: File[]) => {
+    const { images, error } = pickImageFiles(files, attachments.length, maxAttachments);
+    setValidationError(error ?? '');
+    if (images.length > 0) onFilesAdded(images);
+  });
+
+  useImperativeHandle(ref, () => ({ addFiles }), [addFiles]);
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = clipboardImageFiles(e.clipboardData);
+    if (images.length === 0) return;
+    // Rich copies (a web page) carry text alongside the image: let the text paste too
+    if (!e.clipboardData.getData('text/plain')) e.preventDefault();
+    addFiles(images);
   };
 
   const handleAttachClick = () => {
@@ -73,37 +131,15 @@ export default function ChatInput({
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
-
-    setValidationError('');
-
-    // Check total count
-    const totalCount = attachments.length + files.length;
-    if (totalCount > maxAttachments) {
-      setValidationError(
-        `Maximum ${maxAttachments} images allowed. You can add ${maxAttachments - attachments.length} more.`
-      );
-      return;
-    }
-
-    // Filter for image files only
-    const imageFiles = files.filter(file => file.type.startsWith('image/'));
-    if (imageFiles.length < files.length) {
-      setValidationError('Only image files are allowed');
-    }
-
-    if (imageFiles.length > 0) {
-      // Pass files to parent for processing
-      onFilesAdded(imageFiles);
-    }
-
+    addFiles(files);
     // Reset input so same file can be selected again
     e.target.value = '';
   };
 
-  const handleRemoveAttachment = (id: string) => {
+  const handleRemoveAttachment = useStableCallback((id: string) => {
     onRemoveAttachment(id);
     setValidationError('');
-  };
+  });
 
   // Clear validation error after 5 seconds
   useEffect(() => {
@@ -120,23 +156,11 @@ export default function ChatInput({
         {attachments.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">
             {attachments.map(attachment => (
-              <div
+              <AttachmentThumbnail
                 key={attachment.id}
-                className="relative h-20 w-20 overflow-hidden rounded-lg border border-gray-300"
-              >
-                <img
-                  src={`data:${attachment.mimeType};base64,${attachment.data}`}
-                  alt="Attachment preview"
-                  className="h-full w-full object-cover"
-                />
-                <button
-                  onClick={() => handleRemoveAttachment(attachment.id)}
-                  className="absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-xs text-white hover:bg-red-600"
-                  title="Remove image"
-                >
-                  ✕
-                </button>
-              </div>
+                attachment={attachment}
+                onRemove={handleRemoveAttachment}
+              />
             ))}
             {/* Processing indicator */}
             {isProcessing && (
@@ -173,13 +197,14 @@ export default function ChatInput({
           {/* Attach Button */}
           <button
             onClick={handleAttachClick}
-            disabled={disabled || attachments.length >= maxAttachments || isProcessing}
+            disabled={attachments.length >= maxAttachments || isProcessing}
             className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-gray-300 disabled:hover:bg-transparent"
             title={
               attachments.length >= maxAttachments
                 ? `Maximum ${maxAttachments} images`
                 : 'Attach images'
             }
+            aria-label="Attach images"
           >
             <span className="text-2xl">📎</span>
           </button>
@@ -187,20 +212,22 @@ export default function ChatInput({
           {/* Textarea */}
           <textarea
             ref={textareaRef}
+            onCompositionEnd={onCompositionEnd}
             value={value}
             onChange={e => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder="Type your message..."
-            disabled={disabled}
+            aria-label="Message"
             rows={1}
-            className="flex-1 resize-none rounded-3xl border border-gray-300 px-4 py-3 pr-12 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none disabled:bg-gray-100 disabled:text-gray-500"
-            style={{ minHeight: '48px', maxHeight: '120px' }}
+            className="max-h-[120px] min-h-12 flex-1 resize-none overflow-y-auto rounded-3xl border border-gray-300 px-4 py-3 pr-12 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none md:max-h-[40dvh]"
           />
 
           {/* Send / Stop Button */}
-          {disabled && onRequestSoftStop ? (
+          {onRequestSoftStop ? (
             <button
               onClick={onRequestSoftStop}
+              onMouseDown={keepTextareaFocus}
               disabled={softStopRequested}
               className={`absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
                 softStopRequested
@@ -208,6 +235,7 @@ export default function ChatInput({
                   : 'bg-red-600 text-white hover:bg-red-700'
               }`}
               title={softStopRequested ? 'Stopping...' : 'Stop after current step'}
+              aria-label={softStopRequested ? 'Stopping' : 'Stop after current step'}
             >
               {softStopRequested ? (
                 <Spinner size={16} colorClass="border-white" />
@@ -221,12 +249,8 @@ export default function ChatInput({
           ) : (
             <button
               onClick={onSend}
-              disabled={
-                (!value.trim() && attachments.length === 0 && !hasPendingToolCalls) ||
-                disabled ||
-                isProcessing ||
-                showSendSpinner
-              }
+              onMouseDown={keepTextareaFocus}
+              disabled={!canSend}
               className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               title={
                 hasPendingToolCalls
@@ -235,6 +259,7 @@ export default function ChatInput({
                     ? 'Send message'
                     : 'Send message (Enter)'
               }
+              aria-label={hasPendingToolCalls ? 'Resolve pending tool calls' : 'Send message'}
             >
               {showSendSpinner ? (
                 <Spinner size={16} colorClass="border-white" />

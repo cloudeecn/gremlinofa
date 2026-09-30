@@ -24,7 +24,14 @@ import type {
   AgenticLoopEvent,
   AgenticLoopResult,
 } from '../../services/agentic/agenticLoopGenerator';
-import type { APIDefinition, Chat, Message, Model, Project } from '../../protocol/types';
+import type {
+  APIDefinition,
+  CarriedInjection,
+  Chat,
+  Message,
+  Model,
+  Project,
+} from '../../protocol/types';
 import type { LoopEvent } from '../../protocol/protocol';
 
 // Mock the heavy dependencies. The runner only sees `runAgenticLoop` as
@@ -327,8 +334,8 @@ describe('ChatRunner', () => {
             { type: 'streaming_start' },
             { type: 'first_chunk' },
             {
-              type: 'streaming_chunk',
-              groups: [{ category: 'text', blocks: [{ type: 'text', text: 'hi' }] }],
+              type: 'streaming_delta',
+              ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'hi' } }],
             },
             { type: 'message_created', message: assistantMsg },
             { type: 'streaming_end' },
@@ -367,8 +374,21 @@ describe('ChatRunner', () => {
       const types = events.map(e => e.type);
       expect(types).toContain('streaming_start');
       expect(types).toContain('first_chunk');
-      expect(types).toContain('streaming_chunk');
       expect(types).toContain('message_created');
+
+      // The iteration's streaming_start becomes a reset op; the loop's deltas
+      // pass through unchanged, after it.
+      const deltas = events.filter(e => e.type === 'streaming_delta');
+      expect(deltas).toEqual([
+        { type: 'streaming_delta', ops: [{ op: 'reset' }] },
+        {
+          type: 'streaming_delta',
+          ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'hi' } }],
+        },
+      ]);
+      // The run-level streaming_start precedes the reset.
+      expect(types.indexOf('streaming_start')).toBeLessThan(types.indexOf('streaming_delta'));
+      expect(types.filter(t => t === 'streaming_start')).toHaveLength(1);
       expect(types).toContain('streaming_end');
       expect(types).toContain('chat_updated');
       expect(types).toContain('project_updated');
@@ -633,6 +653,112 @@ describe('ChatRunner', () => {
 
       expect(storage.deleteMessageAndAfter).not.toHaveBeenCalled();
       expect(events.find(e => e.type === 'messages_truncated')).toBeUndefined();
+    });
+  });
+
+  describe('carried injected files', () => {
+    const fileA = { path: '/a.md', content: 'alpha' };
+    const fileB = { path: '/b.md', content: 'beta' };
+    const injection = (mode: CarriedInjection['mode']): CarriedInjection => ({
+      mode,
+      before: [{ path: fileA.path, display: '=== /a.md ===\nalpha', entry: fileA }],
+      after: [{ path: fileB.path, display: '=== /b.md ===\nbeta', entry: fileB }],
+      endMarker: false,
+    });
+
+    beforeEach(() => {
+      vi.mocked(storage.getChat).mockResolvedValue(mkChat('c1', 'p1'));
+      vi.mocked(storage.getProject).mockResolvedValue(mkProject('p1'));
+      vi.mocked(storage.getAPIDefinition).mockResolvedValue(mkAPIDef('api_1'));
+      vi.mocked(storage.getModel).mockResolvedValue(mkModel('m1'));
+      vi.mocked(storage.getMessages).mockResolvedValue([]);
+      runAgenticLoopMock.mockImplementation(() =>
+        fakeLoopGen([], {
+          status: 'complete',
+          messages: [],
+          tokens: {
+            inputTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            webSearchCount: 0,
+            cost: 0,
+            costUnreliable: false,
+          },
+        })
+      );
+    });
+
+    const send = async (content: string, carried?: CarriedInjection) => {
+      const events: LoopEvent[] = [];
+      const gen = runner.run(
+        { chatId: 'c1', mode: 'send', content, injection: carried },
+        new AbortController(),
+        'loop_carry'
+      );
+      for await (const ev of gen) events.push(ev);
+      const created = events.flatMap(e => (e.type === 'message_created' ? [e.message] : []));
+      const context = runAgenticLoopMock.mock.calls[0][1] as Message<unknown>[];
+      return { created, context };
+    };
+
+    it('stores the files and brackets the text with their bars', async () => {
+      const { created, context } = await send('go', injection('separate-block'));
+
+      expect(created).toHaveLength(1);
+      const [userMessage] = created;
+      expect(userMessage.content).toMatchObject({
+        content: 'go',
+        injectedFiles: [fileA],
+        injectedFilesAfter: [fileB],
+        injectionMode: 'separate-block',
+      });
+      expect(userMessage.content.renderingContent?.map(g => g.category)).toEqual([
+        'backstage',
+        'text',
+        'backstage',
+      ]);
+      expect(storage.saveMessage).toHaveBeenCalledWith('c1', userMessage);
+      expect(context).toEqual([userMessage]);
+    });
+
+    it('persists mock-tool-call pairs after the user message, in order', async () => {
+      const { created, context } = await send('go', injection('mock-tool-call'));
+
+      expect(created.map(m => m.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user']);
+      expect(created[1].content.toolCalls?.[0].input).toEqual({
+        action: 'readFile',
+        path: '/a.md',
+      });
+      expect(created[4].content.toolResults?.[0].content).toBe('beta');
+      expect(vi.mocked(storage.saveMessage).mock.calls.map(c => c[1])).toEqual(created);
+      expect(context).toEqual(created);
+    });
+
+    it('accepts carried files with no text', async () => {
+      const { created } = await send('', { ...injection('inline'), after: [] });
+      expect(created[0].content.content).toBe('=== /a.md ===\nalpha');
+    });
+
+    it('still rejects a send with no text, attachments or files', async () => {
+      const gen = runner.run(
+        {
+          chatId: 'c1',
+          mode: 'send',
+          content: ' ',
+          injection: { ...injection('inline'), before: [], after: [] },
+        },
+        new AbortController(),
+        'loop_carry_empty'
+      );
+      await expect(
+        (async () => {
+          for await (const _ev of gen) {
+            // drain
+          }
+        })()
+      ).rejects.toMatchObject({ code: 'INVALID_PARAMS' });
     });
   });
 

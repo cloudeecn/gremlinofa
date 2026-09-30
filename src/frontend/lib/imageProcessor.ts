@@ -6,6 +6,14 @@ const MAX_FILE_SIZE_AFTER_COMPRESSION = 1024 * 1024; // 1MB
 const COMPRESSION_THRESHOLD = 500 * 1024; // 500KB
 const JPEG_QUALITY = 0.85;
 
+type AttachmentMimeType = MessageAttachment['mimeType'];
+const ATTACHMENT_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+] as const satisfies readonly AttachmentMimeType[];
+
 interface ProcessImageResult {
   attachment: MessageAttachment | null;
   error?: string;
@@ -82,120 +90,114 @@ function resizeImage(img: HTMLImageElement): HTMLCanvasElement {
   return canvas;
 }
 
-/**
- * Convert canvas to base64 with specified format and quality
- */
-function canvasToBase64(canvas: HTMLCanvasElement, mimeType: string, quality?: number): string {
-  const dataUrl = canvas.toDataURL(mimeType, quality);
-  // Remove data URL prefix (e.g., "data:image/png;base64,")
-  return dataUrl.split(',')[1];
+interface EncodedImage {
+  mimeType: AttachmentMimeType;
+  base64: string;
+  /** Decoded size in bytes (approximate: ignores base64 padding) */
+  size: number;
 }
 
 /**
- * Get base64 size in bytes (approximate)
+ * Encode the canvas, labeling the bytes with the type the browser actually produced.
+ * `toDataURL` silently falls back to PNG for formats it can't encode (GIF in every
+ * browser, WebP on older Safari), so the requested type can't be trusted.
  */
-function getBase64Size(base64: string): number {
-  // Base64 adds ~33% overhead, but padding affects exact size
-  return Math.ceil((base64.length * 3) / 4);
+function encodeCanvas(canvas: HTMLCanvasElement, mimeType: string, quality?: number): EncodedImage {
+  let dataUrl = canvas.toDataURL(mimeType, quality);
+  let producedType = dataUrlMimeType(dataUrl);
+  if (!isAttachmentMimeType(producedType)) {
+    console.debug(
+      '[imageProcessor] Canvas produced %o for %s, re-encoding as PNG',
+      producedType,
+      mimeType
+    );
+    dataUrl = canvas.toDataURL('image/png');
+    producedType = dataUrlMimeType(dataUrl);
+    if (!isAttachmentMimeType(producedType)) {
+      throw new Error('Failed to encode image');
+    }
+  }
+  const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  return { mimeType: producedType, base64, size: Math.ceil((base64.length * 3) / 4) };
 }
+
+/** "data:image/png;base64,..." -> "image/png"; "" for an empty canvas ("data:,") */
+function dataUrlMimeType(dataUrl: string): string {
+  const header = dataUrl.slice('data:'.length, dataUrl.indexOf(','));
+  return header.split(';')[0];
+}
+
+function isAttachmentMimeType(mimeType: string): mimeType is AttachmentMimeType {
+  return (ATTACHMENT_MIME_TYPES as readonly string[]).includes(mimeType);
+}
+
+const toKb = (bytes: number) => (bytes / 1024).toFixed(1);
 
 /**
  * Process an image file: resize, compress if needed, and return MessageAttachment
  *
  * Processing pipeline:
- * 1. Load image
- * 2. Resize if > 1920px on any side
- * 3. Convert to base64
- * 4. If > 500KB, try JPEG compression
- * 5. If PNG becomes larger after JPEG conversion, keep PNG
- * 6. Validate final size <= 1MB
+ * 1. Any supported file under 500KB is sent as-is (keeps GIF animation and the
+ *    original bytes; the canvas can't encode GIF at all)
+ * 2. Otherwise load it, resize if > 1920px on any side, and re-encode in the
+ *    original format (or whatever the browser falls back to)
+ * 3. If still > 500KB, try JPEG and keep whichever is smaller
+ * 4. Validate final size <= 1MB
  */
 export async function processImage(file: File): Promise<ProcessImageResult> {
   try {
-    // Validate file type
-    if (!file.type.match(/^image\/(jpeg|png|gif|webp)$/)) {
+    if (!isAttachmentMimeType(file.type)) {
       return {
         attachment: null,
         error: 'Unsupported image format. Please use JPEG, PNG, GIF, or WebP.',
       };
     }
 
-    // Early bypass: use original file if it's JPG/PNG and under threshold
-    if (
-      (file.type === 'image/jpeg' || file.type === 'image/png') &&
-      file.size < COMPRESSION_THRESHOLD
-    ) {
+    if (file.size < COMPRESSION_THRESHOLD) {
       console.debug(
-        `[imageProcessor] Using original file (${file.type}, ${(file.size / 1024).toFixed(1)}KB) - no processing needed`
+        '[imageProcessor] Using original file (%s, %sKB) - no processing needed',
+        file.type,
+        toKb(file.size)
       );
-
-      const base64 = await fileToBase64(file);
 
       return {
         attachment: {
           id: generateUniqueId('att'),
           type: 'image',
-          mimeType: file.type as MessageAttachment['mimeType'],
-          data: base64,
+          mimeType: file.type,
+          data: await fileToBase64(file),
         },
       };
     }
 
-    // Load and resize image
     const img = await loadImage(file);
     const canvas = resizeImage(img);
 
-    // Get original MIME type
-    const originalMimeType = file.type as MessageAttachment['mimeType'];
-
-    // First attempt: convert to original format
-    const originalBase64 = canvasToBase64(canvas, originalMimeType);
-    const originalSize = getBase64Size(originalBase64);
-
+    const reencoded = encodeCanvas(canvas, file.type);
     console.debug(
-      `[imageProcessor] Original format: ${originalMimeType}, size: ${(originalSize / 1024).toFixed(1)}KB`
+      '[imageProcessor] Re-encoded %s as %s, size: %sKB',
+      file.type,
+      reencoded.mimeType,
+      toKb(reencoded.size)
     );
 
-    // If size is acceptable, use original format
-    if (originalSize <= COMPRESSION_THRESHOLD) {
-      if (originalSize > MAX_FILE_SIZE_AFTER_COMPRESSION) {
-        return {
-          attachment: null,
-          error: `Image too large (${(originalSize / 1024).toFixed(1)}KB). Maximum size is 1MB.`,
-        };
-      }
-
-      return {
-        attachment: {
-          id: generateUniqueId('att'),
-          type: 'image',
-          mimeType: originalMimeType,
-          data: originalBase64,
-        },
-      };
+    let encoded = reencoded;
+    if (reencoded.size > COMPRESSION_THRESHOLD) {
+      const jpeg = encodeCanvas(canvas, 'image/jpeg', JPEG_QUALITY);
+      console.debug('[imageProcessor] JPEG compressed size: %sKB', toKb(jpeg.size));
+      if (jpeg.size < reencoded.size) encoded = jpeg;
     }
 
-    // Try JPEG compression if over threshold
-    const jpegBase64 = canvasToBase64(canvas, 'image/jpeg', JPEG_QUALITY);
-    const jpegSize = getBase64Size(jpegBase64);
-
-    console.debug(`[imageProcessor] JPEG compressed size: ${(jpegSize / 1024).toFixed(1)}KB`);
-
-    // Choose smaller version (only use JPEG if it's actually smaller)
-    const useJpeg = jpegSize < originalSize;
-    const finalBase64 = useJpeg ? jpegBase64 : originalBase64;
-    const finalSize = useJpeg ? jpegSize : originalSize;
-    const finalMimeType = useJpeg ? 'image/jpeg' : originalMimeType;
-
     console.debug(
-      `[imageProcessor] Using ${finalMimeType}, final size: ${(finalSize / 1024).toFixed(1)}KB`
+      '[imageProcessor] Using %s, final size: %sKB',
+      encoded.mimeType,
+      toKb(encoded.size)
     );
 
-    // Validate final size
-    if (finalSize > MAX_FILE_SIZE_AFTER_COMPRESSION) {
+    if (encoded.size > MAX_FILE_SIZE_AFTER_COMPRESSION) {
       return {
         attachment: null,
-        error: `Image too large after compression (${(finalSize / 1024).toFixed(1)}KB). Maximum size is 1MB.`,
+        error: `Image too large after compression (${toKb(encoded.size)}KB). Maximum size is 1MB.`,
       };
     }
 
@@ -203,8 +205,8 @@ export async function processImage(file: File): Promise<ProcessImageResult> {
       attachment: {
         id: generateUniqueId('att'),
         type: 'image',
-        mimeType: finalMimeType,
-        data: finalBase64,
+        mimeType: encoded.mimeType,
+        data: encoded.base64,
       },
     };
   } catch (error) {

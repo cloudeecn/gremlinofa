@@ -1,4 +1,5 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
+import { useOverlay } from '../../hooks/useOverlay';
 
 interface ImageLightboxProps {
   /** Image source URL (data: URL or regular URL) */
@@ -14,27 +15,22 @@ interface ImageLightboxProps {
  * Supports keyboard (Escape to close) and click-outside-to-close.
  */
 export default function ImageLightbox({ src, alt = 'Image preview', onClose }: ImageLightboxProps) {
-  // Handle keyboard events
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    },
-    [onClose]
-  );
+  const rootRef = useRef<HTMLDivElement>(null);
+  useOverlay({
+    active: true,
+    onEscape: onClose,
+    containerRef: rootRef,
+    trapFocus: true,
+    restoreFocus: true,
+  });
 
-  // Add keyboard listener on mount
+  // Prevent body scroll while lightbox is open
   useEffect(() => {
-    document.addEventListener('keydown', handleKeyDown);
-    // Prevent body scroll while lightbox is open
     document.body.style.overflow = 'hidden';
-
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = '';
     };
-  }, [handleKeyDown]);
+  }, []);
 
   // Handle backdrop click (close if clicking outside image)
   const handleBackdropClick = (e: React.MouseEvent) => {
@@ -45,7 +41,12 @@ export default function ImageLightbox({ src, alt = 'Image preview', onClose }: I
 
   return (
     <div
-      className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/90"
+      ref={rootRef}
+      tabIndex={-1}
+      role="dialog"
+      aria-modal="true"
+      aria-label={alt}
+      className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/90 outline-none"
       onClick={handleBackdropClick}
     >
       {/* Close button */}
@@ -53,6 +54,7 @@ export default function ImageLightbox({ src, alt = 'Image preview', onClose }: I
         onClick={onClose}
         className="absolute top-4 right-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
         title="Close (Escape)"
+        aria-label="Close"
       >
         <span className="text-2xl">✕</span>
       </button>

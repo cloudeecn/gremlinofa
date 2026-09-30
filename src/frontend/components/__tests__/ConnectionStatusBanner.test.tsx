@@ -22,16 +22,52 @@ describe('ConnectionStatusBanner', () => {
     vi.useRealTimers();
   });
 
-  it('should render nothing when connected', () => {
+  it('should render only an empty live region when connected', () => {
     mockState = 'connected';
-    const { container } = render(createElement(ConnectionStatusBanner));
-    expect(container.innerHTML).toBe('');
+    render(createElement(ConnectionStatusBanner));
+    const region = screen.getByRole('status');
+    expect(region).toBeEmptyDOMElement();
+    expect(region).not.toHaveAttribute('data-visible');
   });
 
-  it('should render nothing when connecting (initial)', () => {
+  it('should render only an empty live region when connecting (initial)', () => {
     mockState = 'connecting';
-    const { container } = render(createElement(ConnectionStatusBanner));
-    expect(container.innerHTML).toBe('');
+    render(createElement(ConnectionStatusBanner));
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+  });
+
+  it('announces problems through the live region and marks it visible', () => {
+    mockState = 'disconnected';
+    render(createElement(ConnectionStatusBanner));
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    const region = screen.getByRole('status');
+    expect(region).toHaveAttribute('aria-live', 'polite');
+    expect(region).toHaveAttribute('data-visible', 'true');
+    expect(region).toHaveTextContent(/Connection lost/);
+  });
+
+  it('offers a Reload button when the server rejects the key', () => {
+    const reload = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      value: { ...originalLocation, reload },
+      configurable: true,
+    });
+    try {
+      mockState = 'auth_failed';
+      render(createElement(ConnectionStatusBanner));
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+
+      screen.getByRole('button', { name: 'Reload' }).click();
+      expect(reload).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
+    }
   });
 
   it('should show red banner after debounce when disconnected', () => {

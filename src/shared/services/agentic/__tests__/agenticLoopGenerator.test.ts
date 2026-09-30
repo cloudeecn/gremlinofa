@@ -12,7 +12,13 @@ import {
   type TokenTotals,
 } from '../agenticLoopGenerator';
 import { LoopRegistry } from '../../../engine/LoopRegistry';
-import type { APIDefinition, Message, Model, ToolUseBlock } from '../../../protocol/types';
+import type {
+  APIDefinition,
+  Message,
+  Model,
+  RenderingBlockGroup,
+  ToolUseBlock,
+} from '../../../protocol/types';
 
 // Mock dependencies. After the Phase 4 singleton-encapsulation refactor the
 // agentic loop reads `extractToolUseBlocks` / `mapStopReason` /
@@ -36,17 +42,21 @@ vi.mock('../../../engine/lib/api/modelMetadata', () => ({
   isCostUnreliable: vi.fn(() => false),
 }));
 
-vi.mock('../../streaming/StreamingContentAssembler', () => {
+vi.mock('../../streaming/StreamingContentAssembler', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../streaming/StreamingContentAssembler')>();
   return {
-    StreamingContentAssembler: class MockStreamingContentAssembler {
-      pushChunk() {}
-      getGroups() {
+    // Real chunk handling and `takeOps()` (the `streaming_delta` events);
+    // canned finalize output so message assertions don't depend on chunks.
+    StreamingContentAssembler: class MockStreamingContentAssembler
+      extends actual.StreamingContentAssembler
+    {
+      getGroups(): RenderingBlockGroup[] {
         return [{ category: 'text', blocks: [{ type: 'text', text: 'test' }] }];
       }
-      finalize() {
+      finalize(): RenderingBlockGroup[] {
         return [{ category: 'text', blocks: [{ type: 'text', text: 'test' }] }];
       }
-      finalizeWithError(err: { message: string }) {
+      finalizeWithError(err: { message: string }): RenderingBlockGroup[] {
         return [{ category: 'error', blocks: [{ type: 'error', message: err.message }] }];
       }
     },
@@ -348,7 +358,15 @@ describe('agenticLoopGenerator', () => {
         outputTokens: 50,
       };
 
-      const mockStream = createMockStream([{ type: 'content', content: 'Hello!' }], mockResult);
+      const mockStream = createMockStream(
+        [
+          { type: 'content.start' },
+          { type: 'content', content: 'Hel' },
+          { type: 'content', content: 'lo!' },
+          { type: 'content.end' },
+        ],
+        mockResult
+      );
 
       vi.mocked(apiService.sendMessageStream).mockReturnValue(mockStream as never);
       vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
@@ -371,16 +389,66 @@ describe('agenticLoopGenerator', () => {
       const eventTypes = events.map(e => e.type);
       expect(eventTypes).toContain('streaming_start');
       expect(eventTypes).toContain('first_chunk');
-      expect(eventTypes).toContain('streaming_chunk');
       expect(eventTypes).toContain('streaming_end');
       expect(eventTypes).toContain('message_created');
       expect(eventTypes).toContain('tokens_consumed');
+
+      // One delta per visible change: the text block, then each append.
+      // content.end (no citations) changes nothing and yields nothing.
+      expect(events.filter(e => e.type === 'streaming_delta')).toEqual([
+        {
+          type: 'streaming_delta',
+          ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: '' } }],
+        },
+        { type: 'streaming_delta', ops: [{ op: 'append', g: 0, b: 0, text: 'Hel' }] },
+        { type: 'streaming_delta', ops: [{ op: 'append', g: 0, b: 0, text: 'lo!' }] },
+      ]);
+      expect(eventTypes.indexOf('streaming_delta')).toBeGreaterThan(
+        eventTypes.indexOf('streaming_start')
+      );
+      expect(eventTypes.lastIndexOf('streaming_delta')).toBeLessThan(
+        eventTypes.indexOf('streaming_end')
+      );
 
       // Verify final result
       expect(result.value.status).toBe('complete');
       expect(result.value.messages).toHaveLength(2); // user + assistant
       expect(result.value.tokens.inputTokens).toBe(100);
       expect(result.value.tokens.outputTokens).toBe(50);
+    });
+
+    it('yields no streaming event for chunks that change nothing visible', async () => {
+      const mockResult = {
+        textContent: 'Hi',
+        fullContent: [{ type: 'text', text: 'Hi' }],
+        stopReason: 'end_turn',
+        inputTokens: 10,
+        outputTokens: 5,
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream(
+          [
+            { type: 'token_usage' },
+            { type: 'content.start' },
+            { type: 'content', content: 'Hi' },
+            { type: 'token_usage' },
+            { type: 'content.end' },
+          ],
+          mockResult
+        ) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+
+      const events: AgenticLoopEvent[] = [];
+      const gen = runAgenticLoop(createMockOptions(), [createMockUserMessage('Hi')]);
+      let result: IteratorResult<AgenticLoopEvent, AgenticLoopResult>;
+      do {
+        result = await gen.next();
+        if (!result.done) events.push(result.value);
+      } while (!result.done);
+
+      expect(events.filter(e => e.type === 'streaming_delta')).toHaveLength(2);
+      expect(result.value.status).toBe('complete');
     });
 
     it('prefers the provider context-fill snapshot over the billing-usage sum', async () => {
@@ -1977,16 +2045,19 @@ describe('agenticLoopGenerator', () => {
       vi.mocked(apiService.extractToolUseBlocks).mockReturnValue(toolUseBlocks);
 
       // Create generators that yield streaming events before completing
-      const streamingGroups = [
-        { category: 'text' as const, blocks: [{ type: 'text' as const, text: 'progress' }] },
-      ];
+      const delta: import('../../../protocol/types').ToolGroupsDelta = {
+        kind: 'init',
+        infoGroup: { category: 'backstage', blocks: [{ type: 'tool_info', input: 'go' }] },
+        accumulatedGroups: [],
+        streamingGroups: [{ category: 'text', blocks: [{ type: 'text', text: 'progress' }] }],
+      };
 
       vi.mocked(executeClientSideTool).mockImplementation((name: string) => {
         async function* gen(): AsyncGenerator<
           import('../../../protocol/types').ToolStreamEvent,
           import('../../../protocol/types').ToolResult
         > {
-          yield { type: 'groups_update', groups: streamingGroups };
+          yield { type: 'groups_delta', delta };
           return { content: `Done ${name}`, isError: false, breakLoop: { returnValue: 'stop' } };
         }
         return gen();
@@ -2003,20 +2074,16 @@ describe('agenticLoopGenerator', () => {
         if (!result.done) events.push(result.value);
       } while (!result.done);
 
-      const blockUpdates = events.filter(
-        (e): e is Extract<AgenticLoopEvent, { type: 'tool_block_update' }> =>
-          e.type === 'tool_block_update'
-      );
+      const blockUpdates = events.filter(e => e.type === 'tool_block_update');
+      // 2 running + 2 completion; streaming rides tool_groups_delta instead
+      expect(blockUpdates.length).toBe(4);
 
-      // Should have: 2 running + 2 streaming (groups_update) + 2 completion = 6 block updates
-      expect(blockUpdates.length).toBe(6);
-
-      // Streaming events should carry renderingGroups
-      const streamingUpdates = blockUpdates.filter(
-        e => e.block.renderingGroups && e.block.status === 'running'
+      const groupDeltas = events.filter(
+        (e): e is Extract<AgenticLoopEvent, { type: 'tool_groups_delta' }> =>
+          e.type === 'tool_groups_delta'
       );
-      expect(streamingUpdates).toHaveLength(2);
-      expect(streamingUpdates.map(e => e.toolUseId).sort()).toEqual(['toolu_1', 'toolu_2']);
+      expect(groupDeltas.map(e => e.toolUseId).sort()).toEqual(['toolu_1', 'toolu_2']);
+      for (const e of groupDeltas) expect(e.delta).toBe(delta);
     });
 
     it('executes simple tools before complex tools (phased execution)', async () => {

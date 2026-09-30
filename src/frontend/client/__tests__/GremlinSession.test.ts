@@ -126,16 +126,88 @@ describe('GremlinSession', () => {
     await Promise.resolve();
 
     attach.pushEvent({ type: 'loop_started', loopId: 'loop_42' });
-    attach.pushEvent({ type: 'streaming_chunk', groups: [] }, 1);
+    attach.pushEvent({ type: 'streaming_delta', ops: [{ op: 'reset' }] }, 1);
     attach.pushEvent({ type: 'loop_ended', loopId: 'loop_42', status: 'complete' }, 2);
     // Let the events drain into the handler.
     await new Promise(resolve => setTimeout(resolve, 10));
 
-    expect(received.map(e => e.type)).toEqual(['loop_started', 'streaming_chunk', 'loop_ended']);
+    expect(received.map(e => e.type)).toEqual(['loop_started', 'streaming_delta', 'loop_ended']);
     // The session forwards loop_ended to the endHandler so the chat-view
     // hook still sees its idle-transition signal.
     expect(endStatuses).toEqual([{ status: 'complete', detail: undefined }]);
     expect(session.loopId).toBeNull();
+
+    session.dispose();
+  });
+
+  it('drops a stale loop_ended for an earlier loop that attachChat replays after naming the running one', async () => {
+    // Loop A ended and loop B started while attachChat read storage. The
+    // snapshot names B (synthetic loop_started), then replays the queued
+    // events, A's loop_ended among them, then B's streaming_snapshot.
+    // Handling the loop_ended would idle the chat while B runs.
+    const attach = makeAttachController();
+    const { client } = makeMockClient(attach);
+    const session = new GremlinSession(client, 'chat_1');
+    session.onEvent(ev => received.push(ev));
+    session.onEnd((status, detail) => endStatuses.push({ status, detail }));
+    void session.attach();
+    await Promise.resolve();
+
+    const snapshotGroups = [
+      { category: 'text' as const, blocks: [{ type: 'text' as const, text: 'B so far' }] },
+    ];
+    attach.pushEvent({ type: 'loop_started', loopId: 'loop_B' });
+    attach.pushEvent({ type: 'snapshot_complete' }, 1);
+    attach.pushEvent({ type: 'loop_ended', loopId: 'loop_A', status: 'complete' }, 2);
+    attach.pushEvent({ type: 'loop_started', loopId: 'loop_B' }, 3);
+    attach.pushEvent({ type: 'streaming_snapshot', groups: snapshotGroups }, 4);
+    attach.pushEvent(
+      { type: 'streaming_delta', ops: [{ op: 'append', g: 0, b: 0, text: '!' }] },
+      5
+    );
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(received.map(e => e.type)).toEqual([
+      'loop_started',
+      'snapshot_complete',
+      'loop_started',
+      'streaming_snapshot',
+      'streaming_delta',
+    ]);
+    expect(endStatuses).toEqual([]);
+    expect(session.loopId).toBe('loop_B');
+
+    // B's own loop_ended still goes through.
+    attach.pushEvent({ type: 'loop_ended', loopId: 'loop_B', status: 'complete' }, 6);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(received.at(-1)?.type).toBe('loop_ended');
+    expect(endStatuses).toEqual([{ status: 'complete', detail: undefined }]);
+    expect(session.loopId).toBeNull();
+
+    // With no loop tracked, any loop_ended is taken at face value.
+    attach.pushEvent({ type: 'loop_ended', loopId: 'loop_C', status: 'aborted' }, 7);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(endStatuses.at(-1)).toEqual({ status: 'aborted', detail: undefined });
+
+    session.dispose();
+  });
+
+  it('reports a loop ending once even if its loop_ended arrives twice', async () => {
+    const attach = makeAttachController();
+    const { client } = makeMockClient(attach);
+    const session = new GremlinSession(client, 'chat_1');
+    session.onEvent(ev => received.push(ev));
+    session.onEnd((status, detail) => endStatuses.push({ status, detail }));
+    void session.attach();
+    await Promise.resolve();
+
+    attach.pushEvent({ type: 'loop_started', loopId: 'loop_X' });
+    attach.pushEvent({ type: 'loop_ended', loopId: 'loop_X', status: 'error', detail: 'boom' }, 1);
+    attach.pushEvent({ type: 'loop_ended', loopId: 'loop_X', status: 'error', detail: 'boom' }, 2);
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(endStatuses).toEqual([{ status: 'error', detail: 'boom' }]);
+    expect(received.filter(e => e.type === 'loop_ended')).toHaveLength(1);
 
     session.dispose();
   });

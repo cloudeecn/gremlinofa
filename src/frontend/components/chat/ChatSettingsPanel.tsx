@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { gremlinClient } from '../../client';
 import { showDestructiveConfirm } from '../../lib/alerts';
+import { useOverlay } from '../../hooks/useOverlay';
 import { useToolInventory } from '../../hooks/useToolInventory';
 import ReasoningEffortSelect from '../project/ReasoningEffortSelect';
 import VfsPathPickerModal from '../project/VfsPathPickerModal';
@@ -53,10 +54,14 @@ export default function ChatSettingsPanel({
   // editable, so it never lies about where the chat's files live.
   const namespaceTouched = useRef(draft.namespace !== '');
 
-  const initial = useMemo(() => toDraft(chat.agentConfig), [chat.agentConfig]);
+  // The config as this panel last knew it: seeded on open, replaced by each
+  // successful save. Dirty means "saving would change it", so a temperature
+  // typed as "1.0", a persona left behind by switching back to the project
+  // prompt, or an empty custom path don't count.
+  const [baseline, setBaseline] = useState(chat.agentConfig);
   const isDirty = useMemo(
-    () => JSON.stringify(draft) !== JSON.stringify(initial),
-    [draft, initial]
+    () => JSON.stringify(fromDraft(draft)) !== JSON.stringify(fromDraft(toDraft(baseline))),
+    [draft, baseline]
   );
 
   const adapter = useMemo(() => gremlinClient.getVfsAdapter(chat.projectId), [chat.projectId]);
@@ -70,6 +75,8 @@ export default function ChatSettingsPanel({
   );
 
   const handleClose = useCallback(async () => {
+    // Closing wouldn't stop the save, and a failure would land on no one
+    if (isSaving) return;
     if (isDirty) {
       const confirmed = await showDestructiveConfirm(
         'Discard changes?',
@@ -79,21 +86,22 @@ export default function ChatSettingsPanel({
       if (!confirmed) return;
     }
     onClose();
-  }, [isDirty, onClose]);
+  }, [isDirty, isSaving, onClose]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') void handleClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [handleClose]);
+  // On the overlay stack, so Escape inside a nested picker or the "Discard
+  // changes?" confirm closes only that layer. No focus trap: the desktop
+  // sidebar stays usable next to the panel.
+  const panelRef = useRef<HTMLDivElement>(null);
+  useOverlay({ active: true, onEscape: () => void handleClose(), containerRef: panelRef });
 
   const handleSave = async () => {
+    const config = fromDraft(draft);
     setIsSaving(true);
     setSaveStatus('Saving…');
     try {
-      await onSave(fromDraft(draft));
+      await onSave(config);
+      setBaseline(config);
+      setDraft(toDraft(config));
       setSaveStatus('Saved');
     } catch (error) {
       console.debug('[ChatSettingsPanel] save failed:', error);
@@ -112,7 +120,11 @@ export default function ChatSettingsPanel({
   );
 
   return (
-    <div className="absolute inset-0 z-40 flex flex-col bg-gray-50">
+    <div
+      ref={panelRef}
+      tabIndex={-1}
+      className="absolute inset-0 z-40 flex flex-col bg-gray-50 outline-none"
+    >
       <div className="border-b border-gray-200 bg-white">
         <div className="safe-area-inset-top" />
         <div className="flex h-14 items-center px-4">
@@ -595,7 +607,7 @@ export default function ChatSettingsPanel({
         </div>
       </div>
 
-      <div className="safe-area-inset-bottom flex items-center justify-between gap-2 border-t border-gray-200 bg-white p-4">
+      <div className="flex items-center justify-between gap-2 border-t border-gray-200 bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <span aria-live="polite" className="text-sm text-gray-500">
           {saveStatus}
         </span>
@@ -603,7 +615,8 @@ export default function ChatSettingsPanel({
           {isSaving && <Spinner size={14} />}
           <button
             onClick={handleClose}
-            className="h-11 rounded-lg px-4 text-base text-gray-700 transition-colors hover:bg-gray-100"
+            disabled={isSaving}
+            className="h-11 rounded-lg px-4 text-base text-gray-700 transition-colors hover:bg-gray-100 disabled:opacity-50"
           >
             Close
           </button>

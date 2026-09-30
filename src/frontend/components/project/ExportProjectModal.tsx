@@ -3,7 +3,7 @@
  * Shows progress during export and a summary when done.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Modal from '../ui/Modal';
 import { gremlinClient } from '../../client';
 import { triggerProjectDownload } from '../../lib/projectExport';
@@ -36,29 +36,46 @@ function ExportProjectModalContent({
   const [totalFiles, setTotalFiles] = useState(0);
   const [result, setResult] = useState<ExportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const abortedRef = useRef(false);
+  const exportAbortRef = useRef<AbortController | null>(null);
+
+  // Closing the modal any way (Cancel, backdrop, Escape, leaving the page)
+  // unmounts this content; the export must not outlive it and download later.
+  useEffect(() => () => exportAbortRef.current?.abort(), []);
+
+  const handleClose = () => {
+    exportAbortRef.current?.abort();
+    onClose();
+  };
 
   const handleExport = async () => {
+    const controller = new AbortController();
+    exportAbortRef.current = controller;
     setState('running');
     setFilesLoaded(0);
     setTotalFiles(0);
-    abortedRef.current = false;
 
     try {
-      const exportResult = await gremlinClient.exportProjectBundle(projectId, (loaded, total) => {
-        if (abortedRef.current) return;
-        setFilesLoaded(loaded);
-        setTotalFiles(total);
-      });
-
-      if (abortedRef.current) return;
+      const exportResult = await gremlinClient.exportProjectBundle(
+        projectId,
+        (loaded, total) => {
+          setFilesLoaded(loaded);
+          setTotalFiles(total);
+        },
+        controller.signal
+      );
 
       const blob = new Blob([exportResult.bundleJson], { type: 'application/json' });
       triggerProjectDownload(blob, projectName);
       setResult({ fileCount: exportResult.fileCount, dirCount: exportResult.dirCount });
       setState('done');
     } catch (err) {
-      if (abortedRef.current) return;
+      if (controller.signal.aborted) {
+        // Normally the modal is gone by now; if the parent kept it open, offer
+        // the export again rather than an error
+        console.debug('[ExportProjectModal] Export cancelled for project:', projectId);
+        setState('idle');
+        return;
+      }
       console.debug('[ExportProjectModal] Export failed:', err);
       setError(err instanceof Error ? err.message : 'Export failed');
       setState('error');
@@ -66,94 +83,95 @@ function ExportProjectModalContent({
   };
 
   return (
-    <div className="rounded-lg bg-white p-6 shadow-xl">
-      {state === 'done' && result != null ? (
-        <div className="text-center">
-          <div className="mb-4 text-4xl">✅</div>
-          <h2 className="mb-2 text-lg font-semibold text-gray-900">Project Exported</h2>
-          <div className="mb-4 space-y-1 text-sm text-gray-600">
-            <p>
-              {result.fileCount} file{result.fileCount !== 1 ? 's' : ''} exported
-              {result.dirCount > 0 && (
-                <>
-                  , {result.dirCount} empty director{result.dirCount !== 1 ? 'ies' : 'y'}
-                </>
-              )}
-            </p>
-          </div>
-          <div className="mb-4 rounded-lg bg-gray-50 px-4 py-3 text-xs text-gray-500">
-            <p>
-              Saved as <span className="font-mono">.gremlin.json</span>
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg bg-blue-500 px-4 py-2 font-medium text-white hover:bg-blue-600"
-          >
-            Done
-          </button>
-        </div>
-      ) : state === 'error' ? (
-        <div className="text-center">
-          <div className="mb-4 text-4xl">❌</div>
-          <h2 className="mb-2 text-lg font-semibold text-gray-900">Export Failed</h2>
-          <p className="mb-4 text-sm text-red-600">{error}</p>
-          <button
-            onClick={onClose}
-            className="rounded-lg bg-gray-200 px-4 py-2 font-medium text-gray-700 hover:bg-gray-300"
-          >
-            Close
-          </button>
-        </div>
-      ) : (
-        <>
-          <h2 className="mb-3 text-lg font-semibold text-gray-900">Export Project</h2>
-          <div className="mb-4 space-y-2 text-sm text-gray-600">
-            <p>
-              Export &ldquo;{projectName}&rdquo; as a portable <code>.gremlin.json</code> file.
-            </p>
-            <p>Includes project settings and all VFS files. Chats are not exported.</p>
-          </div>
-
-          {state === 'running' && (
-            <div className="mb-4 rounded-lg bg-gray-50 p-3">
-              <div className="flex items-center gap-2 text-sm text-gray-700">
-                <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
-                <span>
-                  {totalFiles > 0
-                    ? `Loading files... ${filesLoaded}/${totalFiles}`
-                    : 'Preparing...'}
-                </span>
-              </div>
+    <Modal isOpen onClose={handleClose} size="sm">
+      <div className="rounded-lg bg-white p-6 shadow-xl">
+        {state === 'done' && result != null ? (
+          <div className="text-center">
+            <div className="mb-4 text-4xl">✅</div>
+            <h2 className="mb-2 text-lg font-semibold text-gray-900">Project Exported</h2>
+            <div className="mb-4 space-y-1 text-sm text-gray-600">
+              <p>
+                {result.fileCount} file{result.fileCount !== 1 ? 's' : ''} exported
+                {result.dirCount > 0 && (
+                  <>
+                    , {result.dirCount} empty director{result.dirCount !== 1 ? 'ies' : 'y'}
+                  </>
+                )}
+              </p>
             </div>
-          )}
-
-          <div className="flex gap-3">
+            <div className="mb-4 rounded-lg bg-gray-50 px-4 py-3 text-xs text-gray-500">
+              <p>
+                Saved as <span className="font-mono">.gremlin.json</span>
+              </p>
+            </div>
             <button
               onClick={onClose}
-              className="flex-1 rounded-lg border border-gray-300 px-4 py-2 font-medium text-gray-700 hover:bg-gray-50"
-              disabled={state === 'running'}
+              className="rounded-lg bg-blue-500 px-4 py-2 font-medium text-white hover:bg-blue-600"
             >
-              Cancel
-            </button>
-            <button
-              onClick={handleExport}
-              disabled={state === 'running'}
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-500 px-4 py-2 font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {state === 'running' ? (
-                <>
-                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                  <span>Exporting...</span>
-                </>
-              ) : (
-                <span>Export</span>
-              )}
+              Done
             </button>
           </div>
-        </>
-      )}
-    </div>
+        ) : state === 'error' ? (
+          <div className="text-center">
+            <div className="mb-4 text-4xl">❌</div>
+            <h2 className="mb-2 text-lg font-semibold text-gray-900">Export Failed</h2>
+            <p className="mb-4 text-sm text-red-600">{error}</p>
+            <button
+              onClick={onClose}
+              className="rounded-lg bg-gray-200 px-4 py-2 font-medium text-gray-700 hover:bg-gray-300"
+            >
+              Close
+            </button>
+          </div>
+        ) : (
+          <>
+            <h2 className="mb-3 text-lg font-semibold text-gray-900">Export Project</h2>
+            <div className="mb-4 space-y-2 text-sm text-gray-600">
+              <p>
+                Export &ldquo;{projectName}&rdquo; as a portable <code>.gremlin.json</code> file.
+              </p>
+              <p>Includes project settings and all VFS files. Chats are not exported.</p>
+            </div>
+
+            {state === 'running' && (
+              <div className="mb-4 rounded-lg bg-gray-50 p-3">
+                <div className="flex items-center gap-2 text-sm text-gray-700">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
+                  <span>
+                    {totalFiles > 0
+                      ? `Loading files... ${filesLoaded}/${totalFiles}`
+                      : 'Preparing...'}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleClose}
+                className="flex-1 rounded-lg border border-gray-300 px-4 py-2 font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleExport}
+                disabled={state === 'running'}
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-500 px-4 py-2 font-medium text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {state === 'running' ? (
+                  <>
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    <span>Exporting...</span>
+                  </>
+                ) : (
+                  <span>Export</span>
+                )}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -163,14 +181,9 @@ export default function ExportProjectModal({
   projectId,
   projectName,
 }: ExportProjectModalProps) {
+  // Unmounted while closed, so each open starts from a fresh state
+  if (!isOpen) return null;
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="sm">
-      <ExportProjectModalContent
-        key={String(isOpen)}
-        onClose={onClose}
-        projectId={projectId}
-        projectName={projectName}
-      />
-    </Modal>
+    <ExportProjectModalContent onClose={onClose} projectId={projectId} projectName={projectName} />
   );
 }

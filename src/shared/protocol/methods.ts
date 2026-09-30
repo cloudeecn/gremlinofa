@@ -12,6 +12,7 @@
 import type {
   APIDefinition,
   AttachmentSection,
+  CarriedInjection,
   Chat,
   ChatAgentConfig,
   Message,
@@ -167,6 +168,11 @@ export interface RunLoopParams {
   content?: string;
   /** Attachments uploaded with the new user message. */
   attachments?: MessageAttachment[];
+  /**
+   * Injected files an edit carries over from the message it replaces
+   * (`send`/`resend` only). The new message sends them in the original's mode.
+   */
+  injection?: CarriedInjection;
   /**
    * Anchor message id for `retry`. The anchor and everything before it are
    * kept; messages strictly after the anchor are deleted from storage before

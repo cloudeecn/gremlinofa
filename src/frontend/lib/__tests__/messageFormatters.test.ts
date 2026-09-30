@@ -1,12 +1,32 @@
 import { describe, it, expect } from 'vitest';
+import type { Message } from '../../../shared/protocol/types';
+import type { RenderingBlockGroup } from '../../../shared/protocol/types/content';
 import {
+  isToolResultMessage,
+  messagePreviewLine,
+  userMessageText,
   formatTokenCount,
   formatTokens,
   formatTokenGroup,
   formatTimestamp,
   formatContextWindow,
   truncateModelName,
+  tailPreview,
 } from '../messageFormatters';
+
+describe('tailPreview', () => {
+  it('returns short text unchanged', () => {
+    expect(tailPreview('ok')).toBe('ok');
+    expect(tailPreview('x'.repeat(200))).toBe('x'.repeat(200));
+  });
+
+  it('keeps the end of long text behind an ellipsis', () => {
+    const text = 'a'.repeat(1000) + 'THE END';
+    const preview = tailPreview(text, 20);
+    expect(preview).toBe('…' + text.slice(-20));
+    expect(preview.endsWith('THE END')).toBe(true);
+  });
+});
 
 describe('formatTimestamp', () => {
   it('shows month, day and time without the year for the current year', () => {
@@ -123,5 +143,76 @@ describe('formatTokenGroup', () => {
     expect(formatTokenGroup('↑', 50000, [{ prefix: 'C↓', value: 20000 }])).toBe(
       '↑(50.0k, C↓20.0k)'
     );
+  });
+});
+
+function message(
+  role: 'user' | 'assistant',
+  content: string,
+  renderingContent?: RenderingBlockGroup[],
+  attachmentIds?: string[]
+): Message<unknown> {
+  return {
+    id: 'm1',
+    role,
+    timestamp: new Date(2026, 0, 1),
+    content: { type: 'text', content, renderingContent, attachmentIds },
+  } as Message<unknown>;
+}
+
+const textGroup = (...texts: string[]): RenderingBlockGroup => ({
+  category: 'text',
+  blocks: texts.map(text => ({ type: 'text', text })),
+});
+
+const toolResultGroup: RenderingBlockGroup = {
+  category: 'backstage',
+  blocks: [{ type: 'tool_result', tool_use_id: 't1', name: 'read', content: 'ok' }],
+} as unknown as RenderingBlockGroup;
+
+describe('userMessageText', () => {
+  it('joins the rendered text blocks', () => {
+    expect(userMessageText(message('user', 'raw', [textGroup('Hello ', 'world')]))).toBe(
+      'Hello world'
+    );
+  });
+
+  it('falls back to the raw content minus metadata', () => {
+    expect(userMessageText(message('user', '<metadata>x</metadata>\nHi'))).toBe('Hi');
+  });
+});
+
+describe('isToolResultMessage', () => {
+  it('is a user message carrying tool_result blocks', () => {
+    expect(isToolResultMessage(message('user', '', [toolResultGroup]))).toBe(true);
+    expect(isToolResultMessage(message('user', 'hi', [textGroup('hi')]))).toBe(false);
+    expect(isToolResultMessage(message('assistant', '', [toolResultGroup]))).toBe(false);
+  });
+});
+
+describe('messagePreviewLine', () => {
+  it('takes the first non-empty line without markdown markers', () => {
+    const assistant = message('assistant', '', [textGroup('\n## Plan\n\nStep one')]);
+    expect(messagePreviewLine(assistant)).toBe('Plan');
+    expect(messagePreviewLine(message('user', '', [textGroup('> quoted\nmore')]))).toBe('quoted');
+  });
+
+  it('truncates long lines', () => {
+    const line = messagePreviewLine(message('user', '', [textGroup('x'.repeat(300))]), 10);
+    expect(line).toBe(`${'x'.repeat(9)}…`);
+  });
+
+  it('names tool results, tool calls and attachments when there is no text', () => {
+    expect(messagePreviewLine(message('user', '', [toolResultGroup]))).toBe('Tool results');
+    const toolCalls: RenderingBlockGroup = {
+      category: 'backstage',
+      blocks: [
+        { type: 'tool_use', id: '1', name: 'read_file', input: {} },
+        { type: 'tool_use', id: '2', name: 'grep', input: {} },
+      ],
+    };
+    expect(messagePreviewLine(message('assistant', '', [toolCalls]))).toBe('read_file, grep');
+    expect(messagePreviewLine(message('user', '', [textGroup()], ['att_1']))).toBe('Attachment');
+    expect(messagePreviewLine(message('assistant', '', []))).toBe('…');
   });
 });

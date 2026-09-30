@@ -1,14 +1,28 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { gremlinClient } from '../client';
 import type { APIDefinition, Model, Project } from '../../shared/protocol/types';
 import { apiKeyOptional } from '../../shared/protocol/apiDefinition';
-import { AppContext, type AppContextType, type ImportOptions } from './createAppContext';
+import {
+  ApiDefinitionsContext,
+  AppActionsContext,
+  AppStatusContext,
+  ModelsContext,
+  ProjectsContext,
+  StorageInfoContext,
+  type AppActions,
+  type AppStatus,
+  type ImportOptions,
+  type ModelsByApiDefinition,
+  type StorageInfo,
+  type StorageQuota,
+} from './createAppContext';
 import type {
   ExportProgressCallback,
   ImportProgressCallback,
 } from '../../shared/protocol/types/data';
 import { clearCachedCEK, getCachedCEKString, setCachedCEKString } from '../lib/localStorageBoot';
 import { cleanupExpiredDrafts } from '../hooks/useDraftPersistence';
+import { downloadBlob } from '../lib/download';
 
 /**
  * Mirrors the backend's `isBase32` check on a CEK string. Local helper —
@@ -21,23 +35,60 @@ function looksLikeBase32CEK(value: string): boolean {
   return /^[a-z2-7]+$/.test(normalized);
 }
 
+/**
+ * Put one definition's model list into the map, keeping the old map when the
+ * list is unchanged. Every fetch returns freshly deserialized objects, so
+ * compare contents: a new map re-renders every model consumer.
+ */
+function withModelList(
+  prev: ModelsByApiDefinition,
+  apiDefinitionId: string,
+  list: Model[]
+): ModelsByApiDefinition {
+  const current = prev.get(apiDefinitionId);
+  if (current && JSON.stringify(current) === JSON.stringify(list)) return prev;
+  return new Map(prev).set(apiDefinitionId, list);
+}
+
+function sameQuota(a: StorageQuota | null, b: StorageQuota | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.usage === b.usage && a.quota === b.quota;
+}
+
+/**
+ * Re-reads a list after a write that already landed. A failure here (the
+ * socket dropped between the two calls) is logged, not thrown: the caller
+ * would report a save that worked as failed, and a retry could duplicate it.
+ */
+async function refreshAfterWrite(refresh: () => Promise<void>, what: string): Promise<void> {
+  try {
+    await refresh();
+  } catch (err) {
+    console.debug('[AppContext] %s refresh after a write failed: %o', what, err);
+  }
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [apiDefinitions, setAPIDefinitions] = useState<APIDefinition[]>([]);
+  // clearAllModelsCache reads the list through this ref so it doesn't depend
+  // on it, which keeps the actions object stable.
+  const apiDefinitionsRef = useRef<APIDefinition[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [models, setModels] = useState<Map<string, Model[]>>(new Map());
+  const [models, setModels] = useState<ModelsByApiDefinition>(() => new Map());
 
   const [isInitializing, setIsInitializing] = useState(true);
-  const [isLoadingProjects, setIsLoadingProjects] = useState(false);
-  const [isLoadingModels, setIsLoadingModels] = useState(false);
-  const [storageQuota, setStorageQuota] = useState<{ usage: number; quota: number } | null>(null);
+  const [initError, setInitError] = useState<string | null>(null);
+  const [storageQuota, setStorageQuota] = useState<StorageQuota | null>(null);
 
-  // Refresh storage quota
   const refreshStorageQuota = useCallback(async () => {
     try {
       const quota = await gremlinClient.getStorageQuota();
       // The protocol returns a non-nullable shape ({usage:0, quota:0} when
       // unavailable); preserve the old null sentinel for the loading hint UI.
-      setStorageQuota(quota.quota === 0 && quota.usage === 0 ? null : quota);
+      const next = quota.quota === 0 && quota.usage === 0 ? null : quota;
+      // WelcomeScreen refreshes on every visit; an identical reading keeps the
+      // old object so storage-info consumers don't re-render.
+      setStorageQuota(prev => (sameQuota(prev, next) ? prev : next));
     } catch (error) {
       console.error('[AppContext] Failed to get storage quota:', error);
       setStorageQuota(null);
@@ -68,6 +119,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     console.debug(
       `[AppContext] refreshAPIDefinitions: Got ${defs.length} definitions, updating state...`
     );
+    apiDefinitionsRef.current = defs;
     setAPIDefinitions(defs);
     console.debug('[AppContext] refreshAPIDefinitions: State updated');
   }, []);
@@ -75,7 +127,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const saveAPIDefinitionHandler = useCallback(
     async (definition: APIDefinition) => {
       await gremlinClient.saveAPIDefinition(definition);
-      await refreshAPIDefinitions();
+      await refreshAfterWrite(refreshAPIDefinitions, 'API definitions');
     },
     [refreshAPIDefinitions]
   );
@@ -84,31 +136,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (id: string) => {
       await gremlinClient.deleteAPIDefinition(id);
       await gremlinClient.deleteModelsCache(id);
-      // Remove models from state
       setModels(prev => {
+        if (!prev.has(id)) return prev;
         const next = new Map(prev);
         next.delete(id);
         return next;
       });
-      await refreshAPIDefinitions();
+      await refreshAfterWrite(refreshAPIDefinitions, 'API definitions');
     },
     [refreshAPIDefinitions]
   );
 
   const refreshProjects = useCallback(async () => {
-    setIsLoadingProjects(true);
-    try {
-      const projs = await gremlinClient.getProjects();
-      setProjects(projs);
-    } finally {
-      setIsLoadingProjects(false);
-    }
+    setProjects(await gremlinClient.getProjects());
   }, []);
 
   const saveProjectHandler = useCallback(
     async (project: Project) => {
       await gremlinClient.saveProject(project);
-      await refreshProjects();
+      await refreshAfterWrite(refreshProjects, 'projects');
     },
     [refreshProjects]
   );
@@ -120,7 +166,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       opts?: { touch?: boolean; unset?: (keyof Project)[] }
     ) => {
       const merged = await gremlinClient.patchProject(projectId, fields, opts);
-      await refreshProjects();
+      await refreshAfterWrite(refreshProjects, 'projects');
       return merged;
     },
     [refreshProjects]
@@ -129,14 +175,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const deleteProjectHandler = useCallback(
     async (id: string) => {
       await gremlinClient.deleteProject(id);
-      await refreshProjects();
+      await refreshAfterWrite(refreshProjects, 'projects');
     },
     [refreshProjects]
   );
 
   const refreshModels = useCallback(
     async (apiDefinitionId: string, forceRefresh = false, skipWaitingModelRefresh = false) => {
-      setIsLoadingModels(true);
       try {
         // Cache age check stays frontend-side as a UX choice — when the
         // cache is fresh we skip the round-trip entirely. Backend owns
@@ -153,8 +198,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               console.debug(
                 `[AppContext] Using cached models for ${apiDefinitionId} (age: ${Math.round(ageMs / 1000 / 60)} minutes)`
               );
-              setModels(prev => new Map(prev).set(apiDefinitionId, cached.models));
-              setIsLoadingModels(false);
+              setModels(prev => withModelList(prev, apiDefinitionId, cached.models));
               return;
             } else {
               console.debug(
@@ -168,15 +212,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const discoverModelsPromise = gremlinClient
           .discoverModels(apiDefinitionId)
           .then(discoveredModels => {
-            setModels(prev => new Map(prev).set(apiDefinitionId, discoveredModels));
+            setModels(prev => withModelList(prev, apiDefinitionId, discoveredModels));
           });
         if (!skipWaitingModelRefresh) {
           await discoverModelsPromise;
         }
       } catch (error) {
         console.error('Failed to refresh models:', error);
-      } finally {
-        setIsLoadingModels(false);
       }
     },
     []
@@ -188,16 +230,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Backend streams the bundle out as `chunk` events; the client
       // assembles them into a Blob and returns the suggested filename.
       const { blob, suggestedName } = await gremlinClient.exportToBlob(onProgress);
-
-      // DOM anchor + download click stays on the main thread.
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = suggestedName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, suggestedName);
 
       console.debug('[AppContext] Data export complete!');
     } catch (error) {
@@ -355,11 +388,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const clearAllModelsCache = useCallback(async () => {
-    for (const def of apiDefinitions) {
+    for (const def of apiDefinitionsRef.current) {
       await gremlinClient.deleteModelsCache(def.id);
     }
-    setModels(new Map());
-  }, [apiDefinitions]);
+    setModels(prev => (prev.size === 0 ? prev : new Map()));
+  }, []);
 
   const handleCompressMessages = useCallback(async (): Promise<{
     total: number;
@@ -391,9 +424,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshStorageQuota]);
 
-  // Initialize app
-  const initializeApp = useCallback(async () => {
-    try {
+  // Runs once the backend's `init` succeeded
+  const loadInitialData = useCallback(async () => {
+    console.debug('[AppContext] Backend initialized, refreshing API definitions...');
+    await refreshAPIDefinitions();
+    console.debug('[AppContext] API definitions refreshed, refreshing projects...');
+    // Load models for all API definitions with credentials
+    const defsWithCredentials = apiDefinitionsRef.current.filter(
+      d => apiKeyOptional(d) || (d.apiKey && d.apiKey.trim() !== '')
+    );
+    console.debug(
+      `[AppContext] Loading models for ${defsWithCredentials.length} configured providers...`
+    );
+    // Projects load alongside the models (skipWaitingModelRefresh for faster
+    // init). Awaited, so a failure lands on the init error screen.
+    await Promise.all([
+      refreshProjects(),
+      Promise.allSettled(defsWithCredentials.map(def => refreshModels(def.id, false, true))),
+    ]);
+    console.debug('[AppContext] App initialization complete!');
+
+    // Refresh storage quota after initialization
+    await refreshStorageQuota();
+  }, [refreshAPIDefinitions, refreshProjects, refreshModels, refreshStorageQuota]);
+
+  useEffect(() => {
+    // async so a synchronous throw (no Worker support, blocked storage) lands
+    // in the catch below too
+    const initBackend = async () => {
       console.debug('[AppContext] Starting app initialization...');
 
       // Clean up expired drafts early in initialization
@@ -401,90 +459,82 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const cachedCek = getCachedCEKString();
       await gremlinClient.init(cachedCek ? { cek: cachedCek } : {});
-      console.debug('[AppContext] Backend initialized, refreshing API definitions...');
-      await refreshAPIDefinitions();
-      console.debug('[AppContext] API definitions refreshed, refreshing projects...');
-      refreshProjects();
-      // Load models for all API definitions with credentials
-      const defs = await gremlinClient.getAPIDefinitions();
-      const defsWithCredentials = defs.filter(
-        d => apiKeyOptional(d) || (d.apiKey && d.apiKey.trim() !== '')
-      );
-      console.debug(
-        `[AppContext] Loading models for ${defsWithCredentials.length} configured providers...`
-      );
-      // Load models in parallel with skipWaitingModelRefresh for faster init
-      await Promise.allSettled(defsWithCredentials.map(def => refreshModels(def.id, false, true)));
-      console.debug('[AppContext] App initialization complete!');
+    };
+    initBackend()
+      .then(loadInitialData)
+      .catch((error: unknown) => {
+        // Bad CEK, unreachable backend: AppContent shows a "Couldn't start"
+        // screen instead of an empty shell.
+        console.error('[AppContext] App initialization failed:', error);
+        setInitError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setIsInitializing(false));
+  }, [loadInitialData]);
 
-      // Refresh storage quota after initialization
-      await refreshStorageQuota();
-    } finally {
-      setIsInitializing(false);
-    }
-  }, [refreshAPIDefinitions, refreshProjects, refreshModels, refreshStorageQuota]);
-
-  useEffect(() => {
-    initializeApp();
-  }, [initializeApp]);
-
-  // Memoize context value to prevent unnecessary re-renders of consumers.
-  const value = useMemo<AppContextType>(
+  // Every member is a stable callback, so this object keeps its identity for
+  // the provider's lifetime.
+  const actions = useMemo<AppActions>(
     () => ({
-      apiDefinitions,
       refreshAPIDefinitions,
       saveAPIDefinition: saveAPIDefinitionHandler,
       deleteAPIDefinition: deleteAPIDefinitionHandler,
-      projects,
       refreshProjects,
       saveProject: saveProjectHandler,
       patchProject: patchProjectHandler,
       deleteProject: deleteProjectHandler,
-      models,
       refreshModels,
+      clearAllModelsCache,
       purgeAllData,
       handleExport,
       handleImport,
       handleMigrate,
-      cek,
-      isCEKBase32,
-      convertCEKToBase32,
-      clearAllModelsCache,
       handleCompressMessages,
-      storageQuota,
+      convertCEKToBase32,
       refreshStorageQuota,
-      isInitializing,
-      isLoadingProjects,
-      isLoadingModels,
     }),
     [
-      apiDefinitions,
       refreshAPIDefinitions,
       saveAPIDefinitionHandler,
       deleteAPIDefinitionHandler,
-      projects,
       refreshProjects,
       saveProjectHandler,
       patchProjectHandler,
       deleteProjectHandler,
-      models,
       refreshModels,
+      clearAllModelsCache,
       purgeAllData,
       handleExport,
       handleImport,
       handleMigrate,
-      cek,
-      isCEKBase32,
-      convertCEKToBase32,
-      clearAllModelsCache,
       handleCompressMessages,
-      storageQuota,
+      convertCEKToBase32,
       refreshStorageQuota,
-      isInitializing,
-      isLoadingProjects,
-      isLoadingModels,
     ]
   );
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  const storageInfo = useMemo<StorageInfo>(
+    () => ({ cek, isCEKBase32, storageQuota }),
+    [cek, isCEKBase32, storageQuota]
+  );
+
+  const status = useMemo<AppStatus>(
+    () => ({ isInitializing, initError }),
+    [isInitializing, initError]
+  );
+
+  return (
+    <AppActionsContext.Provider value={actions}>
+      <AppStatusContext.Provider value={status}>
+        <ApiDefinitionsContext.Provider value={apiDefinitions}>
+          <ProjectsContext.Provider value={projects}>
+            <ModelsContext.Provider value={models}>
+              <StorageInfoContext.Provider value={storageInfo}>
+                {children}
+              </StorageInfoContext.Provider>
+            </ModelsContext.Provider>
+          </ProjectsContext.Provider>
+        </ApiDefinitionsContext.Provider>
+      </AppStatusContext.Provider>
+    </AppActionsContext.Provider>
+  );
 }

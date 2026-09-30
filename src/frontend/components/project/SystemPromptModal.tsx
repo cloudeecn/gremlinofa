@@ -3,6 +3,8 @@ import Spinner from '../ui/Spinner';
 import Modal from '../ui/Modal';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 
+const ignoreClose = () => {};
+
 interface SystemPromptModalProps {
   isOpen: boolean;
   /**
@@ -13,7 +15,8 @@ interface SystemPromptModalProps {
   contextId: string;
   initialValue: string; // From DB
   title?: string;
-  onSave: (value: string) => Promise<void>;
+  /** True once saved; false keeps the modal open with its draft (the caller reports why). */
+  onSave: (value: string) => Promise<boolean>;
   onCancel: () => void;
 }
 
@@ -47,8 +50,7 @@ export default function SystemPromptModal({
   const handleSave = useCallback(async () => {
     setIsSaving(true);
     try {
-      clearDraft('system-prompt-modal', contextId);
-      await onSave(systemPrompt);
+      if (await onSave(systemPrompt)) clearDraft('system-prompt-modal', contextId);
     } finally {
       setIsSaving(false);
     }
@@ -65,14 +67,17 @@ export default function SystemPromptModal({
   }, [contextId, initialValue]);
 
   return (
-    <Modal isOpen={isOpen} onClose={onCancel} size="xl" position="bottom">
+    // While a save is in flight every close path waits: closing wouldn't stop it
+    <Modal isOpen={isOpen} onClose={isSaving ? ignoreClose : onCancel} size="xl" position="bottom">
       <div className="flex max-h-[85dvh] flex-col rounded-t-2xl bg-white md:max-h-[700px] md:rounded-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-200 p-4">
           <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
           <button
             onClick={handleCancel}
-            className="flex h-11 w-11 items-center justify-center text-gray-600 transition-colors hover:text-gray-900"
+            disabled={isSaving}
+            aria-label="Close"
+            className="flex h-11 w-11 items-center justify-center text-gray-600 transition-colors hover:text-gray-900 disabled:opacity-50"
           >
             <span className="text-2xl leading-none">✕</span>
           </button>

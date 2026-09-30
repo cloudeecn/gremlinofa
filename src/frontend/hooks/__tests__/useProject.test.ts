@@ -5,7 +5,7 @@ import { generateUniqueId } from '../../../shared/protocol/idGenerator';
 import * as alerts from '../../lib/alerts';
 import type { Chat, Project } from '../../../shared/protocol/types';
 
-// Mock useApp functions
+// Mock app actions
 const mockSaveProject = vi.fn();
 const mockPatchProject = vi.fn();
 const mockDeleteProject = vi.fn();
@@ -22,7 +22,7 @@ vi.mock('../../client', () => ({
 vi.mock('../../../shared/protocol/idGenerator');
 vi.mock('../../lib/alerts');
 vi.mock('../useApp', () => ({
-  useApp: () => ({
+  useAppActions: () => ({
     saveProject: mockSaveProject,
     patchProject: mockPatchProject,
     deleteProject: mockDeleteProject,
@@ -70,6 +70,12 @@ describe('useProject', () => {
     vi.mocked(gremlinClient.deleteChat).mockResolvedValue(undefined);
     vi.mocked(generateUniqueId).mockReturnValue('chat_new_123');
     vi.mocked(alerts.showAlert).mockResolvedValue();
+    // The backend's merged row: what is stored, plus the patch
+    let stored = { ...mockProject };
+    mockPatchProject.mockImplementation(async (_id: string, fields: Partial<Project>) => {
+      stored = { ...stored, ...fields, lastUsedAt: new Date() };
+      return stored;
+    });
   });
 
   afterEach(() => {
@@ -90,6 +96,61 @@ describe('useProject', () => {
       expect(result.current.chats).toEqual([mockChat]);
       expect(gremlinClient.getProject).toHaveBeenCalledWith('proj_123');
       expect(gremlinClient.getChats).toHaveBeenCalledWith('proj_123');
+    });
+
+    it('skips the chat list with withChats: false', async () => {
+      const onChatsLoaded = vi.fn();
+      const { result } = renderHook(() =>
+        useProject({ projectId: 'proj_123', withChats: false, callbacks: { onChatsLoaded } })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      expect(result.current.project).toEqual(mockProject);
+      expect(result.current.chats).toEqual([]);
+      expect(gremlinClient.getChats).not.toHaveBeenCalled();
+      expect(onChatsLoaded).not.toHaveBeenCalled();
+    });
+
+    it('does not reload when the caller passes a new callbacks object each render', async () => {
+      const { result, rerender } = renderHook(() =>
+        useProject({ projectId: 'proj_123', callbacks: { onProjectLoaded: () => {} } })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+      rerender();
+      rerender();
+
+      expect(gremlinClient.getProject).toHaveBeenCalledTimes(1);
+      expect(gremlinClient.getChats).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls the latest callbacks, not the ones from the first render', async () => {
+      let resolveProject: (project: Project) => void = () => {};
+      vi.mocked(gremlinClient.getProject).mockReturnValue(
+        new Promise(resolve => {
+          resolveProject = resolve;
+        })
+      );
+      const first = vi.fn();
+      const latest = vi.fn();
+      const { rerender } = renderHook(
+        ({ onProjectLoaded }) =>
+          useProject({ projectId: 'proj_123', callbacks: { onProjectLoaded } }),
+        { initialProps: { onProjectLoaded: first } }
+      );
+
+      rerender({ onProjectLoaded: latest });
+      resolveProject(mockProject);
+
+      await waitFor(() => {
+        expect(latest).toHaveBeenCalledWith('proj_123', mockProject);
+      });
+      expect(first).not.toHaveBeenCalled();
     });
 
     it('should call onProjectLoaded callback when project loads', async () => {
@@ -331,6 +392,32 @@ describe('useProject', () => {
       expect(alerts.showAlert).toHaveBeenCalledWith('Error', 'Failed to delete chat');
     });
 
+    it('keeps both of two quick updates', async () => {
+      const { result } = renderHook(() => useProject({ projectId: 'proj_123' }));
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      // Same render, so both calls see the same `project`
+      const { updateProject } = result.current;
+      await Promise.all([updateProject({ name: 'Renamed' }), updateProject({ icon: '🦊' })]);
+
+      await waitFor(() => {
+        expect(result.current.project?.name).toBe('Renamed');
+        expect(result.current.project?.icon).toBe('🦊');
+      });
+    });
+
+    it('returns true once saved, and false with an alert when the save fails', async () => {
+      const { result } = renderHook(() => useProject({ projectId: 'proj_123' }));
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      expect(await result.current.updateProject({ name: 'Saved' })).toBe(true);
+
+      mockPatchProject.mockRejectedValueOnce(new Error('offline'));
+      expect(await result.current.updateProject({ name: 'Lost' })).toBe(false);
+      expect(alerts.showAlert).toHaveBeenCalledWith('Project not saved', 'offline');
+      await waitFor(() => expect(result.current.project?.name).toBe('Saved'));
+    });
+
     it('should do nothing when no project loaded', async () => {
       vi.mocked(gremlinClient.getProject).mockResolvedValue(null);
 
@@ -451,25 +538,41 @@ describe('useProject', () => {
   });
 
   describe('deleteProject', () => {
-    it('should call app.deleteProject with projectId', async () => {
-      const mockDeleteProject = vi.fn();
-      vi.doMock('../useApp', () => ({
-        useApp: () => ({
-          saveProject: vi.fn(),
-          deleteProject: mockDeleteProject,
-        }),
-      }));
-
+    it('resolves only after app.deleteProject finishes', async () => {
+      let finishDelete: () => void = () => {};
+      mockDeleteProject.mockReturnValueOnce(
+        new Promise<void>(resolve => {
+          finishDelete = resolve;
+        })
+      );
       const { result } = renderHook(() => useProject({ projectId: 'proj_123' }));
 
       await waitFor(() => {
         expect(result.current.isLoading).toBe(false);
       });
 
-      await result.current.deleteProject();
+      let settled = false;
+      const deleting = result.current.deleteProject().then(() => {
+        settled = true;
+      });
+      expect(mockDeleteProject).toHaveBeenCalledWith('proj_123');
+      await Promise.resolve();
+      expect(settled).toBe(false);
 
-      // Since useApp is mocked at module level, we can't easily verify this
-      // Just ensure it doesn't crash
+      finishDelete();
+      await deleting;
+      expect(settled).toBe(true);
+    });
+
+    it('rejects when app.deleteProject fails', async () => {
+      mockDeleteProject.mockRejectedValueOnce(new Error('Delete failed'));
+      const { result } = renderHook(() => useProject({ projectId: 'proj_123' }));
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      await expect(result.current.deleteProject()).rejects.toThrow('Delete failed');
     });
 
     it('should do nothing when no project loaded', async () => {
@@ -484,6 +587,35 @@ describe('useProject', () => {
       await result.current.deleteProject();
 
       // Should not crash
+    });
+  });
+
+  describe('Operation identity', () => {
+    it('keeps the same functions across renders and after the project loads', async () => {
+      const { result, rerender } = renderHook(() => useProject({ projectId: 'proj_123' }));
+      const initial = result.current;
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+      rerender();
+
+      expect(result.current.createNewChat).toBe(initial.createNewChat);
+      expect(result.current.deleteChat).toBe(initial.deleteChat);
+      expect(result.current.updateProject).toBe(initial.updateProject);
+      expect(result.current.deleteProject).toBe(initial.deleteProject);
+    });
+
+    it('a function captured before the project loaded sees the loaded project', async () => {
+      const { result } = renderHook(() => useProject({ projectId: 'proj_123' }));
+      const deleteChatFromFirstRender = result.current.deleteChat;
+
+      await waitFor(() => {
+        expect(result.current.project).not.toBeNull();
+      });
+      await deleteChatFromFirstRender('chat_123');
+
+      expect(gremlinClient.deleteChat).toHaveBeenCalledWith('chat_123');
     });
   });
 

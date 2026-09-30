@@ -18,6 +18,33 @@ type BannerMode =
   | 'reconnected'
   | 'auth_failed';
 
+const BANNERS: Record<
+  Exclude<BannerMode, 'hidden'>,
+  { tone: string; dot?: string; text: string }
+> = {
+  auth_failed: {
+    tone: 'border-red-300 bg-red-50 text-red-800',
+    dot: 'bg-red-500',
+    text: 'The server rejected the stored encryption key — reload the page to re-authenticate.',
+  },
+  reconnected: { tone: 'border-green-300 bg-green-50 text-green-800', text: 'Reconnected' },
+  stale: {
+    tone: 'border-amber-300 bg-amber-50 text-amber-800',
+    dot: 'animate-pulse bg-amber-500',
+    text: 'Checking connection...',
+  },
+  disconnected: {
+    tone: 'border-red-300 bg-red-50 text-red-800',
+    dot: 'animate-pulse bg-red-500',
+    text: 'Connection lost — reconnecting...',
+  },
+  reconnecting: {
+    tone: 'border-amber-300 bg-amber-50 text-amber-800',
+    dot: 'animate-pulse bg-amber-500',
+    text: 'Reconnecting...',
+  },
+};
+
 /**
  * App-wide banner that surfaces WebSocket connection problems.
  *
@@ -26,7 +53,7 @@ type BannerMode =
  * - Disconnected: red "Connection lost — reconnecting..."
  * - Reconnecting: amber "Reconnecting..."
  * - Just reconnected: brief green "Reconnected" flash.
- * - Connected (steady state): renders nothing.
+ * - Connected (steady state): an empty live region.
  */
 export function ConnectionStatusBanner() {
   const state = useConnectionState();
@@ -137,51 +164,40 @@ export function ConnectionStatusBanner() {
   // Cleanup on unmount
   useEffect(() => clearTimers, [clearTimers]);
 
-  if (mode === 'hidden') return null;
+  const banner = mode === 'hidden' ? null : BANNERS[mode];
 
-  if (mode === 'auth_failed') {
-    return (
-      <div className="border-b border-red-300 bg-red-50 px-4 py-2 text-center text-sm text-red-800">
-        <span className="mr-2 inline-block h-2 w-2 rounded-full bg-red-500" />
-        The server rejected the stored encryption key — reload the page to re-authenticate.
-      </div>
-    );
-  }
-
-  if (mode === 'reconnected') {
-    return (
-      <div className="border-b border-green-300 bg-green-50 px-4 py-2 text-center text-sm text-green-800">
-        Reconnected
-      </div>
-    );
-  }
-
-  if (mode === 'stale') {
-    return (
-      <div className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-center text-sm text-amber-800">
-        <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-        Checking connection...
-      </div>
-    );
-  }
-
-  if (mode === 'disconnected') {
-    return (
-      <div className="border-b border-red-300 bg-red-50 px-4 py-2 text-center text-sm text-red-800">
-        <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-red-500" />
-        Connection lost — reconnecting...
-      </div>
-    );
-  }
-
-  if (mode === 'reconnecting') {
-    return (
-      <div className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-center text-sm text-amber-800">
-        <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-        Reconnecting...
-      </div>
-    );
-  }
-
-  return null;
+  // The live region stays mounted so screen readers announce each change.
+  // data-visible lets index.css drop the page header's notch spacer: the
+  // banner sits above the header and takes the notch area itself.
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="connection-banner"
+      data-visible={banner ? 'true' : undefined}
+    >
+      {banner && (
+        <div
+          className={`border-b px-4 pt-[calc(env(safe-area-inset-top)+0.5rem)] pb-2 text-center text-sm ${banner.tone}`}
+        >
+          {banner.dot && (
+            <span
+              aria-hidden="true"
+              className={`mr-2 inline-block h-2 w-2 rounded-full ${banner.dot}`}
+            />
+          )}
+          {banner.text}
+          {mode === 'auth_failed' && (
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="ml-2 font-medium underline hover:text-red-900"
+            >
+              Reload
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { VfsAdapter } from '../../../shared/protocol/types/vfs';
+import { downloadBlob } from '../../lib/download';
+import { showAlert, showDestructiveConfirm } from '../../lib/alerts';
 
 // Phase 1.8 leak fix — see VfsFileEditor.tsx for the rationale.
 const basename = (path: string): string => path.split('/').filter(Boolean).pop() ?? '';
@@ -98,17 +100,18 @@ export default function VfsFileViewer({
       blob = new Blob([state.content], { type: 'text/plain;charset=utf-8' });
     }
 
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, filename);
   }, [state.content, state.isBinary, state.mime, filename]);
 
   const handleDropVersions = useCallback(async () => {
+    const dropCount = state.storedVersionCount - KEEP_VERSIONS;
+    const confirmed = await showDestructiveConfirm(
+      'Drop old versions',
+      `Drop ${dropCount > 0 ? `${dropCount} old versions` : 'the old versions'} of ${filename}? The last ${KEEP_VERSIONS} are kept.`,
+      'Drop'
+    );
+    if (!confirmed) return;
+
     try {
       const fileId = await adapter.getFileId(path);
       if (!fileId) return;
@@ -121,8 +124,12 @@ export default function VfsFileViewer({
       }
     } catch (error) {
       console.debug('[VfsFileViewer] Failed to drop versions:', error);
+      void showAlert(
+        'Versions not dropped',
+        error instanceof Error ? error.message : String(error)
+      );
     }
-  }, [adapter, path, loadFile, onDropVersions]);
+  }, [adapter, path, filename, state.storedVersionCount, loadFile, onDropVersions]);
 
   if (state.loading) {
     return (

@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import { useMinionChat } from '../useMinionChat';
+import { LIVE_REFRESH_MS, useMinionChat } from '../useMinionChat';
 import type { MinionChat, Message } from '../../../shared/protocol/types';
 
 // Mock `../client` so the hook calls a stub `gremlinClient` we control
@@ -180,5 +180,122 @@ describe('useMinionChat', () => {
 
     expect(result.current.messages).toHaveLength(2);
     expect(gremlinClient.deleteMessageAndAfter).not.toHaveBeenCalled();
+  });
+
+  describe('live refresh', () => {
+    const newMessage: Message<unknown> = {
+      id: 'msg_3',
+      role: 'assistant',
+      content: { type: 'text', content: 'More work' },
+      timestamp: new Date('2025-01-01T10:00:02Z'),
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      vi.mocked(gremlinClient.getMinionChat).mockResolvedValue(mockMinionChat);
+      // Fresh objects per call, like the RPC's structured clone
+      vi.mocked(gremlinClient.getMinionMessages).mockImplementation(async () =>
+        mockMessages.map(m => ({ ...m }))
+      );
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    // waitFor polls with setInterval, which these tests fake: settle by hand
+    async function settle() {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+
+    async function tick() {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(LIVE_REFRESH_MS);
+      });
+    }
+
+    it('does not poll while the parent loop is idle', async () => {
+      const { result } = renderHook(() => useMinionChat('mc_1'));
+      await settle();
+      expect(result.current.isLoading).toBe(false);
+
+      await tick();
+      await tick();
+
+      expect(gremlinClient.getMinionMessages).toHaveBeenCalledTimes(1);
+    });
+
+    it('appends new messages while live and keeps the existing objects', async () => {
+      const { result } = renderHook(() => useMinionChat('mc_1', { live: true }));
+      await settle();
+      expect(result.current.isLoading).toBe(false);
+      const [first, second] = result.current.messages;
+
+      vi.mocked(gremlinClient.getMinionMessages).mockImplementation(async () =>
+        [...mockMessages, newMessage].map(m => ({ ...m }))
+      );
+      await tick();
+
+      await settle();
+      expect(result.current.messages).toHaveLength(3);
+      expect(result.current.messages[0]).toBe(first);
+      expect(result.current.messages[1]).toBe(second);
+    });
+
+    it('keeps the same array when nothing changed', async () => {
+      const { result } = renderHook(() => useMinionChat('mc_1', { live: true }));
+      await settle();
+      expect(result.current.isLoading).toBe(false);
+      const before = result.current.messages;
+
+      await tick();
+
+      expect(gremlinClient.getMinionMessages).toHaveBeenCalledTimes(2);
+      expect(result.current.messages).toBe(before);
+    });
+
+    it('refetches once more when the parent loop ends, then stops', async () => {
+      const { result, rerender } = renderHook(({ live }) => useMinionChat('mc_1', { live }), {
+        initialProps: { live: true },
+      });
+      await settle();
+      expect(result.current.isLoading).toBe(false);
+
+      vi.mocked(gremlinClient.getMinionMessages).mockImplementation(async () =>
+        [...mockMessages, newMessage].map(m => ({ ...m }))
+      );
+      rerender({ live: false });
+
+      await settle();
+      expect(result.current.messages).toHaveLength(3);
+      const calls = vi.mocked(gremlinClient.getMinionMessages).mock.calls.length;
+      await tick();
+      expect(gremlinClient.getMinionMessages).toHaveBeenCalledTimes(calls);
+    });
+
+    it('drops a refresh that raced a local delete', async () => {
+      const { result } = renderHook(() => useMinionChat('mc_1', { live: true }));
+      await settle();
+      expect(result.current.isLoading).toBe(false);
+
+      // The poll reads the old list while the delete is in flight
+      let resolveDelete: () => void = () => {};
+      vi.mocked(gremlinClient.deleteSingleMessage).mockImplementation(
+        () => new Promise<void>(resolve => (resolveDelete = resolve))
+      );
+      let deleting: Promise<void> = Promise.resolve();
+      act(() => {
+        deleting = result.current.deleteMessage('msg_2');
+      });
+      await tick();
+      await act(async () => {
+        resolveDelete();
+        await deleting;
+      });
+
+      expect(result.current.messages.map(m => m.id)).toEqual(['msg_1']);
+    });
   });
 });

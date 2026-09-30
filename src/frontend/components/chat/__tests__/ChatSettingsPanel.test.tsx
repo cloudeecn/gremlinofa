@@ -58,13 +58,13 @@ function chat(agentConfig?: Chat['agentConfig']): Chat {
   };
 }
 
-function renderPanel(agentConfig?: Chat['agentConfig']) {
-  const onSave = vi.fn(async () => {});
+function renderPanel(agentConfig?: Chat['agentConfig'], projectOverrides: Partial<Project> = {}) {
+  const onSave = vi.fn(async (_config: Chat['agentConfig']) => {});
   const onClose = vi.fn();
   render(
     <ChatSettingsPanel
       chat={chat(agentConfig)}
-      project={project}
+      project={{ ...project, ...projectOverrides }}
       apiDefinitions={apiDefinitions}
       currentApiDefId="api_1"
       currentModelId="m1"
@@ -258,5 +258,82 @@ describe('closing', () => {
     fireEvent.click(screen.getByText('Close'));
     await waitFor(() => expect(confirmMock).toHaveBeenCalled());
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('dirty state', () => {
+  const saveButton = () => screen.getByText('Save') as HTMLButtonElement;
+
+  it('does not count a temperature typed differently but equal', () => {
+    renderPanel({ temperature: 1 });
+    fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '1.0' } });
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("does not count a persona left behind by switching back to the project's prompt", () => {
+    renderPanel();
+    fireEvent.click(screen.getByLabelText(/Replace it/));
+    fireEvent.change(screen.getByLabelText('Persona'), { target: { value: 'researcher' } });
+    expect(saveButton().disabled).toBe(false);
+
+    fireEvent.click(screen.getByLabelText(/Use the project's prompt/));
+    toggle('VFS namespace', 'Inherit');
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it('does not count a custom pre-persona file with no path yet', () => {
+    renderPanel({ systemPromptMode: 'replace', systemPrompt: 'X' });
+    fireEvent.click(screen.getByLabelText('Custom'));
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it('does not count an effort override left at the default', () => {
+    renderPanel(undefined, { reasoningEffort: undefined });
+    toggle('Reasoning effort', 'Override');
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it('is clean after a successful save, and closes without asking', async () => {
+    const { onSave, onClose } = renderPanel();
+    toggle('Temperature', 'Override');
+    fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '0.20' } });
+    await save(onSave);
+    await waitFor(() => expect(screen.getByText('Saved')).toBeTruthy());
+
+    expect(saveButton().disabled).toBe(true);
+    expect((screen.getByLabelText('Temperature') as HTMLInputElement).value).toBe('0.2');
+    fireEvent.click(screen.getByText('Close'));
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('stays dirty after a failed save', async () => {
+    const { onSave } = renderPanel();
+    onSave.mockRejectedValueOnce(new Error('offline'));
+    toggle('Temperature', 'Override');
+    await save(onSave);
+    await waitFor(() => expect(screen.getByText('Save failed')).toBeTruthy());
+
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it('cannot be closed while a save runs', async () => {
+    let finishSave: () => void = () => {};
+    const { onSave, onClose } = renderPanel();
+    onSave.mockReturnValueOnce(
+      new Promise<void>(resolve => {
+        finishSave = resolve;
+      })
+    );
+    toggle('Temperature', 'Override');
+    fireEvent.click(screen.getByText('Save'));
+
+    fireEvent.click(screen.getByText('Close'));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(confirmMock).not.toHaveBeenCalled();
+
+    finishSave();
+    await waitFor(() => expect(screen.getByText('Saved')).toBeTruthy());
   });
 });

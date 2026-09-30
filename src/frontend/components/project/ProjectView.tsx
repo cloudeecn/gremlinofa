@@ -1,14 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Spinner from '../ui/Spinner';
-import { useApp } from '../../hooks/useApp';
+import { useApiDefinitions } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
 import { getApiDefinitionIcon } from '../../lib/apiTypeUtils';
 import type { Chat, MessageAttachment, Project } from '../../../shared/protocol/types';
 import { useAlert } from '../../hooks/useAlert';
+import { useImeSafeEnter } from '../../hooks/useImeSafeEnter';
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
+import { useImageDropZone } from '../../hooks/useImageDropZone';
+import { clipboardImageFiles, pickImageFiles } from '../../lib/imageFiles';
 import { processImages } from '../../lib/imageProcessor';
+import { describeLoopStartError } from '../../lib/loopStartError';
 import { generateUniqueId } from '../../../shared/protocol/idGenerator';
 import { gremlinClient } from '../../client';
 import ModelSelector from './ModelSelector';
@@ -39,9 +43,9 @@ const ChatListItem = React.memo(function ChatListItem({
         }}
         role="button"
         tabIndex={0}
-        className="flex-1 cursor-pointer text-left"
+        className="min-w-0 flex-1 cursor-pointer text-left"
       >
-        <h3 className="mb-1 line-clamp-1 font-semibold text-gray-900">{chat.name}</h3>
+        <h3 className="mb-1 truncate font-semibold text-gray-900">{chat.name}</h3>
         <p className="text-xs text-gray-600">
           {chat.lastModifiedAt.toLocaleDateString()}
           {' • '}
@@ -58,7 +62,7 @@ const ChatListItem = React.memo(function ChatListItem({
       </div>
       <button
         onClick={() => onDelete(chat.id, chat.name)}
-        className="p-2 text-gray-600 transition-colors hover:text-red-600"
+        className="shrink-0 p-2 text-gray-600 transition-colors hover:text-red-600"
       >
         <span className="text-lg">🗑️</span>
       </button>
@@ -73,24 +77,19 @@ interface ProjectViewProps {
 
 export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps) {
   const navigate = useNavigate();
-  const { apiDefinitions } = useApp();
-  const { showDestructiveConfirm } = useAlert();
+  const apiDefinitions = useApiDefinitions();
+  const { showAlert, showDestructiveConfirm } = useAlert();
   const isTouchDevice = useIsTouchDevice();
-  const newChatTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const compositionJustEndedRef = useRef(false);
+  const { onCompositionEnd, isImeEnter } = useImeSafeEnter();
 
   // Use the project hook
   const {
     project,
     chats,
-    isCreatingChat,
     createNewChat,
     deleteChat: deleteProjectChat,
     updateProject,
-  } = useProject({
-    projectId,
-    apiDefinitions,
-  });
+  } = useProject({ projectId });
 
   const vfsAdapter = useMemo(() => gremlinClient.getVfsAdapter(projectId), [projectId]);
 
@@ -104,20 +103,19 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
   const fileInputRef = useRef<HTMLInputElement>(null);
   const maxAttachments = 10;
 
-  // Chrome fires keydown with isComposing:false AFTER compositionend,
-  // so the isComposing check alone misses the Enter that confirmed the IME candidate.
-  useEffect(() => {
-    const textarea = newChatTextareaRef.current;
-    if (!textarea) return;
-    const onCompositionEnd = () => {
-      compositionJustEndedRef.current = true;
-      requestAnimationFrame(() => {
-        compositionJustEndedRef.current = false;
-      });
-    };
-    textarea.addEventListener('compositionend', onCompositionEnd);
-    return () => textarea.removeEventListener('compositionend', onCompositionEnd);
-  }, []);
+  // Covers creating the chat and starting its loop. The ref answers a second
+  // Enter that arrives before the state update renders.
+  const [isStarting, setIsStarting] = useState(false);
+  const isStartingRef = useRef(false);
+  const pendingStartRef = useRef<{
+    chatId: string;
+    /** What was sent: the trimmed text, or the VFS path for send-as-file */
+    content: string;
+    composerText: string;
+    asFile: boolean;
+    apiDefId: string | null;
+    modelId: string | null;
+  } | null>(null);
 
   // Draft persistence for new chat message
   useDraftPersistence({
@@ -127,7 +125,6 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
     onChange: setNewChatMessage,
   });
 
-  const [showSettings, setShowSettings] = useState(false);
   const [showNameIcon, setShowNameIcon] = useState(false);
   const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
@@ -171,6 +168,14 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
     },
     [attachments.length]
   );
+
+  // One entry for the 📎 picker, pasted images and dropped files
+  const addFiles = (files: File[]) => {
+    const { images, error } = pickImageFiles(files, attachments.length, maxAttachments);
+    setValidationError(error ?? '');
+    if (images.length > 0) handleFilesAdded(images);
+  };
+  const { isDragging, dropZoneProps } = useImageDropZone(addFiles);
 
   // Clear validation error after 5 seconds
   useEffect(() => {
@@ -217,12 +222,6 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
 
   if (!project) return null;
 
-  // If in settings mode, navigate to settings route
-  if (showSettings) {
-    navigate(`/project/${projectId}/settings`);
-    return null;
-  }
-
   const handleAttachClick = () => {
     if (attachments.length >= maxAttachments) {
       setValidationError(`Maximum ${maxAttachments} images allowed`);
@@ -234,33 +233,17 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
-
-    setValidationError('');
-
-    // Check total count
-    const totalCount = attachments.length + files.length;
-    if (totalCount > maxAttachments) {
-      setValidationError(
-        `Maximum ${maxAttachments} images allowed. You can add ${maxAttachments - attachments.length} more.`
-      );
-      // Reset input
-      e.target.value = '';
-      return;
-    }
-
-    // Filter for image files only
-    const imageFiles = files.filter(file => file.type.startsWith('image/'));
-    if (imageFiles.length < files.length) {
-      setValidationError('Only image files are allowed');
-    }
-
-    if (imageFiles.length > 0) {
-      // Process files immediately
-      handleFilesAdded(imageFiles);
-    }
-
+    addFiles(files);
     // Reset input so same file can be selected again
     e.target.value = '';
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = clipboardImageFiles(e.clipboardData);
+    if (images.length === 0) return;
+    // Rich copies (a web page) carry text alongside the image: let the text paste too
+    if (!e.clipboardData.getData('text/plain')) e.preventDefault();
+    addFiles(images);
   };
 
   const handleRemoveAttachment = (id: string) => {
@@ -268,85 +251,88 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
     setValidationError('');
   };
 
-  const handleStartNewChat = async () => {
-    if (
-      (!newChatMessage.trim() && attachments.length === 0) ||
-      isCreatingChat ||
-      isProcessingAttachments
-    ) {
-      return;
-    }
+  /**
+   * Creates the chat, starts its loop, then opens it. The composer and the
+   * model override are cleared only once the loop has started: on failure
+   * everything stays, and the chat already created is kept for the retry, so
+   * a second attempt doesn't leave another empty chat behind.
+   */
+  const startNewChat = async (asFile: boolean) => {
+    if (isStartingRef.current || isProcessingAttachments) return;
+    const composerText = newChatMessage;
+    const messageText = composerText.trim();
+    if (asFile ? !messageText : !messageText && attachments.length === 0) return;
+    const startAttachments = !asFile && attachments.length > 0 ? attachments : undefined;
 
-    // Attachments are already processed (MessageAttachment[])
-    const processedAttachments = attachments.length > 0 ? attachments : undefined;
-    const messageText = newChatMessage.trim();
+    isStartingRef.current = true;
+    setIsStarting(true);
+    try {
+      const pending = pendingStartRef.current;
+      const retry =
+        pending &&
+        pending.asFile === asFile &&
+        pending.composerText === composerText &&
+        pending.apiDefId === newChatApiDefId &&
+        pending.modelId === newChatModelId
+          ? pending
+          : null;
 
-    const newChat = await createNewChat(
-      messageText,
-      newChatApiDefId,
-      newChatModelId,
-      processedAttachments
-    );
-
-    if (newChat) {
-      setNewChatMessage('');
-      setAttachments([]);
-      setValidationError('');
-      clearDraft('project-chat', projectId); // Clear draft when chat is created
-      // Reset model override after creating chat
-      setNewChatApiDefId(null);
-      setNewChatModelId(null);
-
-      // Kick off the agentic loop on the backend before navigating. The
-      // backend persists the user message + drives the loop, broadcasting
-      // events via the chat pubsub. ChatView's `attachChat` subscription
-      // picks them up on mount.
-      try {
-        await gremlinClient.startLoop({
-          chatId: newChat.id,
-          mode: 'send',
-          content: messageText,
-          attachments: processedAttachments,
-        });
-      } catch (err) {
-        console.error('[ProjectView] startLoop failed:', err);
+      let chatId: string;
+      let content: string;
+      if (retry) {
+        ({ chatId, content } = retry);
+      } else {
+        content = messageText;
+        if (asFile) {
+          content = `/tmp/${generateUniqueId('tmp')}.txt`;
+          await vfsAdapter.createFile(content, composerText);
+        }
+        const newChat = await createNewChat(
+          content,
+          newChatApiDefId,
+          newChatModelId,
+          startAttachments
+        );
+        if (!newChat) return;
+        chatId = newChat.id;
+        pendingStartRef.current = {
+          chatId,
+          content,
+          composerText,
+          asFile,
+          apiDefId: newChatApiDefId,
+          modelId: newChatModelId,
+        };
       }
 
-      void navigate(`/chat/${newChat.id}`);
-    }
-  };
+      // The backend persists the user message and drives the loop; ChatView's
+      // `attachChat` subscription picks up its events on mount.
+      await gremlinClient.startLoop({
+        chatId,
+        mode: 'send',
+        content,
+        attachments: startAttachments,
+      });
 
-  const handleSendAsFile = async () => {
-    if (!newChatMessage.trim() || isCreatingChat || isProcessingAttachments) return;
-
-    const fileId = generateUniqueId('tmp');
-    const filePath = `/tmp/${fileId}.txt`;
-
-    await vfsAdapter.createFile(filePath, newChatMessage);
-
-    const newChat = await createNewChat(filePath, newChatApiDefId, newChatModelId, undefined);
-
-    if (newChat) {
+      pendingStartRef.current = null;
       setNewChatMessage('');
       setAttachments([]);
       setValidationError('');
       clearDraft('project-chat', projectId);
       setNewChatApiDefId(null);
       setNewChatModelId(null);
-
-      try {
-        await gremlinClient.startLoop({
-          chatId: newChat.id,
-          mode: 'send',
-          content: filePath,
-        });
-      } catch (err) {
-        console.error('[ProjectView] startLoop (sendAsFile) failed:', err);
-      }
-
-      void navigate(`/chat/${newChat.id}`);
+      void navigate(`/chat/${chatId}`);
+    } catch (err) {
+      console.debug('[ProjectView] new chat did not start: %o', err);
+      void showAlert('Chat not started', describeLoopStartError(err));
+    } finally {
+      isStartingRef.current = false;
+      setIsStarting(false);
     }
   };
+
+  const handleStartNewChat = () => startNewChat(false);
+  const handleSendAsFile = () => startNewChat(true);
 
   const handleNewChatModelSelect = (apiDefId: string | null, modelId: string | null) => {
     setNewChatApiDefId(apiDefId);
@@ -355,12 +341,20 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
   };
 
   const handleSystemPromptSave = async (value: string) => {
-    await updateProject({ ...project, systemPrompt: value });
-    setShowSystemPrompt(false);
+    const saved = await updateProject({ systemPrompt: value });
+    if (saved) setShowSystemPrompt(false);
+    return saved;
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    // The whole page takes dropped images for the new-chat composer, so a drop
+    // a few pixels off the textarea doesn't navigate the browser to the file
+    <div className="relative flex min-h-0 flex-1 flex-col" {...dropZoneProps}>
+      {isDragging && (
+        <div className="pointer-events-none absolute inset-0 z-[60] flex items-center justify-center border-4 border-dashed border-blue-400 bg-blue-50/80 text-lg font-medium text-blue-700">
+          Drop images to attach
+        </div>
+      )}
       {/* Header with safe area */}
       <div className="border-b border-gray-200 bg-white">
         <div className="safe-area-inset-top" />
@@ -368,24 +362,25 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
           {onMenuPress && (
             <button
               onClick={onMenuPress}
+              aria-label="Open menu"
               className="flex h-11 w-11 items-center justify-center text-gray-700 hover:text-gray-900 md:hidden"
             >
               <span className="text-2xl">☰</span>
             </button>
           )}
           <div className="flex min-w-0 flex-1 flex-col items-center justify-center">
-            <div className="flex items-center gap-1">
+            <div className="flex max-w-full items-center gap-1">
               <span className="text-lg">{project.icon || '📁'}</span>
               <h1 className="truncate text-lg font-semibold text-gray-900">{project.name}</h1>
               <button
                 onClick={() => setShowNameIcon(true)}
-                className="ml-1 flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                className="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
                 title="Edit project name"
               >
                 <span className="text-sm">✏️</span>
               </button>
             </div>
-            <span className="truncate text-xs text-gray-500">
+            <span className="max-w-full truncate text-xs text-gray-500">
               {project.modelId
                 ? (() => {
                     const apiDef = project.apiDefinitionId
@@ -409,7 +404,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
                 <button
                   onClick={() => {
                     setShowSettingsDropdown(false);
-                    setShowSettings(true);
+                    navigate(`/project/${projectId}/settings`);
                   }}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
                 >
@@ -467,8 +462,12 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
         isOpen={showNameIcon}
         project={project}
         onSave={async (updatedProject: Project) => {
-          await updateProject(updatedProject);
-          setShowNameIcon(false);
+          // Only what the modal edits, so a stale copy can't overwrite other fields.
+          const saved = await updateProject({
+            name: updatedProject.name,
+            icon: updatedProject.icon,
+          });
+          if (saved) setShowNameIcon(false);
         }}
         onCancel={() => setShowNameIcon(false)}
       />
@@ -596,14 +595,17 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
             )}
 
             <textarea
-              ref={newChatTextareaRef}
               value={newChatMessage}
               onChange={e => setNewChatMessage(e.target.value)}
               placeholder="Type your message here..."
+              aria-label="New chat message"
+              onPaste={handlePaste}
+              readOnly={isStarting}
               rows={3}
               className="w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              onCompositionEnd={onCompositionEnd}
               onKeyDown={e => {
-                if (e.nativeEvent.isComposing || compositionJustEndedRef.current) return;
+                if (isImeEnter(e)) return;
                 if (e.key === 'Enter' && !e.shiftKey && !isTouchDevice) {
                   e.preventDefault();
                   handleStartNewChat();
@@ -616,7 +618,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
               <button
                 onClick={handleAttachClick}
                 disabled={
-                  isCreatingChat || attachments.length >= maxAttachments || isProcessingAttachments
+                  isStarting || attachments.length >= maxAttachments || isProcessingAttachments
                 }
                 className="rounded-lg bg-gray-200 px-4 py-2 font-semibold text-gray-700 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                 title={
@@ -632,7 +634,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
               {project.enabledTools?.includes('filesystem') && (
                 <button
                   onClick={handleSendAsFile}
-                  disabled={!newChatMessage.trim() || isCreatingChat || isProcessingAttachments}
+                  disabled={!newChatMessage.trim() || isStarting || isProcessingAttachments}
                   className="rounded-lg bg-gray-200 px-4 py-2 font-semibold text-gray-700 transition-colors hover:bg-gray-300 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                   title="Send text as a VFS file"
                 >
@@ -645,17 +647,13 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
                 onClick={handleStartNewChat}
                 disabled={
                   (!newChatMessage.trim() && attachments.length === 0) ||
-                  isCreatingChat ||
+                  isStarting ||
                   isProcessingAttachments
                 }
                 className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-2 font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
-                {isCreatingChat && <Spinner size={16} colorClass="border-white" />}
-                {isCreatingChat
-                  ? 'Creating...'
-                  : isProcessingAttachments
-                    ? 'Processing...'
-                    : 'Send'}
+                {isStarting && <Spinner size={16} colorClass="border-white" />}
+                {isStarting ? 'Creating...' : isProcessingAttachments ? 'Processing...' : 'Send'}
               </button>
             </div>
           </div>
@@ -663,7 +661,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
       )}
 
       {/* Chat List */}
-      <div className="ios-scroll scroll-safe-bottom flex-1 overflow-y-auto overscroll-y-contain p-4">
+      <div className="ios-scroll flex-1 overflow-y-auto overscroll-y-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <h2 className="mb-3 text-base font-semibold text-gray-900">Recent Chats</h2>
         {chats.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-center">

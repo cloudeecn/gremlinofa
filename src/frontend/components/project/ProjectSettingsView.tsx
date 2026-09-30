@@ -1,14 +1,12 @@
-import { useState, useRef, useCallback } from 'react';
+import { useReducer, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { useApp } from '../../hooks/useApp';
+import { useApiDefinitions } from '../../hooks/useApp';
 import { useProject } from '../../hooks/useProject';
 import { getApiDefinitionIcon } from '../../lib/apiTypeUtils';
 import { apiKeyOptional } from '../../../shared/protocol/apiDefinition';
 import { getStorageConfig } from '../../lib/localStorageBoot';
 import type {
-  Project,
   APIType,
-  ToolOptions,
   ModelReference,
   ToolOptionValue,
   Verbosity,
@@ -23,11 +21,11 @@ import {
   isSelectOption,
   isModelReference,
   isModelReferenceArray,
-  initializeToolOptions,
 } from '../../../shared/protocol/types';
 import { useAlert } from '../../hooks/useAlert';
 import { clearDraft } from '../../hooks/useDraftPersistence';
 import Spinner from '../ui/Spinner';
+import NumberInput from '../ui/NumberInput';
 import ModelSelector from './ModelSelector';
 import SystemPromptModal from './SystemPromptModal';
 import LongtextOptionEditor from './LongtextOptionEditor';
@@ -35,6 +33,12 @@ import AnthropicReasoningConfig from './AnthropicReasoningConfig';
 import OpenAIReasoningConfig from './OpenAIReasoningConfig';
 import { useToolInventory } from '../../hooks/useToolInventory';
 import ReasoningEffortSelect from './ReasoningEffortSelect';
+import {
+  formToProjectPatch,
+  initProjectSettingsState,
+  projectSettingsReducer,
+  type ProjectSettingsForm,
+} from './projectSettingsForm';
 
 interface ProjectSettingsViewProps {
   projectId: string;
@@ -43,89 +47,35 @@ interface ProjectSettingsViewProps {
 
 export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectSettingsViewProps) {
   const navigate = useNavigate();
-  const { apiDefinitions } = useApp();
-  const { showDestructiveConfirm } = useAlert();
+  const apiDefinitions = useApiDefinitions();
+  const { showAlert, showDestructiveConfirm } = useAlert();
 
-  // Use the project hook
-  const { project, updateProject, deleteProject } = useProject({
-    projectId,
-    apiDefinitions,
-  });
+  const { project, updateProject, deleteProject } = useProject({ projectId, withChats: false });
 
-  const [systemPrompt, setSystemPrompt] = useState(project?.systemPrompt || '');
+  // Every edited project field lives in one form object (see projectSettingsForm.ts).
+  const [{ seededFrom, form }, dispatch] = useReducer(
+    projectSettingsReducer,
+    project,
+    initProjectSettingsState
+  );
+  // Re-seed whenever a new project instance arrives. Tracking the last-seeded
+  // project during render is React's recommended alternative to a
+  // setState-in-effect.
+  if (seededFrom !== project) {
+    dispatch({ type: 'seed', project });
+  }
+  const patch = (fields: Partial<ProjectSettingsForm>) => dispatch({ type: 'patch', fields });
+
   const [showSystemPromptModal, setShowSystemPromptModal] = useState(false);
-  const [preFillResponse, setPreFillResponse] = useState(project?.preFillResponse || '');
-  const [enableReasoning, setEnableReasoning] = useState(project?.enableReasoning || false);
-  const [reasoningBudgetTokens, setReasoningBudgetTokens] = useState(
-    project?.reasoningBudgetTokens.toString() || '1024'
-  );
-  const [thinkingKeepTurns, setThinkingKeepTurns] = useState(
-    project?.thinkingKeepTurns !== undefined ? project.thinkingKeepTurns.toString() : ''
-  );
-  const [pruneThinkingBeforeApiCall, setPruneThinkingBeforeApiCall] = useState(
-    project?.pruneThinkingBeforeApiCall ?? false
-  );
-  const [webSearchEnabled, setWebSearchEnabled] = useState(project?.webSearchEnabled || false);
-  const [sendMessageMetadata, setSendMessageMetadata] = useState<boolean | 'template'>(
-    project?.sendMessageMetadata || false
-  );
-  const [metadataTimestampMode, setMetadataTimestampMode] = useState<
-    'utc' | 'local' | 'relative' | 'disabled'
-  >(project?.metadataTimestampMode || 'disabled');
-  const [metadataIncludeModelName, setMetadataIncludeModelName] = useState(
-    project?.metadataIncludeModelName || false
-  );
-  const [metadataIncludeContextWindow, setMetadataIncludeContextWindow] = useState(
-    project?.metadataIncludeContextWindow || false
-  );
-  const [metadataIncludeCost, setMetadataIncludeCost] = useState(
-    project?.metadataIncludeCost || false
-  );
-  const [metadataTemplate, setMetadataTemplate] = useState(
-    project?.metadataTemplate || '{{userMessage}}'
-  );
-  const [metadataNewContext, setMetadataNewContext] = useState(
-    project?.metadataNewContext || false
-  );
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const tooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Unified tool state - replaces individual tool state variables
-  const [enabledTools, setEnabledTools] = useState<string[]>(project?.enabledTools ?? []);
-  const [toolOptionsState, setToolOptionsState] = useState<Record<string, ToolOptions>>(
-    project?.toolOptions ?? {}
-  );
-  const [reasoningEffort, setReasoningEffort] = useState<
-    'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined
-  >(project?.reasoningEffort);
-  const [reasoningSummary, setReasoningSummary] = useState<
-    'auto' | 'concise' | 'detailed' | undefined
-  >(project?.reasoningSummary);
-  const [verbosity, setVerbosity] = useState<Verbosity>(project?.verbosity);
-  const [disableStream, setDisableStream] = useState(project?.disableStream || false);
-  const [extendedContext, setExtendedContext] = useState(project?.extendedContext || false);
-  const [useAnthropicOneHourCache, setUseAnthropicOneHourCache] = useState(
-    project?.useAnthropicOneHourCache || false
-  );
-  const [noLineNumbers, setNoLineNumbers] = useState(project?.noLineNumbers || false);
-  const [cacheRoutingScope, setCacheRoutingScope] = useState<'project' | 'chat'>(
-    project?.cacheRoutingScope ?? 'project'
-  );
-  const [flexTierEnabled, setFlexTierEnabled] = useState(project?.flexTierEnabled || false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRemoteVfs, setShowRemoteVfs] = useState(false);
-  const [remoteVfsUrl, setRemoteVfsUrl] = useState(project?.remoteVfsUrl || '');
-  const [remoteVfsPassword, setRemoteVfsPassword] = useState(project?.remoteVfsPassword || '');
   const [remoteVfsTestStatus, setRemoteVfsTestStatus] = useState<
     'idle' | 'testing' | 'ok' | 'error'
   >('idle');
   const [showDangerZone, setShowDangerZone] = useState(false);
-  const [temperature, setTemperature] = useState(project?.temperature?.toString() || '');
-  const [maxOutputTokens, setMaxOutputTokens] = useState(
-    project?.maxOutputTokens.toString() || '1536'
-  );
   const [showModelSelector, setShowModelSelector] = useState(false);
-  const [selectedApiDefId, setSelectedApiDefId] = useState(project?.apiDefinitionId || null);
-  const [selectedModelId, setSelectedModelId] = useState(project?.modelId || null);
   const [isSaving, setIsSaving] = useState(false);
 
   // Tool option editor modal state
@@ -146,52 +96,14 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
     title: string;
   } | null>(null);
 
-  // Seed form fields whenever a new project instance arrives. Tracking the
-  // last-seeded project during render is React's recommended alternative to a
-  // setState-in-effect.
-  const [seededProject, setSeededProject] = useState(project);
-  if (seededProject !== project) {
-    setSeededProject(project);
-    if (project) {
-      setSystemPrompt(project.systemPrompt || '');
-      setPreFillResponse(project.preFillResponse || '');
-      setEnableReasoning(project.enableReasoning || false);
-      setReasoningBudgetTokens(project.reasoningBudgetTokens.toString() || '1024');
-      setThinkingKeepTurns(
-        project.thinkingKeepTurns !== undefined ? project.thinkingKeepTurns.toString() : ''
-      );
-      setPruneThinkingBeforeApiCall(project.pruneThinkingBeforeApiCall ?? false);
-      setWebSearchEnabled(project.webSearchEnabled || false);
-      setSendMessageMetadata(project.sendMessageMetadata || false);
-      setMetadataTimestampMode(project.metadataTimestampMode || 'disabled');
-      setMetadataIncludeModelName(project.metadataIncludeModelName || false);
-      setMetadataIncludeContextWindow(project.metadataIncludeContextWindow || false);
-      setMetadataIncludeCost(project.metadataIncludeCost || false);
-      setMetadataTemplate(project.metadataTemplate || '{{userMessage}}');
-      setMetadataNewContext(project.metadataNewContext || false);
-      // Load unified tool state (projects are migrated on load)
-      setEnabledTools(project.enabledTools ?? []);
-      setToolOptionsState(project.toolOptions ?? {});
-      setReasoningEffort(project.reasoningEffort);
-      setReasoningSummary(project.reasoningSummary);
-      setVerbosity(project.verbosity);
-      setTemperature(project.temperature?.toString() || '');
-      setMaxOutputTokens(project.maxOutputTokens.toString() || '1536');
-      setSelectedApiDefId(project.apiDefinitionId || null);
-      setSelectedModelId(project.modelId || null);
-      setDisableStream(project.disableStream || false);
-      setExtendedContext(project.extendedContext || false);
-      setUseAnthropicOneHourCache(project.useAnthropicOneHourCache || false);
-      setNoLineNumbers(project.noLineNumbers || false);
-      setCacheRoutingScope(project.cacheRoutingScope ?? 'project');
-      setFlexTierEnabled(project.flexTierEnabled || false);
-      setRemoteVfsUrl(project.remoteVfsUrl || '');
-      setRemoteVfsPassword(project.remoteVfsPassword || '');
-    }
-  }
+  const availableTools = useToolInventory();
+
+  if (!project || !form) return null;
 
   // Get API definition and model names for display
-  const apiDef = selectedApiDefId ? apiDefinitions.find(a => a.id === selectedApiDefId) : null;
+  const apiDef = form.apiDefinitionId
+    ? apiDefinitions.find(a => a.id === form.apiDefinitionId)
+    : null;
   const selectedApiType: APIType | null = apiDef?.apiType ?? null;
   const flexSupported = !!apiDef?.advancedSettings?.flexTierSupported;
 
@@ -201,194 +113,88 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
   // Detect if current model is an o-series reasoning model
   const isOSeriesModel =
     (selectedApiType === 'chatgpt' || selectedApiType === 'responses_api') &&
-    selectedModelId?.startsWith('o');
+    form.modelId?.startsWith('o');
 
   // Check selected API type for conditional UI
   const isAnthropic = selectedApiType === 'anthropic';
   const isOpenAICompatible = selectedApiType === 'chatgpt' || selectedApiType === 'responses_api';
-  const hasModelSelected = !!selectedModelId;
+  const hasModelSelected = !!form.modelId;
 
   const modelDisplayText = hasModelSelected
-    ? `${apiDef ? getApiDefinitionIcon(apiDef) + ' ' : ''}${apiDef?.name || 'Unknown'} • ${selectedModelId}`
+    ? `${apiDef ? getApiDefinitionIcon(apiDef) + ' ' : ''}${apiDef?.name || 'Unknown'} • ${form.modelId}`
     : 'Select a model to get started';
 
-  const availableTools = useToolInventory();
+  const isToolEnabled = (toolName: string) => form.enabledTools.includes(toolName);
 
-  // Helper functions for tool state management
-  const isToolEnabled = useCallback(
-    (toolName: string) => enabledTools.includes(toolName),
-    [enabledTools]
-  );
+  const toggleTool = (toolName: string, enabled: boolean) =>
+    dispatch({
+      type: 'toggleTool',
+      toolName,
+      enabled,
+      optionDefinitions: availableTools.find(t => t.name === toolName)?.optionDefinitions,
+    });
 
-  const toggleTool = useCallback(
-    (toolName: string, enabled: boolean) => {
-      if (enabled) {
-        // Add to enabled list
-        setEnabledTools(prev => [...prev.filter(t => t !== toolName), toolName]);
+  const getToolOptionValue = <T extends ToolOptionValue>(
+    toolName: string,
+    optionId: string,
+    defaultValue: T
+  ): T => (form.toolOptions[toolName]?.[optionId] as T) ?? defaultValue;
 
-        // Initialize options with defaults from tool definition using initializeToolOptions
-        const tool = availableTools.find(t => t.name === toolName);
-        if (tool?.optionDefinitions?.length) {
-          setToolOptionsState(prev => {
-            const initialized = initializeToolOptions(prev[toolName], tool.optionDefinitions, {
-              apiDefinitionId: selectedApiDefId,
-              modelId: selectedModelId,
-            });
-            return { ...prev, [toolName]: initialized };
-          });
-        }
-      } else {
-        // Remove from enabled list
-        setEnabledTools(prev => prev.filter(t => t !== toolName));
-      }
-    },
-    [availableTools, selectedApiDefId, selectedModelId]
-  );
+  const setToolOptionValue = (toolName: string, optionId: string, value: ToolOptionValue) =>
+    dispatch({ type: 'setToolOption', toolName, optionId, value });
 
-  const getToolOptionValue = useCallback(
-    <T extends ToolOptionValue>(toolName: string, optionId: string, defaultValue: T): T =>
-      (toolOptionsState[toolName]?.[optionId] as T) ?? defaultValue,
-    [toolOptionsState]
-  );
+  const getModelDisplayText = (modelRef: ModelReference | undefined): string => {
+    if (!modelRef) return 'Not configured';
+    const def = apiDefinitions.find(d => d.id === modelRef.apiDefinitionId);
+    const icon = def ? getApiDefinitionIcon(def) : '';
+    const name = def?.name || 'Unknown';
+    return `${icon} ${name} • ${modelRef.modelId}`;
+  };
 
-  const setToolOptionValue = useCallback(
-    (toolName: string, optionId: string, value: ToolOptionValue) => {
-      setToolOptionsState(prev => ({
-        ...prev,
-        [toolName]: { ...prev[toolName], [optionId]: value },
-      }));
-    },
-    []
-  );
-
-  // Helper to get model display text for a ModelReference
-  const getModelDisplayText = useCallback(
-    (modelRef: ModelReference | undefined): string => {
-      if (!modelRef) return 'Not configured';
-      const def = apiDefinitions.find(d => d.id === modelRef.apiDefinitionId);
-      const icon = def ? getApiDefinitionIcon(def) : '';
-      const name = def?.name || 'Unknown';
-      return `${icon} ${name} • ${modelRef.modelId}`;
-    },
-    [apiDefinitions]
-  );
-
-  const handleSave = useCallback(async () => {
-    if (!project) return;
-
-    const isServerMode = getStorageConfig().type === 'server';
+  const handleSave = async () => {
     setIsSaving(true);
     try {
-      const updatedProject: Project = {
-        ...project,
-        apiDefinitionId: selectedApiDefId,
-        modelId: selectedModelId,
-        systemPrompt,
-        preFillResponse,
-        enableReasoning,
-        reasoningBudgetTokens: isNaN(parseInt(reasoningBudgetTokens))
-          ? 1024
-          : parseInt(reasoningBudgetTokens),
-        thinkingKeepTurns: thinkingKeepTurns === '' ? undefined : parseInt(thinkingKeepTurns),
-        pruneThinkingBeforeApiCall: pruneThinkingBeforeApiCall || undefined,
-        webSearchEnabled,
-        sendMessageMetadata,
-        metadataTimestampMode,
-        metadataIncludeModelName,
-        metadataIncludeContextWindow,
-        metadataIncludeCost,
-        metadataTemplate,
-        metadataNewContext,
-        // Unified tool format
-        enabledTools: enabledTools.length > 0 ? enabledTools : undefined,
-        toolOptions: Object.keys(toolOptionsState).length > 0 ? toolOptionsState : undefined,
-        reasoningEffort,
-        reasoningSummary,
-        verbosity,
-        temperature: temperature === '' ? null : parseFloat(temperature),
-        maxOutputTokens: isNaN(parseInt(maxOutputTokens)) ? 1536 : parseInt(maxOutputTokens),
-        disableStream: disableStream || undefined,
-        extendedContext: extendedContext || undefined,
-        useAnthropicOneHourCache: useAnthropicOneHourCache || undefined,
-        noLineNumbers: noLineNumbers || undefined,
-        cacheRoutingScope: cacheRoutingScope === 'chat' ? 'chat' : undefined,
-        flexTierEnabled: flexTierEnabled || undefined,
-        remoteVfsUrl: isServerMode ? undefined : remoteVfsUrl.trim() || undefined,
-        remoteVfsPassword: isServerMode ? undefined : remoteVfsPassword || undefined,
+      const saved = await updateProject({
+        ...formToProjectPatch(form, { serverMode: getStorageConfig().type === 'server' }),
+        // Deprecated (E2E encryption was removed); every save clears it.
         remoteVfsEncrypt: undefined,
-        lastUsedAt: new Date(),
-      };
-
-      await updateProject(updatedProject);
+      });
+      // A failed save stays here with every edit; updateProject has said why
+      if (!saved) return;
       clearDraft('system-prompt-modal', projectId); // Clear draft when settings are saved
       navigate(`/project/${projectId}`);
     } finally {
       setIsSaving(false);
     }
-  }, [
-    project,
-    selectedApiDefId,
-    selectedModelId,
-    systemPrompt,
-    preFillResponse,
-    enableReasoning,
-    reasoningBudgetTokens,
-    thinkingKeepTurns,
-    pruneThinkingBeforeApiCall,
-    webSearchEnabled,
-    sendMessageMetadata,
-    metadataTimestampMode,
-    metadataIncludeModelName,
-    metadataIncludeContextWindow,
-    metadataIncludeCost,
-    metadataTemplate,
-    metadataNewContext,
-    enabledTools,
-    toolOptionsState,
-    reasoningEffort,
-    reasoningSummary,
-    verbosity,
-    temperature,
-    maxOutputTokens,
-    disableStream,
-    extendedContext,
-    useAnthropicOneHourCache,
-    noLineNumbers,
-    cacheRoutingScope,
-    flexTierEnabled,
-    remoteVfsUrl,
-    remoteVfsPassword,
-    updateProject,
-    projectId,
-    navigate,
-  ]);
+  };
 
   const handleCancel = () => {
     navigate(`/project/${projectId}`);
   };
 
   const handleModelSelect = (apiDefId: string | null, modelId: string | null) => {
-    setSelectedApiDefId(apiDefId);
-    setSelectedModelId(modelId);
+    patch({ apiDefinitionId: apiDefId, modelId });
     setShowModelSelector(false);
   };
 
   const handleDelete = async () => {
-    if (!project) return;
-
     const confirmed = await showDestructiveConfirm(
       'Delete Project',
       `Are you sure you want to delete "${project.name}"? This will permanently delete all chats in this project. This action cannot be undone.`,
       'Delete'
     );
 
-    if (confirmed) {
-      await deleteProject();
-      navigate('/');
-    }
-  };
+    if (!confirmed) return;
 
-  if (!project) return null;
+    try {
+      await deleteProject();
+    } catch (error) {
+      console.error('[ProjectSettingsView] Failed to delete project:', error);
+      showAlert('Error', 'Failed to delete project');
+      return;
+    }
+    navigate('/');
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-gray-50">
@@ -399,13 +205,16 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
           {onMenuPress && (
             <button
               onClick={onMenuPress}
+              aria-label="Open menu"
               className="flex h-11 w-11 items-center justify-center text-gray-700 hover:text-gray-900 md:hidden"
             >
               <span className="text-2xl">☰</span>
             </button>
           )}
-          <div className="flex-1 text-center">
-            <h1 className="text-lg font-semibold text-gray-900">Settings - {project.name}</h1>
+          <div className="min-w-0 flex-1 text-center">
+            <h1 className="truncate text-lg font-semibold text-gray-900">
+              Settings - {project.name}
+            </h1>
           </div>
           <button
             onClick={handleCancel}
@@ -420,8 +229,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
       <ModelSelector
         isOpen={showModelSelector}
         onClose={() => setShowModelSelector(false)}
-        currentApiDefinitionId={selectedApiDefId}
-        currentModelId={selectedModelId}
+        currentApiDefinitionId={form.apiDefinitionId}
+        currentModelId={form.modelId}
         onSelect={handleModelSelect}
         title="Configure Project"
         showResetOption={false}
@@ -434,8 +243,10 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         contextId={project.id}
         initialValue={project.systemPrompt || ''}
         onSave={async value => {
-          setSystemPrompt(value);
+          // Into the form only; the page's Save writes it
+          patch({ systemPrompt: value });
           setShowSystemPromptModal(false);
+          return true;
         }}
         onCancel={() => setShowSystemPromptModal(false)}
       />
@@ -447,8 +258,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
           isOpen={true}
           title={longtextModal.title}
           value={
-            (typeof toolOptionsState[longtextModal.toolName]?.[longtextModal.optionId] === 'string'
-              ? toolOptionsState[longtextModal.toolName]?.[longtextModal.optionId]
+            (typeof form.toolOptions[longtextModal.toolName]?.[longtextModal.optionId] === 'string'
+              ? form.toolOptions[longtextModal.toolName]?.[longtextModal.optionId]
               : '') as string
           }
           placeholder={longtextModal.placeholder}
@@ -470,21 +281,21 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
           onClose={() => setModelOptionModal(null)}
           currentApiDefinitionId={
             isModelReference(
-              toolOptionsState[modelOptionModal.toolName]?.[modelOptionModal.optionId]
+              form.toolOptions[modelOptionModal.toolName]?.[modelOptionModal.optionId]
             )
               ? (
-                  toolOptionsState[modelOptionModal.toolName]?.[
+                  form.toolOptions[modelOptionModal.toolName]?.[
                     modelOptionModal.optionId
                   ] as ModelReference
                 ).apiDefinitionId
-              : selectedApiDefId
+              : form.apiDefinitionId
           }
           currentModelId={
             isModelReference(
-              toolOptionsState[modelOptionModal.toolName]?.[modelOptionModal.optionId]
+              form.toolOptions[modelOptionModal.toolName]?.[modelOptionModal.optionId]
             )
               ? (
-                  toolOptionsState[modelOptionModal.toolName]?.[
+                  form.toolOptions[modelOptionModal.toolName]?.[
                     modelOptionModal.optionId
                   ] as ModelReference
                 ).modelId
@@ -509,12 +320,12 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
         <ModelSelector
           isOpen={true}
           onClose={() => setModelListAddModal(null)}
-          currentApiDefinitionId={selectedApiDefId}
+          currentApiDefinitionId={form.apiDefinitionId}
           currentModelId={null}
           onSelect={(apiDefId, modelId) => {
             if (apiDefId && modelId) {
               const currentList =
-                toolOptionsState[modelListAddModal.toolName]?.[modelListAddModal.optionId];
+                form.toolOptions[modelListAddModal.toolName]?.[modelListAddModal.optionId];
               const list: ModelReference[] = isModelReferenceArray(currentList) ? currentList : [];
               // Duplicate check
               const alreadyExists = list.some(
@@ -594,9 +405,9 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                 className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-gray-300 bg-white p-3 transition-colors hover:border-gray-400"
               >
                 <span
-                  className={`min-w-0 flex-1 truncate ${systemPrompt ? 'text-gray-900' : 'text-gray-500'}`}
+                  className={`min-w-0 flex-1 truncate ${form.systemPrompt ? 'text-gray-900' : 'text-gray-500'}`}
                 >
-                  {systemPrompt || 'Configure system prompt...'}
+                  {form.systemPrompt || 'Configure system prompt...'}
                 </span>
                 <span className="ml-2 flex-shrink-0 text-gray-600">✏️</span>
               </div>
@@ -613,8 +424,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                 step="0.1"
                 min="0"
                 max="1"
-                value={temperature}
-                onChange={e => setTemperature(e.target.value)}
+                value={form.temperature}
+                onChange={e => patch({ temperature: e.target.value })}
                 placeholder="Use model default"
                 className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
               />
@@ -627,16 +438,19 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                 <span className="text-sm font-semibold text-gray-900">Reasoning</span>
                 <input
                   type="checkbox"
-                  checked={enableReasoning}
-                  onChange={e => setEnableReasoning(e.target.checked)}
+                  checked={form.enableReasoning}
+                  onChange={e => patch({ enableReasoning: e.target.checked })}
                   className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                 />
               </label>
               {/* Section Content */}
-              {enableReasoning && (
+              {form.enableReasoning && (
                 <div className="space-y-6 bg-white p-4">
                   {/* Shared: Reasoning Effort (used by OpenAI/Nova directly, maps to output effort for Anthropic adaptive) */}
-                  <ReasoningEffortSelect value={reasoningEffort} onChange={setReasoningEffort} />
+                  <ReasoningEffortSelect
+                    value={form.reasoningEffort}
+                    onChange={value => patch({ reasoningEffort: value })}
+                  />
 
                   {/* Anthropic / Bedrock Claude Subsection */}
                   <div className="border-t border-gray-100 pt-4">
@@ -644,13 +458,15 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       Anthropic / Bedrock Claude
                     </h4>
                     <AnthropicReasoningConfig
-                      reasoningBudgetTokens={reasoningBudgetTokens}
-                      setReasoningBudgetTokens={setReasoningBudgetTokens}
-                      thinkingKeepTurns={thinkingKeepTurns}
-                      setThinkingKeepTurns={setThinkingKeepTurns}
-                      pruneThinkingBeforeApiCall={pruneThinkingBeforeApiCall}
-                      setPruneThinkingBeforeApiCall={setPruneThinkingBeforeApiCall}
-                      maxOutputTokens={maxOutputTokens}
+                      reasoningBudgetTokens={form.reasoningBudgetTokens}
+                      setReasoningBudgetTokens={value => patch({ reasoningBudgetTokens: value })}
+                      thinkingKeepTurns={form.thinkingKeepTurns}
+                      setThinkingKeepTurns={value => patch({ thinkingKeepTurns: value })}
+                      pruneThinkingBeforeApiCall={form.pruneThinkingBeforeApiCall}
+                      setPruneThinkingBeforeApiCall={value =>
+                        patch({ pruneThinkingBeforeApiCall: value })
+                      }
+                      maxOutputTokens={form.maxOutputTokens}
                     />
                   </div>
 
@@ -660,8 +476,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       Reasoning Summary
                     </h4>
                     <OpenAIReasoningConfig
-                      reasoningSummary={reasoningSummary}
-                      setReasoningSummary={setReasoningSummary}
+                      reasoningSummary={form.reasoningSummary}
+                      setReasoningSummary={value => patch({ reasoningSummary: value })}
                     />
                   </div>
                 </div>
@@ -682,8 +498,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                     <input
                       id="metadataModeDisabled"
                       type="radio"
-                      checked={sendMessageMetadata === false}
-                      onChange={() => setSendMessageMetadata(false)}
+                      checked={form.sendMessageMetadata === false}
+                      onChange={() => patch({ sendMessageMetadata: false })}
                       className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                     <label
@@ -697,8 +513,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                     <input
                       id="metadataModeEnabled"
                       type="radio"
-                      checked={sendMessageMetadata === true}
-                      onChange={() => setSendMessageMetadata(true)}
+                      checked={form.sendMessageMetadata === true}
+                      onChange={() => patch({ sendMessageMetadata: true })}
                       className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                     <label
@@ -712,8 +528,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                     <input
                       id="metadataModeTemplate"
                       type="radio"
-                      checked={sendMessageMetadata === 'template'}
-                      onChange={() => setSendMessageMetadata('template')}
+                      checked={form.sendMessageMetadata === 'template'}
+                      onChange={() => patch({ sendMessageMetadata: 'template' })}
                       className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                     <label
@@ -726,7 +542,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                 </div>
 
                 {/* With Metadata Options */}
-                {sendMessageMetadata === true && (
+                {form.sendMessageMetadata === true && (
                   <div className="space-y-4 border-t border-gray-100 pt-4">
                     {/* Timestamp Mode */}
                     <div>
@@ -738,8 +554,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                           <input
                             id="timestampUtc"
                             type="radio"
-                            checked={metadataTimestampMode === 'utc'}
-                            onChange={() => setMetadataTimestampMode('utc')}
+                            checked={form.metadataTimestampMode === 'utc'}
+                            onChange={() => patch({ metadataTimestampMode: 'utc' })}
                             className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                           />
                           <label
@@ -753,8 +569,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                           <input
                             id="timestampLocal"
                             type="radio"
-                            checked={metadataTimestampMode === 'local'}
-                            onChange={() => setMetadataTimestampMode('local')}
+                            checked={form.metadataTimestampMode === 'local'}
+                            onChange={() => patch({ metadataTimestampMode: 'local' })}
                             className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                           />
                           <label
@@ -768,8 +584,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                           <input
                             id="timestampRelative"
                             type="radio"
-                            checked={metadataTimestampMode === 'relative'}
-                            onChange={() => setMetadataTimestampMode('relative')}
+                            checked={form.metadataTimestampMode === 'relative'}
+                            onChange={() => patch({ metadataTimestampMode: 'relative' })}
                             className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                           />
                           <label
@@ -783,8 +599,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                           <input
                             id="timestampDisabled"
                             type="radio"
-                            checked={metadataTimestampMode === 'disabled'}
-                            onChange={() => setMetadataTimestampMode('disabled')}
+                            checked={form.metadataTimestampMode === 'disabled'}
+                            onChange={() => patch({ metadataTimestampMode: 'disabled' })}
                             className="h-5 w-5 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                           />
                           <label
@@ -808,8 +624,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       <input
                         id="includeModelName"
                         type="checkbox"
-                        checked={metadataIncludeModelName}
-                        onChange={e => setMetadataIncludeModelName(e.target.checked)}
+                        checked={form.metadataIncludeModelName}
+                        onChange={e => patch({ metadataIncludeModelName: e.target.checked })}
                         className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
@@ -825,8 +641,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       <input
                         id="includeContextWindow"
                         type="checkbox"
-                        checked={metadataIncludeContextWindow}
-                        onChange={e => setMetadataIncludeContextWindow(e.target.checked)}
+                        checked={form.metadataIncludeContextWindow}
+                        onChange={e => patch({ metadataIncludeContextWindow: e.target.checked })}
                         className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
@@ -842,8 +658,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       <input
                         id="includeCost"
                         type="checkbox"
-                        checked={metadataIncludeCost}
-                        onChange={e => setMetadataIncludeCost(e.target.checked)}
+                        checked={form.metadataIncludeCost}
+                        onChange={e => patch({ metadataIncludeCost: e.target.checked })}
                         className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
@@ -851,7 +667,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                 )}
 
                 {/* Template Mode Options */}
-                {sendMessageMetadata === 'template' && (
+                {form.sendMessageMetadata === 'template' && (
                   <div className="space-y-4 border-t border-gray-100 pt-4">
                     {/* Available Variables */}
                     <div>
@@ -950,8 +766,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                         Template
                       </label>
                       <textarea
-                        value={metadataTemplate}
-                        onChange={e => setMetadataTemplate(e.target.value)}
+                        value={form.metadataTemplate}
+                        onChange={e => patch({ metadataTemplate: e.target.value })}
                         placeholder="{{userMessage}}"
                         rows={4}
                         className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
@@ -974,8 +790,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       <input
                         id="newContext"
                         type="checkbox"
-                        checked={metadataNewContext}
-                        onChange={e => setMetadataNewContext(e.target.checked)}
+                        checked={form.metadataNewContext}
+                        onChange={e => patch({ metadataNewContext: e.target.checked })}
                         className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
@@ -1007,8 +823,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                   <input
                     id="webSearch"
                     type="checkbox"
-                    checked={webSearchEnabled}
-                    onChange={e => setWebSearchEnabled(e.target.checked)}
+                    checked={form.webSearchEnabled}
+                    onChange={e => patch({ webSearchEnabled: e.target.checked })}
                     className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -1152,19 +968,14 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                                       <p className="text-xs text-gray-500">{opt.subtitle}</p>
                                     )}
                                   </div>
-                                  <input
+                                  <NumberInput
                                     id={`tool-${tool.name}-${opt.id}`}
-                                    type="number"
                                     value={numValue}
                                     min={opt.min}
                                     max={opt.max}
-                                    onChange={e => {
-                                      const parsed = parseInt(e.target.value, 10);
-                                      if (!isNaN(parsed)) {
-                                        setToolOptionValue(tool.name, opt.id, parsed);
-                                      }
-                                    }}
-                                    className="w-20 rounded border border-gray-300 px-2 py-1 text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                    integer
+                                    onChange={next => setToolOptionValue(tool.name, opt.id, next)}
+                                    className="w-20 rounded border border-gray-300 px-2 py-1 text-base text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                                   />
                                 </div>
                               );
@@ -1221,7 +1032,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
 
                             // Model option - model selector button
                             if (isModelOption(opt)) {
-                              const value = toolOptionsState[tool.name]?.[opt.id];
+                              const value = form.toolOptions[tool.name]?.[opt.id];
                               const modelRef = isModelReference(value) ? value : undefined;
                               return (
                                 <div key={opt.id}>
@@ -1268,7 +1079,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
 
                             // Model list option - list with add/remove
                             if (isModelListOption(opt)) {
-                              const value = toolOptionsState[tool.name]?.[opt.id];
+                              const value = form.toolOptions[tool.name]?.[opt.id];
                               const modelList: ModelReference[] = isModelReferenceArray(value)
                                 ? value
                                 : [];
@@ -1391,8 +1202,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       Start assistant replies with this text. Only Anthropic supports this reliably.
                     </p>
                     <textarea
-                      value={preFillResponse}
-                      onChange={e => setPreFillResponse(e.target.value)}
+                      value={form.preFillResponse}
+                      onChange={e => patch({ preFillResponse: e.target.value })}
                       placeholder="Optional pre-fill text..."
                       rows={2}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
@@ -1404,17 +1215,17 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                     <label className="mb-2 block text-sm font-medium text-gray-900">
                       Max Output Tokens
                     </label>
-                    {enableReasoning &&
-                      parseInt(maxOutputTokens) <= parseInt(reasoningBudgetTokens) && (
+                    {form.enableReasoning &&
+                      parseInt(form.maxOutputTokens) <= parseInt(form.reasoningBudgetTokens) && (
                         <p className="mb-2 text-xs text-yellow-700 italic">
                           ⚠️ Max tokens ≤ reasoning budget - will be auto-adjusted to{' '}
-                          {(parseInt(reasoningBudgetTokens) || 0) + 500} for Anthropic
+                          {(parseInt(form.reasoningBudgetTokens) || 0) + 500} for Anthropic
                         </p>
                       )}
                     <input
                       type="number"
-                      value={maxOutputTokens}
-                      onChange={e => setMaxOutputTokens(e.target.value)}
+                      value={form.maxOutputTokens}
+                      onChange={e => patch({ maxOutputTokens: e.target.value })}
                       placeholder="1536"
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     />
@@ -1441,8 +1252,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                     <input
                       id="disableStream"
                       type="checkbox"
-                      checked={disableStream}
-                      onChange={e => setDisableStream(e.target.checked)}
+                      checked={form.disableStream}
+                      onChange={e => patch({ disableStream: e.target.checked })}
                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -1464,12 +1275,12 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       <input
                         id="extendedContext"
                         type="checkbox"
-                        checked={extendedContext}
-                        onChange={e => setExtendedContext(e.target.checked)}
+                        checked={form.extendedContext}
+                        onChange={e => patch({ extendedContext: e.target.checked })}
                         className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
-                    {extendedContext && (
+                    {form.extendedContext && (
                       <p className="mt-1 text-xs text-yellow-700 italic">
                         ⚠️ When input exceeds 200K tokens, all tokens are charged at premium rates
                         (2x input, 1.5x output)
@@ -1493,8 +1304,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                     <input
                       id="noLineNumbers"
                       type="checkbox"
-                      checked={noLineNumbers}
-                      onChange={e => setNoLineNumbers(e.target.checked)}
+                      checked={form.noLineNumbers}
+                      onChange={e => patch({ noLineNumbers: e.target.checked })}
                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -1516,8 +1327,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                     <input
                       id="useAnthropicOneHourCache"
                       type="checkbox"
-                      checked={useAnthropicOneHourCache}
-                      onChange={e => setUseAnthropicOneHourCache(e.target.checked)}
+                      checked={form.useAnthropicOneHourCache}
+                      onChange={e => patch({ useAnthropicOneHourCache: e.target.checked })}
                       className="h-5 w-5 cursor-pointer rounded text-blue-600 focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -1542,8 +1353,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                           type="radio"
                           name="cacheRoutingScope"
                           value="project"
-                          checked={cacheRoutingScope === 'project'}
-                          onChange={() => setCacheRoutingScope('project')}
+                          checked={form.cacheRoutingScope === 'project'}
+                          onChange={() => patch({ cacheRoutingScope: 'project' })}
                           className="mt-0.5 h-4 w-4 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                         />
                         <span className="text-sm text-gray-700">
@@ -1556,8 +1367,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                           type="radio"
                           name="cacheRoutingScope"
                           value="chat"
-                          checked={cacheRoutingScope === 'chat'}
-                          onChange={() => setCacheRoutingScope('chat')}
+                          checked={form.cacheRoutingScope === 'chat'}
+                          onChange={() => patch({ cacheRoutingScope: 'chat' })}
                           className="mt-0.5 h-4 w-4 cursor-pointer text-blue-600 focus:ring-2 focus:ring-blue-500"
                         />
                         <span className="text-sm text-gray-700">
@@ -1573,8 +1384,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                     <label className="flex cursor-pointer items-start gap-2">
                       <input
                         type="checkbox"
-                        checked={flexTierEnabled}
-                        onChange={e => setFlexTierEnabled(e.target.checked)}
+                        checked={form.flexTierEnabled}
+                        onChange={e => patch({ flexTierEnabled: e.target.checked })}
                         className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-2 focus:ring-blue-500"
                       />
                       <span className="text-sm text-gray-700">
@@ -1601,11 +1412,12 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       Verbosity
                     </label>
                     <select
-                      value={verbosity ?? ''}
+                      value={form.verbosity ?? ''}
                       onChange={e =>
-                        setVerbosity(
-                          e.target.value === '' ? undefined : (e.target.value as Verbosity)
-                        )
+                        patch({
+                          verbosity:
+                            e.target.value === '' ? undefined : (e.target.value as Verbosity),
+                        })
                       }
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
                     >
@@ -1659,8 +1471,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                   <label className="mb-1 block text-sm font-medium text-gray-700">Server URL</label>
                   <input
                     type="url"
-                    value={remoteVfsUrl}
-                    onChange={e => setRemoteVfsUrl(e.target.value)}
+                    value={form.remoteVfsUrl}
+                    onChange={e => patch({ remoteVfsUrl: e.target.value })}
                     placeholder="https://vfs.example.com"
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                   />
@@ -1669,8 +1481,8 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                   <label className="mb-1 block text-sm font-medium text-gray-700">Password</label>
                   <input
                     type="password"
-                    value={remoteVfsPassword}
-                    onChange={e => setRemoteVfsPassword(e.target.value)}
+                    value={form.remoteVfsPassword}
+                    onChange={e => patch({ remoteVfsPassword: e.target.value })}
                     placeholder="Server password (empty = dev mode)"
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                   />
@@ -1678,10 +1490,10 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                 <button
                   type="button"
                   onClick={async () => {
-                    if (!remoteVfsUrl.trim()) return;
+                    if (!form.remoteVfsUrl.trim()) return;
                     setRemoteVfsTestStatus('testing');
                     try {
-                      const url = remoteVfsUrl.replace(/\/+$/, '') + '/health';
+                      const url = form.remoteVfsUrl.replace(/\/+$/, '') + '/health';
                       const res = await fetch(url);
                       if (res.ok) {
                         const body = await res.json();
@@ -1693,7 +1505,7 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                       setRemoteVfsTestStatus('error');
                     }
                   }}
-                  disabled={!remoteVfsUrl.trim() || remoteVfsTestStatus === 'testing'}
+                  disabled={!form.remoteVfsUrl.trim() || remoteVfsTestStatus === 'testing'}
                   className="rounded-md bg-gray-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-gray-700 disabled:opacity-50"
                 >
                   {remoteVfsTestStatus === 'testing'

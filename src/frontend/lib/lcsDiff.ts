@@ -1,5 +1,7 @@
 /**
- * Line-by-line diff using Longest Common Subsequence (LCS) algorithm.
+ * Line-by-line diff: common prefix/suffix trimming plus a Longest Common
+ * Subsequence (LCS) on the changed middle (a DP table for small middles, Myers
+ * for large ones with few edits).
  * Produces unified diff output showing additions, removals, and unchanged lines.
  */
 
@@ -14,90 +16,190 @@ export interface DiffHunk {
 }
 
 /**
- * Compute LCS table for two arrays of strings.
- * Returns a 2D array where lcs[i][j] = length of LCS for oldLines[0..i-1] and newLines[0..j-1]
+ * Largest (m+1)*(n+1) LCS table built for the changed middle: 4M Uint32 cells is
+ * 16 MB and ~20-35 ms on a desktop (roughly a 2000 x 2000 line rewrite). Larger
+ * middles go through Myers instead.
  */
-function computeLcsTable(oldLines: string[], newLines: string[]): number[][] {
+const MAX_LCS_CELLS = 4_000_000;
+
+/**
+ * Edit budget for Myers on middles past the table cap. The backtrack keeps one
+ * snapshot per edit step, (D+1)^2 Int32 cells in total, so 2000 edits is the
+ * same 16 MB as the table. Past it the middle is shown as a block replacement
+ * instead of freezing the tab.
+ */
+const MAX_MYERS_EDITS = 2_000;
+
+/**
+ * Diff the changed middle (everything between the common prefix and suffix),
+ * appending to `out`. Removals land before additions within a replaced run.
+ */
+function appendMiddleDiff(out: DiffLine[], oldLines: string[], newLines: string[]): void {
   const m = oldLines.length;
   const n = newLines.length;
 
-  // Initialize (m+1) x (n+1) table with zeros
-  const lcs: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  if (m > 0 && n > 0) {
+    if ((m + 1) * (n + 1) <= MAX_LCS_CELLS) {
+      appendTableDiff(out, oldLines, newLines);
+      return;
+    }
+    // e.g. a header and a footer edit in a long file: nothing to trim, few edits
+    if (appendMyersDiff(out, oldLines, newLines)) return;
+  }
 
-  // Fill LCS table
+  for (const line of oldLines) out.push({ type: 'remove', content: line });
+  for (const line of newLines) out.push({ type: 'add', content: line });
+}
+
+/**
+ * Full O(m*n) LCS table. Ties in the backtrack prefer 'add' when walking
+ * backwards, so removals land before additions.
+ */
+function appendTableDiff(out: DiffLine[], oldLines: string[], newLines: string[]): void {
+  const m = oldLines.length;
+  const n = newLines.length;
+  const cols = n + 1;
+
+  // lcs[i * cols + j] = LCS length of oldLines[0..i-1] and newLines[0..j-1]
+  const lcs = new Uint32Array((m + 1) * cols);
   for (let i = 1; i <= m; i++) {
+    const row = i * cols;
+    const prevRow = row - cols;
+    const oldLine = oldLines[i - 1];
     for (let j = 1; j <= n; j++) {
-      if (oldLines[i - 1] === newLines[j - 1]) {
-        lcs[i][j] = lcs[i - 1][j - 1] + 1;
-      } else {
-        lcs[i][j] = Math.max(lcs[i - 1][j], lcs[i][j - 1]);
+      lcs[row + j] =
+        oldLine === newLines[j - 1]
+          ? lcs[prevRow + j - 1] + 1
+          : Math.max(lcs[prevRow + j], lcs[row + j - 1]);
+    }
+  }
+
+  const reversed: DiffLine[] = [];
+  let i = m;
+  let j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      reversed.push({ type: 'same', content: oldLines[i - 1] });
+      i--;
+      j--;
+    } else if (j > 0 && (i === 0 || lcs[i * cols + j - 1] >= lcs[(i - 1) * cols + j])) {
+      reversed.push({ type: 'add', content: newLines[j - 1] });
+      j--;
+    } else {
+      reversed.push({ type: 'remove', content: oldLines[i - 1] });
+      i--;
+    }
+  }
+
+  for (let k = reversed.length - 1; k >= 0; k--) out.push(reversed[k]);
+}
+
+/**
+ * Myers' greedy shortest edit script: O((m+n)*D) time for D edits, so it stays
+ * cheap on huge inputs as long as few lines changed. Ties prefer deletions going
+ * forward, so removals land before additions like the table's output. Returns
+ * false, leaving `out` untouched, when the script needs more than
+ * MAX_MYERS_EDITS edits.
+ */
+function appendMyersDiff(out: DiffLine[], oldLines: string[], newLines: string[]): boolean {
+  const n = oldLines.length;
+  const m = newLines.length;
+  const maxEdits = Math.min(n + m, MAX_MYERS_EDITS);
+  const offset = maxEdits + 1;
+  // frontier[offset + k] = furthest x reached on diagonal k = x - y
+  const frontier = new Int32Array(2 * maxEdits + 3);
+  // snapshots[d] = frontier[-d..d] before step d, replayed by the backtrack
+  const snapshots: Int32Array[] = [];
+
+  let edits = -1;
+  for (let d = 0; d <= maxEdits && edits < 0; d++) {
+    snapshots.push(frontier.slice(offset - d, offset + d + 1));
+    for (let k = -d; k <= d; k += 2) {
+      let x =
+        k === -d || (k !== d && frontier[offset + k - 1] < frontier[offset + k + 1])
+          ? frontier[offset + k + 1]
+          : frontier[offset + k - 1] + 1;
+      let y = x - k;
+      while (x < n && y < m && oldLines[x] === newLines[y]) {
+        x++;
+        y++;
+      }
+      frontier[offset + k] = x;
+      if (x >= n && y >= m) {
+        edits = d;
+        break;
       }
     }
   }
+  if (edits < 0) return false;
 
-  return lcs;
-}
-
-/**
- * Iterative backtrack to avoid stack overflow on large files.
- * Produces same output as recursive version.
- */
-function backtrackDiffIterative(
-  lcs: number[][],
-  oldLines: string[],
-  newLines: string[]
-): DiffLine[] {
-  let i = oldLines.length;
-  let j = newLines.length;
-  const reversedResult: DiffLine[] = [];
-
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-      reversedResult.push({ type: 'same', content: oldLines[i - 1] });
-      i--;
-      j--;
-    } else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
-      reversedResult.push({ type: 'add', content: newLines[j - 1] });
-      j--;
-    } else if (i > 0) {
-      reversedResult.push({ type: 'remove', content: oldLines[i - 1] });
-      i--;
+  const reversed: DiffLine[] = [];
+  let x = n;
+  let y = m;
+  for (let d = edits; d > 0; d--) {
+    const snapshot = snapshots[d];
+    const k = x - y;
+    const prevK =
+      k === -d || (k !== d && snapshot[d + k - 1] < snapshot[d + k + 1]) ? k + 1 : k - 1;
+    const prevX = snapshot[d + prevK];
+    const prevY = prevX - prevK;
+    while (x > prevX && y > prevY) {
+      reversed.push({ type: 'same', content: oldLines[x - 1] });
+      x--;
+      y--;
     }
+    if (x === prevX) {
+      reversed.push({ type: 'add', content: newLines[prevY] });
+    } else {
+      reversed.push({ type: 'remove', content: oldLines[prevX] });
+    }
+    x = prevX;
+    y = prevY;
+  }
+  while (x > 0) {
+    reversed.push({ type: 'same', content: oldLines[x - 1] });
+    x--;
   }
 
-  return reversedResult.reverse();
+  for (let i = reversed.length - 1; i >= 0; i--) out.push(reversed[i]);
+  return true;
 }
 
 /**
- * Compute line-by-line diff between two arrays of strings.
+ * Line-by-line diff between two versions.
  *
- * Uses Longest Common Subsequence (LCS) algorithm:
- * - O(m*n) time and space where m, n are line counts
- * - For very large files, consider chunking or streaming
- *
- * @param oldLines Lines from the old version
- * @param newLines Lines from the new version
- * @returns Array of DiffLine objects showing changes
+ * The common prefix and suffix are emitted as 'same' without entering the LCS,
+ * so a typical edit only runs the O(m*n) table on the few lines that changed.
+ * A changed middle larger than MAX_LCS_CELLS goes through Myers, which is cheap
+ * when few lines changed (e.g. a header and a footer edit in a long file). One
+ * that also needs more than MAX_MYERS_EDITS edits falls back to "all old middle
+ * removed, all new middle added": correct, just not minimal.
  */
 export function computeLcsDiff(oldLines: string[], newLines: string[]): DiffLine[] {
-  // Edge cases
-  if (oldLines.length === 0 && newLines.length === 0) {
-    return [];
+  const oldLen = oldLines.length;
+  const newLen = newLines.length;
+  const shorter = Math.min(oldLen, newLen);
+
+  let prefix = 0;
+  while (prefix < shorter && oldLines[prefix] === newLines[prefix]) prefix++;
+
+  let suffix = 0;
+  while (
+    suffix < shorter - prefix &&
+    oldLines[oldLen - 1 - suffix] === newLines[newLen - 1 - suffix]
+  ) {
+    suffix++;
   }
 
-  if (oldLines.length === 0) {
-    return newLines.map(line => ({ type: 'add' as const, content: line }));
-  }
-
-  if (newLines.length === 0) {
-    return oldLines.map(line => ({ type: 'remove' as const, content: line }));
-  }
-
-  // Compute LCS table
-  const lcs = computeLcsTable(oldLines, newLines);
-
-  // Backtrack to produce diff (iterative to handle large files)
-  return backtrackDiffIterative(lcs, oldLines, newLines);
+  const diff: DiffLine[] = [];
+  for (let k = 0; k < prefix; k++) diff.push({ type: 'same', content: oldLines[k] });
+  appendMiddleDiff(
+    diff,
+    oldLines.slice(prefix, oldLen - suffix),
+    newLines.slice(prefix, newLen - suffix)
+  );
+  for (let k = oldLen - suffix; k < oldLen; k++) diff.push({ type: 'same', content: oldLines[k] });
+  return diff;
 }
 
 /**

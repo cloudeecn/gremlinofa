@@ -18,15 +18,16 @@ export interface ImportOptions {
   }) => void;
 }
 
-export interface AppContextType {
-  // API Definitions
-  apiDefinitions: APIDefinition[];
+/**
+ * Every AppProvider callback. The object keeps its identity for the life of
+ * the provider, so a component that only calls actions never re-renders
+ * because data changed.
+ */
+export interface AppActions {
   refreshAPIDefinitions: () => Promise<void>;
   saveAPIDefinition: (definition: APIDefinition) => Promise<void>;
   deleteAPIDefinition: (id: string) => Promise<void>;
 
-  // Projects
-  projects: Project[];
   refreshProjects: () => Promise<void>;
   saveProject: (project: Project) => Promise<void>;
   /**
@@ -40,15 +41,13 @@ export interface AppContextType {
   ) => Promise<Project>;
   deleteProject: (id: string) => Promise<void>;
 
-  // Models - now keyed by API definition ID
-  models: Map<string, Model[]>;
   refreshModels: (
     apiDefinitionId: string,
     forceRefresh?: boolean,
     skipWaitingModelRefresh?: boolean
   ) => Promise<void>;
+  clearAllModelsCache: () => Promise<void>;
 
-  // Data Management
   purgeAllData: () => Promise<void>;
   handleExport: (onProgress?: ExportProgressCallback) => Promise<void>;
   handleImport: (
@@ -63,25 +62,48 @@ export interface AppContextType {
     onProgress?: ImportProgressCallback,
     options?: ImportOptions
   ) => Promise<{ imported: number; skipped: number; errors: string[] }>;
-  clearAllModelsCache: () => Promise<void>;
   handleCompressMessages: () => Promise<{
     total: number;
     compressed: number;
     skipped: number;
     errors: number;
   }>;
-  cek: string | null;
-  isCEKBase32: boolean | null;
   convertCEKToBase32: () => Promise<string | null>;
-
-  // Storage Quota
-  storageQuota: { usage: number; quota: number } | null;
   refreshStorageQuota: () => Promise<void>;
-
-  // Loading states
-  isInitializing: boolean;
-  isLoadingProjects: boolean;
-  isLoadingModels: boolean;
 }
 
-export const AppContext = createContext<AppContextType | undefined>(undefined);
+export interface StorageQuota {
+  usage: number;
+  quota: number;
+}
+
+export interface StorageInfo {
+  cek: string | null;
+  isCEKBase32: boolean | null;
+  storageQuota: StorageQuota | null;
+}
+
+export interface AppStatus {
+  isInitializing: boolean;
+  /** Message of the failed `init` (bad CEK, backend down); null while healthy. */
+  initError: string | null;
+}
+
+/** Models keyed by API definition ID. */
+export type ModelsByApiDefinition = Map<string, Model[]>;
+
+/** Everything at once — what `useApp()` returns. */
+export interface AppContextType extends AppActions, StorageInfo, AppStatus {
+  apiDefinitions: APIDefinition[];
+  projects: Project[];
+  models: ModelsByApiDefinition;
+}
+
+// One context per update rate: a consumer re-renders only when the slice it
+// reads changes (a `patchProject` refresh doesn't reach an icon lookup).
+export const AppActionsContext = createContext<AppActions | undefined>(undefined);
+export const ApiDefinitionsContext = createContext<APIDefinition[] | undefined>(undefined);
+export const ProjectsContext = createContext<Project[] | undefined>(undefined);
+export const ModelsContext = createContext<ModelsByApiDefinition | undefined>(undefined);
+export const StorageInfoContext = createContext<StorageInfo | undefined>(undefined);
+export const AppStatusContext = createContext<AppStatus | undefined>(undefined);

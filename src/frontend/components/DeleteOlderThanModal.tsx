@@ -4,7 +4,10 @@
 
 import { useMemo, useState } from 'react';
 import Modal from './ui/Modal';
+import NumberInput from './ui/NumberInput';
 import type { AttachmentSection } from '../../shared/protocol/types';
+
+const ignoreClose = () => {};
 
 interface DeleteOlderThanModalProps {
   isOpen: boolean;
@@ -68,15 +71,10 @@ export default function DeleteOlderThanModal({
     }
   };
 
-  const handleDaysChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value, 10);
-    if (!isNaN(value) && value >= 1) {
-      setDays(value);
-    }
-  };
-
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="sm">
+    // Cancel is disabled while deleting; the backdrop and Escape follow suit so
+    // the result isn't lost behind a closed modal
+    <Modal isOpen={isOpen} onClose={isDeleting ? ignoreClose : onClose} size="sm">
       <div className="rounded-lg bg-white p-6 shadow-xl">
         {deleteResult !== null ? (
           // Success state
@@ -107,12 +105,12 @@ export default function DeleteOlderThanModal({
                 Delete attachments older than
               </label>
               <div className="flex items-center gap-2">
-                <input
+                <NumberInput
                   id="days-input"
-                  type="number"
-                  min="1"
+                  min={1}
+                  integer
                   value={days}
-                  onChange={handleDaysChange}
+                  onChange={setDays}
                   className="w-20 rounded-lg border border-gray-300 px-3 py-2 text-center text-base focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
                   disabled={isDeleting}
                 />

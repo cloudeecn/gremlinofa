@@ -1,48 +1,8 @@
-import React, { useState, useCallback, useEffect, Component, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useMemo, type ReactNode } from 'react';
 import { ErrorContext, type CapturedError } from './ErrorContext';
 import { generateUniqueId } from '../../shared/protocol/idGenerator';
 import { mapStackTrace, isProductionBuild } from '../lib/stackTraceMapper';
-
-// Error Boundary class component that logs errors but continues rendering
-interface ErrorBoundaryProps {
-  children: ReactNode;
-  onError: (error: Error) => void;
-}
-
-interface ErrorBoundaryState {
-  hasError: boolean;
-}
-
-class ErrorBoundaryInner extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  constructor(props: ErrorBoundaryProps) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError(): ErrorBoundaryState {
-    // Don't block rendering - just mark that an error occurred
-    return { hasError: false };
-  }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
-    // Log and capture the error
-    console.debug('[ErrorBoundary] Caught error:', error.message);
-
-    // Add component stack to the error stack
-    const fullStack = error.stack
-      ? `${error.stack}\n\nComponent Stack:${errorInfo.componentStack}`
-      : `Component Stack:${errorInfo.componentStack}`;
-
-    const enhancedError = new Error(error.message);
-    enhancedError.stack = fullStack;
-
-    this.props.onError(enhancedError);
-  }
-
-  render(): ReactNode {
-    return this.props.children;
-  }
-}
+import { CrashView, ErrorBoundary } from '../components/ErrorBoundary';
 
 interface ErrorProviderProps {
   children: ReactNode;
@@ -114,9 +74,24 @@ export function ErrorProvider({ children }: ErrorProviderProps) {
     };
   }, [addError]);
 
+  const contextValue = useMemo(
+    () => ({ errors, addError, removeError, clearErrors }),
+    [errors, addError, removeError, clearErrors]
+  );
+
   return (
-    <ErrorContext.Provider value={{ errors, addError, removeError, clearErrors }}>
-      <ErrorBoundaryInner onError={addError}>{children}</ErrorBoundaryInner>
+    <ErrorContext.Provider value={contextValue}>
+      {/* Last line of defence; each route has its own boundary that keeps the sidebar */}
+      <ErrorBoundary
+        onError={addError}
+        fallback={error => (
+          <div className="flex h-dvh">
+            <CrashView error={error} />
+          </div>
+        )}
+      >
+        {children}
+      </ErrorBoundary>
     </ErrorContext.Provider>
   );
 }

@@ -1,11 +1,8 @@
 import { useState } from 'react';
-import type { MessageAttachment, RenderingBlockGroup } from '../../../shared/protocol/types';
-import type {
-  TextRenderBlock,
-  InjectedFileRenderBlock,
-} from '../../../shared/protocol/types/content';
-import { stripMetadata } from '../../lib/messageFormatters';
-import { showAlert } from '../../lib/alerts';
+import type { MessageAttachment } from '../../../shared/protocol/types';
+import { splitInjectedFileBlocks } from '../../../shared/protocol/carriedInjection';
+import { userMessageText } from '../../lib/messageFormatters';
+import CopyButton from '../ui/CopyButton';
 import ImageLightbox from '../ui/ImageLightbox';
 import { InjectedFilesList } from './InjectedFilesList';
 import MessageInfoBar, { INFO_BAR_BUTTON } from './MessageInfoBar';
@@ -14,7 +11,9 @@ import type { UserMessageBubbleProps } from './types';
 export default function UserMessageBubble({
   message,
   attachments,
+  loadingAttachmentCount = 0,
   onAction,
+  actions,
   onDeleteMessage,
   focusMode,
   isLastMessage,
@@ -22,50 +21,25 @@ export default function UserMessageBubble({
 }: UserMessageBubbleProps) {
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
 
-  // Extract display content from renderingContent if available, fall back to stripMetadata
-  const displayContent = message.content.renderingContent
-    ? (message.content.renderingContent as RenderingBlockGroup[])
-        .flatMap(g => g.blocks)
-        .filter((b): b is TextRenderBlock => b.type === 'text')
-        .map(b => b.text)
-        .join('')
-    : stripMetadata(message.content.content);
+  const displayContent = userMessageText(message);
 
-  // Extract injected file blocks (from minion messages with injectFiles /
-  // injectFilesAfter). The tool puts the leading batch's group before the text
-  // group and the trailing batch's after it, so the text group is the split
-  // point — bars render on the same side of the bubble as their content sits
-  // in what the minion received.
-  // The text group may carry no blocks (inject-only minion call) and still
-  // marks the split, so match on category rather than on a text block.
-  const renderingGroups = (message.content.renderingContent ?? []) as RenderingBlockGroup[];
-  const textGroupIdx = renderingGroups.findIndex(g => g.category === 'text');
-  const splitAt = textGroupIdx === -1 ? renderingGroups.length : textGroupIdx;
-  const pickInjectedFiles = (groups: RenderingBlockGroup[]) =>
-    groups
-      .flatMap(g => g.blocks)
-      .filter((b): b is InjectedFileRenderBlock => b.type === 'injected_file');
-  const injectedFiles = pickInjectedFiles(renderingGroups.slice(0, splitAt));
-  const injectedFilesAfter = pickInjectedFiles(renderingGroups.slice(splitAt));
+  // Bars render on the same side of the bubble as their content sat in what
+  // the model received: injectFiles above, injectFilesAfter below.
+  const { before: injectedFiles, after: injectedFilesAfter } = splitInjectedFileBlocks(
+    message.content.renderingContent
+  );
 
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(displayContent);
-      showAlert('Copied', 'Message copied to clipboard');
-    } catch (_error) {
-      showAlert('Error', 'Failed to copy message');
-    }
-  };
+  // Attachments load asynchronously; reserve their tiles up front so the bubble
+  // doesn't grow after mount (it would shift content when mounted above the viewport).
+  const hasAttachments = attachments.length > 0 || loadingAttachmentCount > 0;
 
-  const handleDumpMessage = async () => {
-    try {
-      const messageJson = JSON.stringify(message, null, 2);
-      await navigator.clipboard.writeText(messageJson);
-      showAlert('Copied', 'Message JSON copied to clipboard');
-    } catch (_error) {
-      showAlert('Error', 'Failed to copy message JSON');
-    }
-  };
+  const canEdit = onAction && (!actions || actions.has('edit'));
+  // Fork would split an SDK session in two, which claude-agent doesn't support
+  const canFork = onAction && !isClaudeAgentChat && (!actions || actions.has('fork'));
+  // claude-agent can only rewind to assistant message UUIDs; use the rollback
+  // on the assistant message above instead
+  const canRollback =
+    onAction && !isLastMessage && !isClaudeAgentChat && (!actions || actions.has('rollback'));
 
   const handleFork = () => {
     onAction?.('fork', message.id);
@@ -90,10 +64,10 @@ export default function UserMessageBubble({
 
       {/* User message bubble — omitted for an inject-only minion message,
           whose whole content is the file bars around it */}
-      {(displayContent.trim() !== '' || attachments.length > 0) && (
+      {(displayContent.trim() !== '' || hasAttachments) && (
         <div className={'max-w-[90%] rounded-2xl bg-blue-600 px-4 py-3 text-white shadow-sm'}>
           {/* Image thumbnails with click-to-preview */}
-          {attachments.length > 0 && (
+          {hasAttachments && (
             <div className="mb-2 grid grid-cols-3 gap-2">
               {attachments.map((attachment: MessageAttachment) => (
                 <button
@@ -109,6 +83,14 @@ export default function UserMessageBubble({
                     className="h-24 w-full object-cover"
                   />
                 </button>
+              ))}
+              {Array.from({ length: loadingAttachmentCount }, (_, index) => (
+                <div
+                  key={`pending-${index}`}
+                  className="h-24 w-full rounded bg-blue-500/60"
+                  data-testid="attachment-placeholder"
+                  aria-hidden="true"
+                />
               ))}
             </div>
           )}
@@ -130,58 +112,54 @@ export default function UserMessageBubble({
         <MessageInfoBar
           timestamp={message.timestamp}
           align="end"
+          quickActions={
+            <>
+              <CopyButton
+                getText={() => displayContent}
+                label="📋"
+                title="Copy message"
+                className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+              />
+              {/* Edit works for claude-agent too: sending the edit rewinds the
+                  SDK to the prior assistant turn. */}
+              {canEdit && (
+                <button
+                  onClick={handleEdit}
+                  className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                  title="Edit message"
+                  aria-label="Edit message"
+                >
+                  📝
+                </button>
+              )}
+            </>
+          }
           actions={
             <>
-              {onAction && (
-                <>
-                  {/* Edit is supported for claude-agent: it rewinds the SDK to
-                      the prior assistant turn and drops this user message text
-                      back into the input box. Fork stays hidden — splitting an
-                      SDK session in two isn't supported. */}
-                  <button
-                    onClick={handleEdit}
-                    className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-                    title="Edit message"
-                  >
-                    📝 Edit
-                  </button>
-                  {!isClaudeAgentChat && (
-                    <button
-                      onClick={handleFork}
-                      className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-                      title="Fork chat from here"
-                    >
-                      🔀 Fork
-                    </button>
-                  )}
-                  {/* Rollback-to-user-message is not supported for claude-agent:
-                      the SDK can only rewind to assistant message UUIDs. Use the
-                      rollback button on the assistant message above instead. */}
-                  {!isLastMessage && !isClaudeAgentChat && (
-                    <button
-                      onClick={handleRollback}
-                      className={`${INFO_BAR_BUTTON} hover:text-orange-600`}
-                      title="Roll back to here"
-                    >
-                      ⏪ Rollback
-                    </button>
-                  )}
-                  <button
-                    onClick={handleCopy}
-                    className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-                    title="Copy message"
-                  >
-                    📋 Copy
-                  </button>
-                  <button
-                    onClick={handleDumpMessage}
-                    className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-                    title="Copy message JSON"
-                  >
-                    🔍
-                  </button>
-                </>
+              {canFork && (
+                <button
+                  onClick={handleFork}
+                  className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                  title="Fork chat from here"
+                >
+                  🔀 Fork
+                </button>
               )}
+              {canRollback && (
+                <button
+                  onClick={handleRollback}
+                  className={`${INFO_BAR_BUTTON} hover:text-orange-600`}
+                  title="Roll back to here"
+                >
+                  ⏪ Rollback
+                </button>
+              )}
+              <CopyButton
+                getText={() => JSON.stringify(message, null, 2)}
+                label="🔍"
+                title="Copy message JSON"
+                className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+              />
               {onDeleteMessage && (
                 <button
                   onClick={() => onDeleteMessage(message.id)}

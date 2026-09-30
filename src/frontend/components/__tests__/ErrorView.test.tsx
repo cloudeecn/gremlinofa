@@ -262,7 +262,7 @@ describe('ErrorView', () => {
       );
 
       // Find backdrop by its class
-      const backdrop = document.querySelector('.animate-fade-in');
+      const backdrop = document.querySelector('.bg-black\\/50');
       expect(backdrop).toBeInTheDocument();
       fireEvent.click(backdrop!);
       expect(mockOnClose).toHaveBeenCalled();

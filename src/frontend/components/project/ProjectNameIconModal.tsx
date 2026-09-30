@@ -14,6 +14,8 @@ interface ProjectNameIconModalProps {
 
 const DEFAULT_ICON = '📁';
 
+const ignoreClose = () => {};
+
 export default function ProjectNameIconModal({
   isOpen,
   project,
@@ -66,14 +68,17 @@ export default function ProjectNameIconModal({
   }, [name, effectiveIcon, project, onSave]);
 
   return (
-    <Modal isOpen={isOpen} onClose={onCancel} size="lg" position="bottom">
+    // While a save is in flight every close path waits: closing wouldn't stop it
+    <Modal isOpen={isOpen} onClose={isSaving ? ignoreClose : onCancel} size="lg" position="bottom">
       <div className="flex max-h-[75dvh] flex-col rounded-t-2xl bg-white md:max-h-[600px] md:rounded-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-200 p-4">
           <h2 className="text-lg font-semibold text-gray-900">Edit Project</h2>
           <button
             onClick={onCancel}
-            className="flex h-11 w-11 items-center justify-center text-gray-600 transition-colors hover:text-gray-900"
+            disabled={isSaving}
+            aria-label="Close"
+            className="flex h-11 w-11 items-center justify-center text-gray-600 transition-colors hover:text-gray-900 disabled:opacity-50"
           >
             <span className="text-2xl leading-none">✕</span>
           </button>

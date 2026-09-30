@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import AssistantMessageBubble from '../AssistantMessageBubble';
+import { showAlert } from '../../../lib/alerts';
 import type { Message, MessageMetadata } from '../../../../shared/protocol/types';
 import type { AssistantMessageBubbleProps } from '../types';
 
@@ -50,9 +51,9 @@ vi.mock('../ErrorBlockView', () => ({
 }));
 
 vi.mock('../TextGroupView', () => ({
-  default: ({ blocks, isVisible }: { blocks: unknown[]; isVisible: boolean }) => (
+  default: ({ blocks, disableMath }: { blocks: unknown[]; disableMath?: boolean }) => (
     <div data-testid="text-group-view">
-      TextGroupView: {blocks.length} blocks, visible: {isVisible ? 'yes' : 'no'}
+      TextGroupView: {blocks.length} blocks, math: {disableMath ? 'off' : 'on'}
     </div>
   ),
 }));
@@ -95,7 +96,6 @@ function createProps(
 ): AssistantMessageBubbleProps {
   return {
     message: createMessage(),
-    isVisible: true,
     ...overrides,
   };
 }
@@ -174,11 +174,11 @@ describe('AssistantMessageBubble', () => {
       expect(screen.getByTestId('text-group-view')).toBeInTheDocument();
     });
 
-    it('passes isVisible to TextGroupView', () => {
-      const props = createProps({ isVisible: true });
+    it('passes disableMath to TextGroupView', () => {
+      const props = createProps({ disableMath: true });
       render(<AssistantMessageBubble {...props} />);
 
-      expect(screen.getByTestId('text-group-view')).toHaveTextContent('visible: yes');
+      expect(screen.getByTestId('text-group-view')).toHaveTextContent('math: off');
     });
 
     it('shows timestamp in metadata line', () => {
@@ -226,17 +226,12 @@ describe('AssistantMessageBubble', () => {
   });
 
   describe('Action Buttons', () => {
-    it('hides action buttons until the trigger row is clicked', async () => {
+    it('keeps Copy on the trigger row and the rest behind it', async () => {
       render(<AssistantMessageBubble {...createProps()} />);
-      expect(screen.queryByTitle('Copy message')).not.toBeInTheDocument();
-      await expandInfoBar();
       expect(screen.getByTitle('Copy message')).toBeInTheDocument();
-    });
-
-    it('shows Copy button', async () => {
-      render(<AssistantMessageBubble {...createProps()} />);
+      expect(screen.queryByTitle('Copy message JSON')).not.toBeInTheDocument();
       await expandInfoBar();
-      expect(screen.getByTitle('Copy message')).toBeInTheDocument();
+      expect(screen.getByTitle('Copy message JSON')).toBeInTheDocument();
     });
 
     it('shows Dump button', async () => {
@@ -257,11 +252,13 @@ describe('AssistantMessageBubble', () => {
         }),
       });
       render(<AssistantMessageBubble {...props} />);
-      await expandInfoBar();
 
       await userEvent.click(screen.getByTitle('Copy message'));
 
       expect(mockClipboard.writeText).toHaveBeenCalledWith('Copy this response');
+      // Inline ✓, no dialog
+      expect(await screen.findByTitle('Copied')).toHaveTextContent('✓');
+      expect(showAlert).not.toHaveBeenCalled();
     });
 
     it('Dump button copies JSON to clipboard', async () => {
@@ -323,8 +320,7 @@ describe('AssistantMessageBubble', () => {
       const { container } = render(<AssistantMessageBubble {...props} />);
       await expandInfoBar();
 
-      const metadataLine = container.querySelector('.text-\\[10px\\]');
-      expect(metadataLine?.textContent).toContain('↓(200, R:50)');
+      expect(container).toHaveTextContent('↓(200, R:50)');
     });
 
     it('displays cache creation tokens grouped with input', async () => {
@@ -335,8 +331,7 @@ describe('AssistantMessageBubble', () => {
       const { container } = render(<AssistantMessageBubble {...props} />);
       await expandInfoBar();
 
-      const metadataLine = container.querySelector('.text-\\[10px\\]');
-      expect(metadataLine?.textContent).toContain('↑(100, C↑30)');
+      expect(container).toHaveTextContent('↑(100, C↑30)');
     });
 
     it('displays cache read tokens grouped with input', async () => {
@@ -347,8 +342,7 @@ describe('AssistantMessageBubble', () => {
       const { container } = render(<AssistantMessageBubble {...props} />);
       await expandInfoBar();
 
-      const metadataLine = container.querySelector('.text-\\[10px\\]');
-      expect(metadataLine?.textContent).toContain('↑(100, C↓40)');
+      expect(container).toHaveTextContent('↑(100, C↓40)');
     });
 
     it('displays context window usage on the trigger row', () => {

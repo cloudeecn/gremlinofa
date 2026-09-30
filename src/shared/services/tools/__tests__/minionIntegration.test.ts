@@ -70,17 +70,21 @@ vi.mock('../../../engine/lib/api/modelMetadata', () => ({
   isCostUnreliable: vi.fn(() => false),
 }));
 
-vi.mock('../../streaming/StreamingContentAssembler', () => {
+vi.mock('../../streaming/StreamingContentAssembler', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../streaming/StreamingContentAssembler')>();
   return {
-    StreamingContentAssembler: class MockStreamingContentAssembler {
-      pushChunk() {}
-      getGroups() {
+    // Real chunk handling and `takeOps()` (the child's streaming deltas);
+    // canned finalize output so result assertions don't depend on chunks.
+    StreamingContentAssembler: class MockStreamingContentAssembler
+      extends actual.StreamingContentAssembler
+    {
+      getGroups(): RenderingBlockGroup[] {
         return [{ category: 'text', blocks: [{ type: 'text', text: 'test response' }] }];
       }
-      finalize() {
+      finalize(): RenderingBlockGroup[] {
         return [{ category: 'text', blocks: [{ type: 'text', text: 'test response' }] }];
       }
-      finalizeWithError(err: { message: string }) {
+      finalizeWithError(err: { message: string }): RenderingBlockGroup[] {
         return [{ category: 'error', blocks: [{ type: 'error', message: err.message }] }];
       }
     },
@@ -408,7 +412,7 @@ describe('Minion Integration', () => {
       expect(infoBlock.type).toBe('tool_info');
     });
 
-    it('yields groups_update events during streaming', async () => {
+    it('yields init, then streaming_ops deltas, during streaming', async () => {
       const mockResult = {
         textContent: 'Done!',
         fullContent: [{ type: 'text', text: 'Done!' }],
@@ -419,8 +423,11 @@ describe('Minion Integration', () => {
 
       const mockStream = createMockStream(
         [
+          { type: 'content.start' },
           { type: 'content', content: 'Working...' },
-          { type: 'content', content: 'Done!' },
+          { type: 'token_usage' },
+          { type: 'content', content: ' Done!' },
+          { type: 'content.end' },
         ],
         mockResult
       );
@@ -458,6 +465,26 @@ describe('Minion Integration', () => {
       if (first.delta.kind !== 'init') throw new Error('unreachable');
       expect(first.delta.infoGroup.category).toBe('backstage');
       expect(first.delta.infoGroup.blocks[0].type).toBe('tool_info');
+      expect(first.delta.streamingGroups).toEqual([
+        { category: 'text', blocks: [{ type: 'text', text: '' }] },
+      ]);
+
+      // Then only the new text, one delta per visible change, until the
+      // message finalizes.
+      expect(events.slice(1, 3)).toEqual([
+        {
+          type: 'groups_delta',
+          delta: { kind: 'streaming_ops', ops: [{ op: 'append', g: 0, b: 0, text: 'Working...' }] },
+        },
+        {
+          type: 'groups_delta',
+          delta: { kind: 'streaming_ops', ops: [{ op: 'append', g: 0, b: 0, text: ' Done!' }] },
+        },
+      ]);
+      expect(events[3]).toMatchObject({
+        type: 'groups_delta',
+        delta: { kind: 'message_finalized', streamingGroups: [] },
+      });
 
       // Result should have renderingGroups
       expect(result.renderingGroups).toBeDefined();

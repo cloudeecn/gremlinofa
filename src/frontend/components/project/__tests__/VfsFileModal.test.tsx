@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import VfsFileModal from '../VfsFileModal';
 import type { VfsAdapter } from '../../../../shared/protocol/types/vfs';
 
@@ -59,6 +59,7 @@ describe('VfsFileModal', () => {
 
   const getDefaultProps = () => ({
     adapter: mockAdapter,
+    projectId: 'p1',
     path: '/docs/notes.txt',
     isOpen: true,
     onClose: vi.fn(),
@@ -360,6 +361,30 @@ describe('VfsFileModal', () => {
         // Should be back in view mode
         expect(screen.getByTitle('Edit file')).toBeInTheDocument();
       });
+    });
+
+    it('does not open the editor for the next file when an edit load finishes late', async () => {
+      let resolveReadFile!: (content: string) => void;
+      vi.mocked(mockAdapter.readFile).mockImplementation(
+        () =>
+          new Promise<string>(resolve => {
+            resolveReadFile = resolve;
+          })
+      );
+      const props = getDefaultProps();
+      const { rerender } = render(<VfsFileModal {...props} />);
+
+      await waitFor(() => expect(screen.getByTitle('Edit file')).not.toBeDisabled());
+      fireEvent.click(screen.getByTitle('Edit file'));
+
+      rerender(<VfsFileModal {...props} isOpen={false} />);
+      rerender(<VfsFileModal {...props} path="/other/file.txt" />);
+      await act(async () => {
+        resolveReadFile('notes body');
+      });
+
+      expect(screen.queryByText('(editing)')).not.toBeInTheDocument();
+      expect(screen.getByTitle('Edit file')).toBeInTheDocument();
     });
   });
 });

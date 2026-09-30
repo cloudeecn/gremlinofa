@@ -20,6 +20,7 @@ import type { EncryptionCore } from '../../../shared/services/encryption/encrypt
 import type { VfsService } from '../../../shared/services/vfs/vfsService';
 import type { UnifiedStorage } from '../../../shared/services/storage/unifiedStorage';
 import type { ClientSideToolRegistry } from '../../../shared/services/tools/clientSideTools';
+import { Tables } from '../../../shared/services/storage/StorageAdapter';
 import type {
   APIDefinition,
   Chat,
@@ -471,6 +472,48 @@ describe('GremlinClient transport lifecycle', () => {
     first.fireReconnect();
     expect(reconnectFired).toHaveBeenCalledTimes(1);
   });
+
+  it("rebindTransport announces the new transport's initial connection state", () => {
+    const socketIn = (connectionState: string) =>
+      ({
+        connectionState,
+        dispose: vi.fn(),
+        request: vi.fn(),
+        stream: vi.fn(),
+        onConnectionStateChange: () => () => {},
+      }) as unknown as Transport;
+    const workerLike = { request: vi.fn(), stream: vi.fn() } as unknown as Transport;
+    const client = new GremlinClient(socketIn('disconnected'));
+    const onState = vi.fn();
+    client.onConnectionStateChange(onState);
+
+    client.rebindTransport(() => socketIn('connecting'));
+    expect(onState).toHaveBeenLastCalledWith('connecting');
+
+    // Same state as before: nothing new to announce
+    client.rebindTransport(() => socketIn('connecting'));
+    expect(onState).toHaveBeenCalledTimes(1);
+
+    // A worker has no state; subscribers read it as connected
+    client.rebindTransport(() => workerLike);
+    expect(onState).toHaveBeenLastCalledWith('connected');
+    expect(onState).toHaveBeenCalledTimes(2);
+  });
+
+  it('announces the initial state of a lazily built socket', async () => {
+    const socket = {
+      connectionState: 'connecting',
+      request: vi.fn(async () => []),
+      stream: vi.fn(),
+      onConnectionStateChange: () => () => {},
+    } as unknown as Transport;
+    const client = new GremlinClient(() => socket);
+    const onState = vi.fn();
+    client.onConnectionStateChange(onState);
+
+    await client.getProjects();
+    expect(onState).toHaveBeenCalledWith('connecting');
+  });
 });
 
 describe('GremlinClient streamed-RPC error propagation', () => {
@@ -515,5 +558,121 @@ describe('GremlinClient streamed-RPC error propagation', () => {
       streamOf([{ kind: 'stream_end', requestId: 'r1', status: 'error', detail: 'boom' }])
     );
     await expect(client.exportToBlob()).rejects.toThrow(/boom/);
+  });
+});
+
+describe('GremlinClient.exportProjectBundle abort', () => {
+  const fileIds = ['f1', 'f2', 'f3', 'f4', 'f5'];
+
+  /** In-process server whose project has five VFS files; counts file reads. */
+  async function setupExport() {
+    const storage = makeStorageStub();
+    const tree = {
+      children: Object.fromEntries(fileIds.map(id => [`${id}.txt`, { type: 'file', fileId: id }])),
+    };
+    const vfsGet = vi.fn(async (table: string, id: string) =>
+      table === Tables.VFS_META
+        ? { encryptedData: JSON.stringify(tree) }
+        : { encryptedData: JSON.stringify({ content: `content of ${id}` }) }
+    );
+    vi.mocked(storage.getProject).mockResolvedValue(mkProject('p1'));
+    (storage as unknown as { getAdapter: () => unknown }).getAdapter = () => ({ get: vfsGet });
+    const deps = {
+      ...makeBackendDepsStub(storage),
+      encryption: {
+        decryptWithDecompression: async (payload: string) => payload,
+      } as unknown as EncryptionCore,
+    };
+    const client = new GremlinClient(new InProcessTransport(new GremlinServer(deps)));
+    await client.init();
+    const fileReads = () =>
+      vfsGet.mock.calls.filter(([table]) => table === Tables.VFS_FILES).length;
+    return { client, fileReads };
+  }
+
+  it('exports every file when not aborted', async () => {
+    const { client, fileReads } = await setupExport();
+    const exported = await client.exportProjectBundle(
+      'p1',
+      undefined,
+      new AbortController().signal
+    );
+    expect(exported.fileCount).toBe(5);
+    expect(fileReads()).toBe(5);
+  });
+
+  it('stops the backend between files and rejects with AbortError', async () => {
+    const { client, fileReads } = await setupExport();
+    const controller = new AbortController();
+    const onProgress = vi.fn((loaded: number) => {
+      if (loaded === 1) controller.abort();
+    });
+
+    const exporting = client.exportProjectBundle('p1', onProgress, controller.signal);
+
+    await expect(exporting).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(exporting).rejects.toBeInstanceOf(DOMException);
+    // Progress events after the abort are dropped, and the generator was
+    // closed instead of reading the remaining files
+    expect(onProgress.mock.calls.map(([loaded]) => loaded)).toEqual([0, 1]);
+    expect(fileReads()).toBeLessThan(fileIds.length);
+  });
+
+  it('rejects without starting a stream when the signal is already aborted', async () => {
+    const stream = vi.fn();
+    const client = new GremlinClient({ request: vi.fn(), stream } as unknown as Transport);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      client.exportProjectBundle('p1', undefined, controller.signal)
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it('leaves the transport stream at the first event after the abort', async () => {
+    let closed = false;
+    // Set only if the client asks for another envelope after the abort
+    let pulledPastDone = false;
+    const controller = new AbortController();
+    const transport = {
+      request: vi.fn(),
+      stream: () =>
+        (async function* () {
+          try {
+            yield {
+              kind: 'stream_event',
+              requestId: 'r1',
+              event: { type: 'progress', loaded: 0, total: 2 },
+            };
+            controller.abort();
+            yield {
+              kind: 'stream_event',
+              requestId: 'r1',
+              event: {
+                type: 'done',
+                bundleJson: '{}',
+                fileCount: 2,
+                dirCount: 0,
+                projectName: 'p',
+              },
+            };
+            pulledPastDone = true;
+            yield { kind: 'stream_end', requestId: 'r1', status: 'complete' };
+          } finally {
+            closed = true;
+          }
+        })(),
+    } as unknown as Transport;
+    const client = new GremlinClient(transport);
+
+    // The bundle arrived after the abort: still no result
+    await expect(
+      client.exportProjectBundle('p1', undefined, controller.signal)
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    // Closed by the client's early exit (which sends stream_cancel), not by
+    // running into stream_end
+    expect(pulledPastDone).toBe(false);
+    expect(closed).toBe(true);
   });
 });

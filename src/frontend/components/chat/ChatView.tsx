@@ -1,22 +1,33 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChat } from '../../hooks/useChat';
-import { useApp } from '../../hooks/useApp';
-import { showAlert, showDestructiveConfirm } from '../../lib/alerts';
-import { formatTokenGroup, stripMetadata } from '../../lib/messageFormatters';
+import { useApiDefinitions } from '../../hooks/useApp';
+import { showAlert, showConfirm, showDestructiveConfirm } from '../../lib/alerts';
+import { formatTokenGroup, messagePreviewLine, userMessageText } from '../../lib/messageFormatters';
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
+import { useImageDropZone } from '../../hooks/useImageDropZone';
+import { useImeSafeEnter } from '../../hooks/useImeSafeEnter';
+import { useOverlay } from '../../hooks/useOverlay';
+import { useStableCallback } from '../../hooks/useStableCallback';
+import { useViewOptions } from '../../hooks/useViewOptions';
 import { processImages } from '../../lib/imageProcessor';
 import { gremlinClient } from '../../client';
 import { getApiDefinitionIcon } from '../../lib/apiTypeUtils';
 import { hasChatAgentOverrides } from '../../../shared/protocol/types';
-import type { MessageAttachment } from '../../../shared/protocol/types';
+import type { CarriedInjection, MessageAttachment } from '../../../shared/protocol/types';
+import { carriesFiles, extractCarriedInjection } from '../../../shared/protocol/carriedInjection';
 import ModelSelector from '../project/ModelSelector';
 import ChatSettingsPanel from './ChatSettingsPanel';
+import Modal from '../ui/Modal';
 import Spinner from '../ui/Spinner';
+import CarriedFilesStrip from './CarriedFilesStrip';
 import ChatInput from './ChatInput';
 import MessageList from './MessageList';
+import type { ChatInputHandle, MessageAction, MessageListHandle } from './types';
 import MinionChatView from './MinionChatView';
 import { MinionChatOverlayContext } from './MinionChatOverlayContext';
+
+const ignoreClose = () => {};
 
 interface ChatViewProps {
   chatId: string;
@@ -29,6 +40,9 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   // Store processed attachments (MessageAttachment[]) instead of raw Files
   // This prevents performance issues with large HDR images
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+  // Injected files an edited message carries into its replacement. Like
+  // attachments they ride along with the next send, but only an edit adds them.
+  const [carriedInjection, setCarriedInjection] = useState<CarriedInjection | null>(null);
   const [isProcessingAttachments, setIsProcessingAttachments] = useState(false);
 
   // Draft persistence for chat input
@@ -47,20 +61,32 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   const pushMinionChat = useCallback((id: string) => {
     setMinionChatStack(stack => [...stack, id]);
   }, []);
+  const minionChatOverlay = useMemo(() => ({ viewMinionChat: pushMinionChat }), [pushMinionChat]);
   const [isRenamingChat, setIsRenamingChat] = useState(false);
   const [renameChatText, setRenameChatText] = useState('');
   const [isSavingRename, setIsSavingRename] = useState(false);
-  const [focusMode, setFocusMode] = useState(false);
-  const [expandMinions, setExpandMinions] = useState(false);
-  const [disableMath, setDisableMath] = useState(false);
-  const [alwaysAutoScroll, setAlwaysAutoScroll] = useState(false);
+  const renameIme = useImeSafeEnter();
+  const {
+    options: { focusMode, expandMinions, disableMath, alwaysAutoScroll },
+    toggle: toggleViewOption,
+  } = useViewOptions();
+  const messageListRef = useRef<MessageListHandle>(null);
+  const chatInputRef = useRef<ChatInputHandle>(null);
   const [showViewMenu, setShowViewMenu] = useState(false);
   const [showChatSettings, setShowChatSettings] = useState(false);
   const viewMenuRef = useRef<HTMLDivElement>(null);
+  const viewMenuPanelRef = useRef<HTMLDivElement>(null);
   const viewMenuButtonRef = useRef<HTMLButtonElement>(null);
+  // Editing an earlier user message: the composer holds its text, and nothing
+  // is deleted until the edit is sent
+  const [editing, setEditing] = useState<{ messageId: string; preview: string } | null>(null);
+
+  const { isDragging, dropZoneProps } = useImageDropZone(files =>
+    chatInputRef.current?.addFiles(files)
+  );
 
   // Get API definitions for icon display
-  const { apiDefinitions } = useApp();
+  const apiDefinitions = useApiDefinitions();
 
   // Close view menu when clicking outside
   useEffect(() => {
@@ -73,6 +99,15 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showViewMenu]);
+
+  useOverlay({
+    active: showViewMenu,
+    onEscape: () => {
+      setShowViewMenu(false);
+      viewMenuButtonRef.current?.focus();
+    },
+    containerRef: viewMenuPanelRef,
+  });
 
   // Memoize callbacks to prevent unnecessary re-renders
   const handleMessagesLoaded = React.useCallback(
@@ -130,18 +165,6 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     [chatId]
   );
 
-  const handleForkMessageLoaded = React.useCallback(
-    (callbackChatId: string, message: string) => {
-      if (callbackChatId !== chatId) {
-        console.debug('[ChatView] Ignoring onForkMessageLoaded for different chat');
-        return;
-      }
-      console.debug('[ChatView] Fork message loaded into input');
-      setInputMessage(message);
-    },
-    [chatId]
-  );
-
   const callbacks = React.useMemo(
     () => ({
       onMessagesLoaded: handleMessagesLoaded,
@@ -149,7 +172,6 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
       onMessagesRemovedOnAndAfter: handleMessagesRemovedOnAndAfter,
       onStreamingStart: handleStreamingStart,
       onStreamingEnd: handleStreamingEnd,
-      onForkMessageLoaded: handleForkMessageLoaded,
     }),
     [
       handleMessagesLoaded,
@@ -157,7 +179,6 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
       handleMessagesRemovedOnAndAfter,
       handleStreamingStart,
       handleStreamingEnd,
-      handleForkMessageLoaded,
     ]
   );
 
@@ -181,8 +202,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     isLockedByIncompleteTail,
     snapshotLoading,
     sendMessage,
+    sendEditedMessage,
     editMessage,
-    copyMessage,
     forkChat,
     overrideModel,
     updateAgentConfig,
@@ -197,47 +218,48 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     callbacks,
   });
 
-  // Handle message actions
-  const handleMessageAction = async (
-    action: 'copy' | 'fork' | 'edit' | 'delete' | 'rollback',
-    messageId: string
-  ) => {
-    if (action === 'copy') {
-      await copyMessage(chatId, messageId);
-    } else if (action === 'rollback') {
-      const confirmed = await showDestructiveConfirm(
-        'Roll Back',
-        'This will delete all messages after this one.',
-        'Roll Back'
-      );
-      if (confirmed) {
-        await rollbackToMessage(chatId, messageId);
-      }
-    } else if (action === 'fork') {
-      if (chat?.claudeAgentSessionId) {
-        // Forking a claude-agent chat would split the SDK session. The hazard
-        // itself is solved — `claudeAgentProtectedSessionIds` is exactly what
-        // lets two records share an ancestor safely (see development.md) — so
-        // this is now unimplemented UI rather than a hard constraint: seed the
-        // protect list from the forked-at message's stamp, same as the clone.
-        return;
-      }
-      const forkedChat = await forkChat(chatId, messageId);
-      if (forkedChat) {
-        navigate(`/chat/${forkedChat.id}`);
-      }
-    } else if (action === 'edit') {
-      // Find the message
-      const message = messages.find(m => m.id === messageId);
-      if (!message) return;
+  // Handle message actions. Stable identity so MessageList/MessageBubble memo holds
+  // while the handler still sees the latest messages and useChat commands.
+  const handleMessageAction = useStableCallback(
+    async (action: MessageAction, messageId: string) => {
+      if (action === 'rollback') {
+        const confirmed = await showDestructiveConfirm(
+          'Roll Back',
+          'This will delete all messages after this one.',
+          'Roll Back'
+        );
+        if (confirmed) {
+          await rollbackToMessage(chatId, messageId);
+        }
+      } else if (action === 'fork') {
+        if (chat?.claudeAgentSessionId) {
+          // Forking a claude-agent chat would split the SDK session. The hazard
+          // itself is solved — `claudeAgentProtectedSessionIds` is exactly what
+          // lets two records share an ancestor safely (see development.md) — so
+          // this is now unimplemented UI rather than a hard constraint: seed the
+          // protect list from the forked-at message's stamp, same as the clone.
+          return;
+        }
+        const forkedChat = await forkChat(chatId, messageId);
+        if (forkedChat) {
+          navigate(`/chat/${forkedChat.id}`);
+        }
+      } else if (action === 'edit') {
+        const message = messages.find(m => m.id === messageId);
+        if (!message) return;
 
-      // Show confirmation using custom dialog (avoids mobile WebView issues with native confirm)
-      const confirmed = await showDestructiveConfirm(
-        'Edit Message',
-        'This will delete this message and all messages after it.',
-        'Edit'
-      );
-      if (confirmed) {
+        // Nothing is deleted here — only the composer's unsent text is at stake
+        const hasDraft =
+          inputMessage.trim() !== '' || attachments.length > 0 || carriesFiles(carriedInjection);
+        if (hasDraft && editing?.messageId !== messageId) {
+          const replace = await showConfirm(
+            'Replace your draft?',
+            'The message box has unsent text. Editing this message replaces it.',
+            'Replace'
+          );
+          if (!replace) return;
+        }
+
         // Load attachments if the message has any (already processed MessageAttachment[])
         let loadedAttachments: MessageAttachment[] = [];
         if (message.content.attachmentIds?.length) {
@@ -246,28 +268,28 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           console.debug('[ChatView] Loaded attachments:', loadedAttachments.length);
         }
 
-        // Delete the message and all after it
-        await editMessage(chatId, messageId, message.content.content);
-
-        // Strip metadata before setting in input
-        const contentWithoutMetadata = stripMetadata(message.content.content);
-        setInputMessage(contentWithoutMetadata);
-
-        // Set attachments in state (already processed, no conversion needed)
+        setInputMessage(userMessageText(message));
         setAttachments(loadedAttachments);
-      }
-    } else if (action === 'delete') {
-      // Show confirmation dialog
-      const confirmed = await showDestructiveConfirm(
-        'Delete Message',
-        'This will delete this message and all messages after it.',
-        'Delete'
-      );
-      if (confirmed) {
-        // Delete the message and all after it (without populating input)
-        await editMessage(chatId, messageId, '');
+        setCarriedInjection(extractCarriedInjection(message.content) ?? null);
+        setEditing({ messageId, preview: messagePreviewLine(message, 80) });
       }
     }
+  );
+
+  const handleCancelEdit = () => {
+    setEditing(null);
+    setInputMessage('');
+    setAttachments([]);
+    setCarriedInjection(null);
+    clearDraft('chatview', chatId);
+  };
+
+  const handleRemoveCarriedFile = (side: 'before' | 'after', index: number) => {
+    setCarriedInjection(current => {
+      if (!current) return current;
+      const next = { ...current, [side]: current[side].filter((_, i) => i !== index) };
+      return carriesFiles(next) ? next : null;
+    });
   };
 
   // Process files immediately when added (fixes performance with large HDR images)
@@ -299,11 +321,15 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
   const handleSendMessage = async () => {
     const messageText = inputMessage.trim();
-    const hasPendingTools = unresolvedToolCalls && unresolvedToolCalls.length > 0;
+    // An edit replaces the message the pending tool calls hang off
+    const hasPendingTools = !editing && unresolvedToolCalls && unresolvedToolCalls.length > 0;
 
     // Allow send with empty input if there are pending tool calls
     if (
-      (!messageText && attachments.length === 0 && !hasPendingTools) ||
+      (!messageText &&
+        attachments.length === 0 &&
+        !carriesFiles(carriedInjection) &&
+        !hasPendingTools) ||
       isLoading ||
       isProcessingAttachments
     )
@@ -320,22 +346,95 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
     // Attachments are already processed (MessageAttachment[])
     const processedAttachments = attachments.length > 0 ? attachments : undefined;
+    const draftText = inputMessage;
+    const draftAttachments = attachments;
+    const draftCarried = carriesFiles(carriedInjection) ? carriedInjection : undefined;
+    const editedMessage = editing;
 
-    setInputMessage('');
-    setAttachments([]); // Clear attachments
-    clearDraft('chatview', chatId); // Clear draft when message is sent
+    clearComposer();
 
-    // Handle pending tool calls: user message triggers reject with the message
-    if (hasPendingTools) {
-      await resolvePendingToolCalls('stop', messageText || undefined, processedAttachments);
-    } else {
-      await sendMessage(chatId, messageText, processedAttachments);
+    if (editedMessage) {
+      setEditing(null);
+      setCarriedInjection(null);
+      const outcome = await sendEditedMessage(
+        chatId,
+        editedMessage.messageId,
+        messageText,
+        processedAttachments,
+        draftCarried
+      );
+      // 'truncated' keeps the files too: the follow-up plain send carries them
+      if (outcome !== 'sent') restoreComposer(draftText, draftAttachments, draftCarried);
+      // Only an edit whose message is still there can resume editing it
+      if (outcome === 'untouched') setEditing(current => current ?? editedMessage);
+      return;
     }
+    // The pending-tools reply can't carry injected files, so they stay in the
+    // composer. Unreachable in practice: only an edit adds them, an edit hides
+    // the pending-tools path, and an edited message is never a tool result.
+    let sent: boolean;
+    if (hasPendingTools) {
+      // User message triggers reject with the message
+      sent = await resolvePendingToolCalls('stop', messageText || undefined, processedAttachments);
+    } else {
+      setCarriedInjection(null);
+      sent = await sendMessage(chatId, messageText, processedAttachments, draftCarried);
+    }
+    if (!sent) restoreComposer(draftText, draftAttachments, draftCarried);
   };
 
+  /** Empties the composer for a send; `restoreComposer` undoes it if the send fails. */
+  const clearComposer = () => {
+    setInputMessage('');
+    setAttachments([]);
+    clearDraft('chatview', chatId);
+    // Sending from deep in history shows the new message and follows the reply
+    messageListRef.current?.jumpToLatest();
+  };
+
+  /**
+   * Puts back what a failed send took out of the composer, ahead of anything
+   * typed since. The draft is saved again by the normal debounce. Carried
+   * files come back only if no edit loaded others meanwhile.
+   */
+  const restoreComposer = (
+    text: string,
+    restoredAttachments: MessageAttachment[],
+    restoredCarried?: CarriedInjection
+  ) => {
+    if (text) setInputMessage(current => (current ? `${text}\n${current}` : text));
+    if (restoredAttachments.length > 0) {
+      setAttachments(current => [...restoredAttachments, ...current]);
+    }
+    if (restoredCarried) setCarriedInjection(current => current ?? restoredCarried);
+  };
+
+  const resolvePendingToolsFromBanner = async (mode: 'stop' | 'continue') => {
+    // Same guard as the composer's send: the banner buttons stay clickable
+    if (isLoading || isProcessingAttachments) return;
+    const draftText = inputMessage;
+    const draftAttachments = attachments;
+    clearComposer();
+    const resolved = await resolvePendingToolCalls(
+      mode,
+      draftText.trim() || undefined,
+      draftAttachments.length > 0 ? draftAttachments : undefined
+    );
+    if (!resolved) restoreComposer(draftText, draftAttachments);
+  };
+  const handlePendingToolReject = useStableCallback(() => resolvePendingToolsFromBanner('stop'));
+  const handlePendingToolAccept = useStableCallback(() =>
+    resolvePendingToolsFromBanner('continue')
+  );
+  const handleContinueAfterToolStop = useStableCallback(() => continueAfterToolStop());
+
   const handleModelSelect = async (apiDefId: string | null, modelId: string | null) => {
-    await overrideModel(chatId, apiDefId, modelId);
-    setShowModelSelector(false);
+    try {
+      await overrideModel(chatId, apiDefId, modelId);
+      setShowModelSelector(false);
+    } catch (err) {
+      showAlert('Model not changed', err instanceof Error ? err.message : String(err));
+    }
   };
 
   const handleStartRename = () => {
@@ -353,6 +452,8 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     try {
       await updateChatName(chatId, renameChatText.trim());
       setIsRenamingChat(false);
+    } catch (err) {
+      showAlert('Rename failed', err instanceof Error ? err.message : String(err));
     } finally {
       setIsSavingRename(false);
     }
@@ -374,8 +475,10 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   if (!chat) return null;
 
   return (
-    <MinionChatOverlayContext.Provider value={{ viewMinionChat: pushMinionChat }}>
-      <div className="relative flex h-full flex-col bg-white">
+    <MinionChatOverlayContext.Provider value={minionChatOverlay}>
+      {/* The whole view takes dropped images, so a drop a few pixels off the
+          composer doesn't navigate the browser to the file */}
+      <div className="relative flex h-full flex-col bg-white" {...dropZoneProps}>
         {/* Header with safe area */}
         <div className="border-b border-gray-200 bg-white">
           <div className="safe-area-inset-top" />
@@ -384,6 +487,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
             {onMenuPress && (
               <button
                 onClick={onMenuPress}
+                aria-label="Open menu"
                 className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100 md:hidden"
               >
                 <span className="text-2xl text-gray-700">☰</span>
@@ -426,35 +530,41 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
                 ref={viewMenuButtonRef}
                 onClick={() => setShowViewMenu(prev => !prev)}
                 aria-label="Chat menu"
+                aria-haspopup="menu"
+                aria-expanded={showViewMenu}
                 className="flex h-11 w-11 items-center justify-center text-gray-600 hover:text-gray-900"
               >
                 <span className="text-xl">⋯</span>
               </button>
               {showViewMenu && (
-                <div className="absolute top-full right-0 z-10 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                <div
+                  ref={viewMenuPanelRef}
+                  tabIndex={-1}
+                  className="absolute top-full right-0 z-10 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg outline-none"
+                >
                   <button
-                    onClick={() => setFocusMode(prev => !prev)}
+                    onClick={() => toggleViewOption('focusMode')}
                     className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
                   >
                     <span className="w-5 text-center">{focusMode ? '✓' : ''}</span>
                     <span>Focus Mode</span>
                   </button>
                   <button
-                    onClick={() => setExpandMinions(prev => !prev)}
+                    onClick={() => toggleViewOption('expandMinions')}
                     className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
                   >
                     <span className="w-5 text-center">{expandMinions ? '✓' : ''}</span>
                     <span>Expand Minions</span>
                   </button>
                   <button
-                    onClick={() => setDisableMath(prev => !prev)}
+                    onClick={() => toggleViewOption('disableMath')}
                     className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
                   >
                     <span className="w-5 text-center">{disableMath ? '✓' : ''}</span>
                     <span>Disable Math</span>
                   </button>
                   <button
-                    onClick={() => setAlwaysAutoScroll(prev => !prev)}
+                    onClick={() => toggleViewOption('alwaysAutoScroll')}
                     className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
                   >
                     <span className="w-5 text-center">{alwaysAutoScroll ? '✓' : ''}</span>
@@ -562,6 +672,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
         {/* Message List */}
         <MessageList
+          ref={messageListRef}
           messages={messages}
           onAction={handleMessageAction}
           isLoading={isLoading}
@@ -570,24 +681,10 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           currentModelId={currentModelId}
           isClaudeAgentChat={!!chat?.claudeAgentSessionId}
           pendingToolCount={unresolvedToolCalls?.length}
-          onPendingToolReject={() => {
-            const text = inputMessage.trim() || undefined;
-            const atts = attachments.length > 0 ? attachments : undefined;
-            setInputMessage('');
-            setAttachments([]);
-            clearDraft('chatview', chatId);
-            resolvePendingToolCalls('stop', text, atts);
-          }}
-          onPendingToolAccept={() => {
-            const text = inputMessage.trim() || undefined;
-            const atts = attachments.length > 0 ? attachments : undefined;
-            setInputMessage('');
-            setAttachments([]);
-            clearDraft('chatview', chatId);
-            resolvePendingToolCalls('continue', text, atts);
-          }}
+          onPendingToolReject={handlePendingToolReject}
+          onPendingToolAccept={handlePendingToolAccept}
           suspendedAfterTools={showContinueBanner}
-          onContinueAfterToolStop={continueAfterToolStop}
+          onContinueAfterToolStop={handleContinueAfterToolStop}
           focusMode={focusMode}
           expandMinions={expandMinions}
           disableMath={disableMath}
@@ -655,19 +752,45 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           </div>
         )}
 
+        {editing && (
+          <div className="flex items-center gap-3 border-t border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-900">
+            <div className="min-w-0 flex-1">
+              <div className="truncate">
+                <span className="font-medium">Editing:</span> {editing.preview}
+              </div>
+              <div className="text-xs text-blue-700">
+                Sending replaces it and everything after it.
+              </div>
+            </div>
+            <button
+              onClick={handleCancelEdit}
+              className="h-9 shrink-0 rounded-md px-3 text-sm font-medium transition-colors hover:bg-blue-100"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {carriedInjection && (
+          <CarriedFilesStrip injection={carriedInjection} onRemove={handleRemoveCarriedFile} />
+        )}
+
         {/* Chat Input */}
         <ChatInput
+          ref={chatInputRef}
           value={inputMessage}
           onChange={setInputMessage}
           onSend={handleSendMessage}
-          disabled={isLoading || isLockedByIncompleteTail || snapshotLoading}
+          // Sending an edit truncates the locked tail first, so it may go through
+          sendDisabled={isLoading || snapshotLoading || (isLockedByIncompleteTail && !editing)}
           attachments={attachments}
           onFilesAdded={handleFilesAdded}
           onRemoveAttachment={handleRemoveAttachment}
           maxAttachments={10}
           isProcessing={isProcessingAttachments}
           showSendSpinner={loopPhase === 'pending'}
-          hasPendingToolCalls={!!unresolvedToolCalls && unresolvedToolCalls.length > 0}
+          hasPendingToolCalls={!editing && !!unresolvedToolCalls && unresolvedToolCalls.length > 0}
+          hasCarriedFiles={carriesFiles(carriedInjection)}
           softStopRequested={softStopRequested}
           onRequestSoftStop={loopPhase !== 'idle' ? requestSoftStop : undefined}
         />
@@ -687,51 +810,49 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           />
         )}
 
-        {/* Rename Chat Modal */}
-        {isRenamingChat && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-            onClick={handleCancelRename}
-          >
-            <div
-              className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl"
-              onClick={e => e.stopPropagation()}
-            >
-              <h2 className="mb-4 text-lg font-semibold text-gray-900">Rename Chat</h2>
-              <input
-                type="text"
-                value={renameChatText}
-                onChange={e => setRenameChatText(e.target.value)}
-                placeholder="Enter chat name"
-                className="mb-4 w-full rounded-lg border border-gray-300 px-4 py-2 text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    handleSaveRename();
-                  } else if (e.key === 'Escape') {
-                    handleCancelRename();
-                  }
-                }}
-              />
-              <div className="flex justify-end gap-3">
-                <button
-                  onClick={handleCancelRename}
-                  disabled={isSavingRename}
-                  className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSaveRename}
-                  disabled={isSavingRename}
-                  className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
-                >
-                  {isSavingRename && <Spinner size={14} colorClass="border-white" />}
-                  Save
-                </button>
-              </div>
+        {/* Rename Chat Modal. A save in flight can't be called back, so the
+            backdrop and Escape wait for it like Cancel does. */}
+        <Modal
+          isOpen={isRenamingChat}
+          onClose={isSavingRename ? ignoreClose : handleCancelRename}
+          ariaLabel="Rename chat"
+        >
+          <div className="w-full rounded-xl bg-white p-6 shadow-xl">
+            <h2 className="mb-4 text-lg font-semibold text-gray-900">Rename Chat</h2>
+            <input
+              type="text"
+              value={renameChatText}
+              onChange={e => setRenameChatText(e.target.value)}
+              placeholder="Enter chat name"
+              aria-label="Chat name"
+              className="mb-4 w-full rounded-lg border border-gray-300 px-4 py-2 text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              onCompositionEnd={renameIme.onCompositionEnd}
+              onKeyDown={e => {
+                if (renameIme.isImeEnter(e)) return;
+                if (e.key === 'Enter' && !isSavingRename) {
+                  handleSaveRename();
+                }
+              }}
+            />
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={handleCancelRename}
+                disabled={isSavingRename}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveRename}
+                disabled={isSavingRename}
+                className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
+              >
+                {isSavingRename && <Spinner size={14} colorClass="border-white" />}
+                Save
+              </button>
             </div>
           </div>
-        )}
+        </Modal>
 
         {/* Chat settings — a full-bleed overlay, not a route: a route change
             would tear down the live loop subscription mid-edit. */}
@@ -762,10 +883,18 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           >
             <MinionChatView
               minionChatId={id}
+              live={isLoading}
+              disableMath={disableMath}
               onClose={() => setMinionChatStack(stack => stack.slice(0, idx))}
             />
           </div>
         ))}
+
+        {isDragging && (
+          <div className="pointer-events-none absolute inset-0 z-[60] flex items-center justify-center border-4 border-dashed border-blue-400 bg-blue-50/80 text-lg font-medium text-blue-700">
+            Drop images to attach
+          </div>
+        )}
       </div>
     </MinionChatOverlayContext.Provider>
   );

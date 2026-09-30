@@ -117,9 +117,24 @@ describe('actions', () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
+  it('ignores the close button, backdrop and Escape while cloning', () => {
+    const { onCancel } = renderModal(minionChat(), { isCloning: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.click(document.querySelector<HTMLElement>('.bg-black\\/50')!);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
   it('cancels', () => {
     const { onCancel } = renderModal(minionChat());
     fireEvent.click(screen.getByText('Cancel'));
     expect(onCancel).toHaveBeenCalled();
+  });
+
+  it('closes from the backdrop and Escape when idle', () => {
+    const { onCancel } = renderModal(minionChat());
+    fireEvent.click(document.querySelector<HTMLElement>('.bg-black\\/50')!);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(2);
   });
 });

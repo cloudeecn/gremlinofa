@@ -51,15 +51,82 @@ function parseDraftData(stored: string | null): DraftData | null {
   }
 }
 
+interface PendingDraft {
+  value: string;
+  timer: number;
+}
+
+/**
+ * Debounced writes not yet in localStorage, by storage key. Module-level so a
+ * pending write outlives the component that scheduled it: unmount, a key
+ * change and leaving the page flush it instead of dropping the last 500 ms of
+ * typing, and `clearDraft` can cancel it.
+ */
+const pendingDrafts = new Map<string, PendingDraft>();
+let flushOnLeaveRegistered = false;
+
+function writeDraft(storageKey: string, value: string): void {
+  try {
+    if (value.trim()) {
+      const draftData: DraftData = { content: value, createdAt: Date.now() };
+      localStorage.setItem(storageKey, JSON.stringify(draftData));
+    } else {
+      localStorage.removeItem(storageKey);
+    }
+  } catch (err) {
+    // Full storage or private mode: the text is still in the input
+    console.debug('[useDraftPersistence] draft write failed: %o', err);
+  }
+}
+
+function cancelDraft(storageKey: string): void {
+  const pending = pendingDrafts.get(storageKey);
+  if (!pending) return;
+  window.clearTimeout(pending.timer);
+  pendingDrafts.delete(storageKey);
+}
+
+function flushDraft(storageKey: string): void {
+  const pending = pendingDrafts.get(storageKey);
+  if (!pending) return;
+  cancelDraft(storageKey);
+  writeDraft(storageKey, pending.value);
+}
+
+function flushAllDrafts(): void {
+  for (const storageKey of [...pendingDrafts.keys()]) flushDraft(storageKey);
+}
+
+function scheduleDraft(storageKey: string, value: string): void {
+  cancelDraft(storageKey);
+  const timer = window.setTimeout(() => {
+    pendingDrafts.delete(storageKey);
+    writeDraft(storageKey, value);
+  }, DEBOUNCE_MS);
+  pendingDrafts.set(storageKey, { value, timer });
+
+  // Closing or backgrounding the tab doesn't unmount anything; mobile browsers
+  // may kill a hidden tab without another event
+  if (!flushOnLeaveRegistered) {
+    flushOnLeaveRegistered = true;
+    window.addEventListener('pagehide', flushAllDrafts);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushAllDrafts();
+    });
+  }
+}
+
 /**
  * Hook to persist draft text to localStorage with debouncing.
  *
  * Format: localStorage key='draft_<place>_<contextId>', value=JSON {content, createdAt}
  *
- * Features:
- * - Saves to localStorage after 500ms of inactivity
- * - Restores draft when component mounts (if context matches and not expired)
+ * - Saves to localStorage after 500ms of inactivity; unmount, a context change,
+ *   `enabled` turning off and leaving the page write a pending save right away
+ * - Restores the draft whenever the storage key changes (mount included), if
+ *   there is one and it hasn't expired
  * - Multiple drafts can coexist (keyed by place+contextId)
+ *
  * Usage:
  * ```ts
  * const [inputMessage, setInputMessage] = useState('');
@@ -84,88 +151,63 @@ export function useDraftPersistence({
   onChange,
   enabled = true,
 }: UseDraftPersistenceOptions): void {
-  const debounceTimerRef = useRef<number | null>(null);
-  const initializedRef = useRef(false);
-  const lastContextIdRef = useRef<string>(contextId);
-  const localStorageKey = buildDraftKey(place, contextId);
+  const storageKey = buildDraftKey(place, contextId);
+  const valueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  // The input's value when the current key took over. It belongs to the
+  // previous key (or the initial state), so it isn't saved under this one
+  // until it changes.
+  const inheritedValueRef = useRef<string | null>(null);
 
-  // Restore draft on mount (only once)
+  // Declared first: the effects below read the latest value and callback
   useEffect(() => {
-    if (!enabled || initializedRef.current) return;
-    initializedRef.current = true;
+    valueRef.current = value;
+    onChangeRef.current = onChange;
+  });
 
-    // Run cleanup on init
+  // Restore on mount and on every key change. Declared before the save effect
+  // so the inherited value is recorded before that effect looks at it.
+  useEffect(() => {
+    if (!enabled) return;
     cleanupExpiredDrafts();
 
-    const stored = localStorage.getItem(localStorageKey);
+    inheritedValueRef.current = valueRef.current;
+    const stored = localStorage.getItem(storageKey);
     const draftData = parseDraftData(stored);
-
     if (draftData && draftData.content) {
-      console.debug(`[useDraftPersistence] Restoring draft for ${place}/${contextId}`);
-      onChange(draftData.content);
+      console.debug('[useDraftPersistence] Restoring draft for %s', storageKey);
+      onChangeRef.current(draftData.content);
     } else if (stored) {
       // Remove invalid/expired entry
-      localStorage.removeItem(localStorageKey);
+      localStorage.removeItem(storageKey);
     }
-  }, [enabled, place, contextId, onChange, localStorageKey]);
 
-  // Handle context changes - run cleanup when switching contexts
+    return () => flushDraft(storageKey);
+  }, [enabled, storageKey]);
+
+  // Save with debouncing
   useEffect(() => {
     if (!enabled) return;
-
-    if (lastContextIdRef.current !== contextId) {
-      console.debug(
-        `[useDraftPersistence] Context changed from ${lastContextIdRef.current} to ${contextId}`
-      );
-      lastContextIdRef.current = contextId;
-      initializedRef.current = false; // Allow restoration for new context
-
-      // Run cleanup on context change
-      cleanupExpiredDrafts();
+    if (inheritedValueRef.current !== null) {
+      if (value === inheritedValueRef.current) return;
+      // One-shot: once the value moves, every later value is this key's own,
+      // including an empty box after a restore (which deletes the draft)
+      inheritedValueRef.current = null;
     }
-  }, [contextId, enabled, place]);
-
-  // Save draft with debouncing
-  useEffect(() => {
-    if (!enabled) return;
-
-    // Clear existing timer
-    if (debounceTimerRef.current !== null) {
-      window.clearTimeout(debounceTimerRef.current);
-    }
-
-    // Set new timer
-    debounceTimerRef.current = window.setTimeout(() => {
-      if (value.trim()) {
-        const draftData: DraftData = {
-          content: value,
-          createdAt: Date.now(),
-        };
-        localStorage.setItem(localStorageKey, JSON.stringify(draftData));
-        console.debug(`[useDraftPersistence] Saved draft for ${place}/${contextId}`);
-      } else {
-        localStorage.removeItem(localStorageKey);
-      }
-      debounceTimerRef.current = null;
-    }, DEBOUNCE_MS);
-
-    // Cleanup on unmount
-    return () => {
-      if (debounceTimerRef.current !== null) {
-        window.clearTimeout(debounceTimerRef.current);
-      }
-    };
-  }, [enabled, place, contextId, value, localStorageKey]);
+    scheduleDraft(storageKey, value);
+  }, [enabled, storageKey, value]);
 }
 
 /**
- * Clear a specific draft from localStorage.
- * Call this when the draft is submitted or should be discarded.
+ * Clear a specific draft from localStorage, along with a pending write that
+ * would otherwise bring it back. Call this when the draft is submitted or
+ * should be discarded.
  */
 export function clearDraft(place: string, contextId: string) {
   const key = buildDraftKey(place, contextId);
+  cancelDraft(key);
   localStorage.removeItem(key);
-  console.debug(`[useDraftPersistence] Draft cleared for ${place}/${contextId}`);
+  console.debug('[useDraftPersistence] Draft cleared for %s', key);
 }
 
 /**
@@ -173,6 +215,7 @@ export function clearDraft(place: string, contextId: string) {
  * Call this when purging data or detaching from storage.
  */
 export function clearAllDrafts() {
+  for (const storageKey of [...pendingDrafts.keys()]) cancelDraft(storageKey);
   const keysToRemove: string[] = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
@@ -183,7 +226,7 @@ export function clearAllDrafts() {
   for (const key of keysToRemove) {
     localStorage.removeItem(key);
   }
-  console.debug(`[useDraftPersistence] Cleared all drafts (${keysToRemove.length} entries)`);
+  console.debug('[useDraftPersistence] Cleared all drafts (%d entries)', keysToRemove.length);
 }
 
 /**
@@ -213,6 +256,6 @@ export function cleanupExpiredDrafts() {
   }
 
   if (keysToRemove.length > 0) {
-    console.debug(`[useDraftPersistence] Cleaned up ${keysToRemove.length} expired drafts`);
+    console.debug('[useDraftPersistence] Cleaned up %d expired drafts', keysToRemove.length);
   }
 }

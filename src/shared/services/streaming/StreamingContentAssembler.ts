@@ -1,13 +1,24 @@
 /**
  * StreamingContentAssembler - Assembles StreamChunk events into RenderingBlockGroup[]
  *
- * This class maintains object stability for React optimization:
- * - Groups array gets new elements but existing elements keep their reference
- * - Each RenderingBlockGroup object is stable while content is appended
- * - Each RenderingContentBlock object is stable while text is appended
+ * Groups and blocks are mutated in place: `getGroups()` hands out a fresh
+ * outer array over live group/block objects, and text/thinking keep growing
+ * on them. While the stream runs, only `takeOps()` payloads may cross a
+ * boundary (the wire, a cache): they never alias live state. `finalize()` /
+ * `finalizeWithError()` copy the groups and the text-like blocks but share
+ * the rest (tool_use, tool_result, notify, ...), which is fine only because
+ * they run once the stream has stopped feeding the assembler.
+ *
+ * Every mutation is also journaled, so `takeOps()` can describe what changed
+ * since the previous call as a short list of `StreamingGroupsOp`s. Structure
+ * only grows at the tail (nothing but `reset()` removes a block), so a
+ * block's `(g, b)` position is fixed once assigned — but a block that isn't
+ * the last one can still grow: Google grounding opens a web_search mid-text
+ * and more text lands on the earlier block afterwards.
  */
 
 import type { StreamChunk } from '../api/baseClient';
+import type { StreamingGroupsOp } from '../../protocol/types';
 import type {
   ErrorRenderBlock,
   FallbackRenderBlock,
@@ -53,6 +64,19 @@ export class StreamingContentAssembler {
   private lastEndedBlockType: string | null = null;
   // Track pending citations for current text block (received before text)
   private pendingCitations: Array<{ url: string; title?: string; citedText?: string }> = [];
+
+  // Change journal drained by `takeOps()`.
+  private positions: Map<RenderingContentBlock, { g: number; b: number }> = new Map();
+  private journalReset = false;
+  // Blocks added since the last take, in positional order. Their later edits
+  // in the same batch fold into the `add` op, which carries the whole block.
+  private journalAdds: Set<RenderingContentBlock> = new Set();
+  // Edits to blocks that already existed at the last take. `append` keeps the
+  // text length before the first append of the batch.
+  private journalEdits: Map<
+    RenderingContentBlock,
+    { kind: 'append'; from: number } | { kind: 'put' }
+  > = new Map();
 
   constructor(options: StreamingAssemblerOptions = {}) {
     this.options = options;
@@ -146,28 +170,65 @@ export class StreamingContentAssembler {
   }
 
   /**
-   * Get current groups (shallow copy for React re-render trigger)
-   * Internal group and block objects keep their references
+   * Live view of the current groups: a fresh outer array over the group and
+   * block objects the assembler keeps mutating. For tests and round-trip
+   * checks against `takeOps()`; never hand it to React, a cache or the wire.
    */
   getGroups(): RenderingBlockGroup[] {
     return [...this.groups];
   }
 
   /**
-   * Reset the assembler to initial state
+   * Drain the change journal: the ops that turn the groups as of the previous
+   * call into the current `getGroups()`. `add` / `put` payloads are
+   * `structuredClone`d and `append` carries a string slice, so an op never
+   * changes after it is taken, however long it sits in a queue. Appends and
+   * puts on existing blocks come first, then adds in positional order, which
+   * is the order `applyStreamingGroupsOps` needs.
+   */
+  takeOps(): StreamingGroupsOp[] {
+    const ops: StreamingGroupsOp[] = this.journalReset ? [{ op: 'reset' }] : [];
+    for (const [block, edit] of this.journalEdits) {
+      const { g, b } = this.positions.get(block)!;
+      if (edit.kind === 'put') {
+        ops.push({ op: 'put', g, b, block: structuredClone(block) });
+        continue;
+      }
+      const text = streamedText(block).slice(edit.from);
+      if (text) ops.push({ op: 'append', g, b, text });
+    }
+    for (const block of this.journalAdds) {
+      const { g } = this.positions.get(block)!;
+      ops.push({ op: 'add', g, category: this.groups[g].category, block: structuredClone(block) });
+    }
+    this.journalReset = false;
+    this.journalAdds.clear();
+    this.journalEdits.clear();
+    return ops;
+  }
+
+  /**
+   * Reset the assembler to initial state. The next `takeOps()` starts with a
+   * `reset` op so a receiver drops its copy too.
    */
   reset(): void {
     this.groups = [];
     this.currentBlock = null;
     this.webSearchMap.clear();
     this.webFetchMap.clear();
+    this.toolResultMap.clear();
     this.lastEndedBlockType = null;
     this.pendingCitations = [];
+    this.positions.clear();
+    this.journalAdds.clear();
+    this.journalEdits.clear();
+    this.journalReset = true;
   }
 
   /**
    * Finalize the assembled content with an error block appended.
-   * Returns a deep copy of groups with the error block added.
+   * Returns new group objects with the error block added; the blocks
+   * themselves are shared with the assembler (see the file header).
    * This method does not modify the assembler's internal state.
    *
    * @param error - Error information to include in the error block
@@ -212,11 +273,26 @@ export class StreamingContentAssembler {
 
     if (lastGroup && lastGroup.category === category) {
       // Same category - add to existing group
+      this.positions.set(block, { g: this.groups.length - 1, b: lastGroup.blocks.length });
       lastGroup.blocks.push(block);
     } else {
       // Different category - create new group
+      this.positions.set(block, { g: this.groups.length, b: 0 });
       this.groups.push({ category, blocks: [block] });
     }
+    this.journalAdds.add(block);
+  }
+
+  /** Journal an append to a text/thinking block. Call before mutating it. */
+  private noteAppend(block: TextRenderBlock | ThinkingRenderBlock): void {
+    if (this.journalAdds.has(block) || this.journalEdits.has(block)) return;
+    this.journalEdits.set(block, { kind: 'append', from: streamedText(block).length });
+  }
+
+  /** Journal a change to a block's non-text fields. A put ships the whole block. */
+  private notePut(block: RenderingContentBlock): void {
+    if (this.journalAdds.has(block)) return;
+    this.journalEdits.set(block, { kind: 'put' });
   }
 
   /**
@@ -244,8 +320,10 @@ export class StreamingContentAssembler {
   }
 
   private handleThinkingDelta(content: string): void {
-    if (this.currentBlock && this.currentBlock.type === 'thinking') {
-      (this.currentBlock as ThinkingRenderBlock).thinking += content;
+    const block = this.currentBlock;
+    if (block?.type === 'thinking') {
+      this.noteAppend(block);
+      block.thinking += content;
     }
   }
 
@@ -273,17 +351,19 @@ export class StreamingContentAssembler {
   }
 
   private handleContentDelta(content: string): void {
-    if (this.currentBlock && this.currentBlock.type === 'text') {
-      (this.currentBlock as TextRenderBlock).text += content;
+    const block = this.currentBlock;
+    if (block?.type === 'text') {
+      this.noteAppend(block);
+      block.text += content;
     }
   }
 
   private handleContentEnd(): void {
     // Apply any pending citations to the current text block before ending
-    if (this.pendingCitations.length > 0 && this.currentBlock?.type === 'text') {
-      const textBlock = this.currentBlock as TextRenderBlock;
-      const citationLinks = this.renderCitationLinks(this.pendingCitations);
-      textBlock.text += citationLinks;
+    const block = this.currentBlock;
+    if (this.pendingCitations.length > 0 && block?.type === 'text') {
+      this.noteAppend(block);
+      block.text += this.renderCitationLinks(this.pendingCitations);
       this.pendingCitations = [];
     }
     this.lastEndedBlockType = 'text';
@@ -308,6 +388,7 @@ export class StreamingContentAssembler {
     const existingBlock = this.webSearchMap.get(id);
     if (existingBlock) {
       // Update query on existing block
+      this.notePut(existingBlock);
       existingBlock.query = query;
     } else {
       // Create new block (fallback for providers that send query immediately)
@@ -327,6 +408,7 @@ export class StreamingContentAssembler {
     const searchBlock = this.webSearchMap.get(toolUseId);
     if (searchBlock && title && url) {
       const result: WebSearchResult = { title, url };
+      this.notePut(searchBlock);
       searchBlock.results.push(result);
     }
   }
@@ -347,6 +429,7 @@ export class StreamingContentAssembler {
     const existingBlock = this.webFetchMap.get(id);
     if (existingBlock) {
       // Update url on existing block
+      this.notePut(existingBlock);
       existingBlock.url = url;
     } else {
       // Create new block (fallback for providers that send url immediately)
@@ -364,6 +447,7 @@ export class StreamingContentAssembler {
     const fetchBlock = this.webFetchMap.get(toolUseId);
     if (fetchBlock) {
       // Update the existing block with final result data
+      this.notePut(fetchBlock);
       fetchBlock.url = url;
       if (title) {
         fetchBlock.title = title;
@@ -457,6 +541,7 @@ export class StreamingContentAssembler {
   ): void {
     const block = this.toolResultMap.get(toolUseId);
     if (block) {
+      this.notePut(block);
       block.modelDelivery = modelDelivery;
     }
   }
@@ -483,7 +568,8 @@ export class StreamingContentAssembler {
   }
 
   /**
-   * Finalize the assembled content, returning a deep copy suitable for storage.
+   * Finalize the assembled content for storage: new groups, copies of the
+   * text/thinking/web_search/web_fetch/error blocks, other blocks shared.
    * Applies any pending citations to the current text block.
    * This method does not modify the assembler's internal state.
    */
@@ -559,4 +645,10 @@ export class StreamingContentAssembler {
       .replace(/\[/g, '&#91;')
       .replace(/\]/g, '&#93;');
   }
+}
+
+function streamedText(block: RenderingContentBlock): string {
+  if (block.type === 'text') return block.text;
+  if (block.type === 'thinking') return block.thinking;
+  return '';
 }

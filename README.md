@@ -39,22 +39,23 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 
 **Rich Rendering**
 
-- Markdown with syntax highlighting (highlight.js)
+- Markdown with syntax highlighting (highlight.js, 41 common languages; a fence in something exotic renders plain, and the bundle is ~790 kB lighter for it)
 - LaTeX math via KaTeX (`$inline$` and `$$display$$`)
 - Collapsible thinking blocks and tool results
 - Citations with source links
 - Code blocks with copy button
+- Prompt-injection-resistant output: model HTML goes through an allowlist, links open in a new tab, and a remote image shows up as a link you choose to open, so nobody gets your secrets via a 1×1 pixel
 
 **Attachments**
 
 - Image support (JPEG, PNG, GIF, WebP)
-- Auto-resize and compression
+- Auto-resize and compression; small images go through untouched, so your GIF keeps its animation
 - Multi-select, preview
 - Stays on-device until you hit send
 
 **Performance**
 
-- Real-time streaming responses
+- Real-time streaming responses, delta-encoded: each update carries only what changed, not the whole reply so far, which is what every chunk used to resend
 - Virtual scrolling for 1000+ message histories
 - PWA with offline support
 
@@ -375,7 +376,7 @@ Your AI can spawn other AIs. The minion system lets your primary model delegate 
 - **Capability delegation, not a free-for-all** — Nesting isn't all-or-nothing once you flip it on. Each call hands the spawned minion a _narrowable_ slice of the orchestrator's own power: `allowNesting` decides per-branch whether that minion may recurse at all, and `availablePersonas` hands it a persona pool it can draw from — which it can only ever narrow further when it delegates onward. So a manager can spawn a researcher that may itself delegate to writers and editors, but never to _other_ managers. Each layer sees only the personas it was granted; over-reach gets a clean rejection, not a silent escape.
 - **Conversation control** — The main model decides: start a fresh minion or pick up an existing one. Minion chats persist with their settings (model, persona, tools), so multi-turn delegation just works.
 - **Inspect while streaming** — Pop open a minion's full conversation in an overlay without leaving your main chat. Watch sub-agents work in real-time, or collapse and check back later. Drill from a minion into _its_ minion and back out — the overlay stacks.
-- **Promote a minion to a real chat** — Hit `⧉` in a minion's overlay and its transcript becomes a chat you drive yourself, still wearing the minion's persona, workspace, tools and model rather than snapping back to the project defaults. The persona and prompt files stay _live_ — edit `/minions/researcher.md` and the next turn picks it up. Useful when a delegated task wandered somewhere interesting and you'd rather take the wheel than keep relaying instructions through the orchestrator.
+- **Promote a minion to a real chat** — Hit `⧉` in a minion's overlay and its transcript becomes a chat you drive yourself, still wearing the minion's persona, workspace, tools and model rather than snapping back to the project defaults. The persona and prompt files stay _live_ — edit `/minions/researcher.md` and the next turn picks it up. Useful when a delegated task wandered somewhere interesting and you'd rather take the wheel than keep relaying instructions through the orchestrator. Editing a message that had files injected keeps them, in the mode they were sent with. Each one sits above the composer as a chip, so dropping a file is something you do on purpose.
 - **Per-chat agent config** — That override layer isn't clone-only. Any chat's `⋯ → Chat Settings` lets you swap in a persona, point at prompt files, sandbox it to its own VFS namespace, narrow the tool set, or retune the reasoning knobs — each field individually set to inherit from the project or override it, with a preview of the exact prompt the model will receive. Tool choices narrow the project's set; they can't widen it, so the project stays the ceiling.
 - **Cost tracking** — Sub-agent costs roll up into your chat totals. No hidden bills.
 - **Optional web search** — Gate web access per-project. When enabled, the primary model can grant minions web search on a per-task basis.

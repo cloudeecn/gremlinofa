@@ -119,11 +119,21 @@ describe('ErrorFloatingButton', () => {
       expect(screen.getByText('Errors (1)')).toBeInTheDocument();
 
       // Click backdrop to close
-      const backdrop = document.querySelector('.animate-fade-in');
+      const backdrop = document.querySelector('.bg-black\\/50');
       expect(backdrop).toBeInTheDocument();
       fireEvent.click(backdrop!);
 
       // ErrorView should be closed
+      expect(screen.queryByText('Errors (1)')).not.toBeInTheDocument();
+    });
+
+    it('closes ErrorView on Escape', () => {
+      renderWithContext(createMockContext({ errors: [createError()] }));
+      fireEvent.click(screen.getByRole('button'));
+      expect(screen.getByRole('dialog', { name: 'Errors' })).toBeInTheDocument();
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+
       expect(screen.queryByText('Errors (1)')).not.toBeInTheDocument();
     });
 

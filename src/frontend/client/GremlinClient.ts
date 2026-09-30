@@ -105,8 +105,18 @@ export class GremlinClient {
     return this._transport!;
   }
 
-  private attachTransport(transport: Transport): void {
+  /**
+   * `previousState` is what subscribers last saw (no transport reads as
+   * 'connected', like `useConnectionState`). A transport starts in its own
+   * state, e.g. a new socket is 'connecting', and only reports later
+   * changes, so a difference is announced here.
+   */
+  private attachTransport(transport: Transport, previousState?: ConnectionState): void {
     this._transport = transport;
+    const initialState = transport.connectionState ?? 'connected';
+    if (initialState !== (previousState ?? 'connected')) {
+      this.emitConnectionState(initialState);
+    }
     if (transport.onReconnect) {
       this.transportUnsubs.push(
         transport.onReconnect(() => {
@@ -122,16 +132,18 @@ export class GremlinClient {
     }
     if (transport.onConnectionStateChange) {
       this.transportUnsubs.push(
-        transport.onConnectionStateChange(state => {
-          for (const cb of this.stateCallbacks) {
-            try {
-              cb(state);
-            } catch {
-              // state callbacks should not throw
-            }
-          }
-        })
+        transport.onConnectionStateChange(state => this.emitConnectionState(state))
       );
+    }
+  }
+
+  private emitConnectionState(state: ConnectionState): void {
+    for (const cb of this.stateCallbacks) {
+      try {
+        cb(state);
+      } catch {
+        // state callbacks should not throw
+      }
     }
   }
 
@@ -150,13 +162,14 @@ export class GremlinClient {
     if (factory) {
       this.transportFactory = factory;
     }
+    const previousState = this.connectionState;
     for (const unsub of this.transportUnsubs) {
       unsub();
     }
     this.transportUnsubs = [];
     this._transport?.dispose?.();
     this._transport = null;
-    this.attachTransport(this.transportFactory());
+    this.attachTransport(this.transportFactory(), previousState);
   }
 
   // ==========================================================================
@@ -255,8 +268,9 @@ export class GremlinClient {
 
   /**
    * Subscribe to connection state changes. Returns an unsubscribe
-   * function. Same registry semantics as `onReconnect`; never fires on
-   * non-WebSocket transports (worker).
+   * function. Same registry semantics as `onReconnect`. A worker transport
+   * never fires; the only event it causes is a 'connected' when a rebind
+   * swaps it in for a socket that wasn't connected.
    */
   onConnectionStateChange(callback: (state: ConnectionState) => void): () => void {
     this.stateCallbacks.add(callback);
@@ -965,9 +979,10 @@ export class GremlinClient {
    * once the stream completes. Callers (typically `AppContext`) hand the
    * blob to a `<a download>` anchor on the main thread.
    *
-   * `onProgress` fires once per record. The first chunk arrives after the
-   * first ~64KB of CSV are buffered, so progress shows up immediately even
-   * for small databases.
+   * `onProgress` fires for the first record, then at most every 100 ms, then
+   * once with the final count before the promise resolves. Progress is
+   * independent of chunking (chunks flush every ~64KB of CSV), so it shows
+   * up immediately even for small databases.
    */
   async exportToBlob(onProgress?: (processed: number) => void): Promise<{
     blob: Blob;
@@ -1137,11 +1152,20 @@ export class GremlinClient {
    * Yields one progress callback per file loaded; once the stream completes,
    * returns the assembled bundle JSON + counts so the caller can wrap it in
    * a `Blob` and trigger the download anchor on the main thread.
+   *
+   * Aborting `signal` rejects with a DOMException named `AbortError`, even
+   * when the bundle already arrived. The check runs as each event arrives:
+   * leaving the loop makes the transport send `stream_cancel`, and the
+   * backend stops between files.
    */
   async exportProjectBundle(
     projectId: string,
-    onProgress?: (loaded: number, total: number) => void
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal
   ): Promise<{ bundleJson: string; fileCount: number; dirCount: number; projectName: string }> {
+    const abortError = () => new DOMException('Project export aborted', 'AbortError');
+    if (signal?.aborted) throw abortError();
+
     let bundleJson = '';
     let fileCount = 0;
     let dirCount = 0;
@@ -1149,6 +1173,7 @@ export class GremlinClient {
 
     let done = false;
     for await (const event of this.streamEvents('exportProject', { projectId })) {
+      if (signal?.aborted) break;
       switch (event.type) {
         case 'progress':
           onProgress?.(event.loaded, event.total);
@@ -1162,6 +1187,7 @@ export class GremlinClient {
           break;
       }
     }
+    if (signal?.aborted) throw abortError();
     if (!done) {
       throw new ProtocolError('STREAM_FAILED', 'exportProject stream ended without a done event');
     }

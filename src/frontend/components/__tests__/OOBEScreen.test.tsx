@@ -73,6 +73,11 @@ vi.mock('../../lib/localStorageBoot', () => ({
   hashPassword: (password: string) => mockHashPassword(password),
 }));
 
+const mockShowDestructiveConfirm = vi.fn();
+vi.mock('../../lib/alerts', () => ({
+  showDestructiveConfirm: (...args: unknown[]) => mockShowDestructiveConfirm(...args),
+}));
+
 // Mock fetch for the /health probe in OOBEScreen's testRemoteConnection.
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
@@ -413,6 +418,56 @@ describe('OOBEScreen', () => {
       expect(sourceCek).toBe('testcekbase32');
       expect(mode).toBe('replace');
     });
+
+    function startRestore() {
+      render(<OOBEScreen onComplete={mockOnComplete} />);
+      fireEvent.click(screen.getByRole('radio', { name: /Import from Backup/i }));
+      const validFile = new File(['col1,col2\nval1,val2'], 'backup.csv', { type: 'text/csv' });
+      Object.defineProperty(validFile, 'arrayBuffer', {
+        value: () => Promise.resolve(new ArrayBuffer(8)),
+      });
+      fireEvent.change(getFileInput(), { target: { files: [validFile] } });
+      fireEvent.change(
+        screen.getByPlaceholderText('Enter the encryption key from your backup...'),
+        { target: { value: 'testcekbase32' } }
+      );
+      fireEvent.click(screen.getByRole('button', { name: /Get Started/i }));
+    }
+
+    it('restores into empty storage without asking', async () => {
+      startRestore();
+
+      await waitFor(() => expect(mockImportFromBytes).toHaveBeenCalled());
+      expect(mockShowDestructiveConfirm).not.toHaveBeenCalled();
+    });
+
+    it('asks twice before restoring over existing data', async () => {
+      mockIsStorageEmpty.mockResolvedValue(false);
+      mockShowDestructiveConfirm.mockResolvedValue(true);
+
+      startRestore();
+
+      await waitFor(() => expect(mockImportFromBytes).toHaveBeenCalled());
+      expect(mockShowDestructiveConfirm).toHaveBeenCalledTimes(2);
+    });
+
+    it('leaves nothing configured when the restore over existing data is cancelled', async () => {
+      mockIsStorageEmpty.mockResolvedValue(false);
+      mockShowDestructiveConfirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+      startRestore();
+
+      await waitFor(() => expect(mockShowDestructiveConfirm).toHaveBeenCalledTimes(2));
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /Get Started/i })).toBeEnabled()
+      );
+      expect(mockImportFromBytes).not.toHaveBeenCalled();
+      expect(mockSetCachedCEKString).not.toHaveBeenCalled();
+      expect(mockClearStorageConfig).toHaveBeenCalled();
+      expect(mockClearCek).not.toHaveBeenCalled();
+      expect(mockOnComplete).not.toHaveBeenCalled();
+      expect(screen.queryByText(/error/i)).not.toBeInTheDocument();
+    });
   });
 
   describe('button state', () => {
@@ -540,6 +595,17 @@ describe('OOBEScreen', () => {
       fireEvent.click(serverRadio);
 
       expect(screen.getByText('Use Existing Data')).toBeInTheDocument();
+    });
+
+    it('falls back to Start Fresh when switching back to IndexedDB from Use Existing Data', () => {
+      render(<OOBEScreen onComplete={mockOnComplete} />);
+
+      fireEvent.click(screen.getByRole('radio', { name: /Remote Backend/i }));
+      fireEvent.click(screen.getByRole('radio', { name: /Use Existing Data/i }));
+      fireEvent.click(screen.getByRole('radio', { name: /IndexedDB/i }));
+
+      expect(screen.queryByText('Use Existing Data')).not.toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: /Start Fresh/i })).toBeChecked();
     });
 
     it('should disable Get Started until wsUrl is provided', () => {

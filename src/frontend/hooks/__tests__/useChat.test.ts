@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useChat } from '../useChat';
 import { generateUniqueId } from '../../../shared/protocol/idGenerator';
 import * as alerts from '../../lib/alerts';
+import { ProtocolError } from '../../../shared/protocol/protocolError';
 import type {
+  CarriedInjection,
   Chat,
   Project,
   Message,
@@ -172,7 +174,6 @@ describe('useChat', () => {
     onStreamingStart: vi.fn(),
     onStreamingEnd: vi.fn(),
     onChatMetadataChanged: vi.fn(),
-    onForkMessageLoaded: vi.fn(),
   };
 
   /** Drive the standard "snapshot" sequence so the hook lands in the loaded state. */
@@ -314,6 +315,40 @@ describe('useChat', () => {
       expect(mockCallbacks.onStreamingEnd).toHaveBeenCalledWith('chat_123');
     });
 
+    it('alerts once for a loop that ended with a thrown error', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      act(() => {
+        activeSession!.fireEvent({ type: 'loop_started', loopId: 'loop_1' });
+        activeSession!.fireEvent({
+          type: 'loop_ended',
+          loopId: 'loop_1',
+          status: 'error',
+          detail: 'Model not found: gpt-9',
+        });
+      });
+
+      expect(alerts.showAlert).toHaveBeenCalledTimes(1);
+      expect(alerts.showAlert).toHaveBeenCalledWith('Reply failed', 'Model not found: gpt-9');
+    });
+
+    it('does not alert for an error that already renders in the chat', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      act(() => {
+        activeSession!.fireEvent({ type: 'loop_started', loopId: 'loop_1' });
+        activeSession!.fireEvent({ type: 'loop_ended', loopId: 'loop_1', status: 'error' });
+      });
+
+      expect(alerts.showAlert).not.toHaveBeenCalled();
+    });
+
     it('seeds softStopRequested from the active-loops snapshot on loop_started (survives re-attach)', async () => {
       // Simulate the backend already holding a soft-stop request for this
       // chat's running loop — the case that happens on chat re-attach.
@@ -360,6 +395,7 @@ describe('useChat', () => {
       );
 
       await waitFor(() => expect(result.current.chat).toBeTruthy());
+      act(() => emitInitialSnapshot([]));
 
       act(() => {
         activeSession!.fireEvent({ type: 'message_created', message: mockUserMessage });
@@ -443,6 +479,19 @@ describe('useChat', () => {
       expect(result.current.chat?.name).toBe('Renamed elsewhere');
     });
 
+    it('rolls the layer back and rejects when the patch fails', async () => {
+      vi.mocked(gremlinClient.patchChat).mockRejectedValueOnce(new Error('offline'));
+
+      const { result } = await mount();
+      await act(async () => {
+        await expect(result.current.updateAgentConfig({ temperature: 0.2 })).rejects.toThrow(
+          'offline'
+        );
+      });
+
+      expect(result.current.chat?.agentConfig).toBeUndefined();
+    });
+
     it('clears the layer through unset, not an undefined field', async () => {
       // The JSON wire drops undefined-valued keys, so `{ agentConfig: undefined }`
       // would be a silent no-op patch instead of a clear.
@@ -493,12 +542,62 @@ describe('useChat', () => {
 
       await waitFor(() => expect(result.current.chat).toBeTruthy());
 
+      let sent: boolean | undefined;
       await act(async () => {
-        await result.current.sendMessage('chat_123', 'Test message');
+        sent = await result.current.sendMessage('chat_123', 'Test message');
       });
 
-      expect(activeSession?.send).toHaveBeenCalledWith('Test message', undefined);
+      expect(sent).toBe(true);
+      expect(activeSession?.send).toHaveBeenCalledWith('Test message', undefined, undefined);
       expect(result.current.loopPhase).toBe('pending');
+    });
+
+    it('returns false and explains CHAT_BUSY when the loop does not start', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      activeSession!.send.mockRejectedValueOnce(new ProtocolError('CHAT_BUSY', 'busy'));
+
+      let sent: boolean | undefined;
+      await act(async () => {
+        sent = await result.current.sendMessage('chat_123', 'Test message');
+      });
+
+      expect(sent).toBe(false);
+      expect(result.current.loopPhase).toBe('idle');
+      expect(alerts.showAlert).toHaveBeenCalledWith(
+        'Message not sent',
+        expect.stringContaining('already has a reply running')
+      );
+    });
+
+    it('returns false without waiting for the alert to close', async () => {
+      // An alert that never resolves: the caller still gets its answer
+      vi.mocked(alerts.showAlert).mockReturnValue(new Promise(() => {}));
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      activeSession!.send.mockRejectedValueOnce(new Error('socket closed'));
+
+      let sent: boolean | undefined;
+      await act(async () => {
+        sent = await result.current.sendMessage('chat_123', 'Test message');
+      });
+
+      expect(sent).toBe(false);
+      expect(alerts.showAlert).toHaveBeenCalledWith('Message not sent', 'socket closed');
+    });
+
+    it('returns false for an empty message without sending', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      expect(await result.current.sendMessage('chat_123', '   ')).toBe(false);
+      expect(activeSession?.send).not.toHaveBeenCalled();
     });
 
     it('ignores mismatched chatId (race condition protection)', async () => {
@@ -508,7 +607,7 @@ describe('useChat', () => {
 
       await waitFor(() => expect(result.current.chat).toBeTruthy());
 
-      await result.current.sendMessage('chat_different', 'Test');
+      expect(await result.current.sendMessage('chat_different', 'Test')).toBe(false);
 
       expect(activeSession?.send).not.toHaveBeenCalled();
     });
@@ -535,7 +634,7 @@ describe('useChat', () => {
 
       await waitFor(() => expect(result.current.isLockedByIncompleteTail).toBe(true));
 
-      await result.current.sendMessage('chat_123', 'Test');
+      expect(await result.current.sendMessage('chat_123', 'Test')).toBe(false);
 
       expect(activeSession?.send).not.toHaveBeenCalled();
       expect(alerts.showAlert).toHaveBeenCalledWith(
@@ -624,23 +723,6 @@ describe('useChat', () => {
     });
   });
 
-  describe('resendFromMessage', () => {
-    it('delegates to GremlinSession.retry', async () => {
-      const { result } = renderHook(() =>
-        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
-      );
-
-      await waitFor(() => expect(result.current.chat).toBeTruthy());
-
-      await act(async () => {
-        await result.current.resendFromMessage('msg_user_1');
-      });
-
-      expect(activeSession?.retry).toHaveBeenCalledWith('msg_user_1');
-      expect(result.current.loopPhase).toBe('pending');
-    });
-  });
-
   describe('rollbackToMessage', () => {
     it('keeps target message and deletes everything after', async () => {
       const { result } = renderHook(() =>
@@ -698,63 +780,164 @@ describe('useChat', () => {
     });
   });
 
-  describe('copyMessage', () => {
-    it('copies message content to clipboard', async () => {
-      const mockWriteText = vi.fn().mockResolvedValue(undefined);
-      Object.assign(navigator, { clipboard: { writeText: mockWriteText } });
-
-      const { result } = renderHook(() =>
-        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
-      );
-
-      await waitFor(() => expect(result.current.chat).toBeTruthy());
-      act(() => emitInitialSnapshot());
-
-      await result.current.copyMessage('chat_123', 'msg_user_1');
-
-      expect(mockWriteText).toHaveBeenCalledWith('Hello');
-      expect(alerts.showAlert).toHaveBeenCalledWith('Copied', 'Message copied to clipboard');
-    });
-
-    it('strips metadata from copied content', async () => {
-      const messageWithMetadata: Message<string> = {
-        ...mockUserMessage,
-        content: {
-          type: 'text',
-          content: '<metadata><timestamp>2024</timestamp></metadata>\n\nActual message',
-        },
-      };
-
-      const mockWriteText = vi.fn().mockResolvedValue(undefined);
-      Object.assign(navigator, { clipboard: { writeText: mockWriteText } });
-
-      const { result } = renderHook(() =>
-        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
-      );
-
-      await waitFor(() => expect(result.current.chat).toBeTruthy());
-      act(() => emitInitialSnapshot([messageWithMetadata]));
-
-      await result.current.copyMessage('chat_123', messageWithMetadata.id);
-
-      expect(mockWriteText).toHaveBeenCalledWith('Actual message');
-    });
-
-    it('handles copy errors', async () => {
-      Object.assign(navigator, {
-        clipboard: { writeText: vi.fn().mockRejectedValue(new Error('Failed')) },
+  describe('sendEditedMessage', () => {
+    it('deletes the edited message and everything after it, then sends', async () => {
+      const order: string[] = [];
+      vi.mocked(gremlinClient.deleteMessageAndAfter).mockImplementation(async () => {
+        order.push('delete');
       });
 
       const { result } = renderHook(() =>
         useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
       );
-
       await waitFor(() => expect(result.current.chat).toBeTruthy());
       act(() => emitInitialSnapshot());
+      await waitFor(() => expect(result.current.messages).toHaveLength(2));
+      activeSession!.send.mockImplementation(async () => {
+        order.push('send');
+      });
 
-      await result.current.copyMessage('chat_123', 'msg_user_1');
+      let outcome: string | undefined;
+      await act(async () => {
+        outcome = await result.current.sendEditedMessage('chat_123', 'msg_user_1', 'Hello again');
+      });
 
-      expect(alerts.showAlert).toHaveBeenCalledWith('Error', 'Failed to copy message');
+      expect(outcome).toBe('sent');
+      expect(gremlinClient.deleteMessageAndAfter).toHaveBeenCalledWith('chat_123', 'msg_user_1');
+      expect(activeSession?.send).toHaveBeenCalledWith('Hello again', undefined, undefined);
+      expect(order).toEqual(['delete', 'send']);
+      expect(result.current.messages).toHaveLength(0);
+      expect(result.current.loopPhase).toBe('pending');
+    });
+
+    it('puts the messages back and reports untouched when the truncation fails', async () => {
+      vi.mocked(gremlinClient.patchChat).mockRejectedValueOnce(new Error('storage offline'));
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      act(() => emitInitialSnapshot());
+      await waitFor(() => expect(result.current.messages).toHaveLength(2));
+
+      let outcome: string | undefined;
+      await act(async () => {
+        outcome = await result.current.sendEditedMessage('chat_123', 'msg_user_1', 'Hello again');
+      });
+
+      expect(outcome).toBe('untouched');
+      expect(result.current.messages.map(m => m.id)).toEqual(['msg_user_1', 'msg_assistant_1']);
+      expect(result.current.chat?.contextWindowUsage).toBe(150);
+      expect(gremlinClient.deleteMessageAndAfter).not.toHaveBeenCalled();
+      expect(activeSession?.send).not.toHaveBeenCalled();
+      expect(alerts.showAlert).toHaveBeenCalledWith('Edit failed', 'storage offline');
+    });
+
+    it('reports truncated when the old message is gone but the loop does not start', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      act(() => emitInitialSnapshot());
+      await waitFor(() => expect(result.current.messages).toHaveLength(2));
+      activeSession!.send.mockRejectedValueOnce(new ProtocolError('CHAT_BUSY', 'busy'));
+
+      let outcome: string | undefined;
+      await act(async () => {
+        outcome = await result.current.sendEditedMessage('chat_123', 'msg_user_1', 'Hello again');
+      });
+
+      expect(outcome).toBe('truncated');
+      expect(result.current.loopPhase).toBe('idle');
+    });
+
+    it('goes through on a chat locked by an incomplete tail, which the edit deletes', async () => {
+      const incompleteAssistant: Message<unknown> = {
+        ...mockAssistantMessage,
+        id: 'msg_assistant_partial',
+        incomplete: true,
+      };
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      act(() => {
+        emitInitialSnapshot([mockUserMessage, incompleteAssistant]);
+        activeSession!.fireEvent({ type: 'lock_state_changed', locked: true });
+      });
+      await waitFor(() => expect(result.current.isLockedByIncompleteTail).toBe(true));
+
+      await act(async () => {
+        await result.current.sendEditedMessage('chat_123', 'msg_user_1', 'Try again');
+      });
+
+      expect(activeSession?.send).toHaveBeenCalledWith('Try again', undefined, undefined);
+      expect(alerts.showAlert).not.toHaveBeenCalled();
+    });
+
+    it('sends as a new message when the edited one is gone', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      act(() => emitInitialSnapshot());
+      await waitFor(() => expect(result.current.messages).toHaveLength(2));
+
+      let outcome: string | undefined;
+      await act(async () => {
+        outcome = await result.current.sendEditedMessage('chat_123', 'msg_gone', 'Still here');
+      });
+
+      expect(outcome).toBe('sent');
+      expect(gremlinClient.deleteMessageAndAfter).not.toHaveBeenCalled();
+      expect(activeSession?.send).toHaveBeenCalledWith('Still here', undefined, undefined);
+      expect(result.current.messages).toHaveLength(2);
+    });
+  });
+
+  describe('carried injected files', () => {
+    const injection: CarriedInjection = {
+      mode: 'inline',
+      before: [{ path: '/a.md', display: '=== /a.md ===\nalpha' }],
+      after: [],
+      endMarker: true,
+    };
+
+    it('hands the carried files to the session with the edited message', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      act(() => emitInitialSnapshot());
+      await waitFor(() => expect(result.current.messages).toHaveLength(2));
+
+      await act(async () => {
+        await result.current.sendEditedMessage(
+          'chat_123',
+          'msg_user_1',
+          'Hello again',
+          undefined,
+          injection
+        );
+      });
+
+      expect(activeSession?.send).toHaveBeenCalledWith('Hello again', undefined, injection);
+    });
+
+    it('treats carried files as content when there is no text', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      act(() => emitInitialSnapshot());
+      await waitFor(() => expect(result.current.messages).toHaveLength(2));
+
+      let sent: boolean | undefined;
+      await act(async () => {
+        sent = await result.current.sendMessage('chat_123', '', undefined, injection);
+      });
+
+      expect(sent).toBe(true);
+      expect(activeSession?.send).toHaveBeenCalledWith('', undefined, injection);
     });
   });
 
@@ -805,6 +988,23 @@ describe('useChat', () => {
       expect(mockCallbacks.onChatMetadataChanged).toHaveBeenCalled();
     });
 
+    it('rolls the override back and rejects when the patch fails', async () => {
+      vi.mocked(gremlinClient.patchChat).mockRejectedValueOnce(new Error('offline'));
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      await act(async () => {
+        await expect(
+          result.current.overrideModel('chat_123', 'api_new', 'gpt-3.5')
+        ).rejects.toThrow('offline');
+      });
+
+      expect(result.current.chat?.apiDefinitionId).toBeNull();
+      expect(result.current.chat?.modelId).toBeNull();
+    });
+
     it('ignores mismatched chatId', async () => {
       const { result } = renderHook(() =>
         useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
@@ -846,6 +1046,39 @@ describe('useChat', () => {
       const callsBefore = vi.mocked(gremlinClient.patchChat).mock.calls.length;
       await result.current.updateChatName('chat_different', 'New Name');
       expect(vi.mocked(gremlinClient.patchChat).mock.calls.length).toBe(callsBefore);
+    });
+
+    it('rolls the name back, keeping other fields that changed meanwhile', async () => {
+      let rejectPatch: (err: Error) => void = () => {};
+      vi.mocked(gremlinClient.patchChat).mockReturnValueOnce(
+        new Promise((_resolve, reject) => {
+          rejectPatch = reject;
+        })
+      );
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      let rename!: Promise<void>;
+      act(() => {
+        rename = result.current.updateChatName('chat_123', 'New Name');
+      });
+      expect(result.current.chat?.name).toBe('New Name');
+      // A running loop's totals land while the rename is in flight
+      act(() => {
+        activeSession!.fireEvent({
+          type: 'chat_updated',
+          chat: { ...mockChat, name: 'New Name', totalInputTokens: 900 },
+        });
+      });
+      await act(async () => {
+        rejectPatch(new Error('offline'));
+        await expect(rename).rejects.toThrow('offline');
+      });
+
+      expect(result.current.chat?.name).toBe('Test Chat');
+      expect(result.current.chat?.totalInputTokens).toBe(900);
     });
 
     it('ignores empty names', async () => {
@@ -958,7 +1191,7 @@ describe('useChat', () => {
       expect(activeSession?.continueLoop).toHaveBeenCalled();
     });
 
-    it('stop mode + user message: saves both the rejection and the follow-up', async () => {
+    it('stop mode + follow-up: saves the rejection, then sends the follow-up with its attachments', async () => {
       const { result } = renderHook(() =>
         useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
       );
@@ -968,19 +1201,46 @@ describe('useChat', () => {
 
       await waitFor(() => expect(result.current.unresolvedToolCalls).not.toBeNull());
 
+      const attachments = [
+        { id: 'att_1', type: 'image' as const, mimeType: 'image/png' as const, data: 'AAAA' },
+      ];
+      let resolved: boolean | undefined;
       await act(async () => {
-        await result.current.resolvePendingToolCalls('stop', 'User follow-up message');
+        resolved = await result.current.resolvePendingToolCalls(
+          'stop',
+          'User follow-up message',
+          attachments
+        );
       });
 
-      // Two saveMessage calls: rejection + follow-up.
-      const saveCalls = vi.mocked(gremlinClient.saveMessage).mock.calls;
-      const followUp = saveCalls.find(
-        ([, msg]) =>
-          (msg as Message<unknown>).role === 'user' &&
-          (msg as Message<unknown>).content.content === 'User follow-up message'
+      expect(resolved).toBe(true);
+      // Only the rejection is saved here; the follow-up goes through send,
+      // which persists it with its attachments
+      expect(gremlinClient.saveMessage).toHaveBeenCalledTimes(1);
+      expect(activeSession?.send).toHaveBeenCalledWith('User follow-up message', attachments);
+      expect(activeSession?.continueLoop).not.toHaveBeenCalled();
+    });
+
+    it('returns false and alerts when the follow-up send fails', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
       );
-      expect(followUp).toBeDefined();
-      expect(activeSession?.continueLoop).toHaveBeenCalled();
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      act(() => emitInitialSnapshot([mockUserMessage, mockAssistantWithToolUse]));
+      await waitFor(() => expect(result.current.unresolvedToolCalls).not.toBeNull());
+      activeSession!.send.mockRejectedValueOnce(new ProtocolError('CHAT_BUSY', 'busy'));
+
+      let resolved: boolean | undefined;
+      await act(async () => {
+        resolved = await result.current.resolvePendingToolCalls('stop', 'follow-up');
+      });
+
+      expect(resolved).toBe(false);
+      expect(result.current.loopPhase).toBe('idle');
+      expect(alerts.showAlert).toHaveBeenCalledWith(
+        'Message not sent',
+        expect.stringContaining('already has a reply running')
+      );
     });
 
     it('does not detect unresolved tools when a tool_result already exists', async () => {
@@ -1509,7 +1769,7 @@ describe('useChat', () => {
       // receives `streaming_snapshot` from `GremlinServer.attachChat` carrying
       // the partially-streamed assistant groups. The frontend applies them
       // directly so the bubble repaints immediately instead of going blank
-      // until the next live `streaming_chunk` (worst on claude-agent, whose
+      // until the next live `streaming_delta` (worst on claude-agent, whose
       // turns have long no-token gaps).
       const msgs = [makeMsg('m1'), makeMsg('m2', 'assistant')];
       const streamingGroup = {
@@ -1526,16 +1786,16 @@ describe('useChat', () => {
       await waitFor(() => expect(result.current.messages).toHaveLength(2));
 
       // reconnect_start clears any prior streaming groups; the snapshot refills
-      // them via streaming_snapshot, which lands after the (assistant)
-      // message_created that would otherwise clear the bubble.
+      // them via streaming_snapshot, which lands after snapshot_complete and
+      // the (assistant) message_created that would otherwise clear the bubble.
       act(() => {
         activeSession!.fireEvent({ type: 'reconnect_start' });
         activeSession!.fireEvent({ type: 'chat_updated', chat: mockChat });
         activeSession!.fireEvent({ type: 'message_created', message: msgs[0] });
         activeSession!.fireEvent({ type: 'message_created', message: msgs[1] });
         activeSession!.fireEvent({ type: 'loop_started', loopId: 'loop_1' });
-        activeSession!.fireEvent({ type: 'streaming_snapshot', groups: [streamingGroup] });
         activeSession!.fireEvent({ type: 'snapshot_complete' });
+        activeSession!.fireEvent({ type: 'streaming_snapshot', groups: [streamingGroup] });
       });
 
       await waitFor(
@@ -1547,11 +1807,10 @@ describe('useChat', () => {
       );
     });
 
-    it('applies tool_groups_delta append events to placeholder rendering', async () => {
-      // Wave 2 steady-state path: minion emits `tool_groups_delta` per
-      // upstream SSE chunk instead of full snapshots. Init seeds the
-      // accumulator, subsequent `append` deltas extend the last text
-      // block. The frontend projects the assembled state into the
+    it('applies tool_groups_delta streaming_ops events to placeholder rendering', async () => {
+      // Steady-state path: minion emits `tool_groups_delta` per upstream
+      // chunk instead of full snapshots. Init seeds the accumulator,
+      // subsequent `streaming_ops` deltas extend the text block. The frontend projects the assembled state into the
       // placeholder via the same `applyToolBlockBatch` machinery.
       const pendingToolMsg: Message<unknown> = {
         id: 'msg_pending_tool_3',
@@ -1611,12 +1870,12 @@ describe('useChat', () => {
         activeSession!.fireEvent({
           type: 'tool_groups_delta',
           toolUseId: 'tu_minion_3',
-          delta: { kind: 'append', target: 'last_text', text: ', world' },
+          delta: { kind: 'streaming_ops', ops: [{ op: 'append', g: 0, b: 0, text: ', world' }] },
         });
         activeSession!.fireEvent({
           type: 'tool_groups_delta',
           toolUseId: 'tu_minion_3',
-          delta: { kind: 'append', target: 'last_text', text: '!' },
+          delta: { kind: 'streaming_ops', ops: [{ op: 'append', g: 0, b: 0, text: '!' }] },
         });
       });
 
@@ -1706,7 +1965,7 @@ describe('useChat', () => {
         activeSession!.fireEvent({
           type: 'tool_groups_delta',
           toolUseId: 'tu_minion_4',
-          delta: { kind: 'append', target: 'last_text', text: '... done' },
+          delta: { kind: 'streaming_ops', ops: [{ op: 'append', g: 0, b: 0, text: '... done' }] },
         });
         activeSession!.fireEvent({
           type: 'tool_block_update',
@@ -1736,6 +1995,198 @@ describe('useChat', () => {
         },
         { timeout: 1000 }
       );
+    });
+  });
+
+  // ==========================================================================
+  // Streaming deltas
+  // ==========================================================================
+
+  describe('Streaming deltas', () => {
+    const textGroup = (text: string) => ({
+      category: 'text' as const,
+      blocks: [{ type: 'text' as const, text }],
+    });
+    const append = (text: string): LoopEvent => ({
+      type: 'streaming_delta',
+      ops: [{ op: 'append', g: 0, b: 0, text }],
+    });
+    const assistantMsg: Message<unknown> = {
+      id: 'msg_assistant_streamed',
+      role: 'assistant',
+      content: { type: 'text', content: 'Hello' },
+      timestamp: new Date('2024-01-01'),
+    };
+
+    // Mount, deliver an empty snapshot and start a loop, under fake timers.
+    async function mountStreaming() {
+      const hook = renderHook(() => useChat({ chatId: 'chat_123', callbacks: mockCallbacks }));
+      await act(async () => {});
+      act(() => {
+        emitInitialSnapshot([]);
+        activeSession!.fireEvent({ type: 'loop_started', loopId: 'loop_1' });
+        activeSession!.fireEvent({ type: 'streaming_start' });
+        activeSession!.fireEvent({ type: 'first_chunk' });
+      });
+      return hook;
+    }
+
+    it('applies every delta and flushes the result after the 200 ms throttle', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { result } = await mountStreaming();
+        act(() => {
+          activeSession!.fireEvent({ type: 'streaming_delta', ops: [{ op: 'reset' }] });
+          activeSession!.fireEvent({
+            type: 'streaming_delta',
+            ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'He' } }],
+          });
+          activeSession!.fireEvent(append('l'));
+          activeSession!.fireEvent(append('lo'));
+        });
+        // Throttled: nothing rendered yet.
+        expect(result.current.streamingGroups).toEqual([]);
+
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([textGroup('Hello')]);
+
+        // Deltas in the next window build on the applied state.
+        act(() => activeSession!.fireEvent(append(' world')));
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([textGroup('Hello world')]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('uses streaming_snapshot as the base for the deltas after it', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { result } = await mountStreaming();
+        act(() => activeSession!.fireEvent(append('stale')));
+        act(() => {
+          activeSession!.fireEvent({ type: 'streaming_snapshot', groups: [textGroup('Hel')] });
+        });
+        // Snapshot renders immediately, and cancels the pending flush.
+        expect(result.current.streamingGroups).toEqual([textGroup('Hel')]);
+
+        act(() => activeSession!.fireEvent(append('lo')));
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([textGroup('Hello')]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('reconnect_start clears the applied state and the pending flush', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { result } = await mountStreaming();
+        act(() => {
+          activeSession!.fireEvent({
+            type: 'streaming_delta',
+            ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'old' } }],
+          });
+        });
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([textGroup('old')]);
+
+        act(() => {
+          activeSession!.fireEvent(append(' pending'));
+          activeSession!.fireEvent({ type: 'reconnect_start' });
+        });
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([]);
+
+        // The replay's new stream starts from empty, not from 'old pending'.
+        act(() => {
+          activeSession!.fireEvent({
+            type: 'streaming_delta',
+            ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'new' } }],
+          });
+        });
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([textGroup('new')]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('an assistant message_created hides the bubble; the next reset starts a new one', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { result } = await mountStreaming();
+        act(() => {
+          activeSession!.fireEvent({
+            type: 'streaming_delta',
+            ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'Hello' } }],
+          });
+          activeSession!.fireEvent({ type: 'message_created', message: assistantMsg });
+        });
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([]);
+
+        act(() => {
+          activeSession!.fireEvent({
+            type: 'streaming_delta',
+            ops: [
+              { op: 'reset' },
+              { op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'Next' } },
+            ],
+          });
+        });
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([textGroup('Next')]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('an assistant message_created also drops the applied state, not just the bubble', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { result } = await mountStreaming();
+        act(() => {
+          activeSession!.fireEvent({ type: 'streaming_snapshot', groups: [textGroup('Hello')] });
+          activeSession!.fireEvent({ type: 'message_created', message: assistantMsg });
+          // No reset first: the add must open a fresh group, not join 'Hello'.
+          activeSession!.fireEvent({
+            type: 'streaming_delta',
+            ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'Next' } }],
+          });
+        });
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([textGroup('Next')]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('loop_ended flushes then clears the streaming state', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { result } = await mountStreaming();
+        act(() => {
+          activeSession!.fireEvent({
+            type: 'streaming_delta',
+            ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'x' } }],
+          });
+          activeSession!.fireEvent({ type: 'loop_ended', loopId: 'loop_1', status: 'complete' });
+        });
+        expect(result.current.streamingGroups).toEqual([]);
+
+        // A later loop's first add lands on empty state.
+        act(() => {
+          activeSession!.fireEvent({
+            type: 'streaming_delta',
+            ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'y' } }],
+          });
+        });
+        act(() => vi.advanceTimersByTime(200));
+        expect(result.current.streamingGroups).toEqual([textGroup('y')]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -1923,6 +2374,116 @@ describe('useChat', () => {
       rerender({ chatId: 'chat_456' });
 
       expect(result.current.snapshotLoading).toBe(true);
+    });
+  });
+
+  describe('Snapshot batching', () => {
+    function replayMessage(i: number): Message<unknown> {
+      return {
+        id: `msg_replay_${i}`,
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: { type: 'text', content: `message ${i}` },
+        timestamp: new Date('2024-01-01'),
+      };
+    }
+
+    it('commits a snapshot replay in one render instead of one per message', async () => {
+      let renders = 0;
+      const { result } = renderHook(() => {
+        renders++;
+        return useChat({ chatId: 'chat_123', callbacks: mockCallbacks });
+      });
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+      act(() => activeSession!.fireEvent({ type: 'chat_updated', chat: mockChat }));
+
+      const rendersBeforeReplay = renders;
+      // Each event in its own act — like separate worker/WebSocket messages
+      for (let i = 0; i < 50; i++) {
+        act(() => activeSession!.fireEvent({ type: 'message_created', message: replayMessage(i) }));
+      }
+      expect(result.current.messages).toHaveLength(0);
+      expect(renders).toBe(rendersBeforeReplay);
+
+      act(() => activeSession!.fireEvent({ type: 'snapshot_complete' }));
+
+      expect(result.current.messages).toHaveLength(50);
+      expect(result.current.messages[49].id).toBe('msg_replay_49');
+      expect(result.current.snapshotLoading).toBe(false);
+      expect(renders - rendersBeforeReplay).toBeLessThanOrEqual(2);
+    });
+
+    it('fires onMessagesLoaded once, with the full committed list', async () => {
+      const { result } = renderHook(() =>
+        useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+      );
+      await waitFor(() => expect(result.current.chat).toBeTruthy());
+
+      const replay = [replayMessage(0), replayMessage(1), replayMessage(2)];
+      act(() => emitInitialSnapshot(replay));
+      act(() => activeSession!.fireEvent({ type: 'message_created', message: replayMessage(3) }));
+
+      expect(mockCallbacks.onMessagesLoaded).toHaveBeenCalledTimes(1);
+      expect(mockCallbacks.onMessagesLoaded).toHaveBeenCalledWith('chat_123', replay);
+      expect(result.current.messages).toHaveLength(4);
+    });
+
+    it('lands a tool_block_update flushed mid-snapshot on its placeholder', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { result } = renderHook(() =>
+          useChat({ chatId: 'chat_123', callbacks: mockCallbacks })
+        );
+        await act(async () => {});
+
+        const pendingToolMsg: Message<unknown> = {
+          id: 'msg_pending_tool',
+          role: 'user',
+          content: {
+            type: 'text',
+            content: '',
+            renderingContent: [
+              {
+                category: 'backstage',
+                blocks: [
+                  {
+                    type: 'tool_result',
+                    tool_use_id: 'tu_1',
+                    content: '',
+                    name: 'minion',
+                    status: 'running',
+                  },
+                ],
+              },
+            ],
+          },
+          timestamp: new Date('2024-01-01'),
+        };
+
+        act(() => {
+          activeSession!.fireEvent({ type: 'chat_updated', chat: mockChat });
+          activeSession!.fireEvent({ type: 'message_created', message: replayMessage(0) });
+          activeSession!.fireEvent({ type: 'pending_tool_result', message: pendingToolMsg });
+          activeSession!.fireEvent({
+            type: 'tool_block_update',
+            toolUseId: 'tu_1',
+            block: { content: 'partial output' },
+          });
+        });
+        // The 200 ms tool-block throttle fires before snapshot_complete arrives
+        act(() => vi.advanceTimersByTime(250));
+        expect(result.current.messages).toHaveLength(0);
+
+        act(() => activeSession!.fireEvent({ type: 'snapshot_complete' }));
+
+        expect(result.current.messages.map(m => m.id)).toEqual([
+          'msg_replay_0',
+          'msg_pending_tool',
+        ]);
+        const block = result.current.messages[1].content.renderingContent![0].blocks[0];
+        expect((block as { content: string }).content).toBe('partial output');
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

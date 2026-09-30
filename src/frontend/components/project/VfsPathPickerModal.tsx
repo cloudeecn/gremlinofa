@@ -51,7 +51,7 @@ export default function VfsPathPickerModal({
           />
         </div>
 
-        <div className="safe-area-inset-bottom flex items-center justify-between gap-2 border-t border-gray-200 p-4">
+        <div className="flex items-center justify-between gap-2 border-t border-gray-200 p-4">
           <span className="min-w-0 truncate font-mono text-xs text-gray-500">
             {selected ?? 'No file selected'}
           </span>

@@ -1,20 +1,34 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMinionChat } from '../../hooks/useMinionChat';
 import { useIsMobile } from '../../hooks/useIsMobile';
+import { useOverlay } from '../../hooks/useOverlay';
 import { formatTokenGroup } from '../../lib/messageFormatters';
 import { showAlert, showDestructiveConfirm } from '../../lib/alerts';
 import MessageList from './MessageList';
 import CloneMinionChatModal from './CloneMinionChatModal';
+import type { RenderingBlockGroup } from '../../../shared/protocol/types/content';
+import type { MessageAction } from './types';
+
+/** Module-level so MessageList's memo holds across this view's re-renders. */
+const NO_STREAMING_GROUPS: RenderingBlockGroup[] = [];
+/** Edit and Fork have no minion-chat implementation; only rollback is offered. */
+const MINION_ACTIONS: ReadonlySet<MessageAction> = new Set(['rollback']);
 
 interface MinionChatViewProps {
   minionChatId: string;
+  /** The parent chat's loop is running: keep refetching (the minion may be working) */
+  live?: boolean;
+  /** The parent chat's Disable Math view option */
+  disableMath?: boolean;
   onMenuPress?: () => void;
   onClose?: () => void;
 }
 
 export default function MinionChatView({
   minionChatId,
+  live = false,
+  disableMath,
   onMenuPress,
   onClose,
 }: MinionChatViewProps) {
@@ -29,8 +43,12 @@ export default function MinionChatView({
     rollbackToMessage,
     cloneToChat,
     isCloning,
-  } = useMinionChat(minionChatId);
+  } = useMinionChat(minionChatId, { live });
   const [isCloneModalOpen, setIsCloneModalOpen] = useState(false);
+
+  // As an overlay inside ChatView, Escape closes it (one layer at a time)
+  const rootRef = useRef<HTMLDivElement>(null);
+  useOverlay({ active: !!onClose, onEscape: () => onClose?.(), containerRef: rootRef });
 
   // claude-agent minions can't splice out a single message or rewind to a user
   // turn — the SDK only resumes at assistant UUIDs. Hide ❌ delete + user-message
@@ -97,7 +115,7 @@ export default function MinionChatView({
   );
 
   const handleAction = useCallback(
-    async (action: string, messageId: string) => {
+    async (action: MessageAction, messageId: string) => {
       if (action === 'rollback') {
         const confirmed = await showDestructiveConfirm(
           'Roll Back',
@@ -112,14 +130,23 @@ export default function MinionChatView({
     [rollbackToMessage]
   );
 
+  const title = minionChat?.displayName || minionChat?.persona || 'Minion chat';
+  const subtitle =
+    title === 'Minion chat'
+      ? undefined
+      : minionChat?.displayName && minionChat.persona
+        ? `Minion chat · ${minionChat.persona}`
+        : 'Minion chat';
+
   return (
-    <div className="flex h-full flex-col bg-white">
+    <div ref={rootRef} tabIndex={-1} className="flex h-full flex-col bg-white outline-none">
       {/* Header */}
       <div className="border-b border-gray-200 bg-white">
         <div className="flex h-14 items-center px-4">
           {isMobile && onMenuPress && (
             <button
               onClick={onMenuPress}
+              aria-label="Open menu"
               className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
             >
               <span className="text-2xl text-gray-700">☰</span>
@@ -133,8 +160,10 @@ export default function MinionChatView({
             <span className="text-xl text-gray-700">←</span>
           </button>
           <div className="flex min-w-0 flex-1 flex-col justify-center">
-            <h1 className="truncate text-lg font-semibold text-gray-900">Minion Chat</h1>
-            <span className="truncate text-xs text-gray-500">{minionChatId}</span>
+            <h1 className="truncate text-lg font-semibold text-gray-900" title={minionChatId}>
+              {title}
+            </h1>
+            {subtitle && <span className="truncate text-xs text-gray-500">{subtitle}</span>}
           </div>
           <button
             onClick={() => setIsCloneModalOpen(true)}
@@ -178,12 +207,15 @@ export default function MinionChatView({
       <MessageList
         messages={messages}
         onAction={handleAction}
+        actions={MINION_ACTIONS}
         onDeleteMessage={isClaudeAgent ? undefined : handleDeleteMessage}
-        isLoading={isLoading}
-        streamingGroups={[]}
+        isLoading={false}
+        snapshotLoading={isLoading}
+        streamingGroups={NO_STREAMING_GROUPS}
         currentApiDefId={null}
         currentModelId={null}
         isClaudeAgentChat={isClaudeAgent}
+        disableMath={disableMath}
       />
 
       {isCloneModalOpen && (

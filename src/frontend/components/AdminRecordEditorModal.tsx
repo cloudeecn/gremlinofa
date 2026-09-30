@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
 import Modal from './ui/Modal';
 import { gremlinClient } from '../client';
 import { showAlert, showDestructiveConfirm } from '../lib/alerts';
@@ -50,15 +50,25 @@ export default function AdminRecordEditorModal({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const jsonParseError = (() => {
-    if (!record) return null;
+  // Rows can be multi-MB and DataManagerPage keeps this modal mounted (and
+  // re-rendering on every export progress event), so validation parses a
+  // deferred snapshot: once per edit, in a background render, never while
+  // closed. Record and text are deferred together; deferring only the text
+  // would validate a freshly loaded record against the previous text.
+  const editorSnapshot = useMemo(() => ({ isOpen, record, json }), [isOpen, record, json]);
+  const validatedSnapshot = useDeferredValue(editorSnapshot);
+  const validationPending = validatedSnapshot !== editorSnapshot;
+  const snapshotParseError = useMemo(() => {
+    if (!validatedSnapshot.isOpen || !validatedSnapshot.record) return null;
     try {
-      JSON.parse(json);
+      JSON.parse(validatedSnapshot.json);
       return null;
     } catch (err) {
       return err instanceof Error ? err.message : String(err);
     }
-  })();
+  }, [validatedSnapshot]);
+  // An error from another record's text says nothing about the one on screen
+  const jsonParseError = validatedSnapshot.record === record ? snapshotParseError : null;
 
   const handleLoad = async () => {
     const id = recordId.trim();
@@ -83,7 +93,7 @@ export default function AdminRecordEditorModal({
   };
 
   const handleSave = async () => {
-    if (!record || !loadedKey || jsonParseError) return;
+    if (!record || !loadedKey || jsonParseError || validationPending) return;
     const confirmed = await showDestructiveConfirm(
       'Overwrite Record',
       `This rewrites ${loadedKey.table}/${loadedKey.id} with the edited JSON. The previous blob is backed up to app_metadata (admin_edit_backup:${loadedKey.table}:${loadedKey.id}).`,
@@ -199,7 +209,7 @@ export default function AdminRecordEditorModal({
           </button>
           <button
             onClick={handleSave}
-            disabled={!record || saving || !!jsonParseError || hasRunningLoops}
+            disabled={!record || saving || !!jsonParseError || validationPending || hasRunningLoops}
             className="rounded bg-red-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:bg-gray-300"
           >
             {saving ? 'Saving…' : 'Overwrite Record'}

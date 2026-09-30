@@ -1,6 +1,38 @@
 /// <reference types="vite/client" />
 import StackTrace from 'stacktrace-js';
 
+type GpsCache = Record<string, unknown>;
+
+/**
+ * Module-level caches for every mapping call. stacktrace-js builds a fresh
+ * StackTraceGPS per `fromError`, and each one starts with empty caches unless
+ * given these, so every mapped error re-fetched the bundle and re-parsed its
+ * source map. GPS fills the objects in place (options are shallow-copied).
+ * `sourceMapConsumerCache` is a StackTraceGPS option that stacktrace-js's
+ * typings leave out, hence the widened type.
+ */
+const sourceCache: StackTrace.SourceCache = {};
+const sourceMapConsumerCache: GpsCache = {};
+const gpsOptions: StackTrace.StackTraceOptions & { sourceMapConsumerCache: GpsCache } = {
+  sourceCache,
+  sourceMapConsumerCache,
+};
+
+/**
+ * GPS caches the promise of an in-flight fetch/parse, including one that later
+ * rejects (offline, 404). Evict those so a transient failure doesn't stick for
+ * the rest of the session.
+ */
+function evictFailures(cache: GpsCache): void {
+  for (const [url, entry] of Object.entries(cache)) {
+    if (entry instanceof Promise) {
+      entry.catch(() => {
+        if (cache[url] === entry) delete cache[url];
+      });
+    }
+  }
+}
+
 /**
  * Maps a minified stack trace to original source locations using source maps.
  * Only works in production builds where source maps are available.
@@ -10,9 +42,9 @@ import StackTrace from 'stacktrace-js';
  */
 export async function mapStackTrace(error: Error): Promise<string> {
   try {
-    const stackframes = await StackTrace.fromError(error, {
-      // Use sourceCache to avoid re-fetching source maps
-      offline: false,
+    const stackframes = await StackTrace.fromError(error, gpsOptions).finally(() => {
+      evictFailures(sourceCache);
+      evictFailures(sourceMapConsumerCache);
     });
 
     if (stackframes.length === 0) {

@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import Spinner from './ui/Spinner';
 import RunningLoopsSection from './activeLoops/RunningLoopsSection';
-import { useApp } from '../hooks/useApp';
+import { useAppActions, useProjects } from '../hooks/useApp';
 import { useAlert } from '../hooks/useAlert';
+import { useImeSafeEnter } from '../hooks/useImeSafeEnter';
 import type { Project } from '../../shared/protocol/types';
 import { generateUniqueId } from '../../shared/protocol/idGenerator';
 
@@ -12,27 +13,48 @@ interface SidebarProps {
   onCollapse?: () => void;
 }
 
+// Probed once per page load: the Sidebar remounts on every collapse/expand
+// and every drawer open.
+let devBuildProbe: Promise<boolean> | null = null;
+let devBuildAvailable = false;
+
+function probeDevBuild(): Promise<boolean> {
+  devBuildProbe ??= fetch('/dev/', { method: 'HEAD' }).then(
+    res => {
+      devBuildAvailable = res.ok;
+      return res.ok;
+    },
+    () => false
+  );
+  return devBuildProbe;
+}
+
 export default function Sidebar({ onClose, onCollapse }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { projects, saveProject } = useApp();
+  const projects = useProjects();
+  const { saveProject } = useAppActions();
   const { showAlert } = useAlert();
 
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
-  const [devAvailable, setDevAvailable] = useState(false);
+  const [devAvailable, setDevAvailable] = useState(() => devBuildAvailable);
   const [isSavingProject, setIsSavingProject] = useState(false);
+  const { onCompositionEnd, isImeEnter } = useImeSafeEnter();
 
   const baseUrl = import.meta.env.BASE_URL;
   const isDevMode = baseUrl.includes('/dev/');
 
   // Check if /dev/ is accessible (only in production mode)
   useEffect(() => {
-    if (!isDevMode) {
-      fetch('/dev/', { method: 'HEAD' })
-        .then(res => setDevAvailable(res.ok))
-        .catch(() => setDevAvailable(false));
-    }
+    if (isDevMode) return;
+    let cancelled = false;
+    void probeDevBuild().then(available => {
+      if (!cancelled) setDevAvailable(available);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [isDevMode]);
 
   // Extract selected projectId from current route
@@ -86,6 +108,9 @@ export default function Sidebar({ onClose, onCollapse }: SidebarProps) {
 
   return (
     <div className="flex h-full w-full flex-col bg-gray-900 text-white">
+      {/* Both the drawer and the desktop column start at the top edge, so the
+        notch / status bar area is ours to paint (dark) and keep clear. */}
+      <div className="safe-area-inset-top" />
       {/* Header */}
       <div className="flex items-start justify-between border-b border-gray-700 p-4">
         <h1 className="text-sm leading-tight font-semibold">
@@ -151,10 +176,16 @@ export default function Sidebar({ onClose, onCollapse }: SidebarProps) {
             placeholder="Project name"
             value={newProjectName}
             onChange={e => setNewProjectName(e.target.value)}
+            onCompositionEnd={onCompositionEnd}
             onKeyDown={e => {
+              if (isImeEnter(e)) return;
+              // Enter bypasses the disabled Create button, so guard it too:
+              // a second Enter mid-save would create a second project
               if (e.key === 'Enter') {
-                handleCreateProject();
+                if (!isSavingProject) handleCreateProject();
               } else if (e.key === 'Escape') {
+                // Handled here: keeps the open mobile drawer from closing too
+                e.preventDefault();
                 setIsCreatingProject(false);
                 setNewProjectName('');
               }
@@ -183,7 +214,7 @@ export default function Sidebar({ onClose, onCollapse }: SidebarProps) {
       )}
 
       {/* Footer Actions */}
-      <div className="safe-area-inset-bottom border-t border-gray-700 p-2">
+      <div className="border-t border-gray-700 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <button
           onClick={() => setIsCreatingProject(true)}
           className="w-full rounded-lg px-3 py-2 text-left text-sm text-gray-300 transition-colors hover:bg-gray-800"

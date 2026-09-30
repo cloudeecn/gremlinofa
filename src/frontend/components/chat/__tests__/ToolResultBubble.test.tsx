@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ToolResultBubble from '../ToolResultBubble';
 import type { Message } from '../../../../shared/protocol/types';
+import type { ToolResultRenderBlock } from '../../../../shared/protocol/types/content';
 
 // Mock ToolResultView
 vi.mock('../ToolResultView', () => ({
@@ -156,5 +157,20 @@ describe('ToolResultBubble', () => {
     render(<ToolResultBubble message={message} focusMode={true} />);
 
     expect(screen.queryByText(/\$0\.042/)).not.toBeInTheDocument();
+  });
+});
+
+describe('ToolResultBubble preview', () => {
+  it('keeps only the tail of a huge result in the collapsed header', () => {
+    const message = createToolResultMessage();
+    const group = message.content.renderingContent![0];
+    group.blocks = [
+      { ...(group.blocks[0] as ToolResultRenderBlock), content: 'z'.repeat(200_000) + 'TAIL' },
+    ];
+
+    render(<ToolResultBubble message={message} />);
+
+    const preview = screen.getByText(/TAIL$/);
+    expect(preview.textContent!.length).toBeLessThanOrEqual(201);
   });
 });

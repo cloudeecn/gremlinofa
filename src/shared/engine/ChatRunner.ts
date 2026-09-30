@@ -32,6 +32,7 @@ import {
   assertChatNotLockedByIncompleteTail,
   isChatLockedByIncompleteTail,
 } from './lib/incompleteTail';
+import { carriesFiles } from '../protocol/carriedInjection';
 import { generateUniqueId } from '../protocol/idGenerator';
 import { generateMessageWithMetadata } from './messageMetadata';
 import type { BackendDeps } from './backendDeps';
@@ -44,7 +45,17 @@ import { ProtocolError } from './GremlinServer';
 import { LoopRegistry } from './LoopRegistry';
 import { prepareMessageForWire } from './messageWire';
 import type { ActiveLoop, LoopEvent, LoopId, RunLoopParams } from '../protocol/protocol';
-import type { Chat, Message, MessageAttachment, Project } from '../protocol/types';
+import type {
+  CarriedInjection,
+  Chat,
+  Message,
+  MessageAttachment,
+  RenderingBlockGroup,
+} from '../protocol/types';
+import {
+  buildCarriedUserContent,
+  buildMockToolCallPair,
+} from '../services/api/fileInjectionHelper';
 
 /** Result of a successful run, returned to the dispatcher for cleanup. */
 export interface ChatRunnerResult {
@@ -219,23 +230,24 @@ export class ChatRunner {
   > {
     if (params.mode === 'send' || params.mode === 'resend') {
       const text = (params.content ?? '').trim();
-      if (!text && (!params.attachments || params.attachments.length === 0)) {
+      const withFiles = carriesFiles(params.injection);
+      if (!text && (!params.attachments || params.attachments.length === 0) && !withFiles) {
         throw new ProtocolError(
           'INVALID_PARAMS',
-          'send/resend requires either content text or attachments'
+          'send/resend requires content text, attachments or injected files'
         );
       }
-      const userMessage = await this.createAndSaveUserMessage(
-        ctx.chat.id,
+      const created = await this.createAndSaveUserMessage(
+        ctx,
         text,
-        ctx.project,
-        ctx.chat,
-        ctx.modelId,
         existingMessages.length > 0 ? existingMessages[0].timestamp : undefined,
-        params.attachments
+        params.attachments,
+        withFiles ? params.injection : undefined
       );
-      yield { type: 'message_created', message: prepareMessageForWire(userMessage) };
-      return { messages: [...existingMessages, userMessage] };
+      for (const message of created) {
+        yield { type: 'message_created', message: prepareMessageForWire(message) };
+      }
+      return { messages: [...existingMessages, ...created] };
     }
 
     if (params.mode === 'retry' && params.fromMessageId) {
@@ -262,12 +274,9 @@ export class ChatRunner {
       (params.pendingTrailingAttachments && params.pendingTrailingAttachments.length > 0)
     ) {
       const text = (params.pendingTrailingContent ?? '').trim();
-      trailingUserMessage = await this.createAndSaveUserMessage(
-        ctx.chat.id,
+      [trailingUserMessage] = await this.createAndSaveUserMessage(
+        ctx,
         text,
-        ctx.project,
-        ctx.chat,
-        ctx.modelId,
         existingMessages.length > 0 ? existingMessages[0].timestamp : undefined,
         params.pendingTrailingAttachments
       );
@@ -281,35 +290,53 @@ export class ChatRunner {
   }
 
   /**
-   * Create + persist a user message. Mirrors `useChat.ts`'s helper of the
-   * same name. PR 10 will delete the React copy and route through this one.
+   * Create + persist a user message. With carried injected files it is built
+   * in the original's mode; `mock-tool-call` also persists the synthetic tool
+   * pairs, which follow the user message in the returned list.
    */
   private async createAndSaveUserMessage(
-    chatId: string,
+    ctx: ChatLoopContext,
     messageText: string,
-    project: Project,
-    chat: Chat,
-    modelId: string,
     firstMessageTimestamp: Date | undefined,
-    attachments: MessageAttachment[] | undefined
-  ): Promise<Message<unknown>> {
+    attachments: MessageAttachment[] | undefined,
+    injection?: CarriedInjection
+  ): Promise<[Message<unknown>, ...Message<unknown>[]]> {
+    const chatId = ctx.chat.id;
     const messageWithMetadata = generateMessageWithMetadata(
       messageText,
-      project,
-      chat,
-      modelId,
+      ctx.project,
+      ctx.chat,
+      ctx.modelId,
       firstMessageTimestamp
     );
+    const carried = injection
+      ? buildCarriedUserContent(injection, messageText, messageWithMetadata, ctx.apiDef.apiType)
+      : undefined;
 
     const attachmentIds = attachments?.map(att => att.id) ?? [];
 
+    const textGroup: RenderingBlockGroup = {
+      category: 'text',
+      blocks: [{ type: 'text', text: messageText }],
+    };
     const userMessage: Message<unknown> = {
       id: generateUniqueId('msg_user'),
       role: 'user',
       content: {
         type: 'text',
-        content: messageWithMetadata,
-        renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: messageText }] }],
+        content: carried?.content ?? messageWithMetadata,
+        renderingContent: carried
+          ? [
+              ...(carried.leadingBlocks.length > 0
+                ? [{ category: 'backstage' as const, blocks: carried.leadingBlocks }]
+                : []),
+              textGroup,
+              ...(carried.trailingBlocks.length > 0
+                ? [{ category: 'backstage' as const, blocks: carried.trailingBlocks }]
+                : []),
+            ]
+          : [textGroup],
+        ...carried?.fields,
         ...(attachmentIds.length > 0 && {
           attachmentIds,
           originalAttachmentCount: attachmentIds.length,
@@ -325,7 +352,15 @@ export class ChatRunner {
     }
 
     await this.storage.saveMessage(chatId, userMessage);
-    return userMessage;
+
+    const mockPairs: Message<unknown>[] = [];
+    for (const file of carried?.mockFiles ?? []) {
+      for (const message of buildMockToolCallPair(file.entry, file.display)) {
+        await this.storage.saveMessage(chatId, message);
+        mockPairs.push(message);
+      }
+    }
+    return [userMessage, ...mockPairs];
   }
 
   /**
@@ -358,11 +393,13 @@ export class ChatRunner {
           // Adapt the inner event to the protocol shape.
           switch (event.type) {
             case 'streaming_start':
-              yield { type: 'streaming_chunk', groups: [] };
+              // Each iteration assembles a new reply from empty groups, so
+              // receivers drop the previous iteration's streaming state.
+              yield { type: 'streaming_delta', ops: [{ op: 'reset' }] };
               break;
 
-            case 'streaming_chunk':
-              yield { type: 'streaming_chunk', groups: event.groups };
+            case 'streaming_delta':
+              yield { type: 'streaming_delta', ops: event.ops };
               break;
 
             case 'streaming_end':

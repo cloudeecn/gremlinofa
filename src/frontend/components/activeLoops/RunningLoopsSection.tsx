@@ -1,5 +1,5 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
-import { activeLoopsStore, gremlinClient } from '../../client';
+import { useSyncExternalStore } from 'react';
+import { activeLoopsStore } from '../../client';
 import type { ActiveLoop, LoopId } from '../../../shared/protocol/protocol';
 import ActiveLoopRow from './ActiveLoopRow';
 
@@ -26,17 +26,23 @@ export default function RunningLoopsSection({ onAfterNavigate }: RunningLoopsSec
     activeLoopsStore.getSnapshot
   );
 
-  // Live titles pushed by the backend when a chat is renamed mid-loop.
-  const liveTitles = useSyncExternalStore(
+  // The store resolves each chat's title once while it has running loops and
+  // applies live renames.
+  const titles = useSyncExternalStore(
     activeLoopsStore.subscribe,
     activeLoopsStore.getTitlesSnapshot,
     activeLoopsStore.getTitlesSnapshot
   );
-
-  // Lazy initial fetch — live titles take precedence once they arrive.
-  const chatNames = useChatNamesForLoops(loops);
+  const pendingTitles = useSyncExternalStore(
+    activeLoopsStore.subscribe,
+    activeLoopsStore.getPendingTitlesSnapshot,
+    activeLoopsStore.getPendingTitlesSnapshot
+  );
 
   if (loops.length === 0) return null;
+
+  const chatLabel = (chatId: string) =>
+    titles.get(chatId) ?? (pendingTitles.has(chatId) ? 'Loading…' : 'Unknown chat');
 
   // Index children by parent so we can render a tree of arbitrary depth.
   const childrenByParent = new Map<LoopId, ActiveLoop[]>();
@@ -60,7 +66,7 @@ export default function RunningLoopsSection({ onAfterNavigate }: RunningLoopsSec
         <ActiveLoopRow
           loop={loop}
           depth={depth}
-          chatLabel={liveTitles.get(loop.chatId) ?? chatNames.get(loop.chatId) ?? 'Loading…'}
+          chatLabel={chatLabel(loop.chatId)}
           onAfterNavigate={onAfterNavigate}
         />
         {children.map(child => renderLoop(child, depth + 1))}
@@ -81,46 +87,4 @@ export default function RunningLoopsSection({ onAfterNavigate }: RunningLoopsSec
       <div className="space-y-0.5 px-2 pb-2">{roots.map(root => renderLoop(root, 0))}</div>
     </div>
   );
-}
-
-/**
- * Lazy initial chat-name lookup for the loops list. Live title updates
- * from `chat_title_changed` events are handled separately via
- * `activeLoopsStore.getTitlesSnapshot` and take precedence at render time.
- */
-function useChatNamesForLoops(loops: ActiveLoop[]): Map<string, string> {
-  const [names, setNames] = useState<Map<string, string>>(() => new Map());
-
-  useEffect(() => {
-    const missing = new Set<string>();
-    for (const loop of loops) {
-      if (!names.has(loop.chatId)) missing.add(loop.chatId);
-    }
-    if (missing.size === 0) return;
-
-    let cancelled = false;
-    const fetchNames = async () => {
-      const updates = new Map(names);
-      for (const chatId of missing) {
-        try {
-          const chat = await gremlinClient.getChat(chatId);
-          if (cancelled) return;
-          if (chat) updates.set(chatId, chat.name);
-        } catch {
-          // Ignore — the row will show "Loading…" until next attempt
-        }
-      }
-      if (!cancelled) setNames(updates);
-    };
-    void fetchNames();
-
-    return () => {
-      cancelled = true;
-    };
-    // We deliberately depend only on the loops array (not `names`) so we
-    // don't loop forever after a successful fetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loops]);
-
-  return names;
 }

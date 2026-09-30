@@ -401,6 +401,43 @@ describe('LoopRegistry', () => {
       expect(refetched[0].mergedBlock.status).toBe('running');
     });
 
+    it('folds tool_groups_delta into groupsState; earlier snapshots stay put', () => {
+      const reg = new LoopRegistry();
+      const infoGroup: RenderingBlockGroup = {
+        category: 'backstage',
+        blocks: [{ type: 'tool_info', input: 'go' }],
+      };
+      broadcast(reg, 'chat_1', {
+        type: 'pending_tool_result',
+        message: mkPendingMessage('msg_m', ['tu_m']),
+      });
+      broadcast(reg, 'chat_1', {
+        type: 'tool_groups_delta',
+        toolUseId: 'tu_m',
+        delta: {
+          kind: 'init',
+          infoGroup,
+          accumulatedGroups: [],
+          streamingGroups: [{ category: 'text', blocks: [{ type: 'text', text: 'He' }] }],
+        },
+      });
+      const snapshot = reg.getPendingToolResults('chat_1')[0].groupsState;
+      const snapshotJson = JSON.stringify(snapshot);
+
+      broadcast(reg, 'chat_1', {
+        type: 'tool_groups_delta',
+        toolUseId: 'tu_m',
+        delta: { kind: 'streaming_ops', ops: [{ op: 'append', g: 0, b: 0, text: 'llo' }] },
+      });
+
+      expect(JSON.stringify(snapshot)).toBe(snapshotJson);
+      expect(reg.getPendingToolResults('chat_1')[0].groupsState).toEqual({
+        infoGroup,
+        accumulatedGroups: [],
+        streamingGroups: [{ category: 'text', blocks: [{ type: 'text', text: 'Hello' }] }],
+      });
+    });
+
     // Type-system spot check: the helper above produces a real
     // `Message<unknown>` whose `content.toolResults` field is the same shape
     // the broadcast intercept reads.
@@ -417,6 +454,22 @@ describe('LoopRegistry', () => {
       { category: 'text', blocks: [{ type: 'text', text }] },
     ];
 
+    // The ops ChatRunner emits for a fresh iteration that has streamed `text`.
+    const startStream = (reg: LoopRegistry, chatId: string, text: string) => {
+      reg.broadcastChatEvent(chatId, { type: 'streaming_delta', ops: [{ op: 'reset' }] });
+      reg.broadcastChatEvent(chatId, {
+        type: 'streaming_delta',
+        ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text } }],
+      });
+    };
+
+    const append = (reg: LoopRegistry, chatId: string, text: string) => {
+      reg.broadcastChatEvent(chatId, {
+        type: 'streaming_delta',
+        ops: [{ op: 'append', g: 0, b: 0, text }],
+      });
+    };
+
     const assistantMessage = (id: string): Message<unknown> =>
       ({
         id,
@@ -425,11 +478,27 @@ describe('LoopRegistry', () => {
         content: { type: 'text', content: '' },
       }) as unknown as Message<unknown>;
 
-    it('caches the latest streaming_chunk groups, overwriting (not merging)', () => {
+    it('applies streaming_delta ops to the cached groups', () => {
       const reg = new LoopRegistry();
-      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hel') });
-      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hello') });
-      expect(reg.getStreamingGroups('chat_1')).toEqual(mkGroups('hello'));
+      startStream(reg, 'chat_1', 'hel');
+      append(reg, 'chat_1', 'lo');
+      reg.broadcastChatEvent('chat_1', {
+        type: 'streaming_delta',
+        ops: [
+          { op: 'add', g: 1, category: 'backstage', block: { type: 'thinking', thinking: 'x' } },
+        ],
+      });
+      expect(reg.getStreamingGroups('chat_1')).toEqual([
+        ...mkGroups('hello'),
+        { category: 'backstage', blocks: [{ type: 'thinking', thinking: 'x' }] },
+      ]);
+    });
+
+    it('a reset op empties the cache for the next iteration', () => {
+      const reg = new LoopRegistry();
+      startStream(reg, 'chat_1', 'first');
+      reg.broadcastChatEvent('chat_1', { type: 'streaming_delta', ops: [{ op: 'reset' }] });
+      expect(reg.getStreamingGroups('chat_1')).toEqual([]);
     });
 
     it('getStreamingGroups returns undefined when no turn is mid-stream', () => {
@@ -437,17 +506,25 @@ describe('LoopRegistry', () => {
       expect(reg.getStreamingGroups('chat_none')).toBeUndefined();
     });
 
-    it('returns a fresh outer array — mutating the result does not corrupt the cache', () => {
+    it('a snapshot it returned stays unchanged after later deltas', () => {
       const reg = new LoopRegistry();
-      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hi') });
-      const got = reg.getStreamingGroups('chat_1');
-      got!.length = 0;
-      expect(reg.getStreamingGroups('chat_1')).toHaveLength(1);
+      startStream(reg, 'chat_1', 'hi');
+      const snapshot = reg.getStreamingGroups('chat_1');
+      const snapshotJson = JSON.stringify(snapshot);
+      append(reg, 'chat_1', ' there');
+      reg.broadcastChatEvent('chat_1', {
+        type: 'streaming_delta',
+        ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'fallback' } }],
+      });
+      expect(JSON.stringify(snapshot)).toBe(snapshotJson);
+      expect(reg.getStreamingGroups('chat_1')).toEqual([
+        { category: 'text', blocks: [{ type: 'text', text: 'hi there' }, { type: 'fallback' }] },
+      ]);
     });
 
     it('clears the cache when an assistant message_created supersedes the stream', () => {
       const reg = new LoopRegistry();
-      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hi') });
+      startStream(reg, 'chat_1', 'hi');
       reg.broadcastChatEvent('chat_1', {
         type: 'message_created',
         message: assistantMessage('msg_1'),
@@ -457,7 +534,7 @@ describe('LoopRegistry', () => {
 
     it('does NOT clear on a user/tool_result message_created — only assistant supersedes', () => {
       const reg = new LoopRegistry();
-      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hi') });
+      startStream(reg, 'chat_1', 'hi');
       const userMsg = {
         id: 'msg_tr',
         role: 'user',
@@ -470,21 +547,72 @@ describe('LoopRegistry', () => {
 
     it('loop_ended clears the streaming cache (abort / no-message safety net)', () => {
       const reg = new LoopRegistry();
-      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('hi') });
+      startStream(reg, 'chat_1', 'hi');
       reg.broadcastChatEvent('chat_1', { type: 'loop_ended', loopId: 'loop_1', status: 'aborted' });
       expect(reg.getStreamingGroups('chat_1')).toBeUndefined();
     });
 
     it('is per-chat — a stream on chat_1 is independent of chat_2', () => {
       const reg = new LoopRegistry();
-      reg.broadcastChatEvent('chat_1', { type: 'streaming_chunk', groups: mkGroups('a') });
-      reg.broadcastChatEvent('chat_2', { type: 'streaming_chunk', groups: mkGroups('b') });
+      startStream(reg, 'chat_1', 'a');
+      startStream(reg, 'chat_2', 'b');
       reg.broadcastChatEvent('chat_1', {
         type: 'message_created',
         message: assistantMessage('m1'),
       });
       expect(reg.getStreamingGroups('chat_1')).toBeUndefined();
       expect(reg.getStreamingGroups('chat_2')).toEqual(mkGroups('b'));
+    });
+  });
+
+  describe('fan-out order', () => {
+    // attachChat drops the deltas it queued before its cache read, which is
+    // only right if a subscriber never sees a delta the caches lack.
+    it('folds a delta into the caches before subscribers receive it', () => {
+      const reg = new LoopRegistry();
+      reg.broadcastChatEvent('chat_1', {
+        type: 'pending_tool_result',
+        message: {
+          id: 'msg_1',
+          role: 'user',
+          timestamp: new Date(),
+          content: {
+            type: 'text',
+            content: '',
+            toolResults: [{ type: 'tool_result', tool_use_id: 'tu_1', content: '' }],
+          },
+        } as unknown as Message<unknown>,
+      });
+      const seen: unknown[] = [];
+      reg.subscribeChatEvents('chat_1', event => {
+        if (event.type === 'streaming_delta') seen.push(reg.getStreamingGroups('chat_1'));
+        if (event.type === 'tool_groups_delta') {
+          seen.push(reg.getPendingToolResults('chat_1')[0].groupsState?.streamingGroups);
+        }
+      });
+
+      reg.broadcastChatEvent('chat_1', {
+        type: 'streaming_delta',
+        ops: [{ op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'hi' } }],
+      });
+      const toolGroups: RenderingBlockGroup[] = [
+        { category: 'text', blocks: [{ type: 'text', text: 'minion' }] },
+      ];
+      reg.broadcastChatEvent('chat_1', {
+        type: 'tool_groups_delta',
+        toolUseId: 'tu_1',
+        delta: {
+          kind: 'init',
+          infoGroup: { category: 'backstage', blocks: [] },
+          accumulatedGroups: [],
+          streamingGroups: toolGroups,
+        },
+      });
+
+      expect(seen).toEqual([
+        [{ category: 'text', blocks: [{ type: 'text', text: 'hi' }] }],
+        toolGroups,
+      ]);
     });
   });
 

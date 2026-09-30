@@ -11,6 +11,8 @@ const basename = (path: string): string => path.split('/').filter(Boolean).pop()
 
 export interface VfsFileEditorProps {
   adapter: VfsAdapter;
+  /** Scopes the unsaved draft: the same path in another project is another file */
+  projectId: string;
   path: string;
   initialContent: string;
   onSave: () => void;
@@ -19,6 +21,7 @@ export interface VfsFileEditorProps {
 
 export default function VfsFileEditor({
   adapter,
+  projectId,
   path,
   initialContent,
   onSave,
@@ -29,7 +32,7 @@ export default function VfsFileEditor({
   const [error, setError] = useState<string | null>(null);
 
   // Draft context ID: encodedPath to handle "/" in paths
-  const draftContextId = `vfs_${encodeURIComponent(path)}`;
+  const draftContextId = `vfs_${projectId}_${encodeURIComponent(path)}`;
 
   const isDirty = content !== initialContent;
 

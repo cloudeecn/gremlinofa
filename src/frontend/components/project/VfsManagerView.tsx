@@ -9,6 +9,7 @@ import VfsFileEditor from './VfsFileEditor';
 import VfsDiffViewer from './VfsDiffViewer';
 import VfsFileModal from './VfsFileModal';
 import { zip, unzip } from 'fflate';
+import { downloadBlob } from '../../lib/download';
 
 // Phase 1.8 leak fix — see VfsFileEditor.tsx for the rationale.
 const basename = (path: string): string => path.split('/').filter(Boolean).pop() ?? '';
@@ -50,26 +51,47 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
   // Loading state for operations
   const [isOperating, setIsOperating] = useState(false);
 
+  // The deep link reads isMobile when it resolves rather than depending on it:
+  // crossing 768px (tablet rotation) must not re-select initialPath or reopen
+  // the mobile modal.
+  const isMobileRef = useRef(isMobile);
+  useEffect(() => {
+    isMobileRef.current = isMobile;
+  }, [isMobile]);
+
+  // Bumped on every user selection, so async work started for an earlier one (the
+  // deep-link lookup, loading content for edit) can tell it's stale.
+  const selectionSeqRef = useRef(0);
+
   // Handle initial path from URL deep link
   useEffect(() => {
     if (!initialPath || !adapter) return;
 
+    let cancelled = false;
+    const selectionSeq = selectionSeqRef.current;
+    const isStale = () => cancelled || selectionSeqRef.current !== selectionSeq;
+
     const checkAndSelectPath = async () => {
       try {
         const isFileResult = await adapter.isFile(initialPath);
+        if (isStale()) return;
         if (isFileResult) {
           setSelectedPath(initialPath);
           setSelectedType('file');
-          if (isMobile) {
+          // Leftover edit/diff state belongs to another file (or another project's adapter)
+          setDesktopMode('view');
+          if (isMobileRef.current) {
             setMobileModalOpen(true);
           }
           return;
         }
 
         const isDirResult = await adapter.isDirectory(initialPath);
+        if (isStale()) return;
         if (isDirResult) {
           setSelectedPath(initialPath);
           setSelectedType('dir');
+          setDesktopMode('view');
         }
       } catch (error) {
         console.debug('[VfsManagerView] Initial path check failed:', error);
@@ -77,10 +99,14 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
     };
 
     checkAndSelectPath();
-  }, [initialPath, adapter, isMobile]);
+    return () => {
+      cancelled = true;
+    };
+  }, [initialPath, adapter]);
 
   const handleSelectFile = useCallback(
     (path: string) => {
+      selectionSeqRef.current++;
       setSelectedPath(path);
       setSelectedType('file');
       setDesktopMode('view');
@@ -94,6 +120,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
   );
 
   const handleSelectDir = useCallback((path: string) => {
+    selectionSeqRef.current++;
     setSelectedPath(path);
     setSelectedType('dir');
     setDesktopMode('view');
@@ -107,8 +134,12 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
   const handleDesktopEdit = useCallback(async () => {
     if (!selectedPath || !adapter) return;
 
+    const selectionSeq = selectionSeqRef.current;
     try {
       const content = await adapter.readFile(selectedPath);
+      // Another file was picked mid-read: opening the editor now would pair its
+      // path with this file's content, and saving would overwrite it.
+      if (selectionSeqRef.current !== selectionSeq) return;
       setEditInitialContent(content);
       setDesktopMode('edit');
     } catch (error) {
@@ -352,15 +383,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
         // Download the ZIP (copy to new ArrayBuffer to satisfy TypeScript)
         const arrayBuffer = new ArrayBuffer(data.length);
         new Uint8Array(arrayBuffer).set(data);
-        const blob = new Blob([arrayBuffer], { type: 'application/zip' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `${dirName}.zip`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
+        downloadBlob(new Blob([arrayBuffer], { type: 'application/zip' }), `${dirName}.zip`);
       });
     } catch (error) {
       setIsOperating(false);
@@ -599,6 +622,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
           {selectedPath && selectedType === 'file' && (
             <VfsFileModal
               adapter={adapter}
+              projectId={projectId}
               path={selectedPath}
               isOpen={mobileModalOpen}
               onClose={handleMobileModalClose}
@@ -710,6 +734,7 @@ export default function VfsManagerView({ projectId, initialPath }: VfsManagerVie
             ) : desktopMode === 'edit' ? (
               <VfsFileEditor
                 adapter={adapter}
+                projectId={projectId}
                 path={selectedPath}
                 initialContent={editInitialContent}
                 onSave={handleDesktopSave}

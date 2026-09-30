@@ -3,8 +3,10 @@
  * Allows users to view and manage attachments grouped by chat
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAttachmentManager } from '../hooks/useAttachmentManager';
+import { useStableCallback } from '../hooks/useStableCallback';
+import { showDestructiveConfirm } from '../lib/alerts';
 import { AttachmentSection } from './AttachmentSection';
 import DeleteOlderThanModal from './DeleteOlderThanModal';
 
@@ -35,27 +37,35 @@ export function AttachmentManagerView({ onMenuPress }: AttachmentManagerViewProp
     null
   );
   const [isDeleteOlderModalOpen, setIsDeleteOlderModalOpen] = useState(false);
+  // State, not a ref: sections need the element as their observer root on first render
+  const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
 
   // Load sections on mount
   useEffect(() => {
     loadSections();
   }, [loadSections]);
 
-  // Handle section visibility change (load data when visible, unload when not)
-  const handleSectionVisibilityChange = useCallback(
-    (chatId: string, messageIds: string[], isVisible: boolean) => {
-      if (isVisible) {
-        loadSectionData(chatId, messageIds);
-      } else {
-        unloadSectionData(chatId);
-      }
-    },
-    [loadSectionData, unloadSectionData]
-  );
+  // Load data when a section enters the buffer zone, unload when it leaves.
+  // Stable identity: each section's IntersectionObserver effect depends on it.
+  const handleSectionVisibilityChange = useStableCallback((chatId: string, isVisible: boolean) => {
+    if (isVisible) {
+      const section = sections.find(s => s.chatId === chatId);
+      loadSectionData(chatId, section?.attachments.map(a => a.messageId) ?? []);
+    } else {
+      unloadSectionData(chatId);
+    }
+  });
 
   // Handle delete selected
   const handleDeleteSelected = async () => {
     if (selectedIds.size === 0) return;
+    const count = selectedIds.size;
+    const confirmed = await showDestructiveConfirm(
+      'Delete attachments',
+      `Delete ${count} attachment${count === 1 ? '' : 's'}? Messages that used them will show them as missing.`,
+      'Delete'
+    );
+    if (!confirmed) return;
 
     setIsDeleting(true);
     setDeleteResult(null);
@@ -110,7 +120,10 @@ export function AttachmentManagerView({ onMenuPress }: AttachmentManagerViewProp
       </div>
 
       {/* Content */}
-      <div className="ios-scroll scroll-safe-bottom min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+      <div
+        ref={setScrollRoot}
+        className="ios-scroll scroll-safe-bottom min-h-0 flex-1 overflow-y-auto overscroll-y-contain"
+      >
         {isLoading ? (
           // Loading state
           <div className="flex items-center justify-center p-8">
@@ -166,15 +179,10 @@ export function AttachmentManagerView({ onMenuPress }: AttachmentManagerViewProp
                 loadedData={loadedData.get(section.chatId)}
                 selectedIds={selectedIds}
                 onToggleSelection={toggleSelection}
-                onSelectAll={() => selectAllInSection(section.chatId)}
-                onDeselectAll={() => deselectAllInSection(section.chatId)}
-                onVisibilityChange={isVisible =>
-                  handleSectionVisibilityChange(
-                    section.chatId,
-                    section.attachments.map(a => a.messageId),
-                    isVisible
-                  )
-                }
+                onSelectAll={selectAllInSection}
+                onDeselectAll={deselectAllInSection}
+                onVisibilityChange={handleSectionVisibilityChange}
+                scrollRoot={scrollRoot}
               />
             ))}
           </div>

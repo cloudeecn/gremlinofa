@@ -1,13 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import {
   effectiveInjectionMode,
+  buildCarriedUserContent,
+  buildInlineContent,
   buildInlinePrefix,
   buildInlineSuffix,
   buildInlineSection,
+  buildMockToolCallPair,
   buildSeparateBlockText,
   hasCustomFraming,
   wrapInjectedFile,
 } from '../fileInjectionHelper';
+import { extractCarriedInjection } from '../../../protocol/carriedInjection';
+import type { CarriedInjection, MessageContent } from '../../../protocol/types';
 
 describe('effectiveInjectionMode', () => {
   it('returns inline for undefined or inline request', () => {
@@ -191,5 +196,136 @@ describe('buildInlineSection', () => {
     expect(
       buildInlineSection({ path: '/a.ts', content: 'aaa', preamble: 'pre' }, ' with line numbers')
     ).toBe('pre\naaa');
+  });
+});
+
+describe('buildInlineContent', () => {
+  it('keeps a real message byte-for-byte, separators included', () => {
+    expect(
+      buildInlineContent('=== a ===\nx\n\n', '=== end of files ===\n\n', 'go\n', '\n\ny')
+    ).toBe('=== a ===\nx\n\n=== end of files ===\n\ngo\n\n\ny');
+  });
+
+  it('trims the separators when there is no message text', () => {
+    expect(buildInlineContent('=== a ===\nx\n\n', '=== end of files ===\n\n', '', '')).toBe(
+      '=== a ===\nx\n\n=== end of files ==='
+    );
+    expect(buildInlineContent('', '', '', '\n\n=== b ===\ny')).toBe('=== b ===\ny');
+  });
+});
+
+describe('buildCarriedUserContent', () => {
+  const a = { path: '/a.md', content: 'alpha' };
+  const b = { path: '/b.md', content: 'beta' };
+  const carried = (
+    mode: CarriedInjection['mode'],
+    endMarker = false,
+    after: CarriedInjection['after'] = [{ path: b.path, display: buildInlineSection(b), entry: b }]
+  ): CarriedInjection => ({
+    mode,
+    before: [{ path: a.path, display: buildInlineSection(a), entry: a }],
+    after,
+    endMarker,
+  });
+
+  it('splices inline sections around the model text', () => {
+    const built = buildCarriedUserContent(
+      carried('inline', true),
+      'go',
+      '<meta>go</meta>',
+      'chatgpt'
+    );
+    expect(built.content).toBe(
+      `${buildInlineSection(a)}\n\n=== end of files ===\n\n<meta>go</meta>\n\n${buildInlineSection(b)}`
+    );
+    expect(built.fields).toEqual({});
+    expect(built.leadingBlocks).toEqual([
+      { type: 'injected_file', path: a.path, content: buildInlineSection(a) },
+    ]);
+    expect(built.trailingBlocks).toHaveLength(1);
+  });
+
+  it('drops the end marker once no leading file is kept', () => {
+    const injection = { ...carried('inline', true), before: [] };
+    expect(buildCarriedUserContent(injection, 'go', 'go', 'chatgpt').content).toBe(
+      `go\n\n${buildInlineSection(b)}`
+    );
+  });
+
+  it('stores raw entries for block-level modes and keeps the text clean', () => {
+    const built = buildCarriedUserContent(carried('separate-block'), 'go', 'go', 'google');
+    expect(built.content).toBe('go');
+    expect(built.fields).toEqual({
+      injectedFiles: [a],
+      injectedFilesAfter: [b],
+      injectionMode: 'separate-block',
+    });
+    expect(built.mockFiles).toEqual([]);
+  });
+
+  it('stores no fields when every file was removed', () => {
+    const injection = { ...carried('as-file'), before: [], after: [] };
+    expect(buildCarriedUserContent(injection, 'go', 'go', 'anthropic').fields).toEqual({});
+  });
+
+  it('returns mock files in leading-then-trailing order', () => {
+    const built = buildCarriedUserContent(carried('mock-tool-call'), 'go', 'go', 'anthropic');
+    expect(built.fields.injectionMode).toBe('mock-tool-call');
+    expect(built.mockFiles.map(f => f.entry.path)).toEqual([a.path, b.path]);
+  });
+
+  it('downgrades mock-tool-call for claude-agent and for an empty message', () => {
+    const agent = buildCarriedUserContent(carried('mock-tool-call'), 'go', 'go', 'claude-agent');
+    expect(agent.fields.injectionMode).toBe('separate-block');
+    expect(agent.mockFiles).toEqual([]);
+    const empty = buildCarriedUserContent(carried('mock-tool-call'), '', '', 'anthropic');
+    expect(empty.fields.injectionMode).toBe('separate-block');
+  });
+
+  it('refuses a block-level file without its stored entry', () => {
+    const injection = carried('as-file', false, [{ path: b.path, display: 'x' }]);
+    expect(() => buildCarriedUserContent(injection, 'go', 'go', 'anthropic')).toThrow(/b\.md/);
+  });
+
+  it('round-trips: the rebuilt message carries the same files again', () => {
+    for (const mode of ['inline', 'separate-block'] as const) {
+      const injection = carried(mode, mode === 'inline');
+      const built = buildCarriedUserContent(injection, 'go', 'go', 'chatgpt');
+      const rebuilt: MessageContent<unknown> = {
+        type: 'text',
+        content: built.content,
+        renderingContent: [
+          { category: 'backstage', blocks: built.leadingBlocks },
+          { category: 'text', blocks: [{ type: 'text', text: 'go' }] },
+          { category: 'backstage', blocks: built.trailingBlocks },
+        ],
+        ...built.fields,
+      };
+      const again = extractCarriedInjection(rebuilt);
+      expect(again?.mode).toBe(mode);
+      expect(again?.endMarker).toBe(injection.endMarker);
+      expect(again?.before.map(f => f.display)).toEqual(injection.before.map(f => f.display));
+      expect(again?.after.map(f => f.display)).toEqual(injection.after.map(f => f.display));
+    }
+  });
+});
+
+describe('buildMockToolCallPair', () => {
+  it('pairs a filesystem readFile call with the framed file as its result', () => {
+    const file = { path: '/a.md', content: 'alpha', preamble: '<a>' };
+    const [call, result] = buildMockToolCallPair(file, 'bar text');
+    expect(call.role).toBe('assistant');
+    expect(call.content.toolCalls?.[0]).toMatchObject({
+      name: 'filesystem',
+      input: { action: 'readFile', path: '/a.md' },
+    });
+    expect(call.content.renderingContent?.[0].blocks).toEqual([
+      { type: 'injected_file', path: '/a.md', content: 'bar text' },
+    ]);
+    expect(result.content.toolResults?.[0]).toEqual({
+      type: 'tool_result',
+      tool_use_id: call.content.toolCalls?.[0].id,
+      content: '<a>\nalpha',
+    });
   });
 });

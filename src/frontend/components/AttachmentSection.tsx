@@ -4,18 +4,23 @@
  * Uses IntersectionObserver to load/unload image data based on visibility
  */
 
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import type { AttachmentSection as AttachmentSectionType } from '../../shared/protocol/types';
 import type { AttachmentWithData } from '../hooks/useAttachmentManager';
 
+// Callbacks take the chatId so the parent can pass one stable function to every
+// section; an inline closure per section would recreate each IntersectionObserver
+// on every parent render.
 interface AttachmentSectionProps {
   section: AttachmentSectionType;
   loadedData: AttachmentWithData[] | undefined;
   selectedIds: Set<string>;
   onToggleSelection: (attachmentId: string) => void;
-  onSelectAll: () => void;
-  onDeselectAll: () => void;
-  onVisibilityChange: (isVisible: boolean) => void;
+  onSelectAll: (chatId: string) => void;
+  onDeselectAll: (chatId: string) => void;
+  onVisibilityChange: (chatId: string, isVisible: boolean) => void;
+  /** The scrolling ancestor; null observes against the viewport. */
+  scrollRoot: Element | null;
 }
 
 /**
@@ -35,7 +40,7 @@ function getRelativeTimeString(date: Date): string {
   }
 }
 
-export function AttachmentSection({
+export const AttachmentSection = memo(function AttachmentSection({
   section,
   loadedData,
   selectedIds,
@@ -43,8 +48,10 @@ export function AttachmentSection({
   onSelectAll,
   onDeselectAll,
   onVisibilityChange,
+  scrollRoot,
 }: AttachmentSectionProps) {
   const sectionRef = useRef<HTMLDivElement>(null);
+  const { chatId } = section;
 
   // Check if all attachments in this section are selected
   const allSelected = section.attachments.every(att => selectedIds.has(att.id));
@@ -60,11 +67,11 @@ export function AttachmentSection({
       entries => {
         const entry = entries[0];
         // Notify parent of visibility change (both entering and leaving)
-        onVisibilityChange(entry.isIntersecting);
+        onVisibilityChange(chatId, entry.isIntersecting);
       },
       {
-        root: null,
-        // Load/unload when section is 2 screen heights away
+        root: scrollRoot,
+        // Load/unload when section is 2 root heights away
         rootMargin: '200% 0px',
         threshold: 0,
       }
@@ -75,7 +82,7 @@ export function AttachmentSection({
     return () => {
       observer.disconnect();
     };
-  }, [onVisibilityChange]);
+  }, [chatId, onVisibilityChange, scrollRoot]);
 
   // Create a map of loaded data by attachment ID for quick lookup
   const loadedDataMap = new Map(loadedData?.map(att => [att.id, att]) || []);
@@ -111,9 +118,9 @@ export function AttachmentSection({
             }}
             onChange={() => {
               if (allSelected) {
-                onDeselectAll();
+                onDeselectAll(chatId);
               } else {
-                onSelectAll();
+                onSelectAll(chatId);
               }
             }}
             className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
@@ -191,4 +198,4 @@ export function AttachmentSection({
       </div>
     </div>
   );
-}
+});

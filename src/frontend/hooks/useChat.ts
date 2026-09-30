@@ -38,6 +38,7 @@ import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { activeLoopsStore, gremlinClient, GremlinSession } from '../client';
 import type {
   APIDefinition,
+  CarriedInjection,
   Chat,
   ChatAgentConfig,
   Message,
@@ -49,12 +50,15 @@ import type {
 } from '../../shared/protocol/types';
 import type { ToolResultRenderBlock } from '../../shared/protocol/types/content';
 import type { LoopEvent } from '../../shared/protocol/protocol';
+import { carriesFiles } from '../../shared/protocol/carriedInjection';
 import { showAlert } from '../lib/alerts';
+import { describeLoopStartError } from '../lib/loopStartError';
 import {
   applyGroupsDelta,
   assembleGroups,
   type ToolGroupsState,
 } from '../../shared/services/tools/toolGroupsDelta';
+import { applyStreamingGroupsOps } from '../../shared/services/streaming/streamingGroupsOps';
 import {
   computeClaudeAgentRewindBefore,
   computeClaudeAgentRewindKeeping,
@@ -115,7 +119,6 @@ function extractToolResultIdsFromMessage(message: Message<unknown>): Set<string>
   return ids;
 }
 
-/** True iff the last assistant message has tool calls without matching results. */
 /**
  * Split a claude-agent rewind patch into surgical `fields` (keys to set) and
  * `unset` (keys to clear). Clears MUST go through `unset` — the JSON wire drops
@@ -135,6 +138,18 @@ function splitRewindPatch(rewind: Partial<Chat>): {
   return { fields, unset };
 }
 
+/**
+ * The current values of `keys` on `chat`. An optimistic edit keeps them to put
+ * back field by field if the patch fails, so whatever a `chat_updated`
+ * brought in meanwhile (a loop's token totals) survives the rollback.
+ */
+function pickChatFields(chat: Chat, keys: (keyof Chat)[]): Partial<Chat> {
+  const picked: Partial<Chat> = {};
+  for (const key of keys) (picked as Record<string, unknown>)[key] = chat[key];
+  return picked;
+}
+
+/** True iff the last assistant message has tool calls without matching results. */
 function getUnresolvedToolCalls(messages: Message<unknown>[]): ToolUseBlock[] | null {
   if (messages.length === 0) return null;
 
@@ -169,6 +184,8 @@ function getUnresolvedToolCalls(messages: Message<unknown>[]): ToolUseBlock[] | 
 // Hook surface
 // ============================================================================
 
+type MessagesUpdater = (prev: Message<unknown>[]) => Message<unknown>[];
+
 export type DummyHookStatus =
   | { state: 'hooked'; hookName: string }
   | { state: 'intercepting'; hookName: string };
@@ -180,8 +197,15 @@ export interface UseChatCallbacks {
   onStreamingStart: (chatId: string, loadingText: string) => void;
   onStreamingEnd: (chatId: string) => void;
   onChatMetadataChanged?: (chatId: string, chat: Chat) => void;
-  onForkMessageLoaded?: (chatId: string, message: string) => void;
 }
+
+/**
+ * What `sendEditedMessage` did with the edit: `sent` handed it to the loop;
+ * `untouched` left the chat as it was (the caller restores the edit);
+ * `truncated` deleted the old message but the loop didn't start (the caller
+ * restores the text only).
+ */
+export type EditSendResult = 'sent' | 'untouched' | 'truncated';
 
 export interface UseChatProps {
   chatId: string;
@@ -215,29 +239,51 @@ export interface UseChatReturn {
   isLockedByIncompleteTail: boolean;
   /** True while the initial or reconnect snapshot is being replayed. */
   snapshotLoading: boolean;
+  /**
+   * True once the message is handed to the loop; false leaves it with the
+   * caller. `injection` carries injected files over from an edited message.
+   */
   sendMessage: (
     chatId: string,
     content: string,
-    attachments?: MessageAttachment[]
-  ) => Promise<void>;
+    attachments?: MessageAttachment[],
+    injection?: CarriedInjection
+  ) => Promise<boolean>;
+  /** Delete the message and everything after it. */
   editMessage: (chatId: string, messageId: string, content: string) => Promise<void>;
-  copyMessage: (chatId: string, messageId: string) => Promise<void>;
+  /**
+   * Send an edited version of an earlier user message: delete it and
+   * everything after it, then send. Skips the incomplete-tail lock, since the
+   * locked tail is among what gets deleted. A message that's already gone
+   * falls back to a plain send.
+   */
+  sendEditedMessage: (
+    chatId: string,
+    messageId: string,
+    content: string,
+    attachments?: MessageAttachment[],
+    injection?: CarriedInjection
+  ) => Promise<EditSendResult>;
   forkChat: (chatId: string, messageId: string) => Promise<{ id: string } | null>;
+  /** Rejects (with the change rolled back) when the backend refuses it. */
   overrideModel: (chatId: string, apiDefId: string | null, modelId: string | null) => Promise<void>;
   /**
    * Replace the chat's agent-config layer wholesale. `undefined` clears it.
-   * Resolves once the backend has acknowledged, with the merged row adopted.
+   * Resolves once the backend has acknowledged, with the merged row adopted;
+   * rejects with the change rolled back.
    */
   updateAgentConfig: (agentConfig: ChatAgentConfig | undefined) => Promise<void>;
+  /** Rejects (with the name rolled back) when the backend refuses it. */
   updateChatName: (chatId: string, name: string) => Promise<void>;
-  /** Resolve pending tool calls with stop (error) or continue (execute) */
+  /**
+   * Resolve pending tool calls with stop (error) or continue (execute). True
+   * once the follow-up is handed off; false leaves it with the caller.
+   */
   resolvePendingToolCalls: (
     mode: 'stop' | 'continue',
     userMessage?: string,
     attachments?: MessageAttachment[]
-  ) => Promise<void>;
-  /** Resend from a message - delete messages after and re-run agentic loop */
-  resendFromMessage: (messageId: string) => Promise<void>;
+  ) => Promise<boolean>;
   /** Roll back to a message — delete everything after it, keep the target */
   rollbackToMessage: (chatId: string, messageId: string) => Promise<void>;
   /** Request the agentic loop to stop at the next tool boundary */
@@ -286,10 +332,16 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     messagesRef.current = messages;
   });
 
+  // Set on the first `snapshot_complete`; the effect below fires `onMessagesLoaded`.
+  const messagesLoadedPendingRef = useRef(false);
+
   // Throttle state for streaming UI updates. Refs (not state) so the
   // throttled callbacks can read the latest pending value without
-  // re-creating their closure on every render.
-  const pendingStreamingRef = useRef<RenderingBlockGroup[] | null>(null);
+  // re-creating their closure on every render. `streamingStateRef` holds
+  // the in-flight reply with every `streaming_delta` applied — deltas are
+  // edits, so none may be skipped; only the React flush is throttled, and a
+  // pending `streamingTimerRef` means the ref is ahead of the state.
+  const streamingStateRef = useRef<RenderingBlockGroup[]>([]);
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingToolUpdatesRef = useRef<Map<string, Partial<ToolResultRenderBlock>>>(new Map());
   const toolUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -341,59 +393,77 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     return true;
   };
 
-  /** Apply a batch of accumulated tool block updates in a single setMessages call. */
-  const applyToolBlockBatch = useCallback((batch: Map<string, Partial<ToolResultRenderBlock>>) => {
-    setMessages(prev => {
-      // Search backward in last 10 messages for the pending tool result message
-      const searchStart = Math.max(0, prev.length - 10);
-      let targetIdx = -1;
-      for (let i = prev.length - 1; i >= searchStart; i--) {
-        if (prev[i].role === 'user' && prev[i].content.renderingContent) {
-          targetIdx = i;
-          break;
-        }
-      }
-      if (targetIdx < 0) return prev;
-
-      const targetMsg = prev[targetIdx];
-      const groups = targetMsg.content.renderingContent;
-      if (!groups) return prev;
-
-      let anyFound = false;
-      const updatedGroups = groups.map(group => {
-        if (group.category !== 'backstage') return group;
-        const updatedBlocks = group.blocks.map(block => {
-          if (block.type !== 'tool_result') return block;
-          const update = batch.get((block as ToolResultRenderBlock).tool_use_id);
-          if (update) {
-            anyFound = true;
-            const current = (block as ToolResultRenderBlock).status;
-            const merged = { ...block, ...update };
-            // Never downgrade a terminal block: the tool-block and
-            // tool-groups buffers flush on independent timers, so a stale
-            // non-terminal status may land after 'complete'/'error'.
-            if (
-              (current === 'complete' || current === 'error') &&
-              update.status !== 'complete' &&
-              update.status !== 'error'
-            ) {
-              merged.status = current;
-            }
-            return merged;
-          }
-          return block;
-        });
-        return { ...group, blocks: updatedBlocks };
-      });
-      if (!anyFound) return prev;
-
-      const updatedMsg = {
-        ...targetMsg,
-        content: { ...targetMsg.content, renderingContent: updatedGroups },
-      };
-      return [...prev.slice(0, targetIdx), updatedMsg, ...prev.slice(targetIdx + 1)];
-    });
+  // Snapshot replays (initial attach and reconnect) deliver one `message_created`
+  // per persisted message, each in its own worker/WebSocket message — a render
+  // per message for a long chat. Message-list updates arriving mid-replay are
+  // queued and committed in one go on `snapshot_complete`. Every update goes
+  // through here (tool-block flushes included) so the queue keeps arrival order.
+  const snapshotInProgressRef = useRef(true);
+  const queuedMessageUpdatesRef = useRef<MessagesUpdater[]>([]);
+  const updateMessages = useCallback((update: MessagesUpdater) => {
+    if (snapshotInProgressRef.current) {
+      queuedMessageUpdatesRef.current.push(update);
+    } else {
+      setMessages(update);
+    }
   }, []);
+
+  /** Apply a batch of accumulated tool block updates in a single messages update. */
+  const applyToolBlockBatch = useCallback(
+    (batch: Map<string, Partial<ToolResultRenderBlock>>) => {
+      updateMessages(prev => {
+        // Search backward in last 10 messages for the pending tool result message
+        const searchStart = Math.max(0, prev.length - 10);
+        let targetIdx = -1;
+        for (let i = prev.length - 1; i >= searchStart; i--) {
+          if (prev[i].role === 'user' && prev[i].content.renderingContent) {
+            targetIdx = i;
+            break;
+          }
+        }
+        if (targetIdx < 0) return prev;
+
+        const targetMsg = prev[targetIdx];
+        const groups = targetMsg.content.renderingContent;
+        if (!groups) return prev;
+
+        let anyFound = false;
+        const updatedGroups = groups.map(group => {
+          if (group.category !== 'backstage') return group;
+          const updatedBlocks = group.blocks.map(block => {
+            if (block.type !== 'tool_result') return block;
+            const update = batch.get((block as ToolResultRenderBlock).tool_use_id);
+            if (update) {
+              anyFound = true;
+              const current = (block as ToolResultRenderBlock).status;
+              const merged = { ...block, ...update };
+              // Never downgrade a terminal block: the tool-block and
+              // tool-groups buffers flush on independent timers, so a stale
+              // non-terminal status may land after 'complete'/'error'.
+              if (
+                (current === 'complete' || current === 'error') &&
+                update.status !== 'complete' &&
+                update.status !== 'error'
+              ) {
+                merged.status = current;
+              }
+              return merged;
+            }
+            return block;
+          });
+          return { ...group, blocks: updatedBlocks };
+        });
+        if (!anyFound) return prev;
+
+        const updatedMsg = {
+          ...targetMsg,
+          content: { ...targetMsg.content, renderingContent: updatedGroups },
+        };
+        return [...prev.slice(0, targetIdx), updatedMsg, ...prev.slice(targetIdx + 1)];
+      });
+    },
+    [updateMessages]
+  );
 
   /**
    * Project the dirty entries from `toolGroupsRef` into placeholder
@@ -434,10 +504,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     if (streamingTimerRef.current) {
       clearTimeout(streamingTimerRef.current);
       streamingTimerRef.current = null;
-    }
-    if (pendingStreamingRef.current !== null) {
-      setStreamingGroups(pendingStreamingRef.current);
-      pendingStreamingRef.current = null;
+      setStreamingGroups(streamingStateRef.current);
     }
     if (toolUpdateTimerRef.current) {
       clearTimeout(toolUpdateTimerRef.current);
@@ -484,6 +551,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           // `onEnd` cleanup here so the chat-view transitions back to idle
           // even when the loop was started somewhere else (e.g. project view).
           flushThrottledBuffers();
+          streamingStateRef.current = [];
           setStreamingGroups([]);
           setDummyHookStatus(null);
           setSoftStopRequested(false);
@@ -493,6 +561,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           callbacksRef.current.onStreamingEnd(chatId);
           if (event.status !== 'complete') {
             console.debug('[useChat] loop_ended:', event.status);
+          }
+          // `detail` is only set when the loop threw (storage, a lost model):
+          // nothing lands in the chat for those, unlike an API error, which
+          // renders as an error block in the reply
+          if (event.status === 'error' && event.detail) {
+            void showAlert('Reply failed', event.detail);
           }
           break;
 
@@ -506,7 +580,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
             clearTimeout(streamingTimerRef.current);
             streamingTimerRef.current = null;
           }
-          pendingStreamingRef.current = null;
+          streamingStateRef.current = [];
           setStreamingGroups([]);
           if (toolUpdateTimerRef.current) {
             clearTimeout(toolUpdateTimerRef.current);
@@ -529,14 +603,24 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           setDummyHookStatus(null);
           setSoftStopRequested(false);
 
+          // A reconnect can cut a replay short: fold whatever it queued into
+          // the base, then queue again for the replay that follows.
+          let base = messagesRef.current;
+          const leftover = queuedMessageUpdatesRef.current.splice(0);
+          let baseChanged = leftover.length > 0;
+          base = leftover.reduce((acc, update) => update(acc), base);
+          snapshotInProgressRef.current = true;
+
           // Strip unstable (pending tool result) messages — the snapshot
           // will deliver the finalized versions as new messages.
-          let base = messagesRef.current;
           if (unstableMessageIdsRef.current.size > 0) {
             base = base.filter(m => !unstableMessageIdsRef.current.has(m.id));
+            baseChanged = true;
+            unstableMessageIdsRef.current = new Set();
+          }
+          if (baseChanged) {
             setMessages(base);
             messagesRef.current = base;
-            unstableMessageIdsRef.current = new Set();
           }
 
           // Build reconciliation map so the incoming snapshot can diff
@@ -564,7 +648,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           break;
         }
 
-        case 'snapshot_complete':
+        case 'snapshot_complete': {
+          // Commit the whole replay in one render, in arrival order.
+          snapshotInProgressRef.current = false;
+          const queued = queuedMessageUpdatesRef.current.splice(0);
+          if (queued.length > 0) {
+            setMessages(prev => queued.reduce((acc, update) => update(acc), prev));
+          }
           // Finalize reconciliation: trim trailing messages the server
           // no longer has (e.g. deleted during disconnect).
           if (reconMapRef.current) {
@@ -575,10 +665,10 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
             reconMapRef.current = null;
           }
           setSnapshotLoading(false);
-          // The `useEffect` mount handler dispatches the legacy
-          // `onMessagesLoaded` callback from the same event — handled there
-          // because it needs the latest `messages` state.
+          // `onMessagesLoaded` fires from an effect once this commit lands —
+          // it needs the committed `messages`.
           break;
+        }
 
         case 'streaming_start':
           callbacksRef.current.onStreamingStart(chatId, 'Thinking...');
@@ -588,17 +678,14 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           setLoopPhase('streaming');
           break;
 
-        case 'streaming_chunk': {
-          // Throttle: stash the latest groups in a ref and let the timer
-          // flush at most once per STREAMING_THROTTLE_MS.
-          pendingStreamingRef.current = event.groups;
+        case 'streaming_delta': {
+          // Apply every delta to the ref now; let the timer flush the result
+          // to React at most once per STREAMING_THROTTLE_MS.
+          streamingStateRef.current = applyStreamingGroupsOps(streamingStateRef.current, event.ops);
           if (!streamingTimerRef.current) {
             streamingTimerRef.current = setTimeout(() => {
               streamingTimerRef.current = null;
-              if (pendingStreamingRef.current !== null) {
-                setStreamingGroups(pendingStreamingRef.current);
-                pendingStreamingRef.current = null;
-              }
+              setStreamingGroups(streamingStateRef.current);
             }, STREAMING_THROTTLE_MS);
           }
           break;
@@ -613,9 +700,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           // attachChat replay of the in-flight assistant bubble (text +
           // thinking + provider-side tool results). Apply directly, bypassing
           // the streaming throttle, so the bubble repaints instantly on
-          // reattach instead of waiting for the next live `streaming_chunk`.
-          // Any live chunk arriving after lands on top via the normal path.
-          pendingStreamingRef.current = null;
+          // reattach instead of waiting for the next live `streaming_delta`.
+          // It is also the base the following deltas apply to.
+          if (streamingTimerRef.current) {
+            clearTimeout(streamingTimerRef.current);
+            streamingTimerRef.current = null;
+          }
+          streamingStateRef.current = event.groups;
           setStreamingGroups(event.groups);
           break;
 
@@ -636,14 +727,14 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
             // First mismatch — truncate at expected position, append.
             reconTruncatedRef.current = true;
             reconPosRef.current = expectedPos + 1;
-            setMessages(prev => [...prev.slice(0, expectedPos), msg]);
+            updateMessages(prev => [...prev.slice(0, expectedPos), msg]);
           } else if (reconMap) {
             // Already truncated — append remaining snapshot messages.
             reconPosRef.current += 1;
-            setMessages(prev => [...prev, msg]);
+            updateMessages(prev => [...prev, msg]);
           } else {
             // Normal mode — dedup against recent messages for retransmissions.
-            setMessages(prev => {
+            updateMessages(prev => {
               const searchStart = Math.max(0, prev.length - 10);
               for (let i = prev.length - 1; i >= searchStart; i--) {
                 if (prev[i].id === msg.id) {
@@ -661,9 +752,17 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
 
           // Clear streaming groups when a fresh assistant message lands so
           // the StreamingMessage doesn't double up with the MessageBubble.
+          // attachChat replays every assistant message it queued before the
+          // `streaming_snapshot`, so this never wipes a newer iteration.
           if (msg.role === 'assistant') {
-            setStreamingGroups([]);
-            pendingStreamingRef.current = null;
+            if (streamingTimerRef.current) {
+              clearTimeout(streamingTimerRef.current);
+              streamingTimerRef.current = null;
+            }
+            streamingStateRef.current = [];
+            // Keep the same empty array: a fresh `[]` per replayed assistant
+            // message would re-render the chat once per message.
+            setStreamingGroups(prev => (prev.length === 0 ? prev : []));
           }
           callbacksRef.current.onMessageAppended(chatId, msg);
           break;
@@ -674,7 +773,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           // after the anchor in storage. Drop them from React state too,
           // keeping the anchor itself.
           const anchor = event.afterMessageId;
-          setMessages(prev => {
+          updateMessages(prev => {
             const idx = prev.findIndex(m => m.id === anchor);
             return idx >= 0 ? prev.slice(0, idx + 1) : prev;
           });
@@ -697,9 +796,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
             const expectedPos = reconPosRef.current;
             reconTruncatedRef.current = true;
             reconPosRef.current = expectedPos + 1;
-            setMessages(prev => [...prev.slice(0, expectedPos), msg]);
+            updateMessages(prev => [...prev.slice(0, expectedPos), msg]);
           } else {
-            setMessages(prev => {
+            updateMessages(prev => {
               const searchStart = Math.max(0, prev.length - 10);
               for (let i = prev.length - 1; i >= searchStart; i--) {
                 if (prev[i].id === msg.id) return prev;
@@ -803,7 +902,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
           break;
       }
     },
-    [chatId, applyToolBlockBatch, flushThrottledBuffers, scheduleToolGroupsFlush]
+    [chatId, applyToolBlockBatch, flushThrottledBuffers, scheduleToolGroupsFlush, updateMessages]
   );
 
   // ============================================================================
@@ -815,6 +914,9 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     let messagesLoadedFired = false;
     // Note: the lock / snapshot-loading flags are reset during render (see the
     // prevChatId tracker above) — keep them out of this effect.
+    snapshotInProgressRef.current = true;
+    queuedMessageUpdatesRef.current = [];
+    messagesLoadedPendingRef.current = false;
     const session = new GremlinSession(gremlinClient, chatId);
     sessionRef.current = session;
 
@@ -833,10 +935,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       // `gremlinClient.getMessages` call before the attachChat-based load).
       if (!messagesLoadedFired && event.type === 'snapshot_complete') {
         messagesLoadedFired = true;
-        setMessages(prev => {
-          callbacksRef.current.onMessagesLoaded(chatId, prev);
-          return prev;
-        });
+        messagesLoadedPendingRef.current = true;
       }
     });
     session.onEnd((_status, _detail) => {
@@ -900,6 +999,13 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
+
+  // Fire `onMessagesLoaded` with the committed list once the first snapshot lands.
+  useEffect(() => {
+    if (snapshotLoading || !messagesLoadedPendingRef.current) return;
+    messagesLoadedPendingRef.current = false;
+    callbacksRef.current.onMessagesLoaded(chatId, messages);
+  }, [chatId, messages, snapshotLoading]);
 
   // ============================================================================
   // Derived state
@@ -972,51 +1078,81 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   // Imperative commands — these all delegate into GremlinSession or gremlinClient
   // ============================================================================
 
-  const sendMessage = async (
-    incomingChatId: string,
-    content: string,
-    attachments?: MessageAttachment[]
-  ) => {
-    if (!verifyChatId(incomingChatId, 'sendMessage')) return;
-    if (!chat || !project || !sessionRef.current) return;
-    if (isLockedByIncompleteTail) {
-      await showAlert(
-        'Chat Locked',
-        'The last assistant message was aborted. Resolve it (delete the message or roll back) before continuing.'
-      );
-      return;
-    }
-
-    const messageText = content.trim();
-    if (!messageText && (!attachments || attachments.length === 0)) return;
-
-    const effectiveModelId = chat.modelId ?? project.modelId;
-    if (!effectiveModelId) {
-      await showAlert(
-        'Configuration Required',
-        'Please configure a model for this chat or project.'
-      );
-      return;
-    }
-
+  /**
+   * Start a loop through the session. A rejection (CHAT_BUSY, a dropped
+   * socket) alerts without waiting for the dialog, so the caller can put the
+   * user's text back right away.
+   */
+  const startLoopWith = async (
+    start: (session: GremlinSession) => Promise<void>,
+    failureTitle: string
+  ): Promise<boolean> => {
+    const session = sessionRef.current;
+    if (!session) return false;
     setLoopPhase('pending');
     try {
-      await sessionRef.current.send(content, attachments);
+      await start(session);
+      return true;
     } catch (err) {
-      console.error('[useChat] sendMessage error:', err);
+      console.debug('[useChat] loop did not start: %o', err);
       setLoopPhase('idle');
+      void showAlert(failureTitle, describeLoopStartError(err));
+      return false;
     }
   };
 
-  const editMessage = async (incomingChatId: string, messageId: string, _content: string) => {
-    if (!verifyChatId(incomingChatId, 'editMessage')) return;
-    if (!chat) return;
+  const sendMessage = async (
+    incomingChatId: string,
+    content: string,
+    attachments?: MessageAttachment[],
+    injection?: CarriedInjection
+  ): Promise<boolean> => {
+    if (!verifyChatId(incomingChatId, 'sendMessage')) return false;
+    if (!chat || !project || !sessionRef.current) return false;
+    if (isLockedByIncompleteTail) {
+      void showAlert(
+        'Chat Locked',
+        'The last assistant message was aborted. Resolve it (delete the message or roll back) before continuing.'
+      );
+      return false;
+    }
+
+    const messageText = content.trim();
+    if (!messageText && (!attachments || attachments.length === 0) && !carriesFiles(injection)) {
+      return false;
+    }
+
+    const effectiveModelId = chat.modelId ?? project.modelId;
+    if (!effectiveModelId) {
+      void showAlert(
+        'Configuration Required',
+        'Please configure a model for this chat or project.'
+      );
+      return false;
+    }
+
+    return startLoopWith(
+      session => session.send(content, attachments, injection),
+      'Message not sent'
+    );
+  };
+
+  /**
+   * Deletes the message and everything after it. `gone` when it isn't in the
+   * chat; `failed` when the backend refused, after putting the local state back.
+   */
+  const truncateFromMessage = async (
+    incomingChatId: string,
+    messageId: string
+  ): Promise<'truncated' | 'gone' | 'failed'> => {
+    if (!chat) return 'gone';
 
     const messageIndex = messages.findIndex(m => m.id === messageId);
-    if (messageIndex === -1) return;
+    if (messageIndex === -1) return 'gone';
 
     // Recalculate context window from remaining messages.
     const remainingMessages = messages.slice(0, messageIndex);
+    const removedMessages = messages.slice(messageIndex);
     let contextWindowUsage = 0;
     for (let i = remainingMessages.length - 1; i >= 0; i--) {
       const msg = remainingMessages[i];
@@ -1038,21 +1174,82 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       lastModifiedAt: new Date(),
       ...sdkRewind,
     };
+    const touchedBefore = pickChatFields(chat, [
+      'contextWindowUsage',
+      'lastModifiedAt',
+      ...(Object.keys(sdkRewind) as (keyof Chat)[]),
+    ]);
 
     setChat(updatedChat);
-    setMessages(prev => prev.slice(0, messageIndex));
+    updateMessages(prev => prev.slice(0, messageIndex));
     callbacksRef.current.onChatMetadataChanged?.(updatedChat.id, updatedChat);
     callbacksRef.current.onMessagesRemovedOnAndAfter(updatedChat.id, messageId);
 
     // Patch only the fields we touch (+ SDK rewind clears via `unset`) so we
     // don't clobber unrelated chat state with a whole-object write.
     const { fields: sdkFields, unset: sdkUnset } = splitRewindPatch(sdkRewind);
-    await gremlinClient.patchChat(
-      incomingChatId,
-      { contextWindowUsage, ...sdkFields },
-      { touch: true, unset: sdkUnset }
+    let patched = false;
+    try {
+      await gremlinClient.patchChat(
+        incomingChatId,
+        { contextWindowUsage, ...sdkFields },
+        { touch: true, unset: sdkUnset }
+      );
+      patched = true;
+      await gremlinClient.deleteMessageAndAfter(incomingChatId, messageId);
+      return 'truncated';
+    } catch (err) {
+      console.debug('[useChat] truncate failed: %o', err);
+      updateMessages(prev => [...prev, ...removedMessages]);
+      // A landed patch is what the backend now holds; only an unapplied one
+      // is undone. Field by field, so a concurrent chat_updated survives.
+      if (!patched) setChat(prev => (prev ? { ...prev, ...touchedBefore } : prev));
+      void showAlert('Edit failed', err instanceof Error ? err.message : String(err));
+      return 'failed';
+    }
+  };
+
+  const editMessage = async (incomingChatId: string, messageId: string, _content: string) => {
+    if (!verifyChatId(incomingChatId, 'editMessage')) return;
+    await truncateFromMessage(incomingChatId, messageId);
+  };
+
+  const sendEditedMessage = async (
+    incomingChatId: string,
+    messageId: string,
+    content: string,
+    attachments?: MessageAttachment[],
+    injection?: CarriedInjection
+  ): Promise<EditSendResult> => {
+    if (!verifyChatId(incomingChatId, 'sendEditedMessage')) return 'untouched';
+    if (!chat || !project || !sessionRef.current) return 'untouched';
+    if (!content.trim() && (!attachments || attachments.length === 0) && !carriesFiles(injection)) {
+      return 'untouched';
+    }
+    if (!(chat.modelId ?? project.modelId)) {
+      void showAlert(
+        'Configuration Required',
+        'Please configure a model for this chat or project.'
+      );
+      return 'untouched';
+    }
+
+    const truncation = await truncateFromMessage(incomingChatId, messageId);
+    if (truncation === 'failed') return 'untouched';
+    if (truncation === 'gone') {
+      console.debug('[useChat] sendEditedMessage: message gone, sending as new', messageId);
+      // This closure's lock flag predates any truncation; a gone message
+      // truncated nothing, so the normal send (and its lock check) applies
+      return (await sendMessage(incomingChatId, content, attachments, injection))
+        ? 'sent'
+        : 'untouched';
+    }
+
+    const started = await startLoopWith(
+      session => session.send(content, attachments, injection),
+      'Message not sent'
     );
-    await gremlinClient.deleteMessageAndAfter(incomingChatId, messageId);
+    return started ? 'sent' : 'truncated';
   };
 
   const rollbackToMessage = async (incomingChatId: string, messageId: string) => {
@@ -1090,7 +1287,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     };
 
     setChat(updatedChat);
-    setMessages(prev => prev.slice(0, messageIndex + 1));
+    updateMessages(prev => prev.slice(0, messageIndex + 1));
     callbacksRef.current.onChatMetadataChanged?.(updatedChat.id, updatedChat);
     callbacksRef.current.onMessagesRemovedOnAndAfter(updatedChat.id, nextMessageId);
 
@@ -1101,19 +1298,6 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       { touch: true, unset: sdkUnset }
     );
     await gremlinClient.deleteMessageAndAfter(incomingChatId, nextMessageId);
-  };
-
-  const copyMessage = async (_incomingChatId: string, messageId: string) => {
-    const message = messages.find(m => m.id === messageId);
-    if (!message) return;
-    try {
-      const { stripMetadata } = await import('../lib/messageFormatters');
-      const contentWithoutMetadata = stripMetadata(message.content.content);
-      await navigator.clipboard.writeText(contentWithoutMetadata);
-      await showAlert('Copied', 'Message copied to clipboard');
-    } catch {
-      await showAlert('Error', 'Failed to copy message');
-    }
   };
 
   const forkChat = async (
@@ -1143,30 +1327,43 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       modelId,
       lastModifiedAt: new Date(),
     };
+    const touchedBefore = pickChatFields(chat, ['apiDefinitionId', 'modelId', 'lastModifiedAt']);
     setChat(updatedChat);
     callbacksRef.current.onChatMetadataChanged?.(incomingChatId, updatedChat);
     // Patch only the override fields (+ touch) so an in-flight loop's token
     // totals survive. `null` clears the override; it crosses the wire fine
     // (only `undefined` is dropped).
-    await gremlinClient.patchChat(
-      incomingChatId,
-      { apiDefinitionId: apiDefId, modelId },
-      { touch: true }
-    );
+    try {
+      await gremlinClient.patchChat(
+        incomingChatId,
+        { apiDefinitionId: apiDefId, modelId },
+        { touch: true }
+      );
+    } catch (err) {
+      setChat(prev => (prev ? { ...prev, ...touchedBefore } : prev));
+      throw err;
+    }
   };
 
   const updateAgentConfig = async (agentConfig: ChatAgentConfig | undefined) => {
     if (!chat) return;
 
     // Optimistic first so the form settles immediately...
+    const touchedBefore = pickChatFields(chat, ['agentConfig']);
     setChat(prev => (prev ? { ...prev, agentConfig } : prev));
 
     // ...then adopt the backend's merged row. `chat_updated` overwrites `chat`
     // wholesale from the backend, so during a live loop an optimistic-only
     // write can flicker back to the pre-save value.
-    const merged = agentConfig
-      ? await gremlinClient.patchChat(chat.id, { agentConfig }, { touch: true })
-      : await gremlinClient.patchChat(chat.id, {}, { touch: true, unset: ['agentConfig'] });
+    let merged: Chat;
+    try {
+      merged = agentConfig
+        ? await gremlinClient.patchChat(chat.id, { agentConfig }, { touch: true })
+        : await gremlinClient.patchChat(chat.id, {}, { touch: true, unset: ['agentConfig'] });
+    } catch (err) {
+      setChat(prev => (prev ? { ...prev, ...touchedBefore } : prev));
+      throw err;
+    }
 
     if (!verifyChatId(chat.id, 'updateAgentConfig')) return;
     setChat(merged);
@@ -1182,117 +1379,98 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
       name: name.trim(),
       lastModifiedAt: new Date(),
     };
+    const touchedBefore = pickChatFields(chat, ['name', 'lastModifiedAt']);
     setChat(updatedChat);
     callbacksRef.current.onChatMetadataChanged?.(chat.id, updatedChat);
     // Patch only the name (+ touch) so a rename mid-loop doesn't clobber the
     // loop's token totals (and vice versa).
-    await gremlinClient.patchChat(chat.id, { name: name.trim() }, { touch: true });
+    try {
+      await gremlinClient.patchChat(chat.id, { name: name.trim() }, { touch: true });
+    } catch (err) {
+      setChat(prev => (prev ? { ...prev, ...touchedBefore } : prev));
+      throw err;
+    }
   };
 
   const resolvePendingToolCalls = async (
     mode: 'stop' | 'continue',
     userMessage?: string,
     attachments?: MessageAttachment[]
-  ) => {
-    if (!chat || !project || !sessionRef.current) return;
-    if (!unresolvedToolCalls || unresolvedToolCalls.length === 0) return;
+  ): Promise<boolean> => {
+    if (!chat || !project || !sessionRef.current) return false;
+    if (!unresolvedToolCalls || unresolvedToolCalls.length === 0) return false;
 
+    const followUpText = userMessage?.trim() || undefined;
+    const hasFollowUp = !!followUpText || (attachments?.length ?? 0) > 0;
+
+    if (mode === 'continue') {
+      // Continue: hand the unresolved tool blocks + optional follow-up to
+      // the backend. The agentic loop executes the tools, persists their
+      // results, then injects the follow-up before the next API call.
+      return startLoopWith(
+        session => session.resolveContinue(unresolvedToolCalls, followUpText, attachments),
+        'Tool calls not resolved'
+      );
+    }
+
+    // Stop: synthesize error tool results client-side and save them, so the
+    // backend sees the rejection in the history. A follow-up then goes
+    // through a normal send, which persists it with its attachments; without
+    // one the loop just continues from the rejection.
     setLoopPhase('pending');
     try {
-      if (mode === 'continue') {
-        // Continue: hand the unresolved tool blocks + optional follow-up to
-        // the backend. The agentic loop executes the tools, persists their
-        // results, then injects the follow-up before the next API call.
-        await sessionRef.current.resolveContinue(
-          unresolvedToolCalls,
-          userMessage?.trim() || undefined,
-          attachments
+      const { createToolResultRenderBlock } =
+        await import('../../shared/services/agentic/agenticLoopGenerator');
+      const { generateUniqueId } = await import('../../shared/protocol/idGenerator');
+      const apiType = apiDefinition?.apiType ?? 'chatgpt';
+      const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
+      const toolResults: {
+        type: 'tool_result';
+        tool_use_id: string;
+        name: string;
+        content: string;
+        is_error: true;
+      }[] = [];
+      for (const toolUse of unresolvedToolCalls) {
+        const errorMessage = 'User rejected the tool call';
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          name: toolUse.name,
+          content: errorMessage,
+          is_error: true,
+        });
+        toolResultRenderBlocks.push(
+          createToolResultRenderBlock(toolUse.id, toolUse.name, errorMessage, true)
         );
-      } else {
-        // Stop: synthesize error tool results client-side, save them (so
-        // the next backend load picks them up), optimistically update
-        // React state, optionally save a user follow-up too, then call
-        // continueLoop. The backend sees a chat history that already has
-        // the rejection + follow-up baked in and runs from there.
-        const { createToolResultRenderBlock } =
-          await import('../../shared/services/agentic/agenticLoopGenerator');
-        const { generateUniqueId } = await import('../../shared/protocol/idGenerator');
-        const apiType = apiDefinition?.apiType ?? 'chatgpt';
-        const toolResultRenderBlocks: ToolResultRenderBlock[] = [];
-        const toolResults: {
-          type: 'tool_result';
-          tool_use_id: string;
-          name: string;
-          content: string;
-          is_error: true;
-        }[] = [];
-        for (const toolUse of unresolvedToolCalls) {
-          const errorMessage = 'User rejected the tool call';
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: toolUse.id,
-            name: toolUse.name,
-            content: errorMessage,
-            is_error: true,
-          });
-          toolResultRenderBlocks.push(
-            createToolResultRenderBlock(toolUse.id, toolUse.name, errorMessage, true)
-          );
-        }
-        const toolResultMessage: Message<unknown> = {
-          id: generateUniqueId('msg_user'),
-          role: 'user',
-          content: {
-            type: 'text',
-            content: '',
-            modelFamily: apiType,
-            toolResults,
-            renderingContent: [{ category: 'backstage', blocks: toolResultRenderBlocks }],
-          },
-          timestamp: new Date(),
-        };
-        await gremlinClient.saveMessage(chat.id, toolResultMessage);
-        setMessages(prev => [...prev, toolResultMessage]);
-        callbacksRef.current.onMessageAppended(chatId, toolResultMessage);
-
-        // Optional user follow-up — save it to storage too so the loop
-        // picks it up from the message history.
-        const followUpText = (userMessage ?? '').trim();
-        if (followUpText || (attachments && attachments.length > 0)) {
-          const followUpMessage: Message<unknown> = {
-            id: generateUniqueId('msg_user'),
-            role: 'user',
-            content: {
-              type: 'text',
-              content: followUpText,
-              renderingContent: [
-                { category: 'text', blocks: [{ type: 'text', text: followUpText }] },
-              ],
-            },
-            timestamp: new Date(),
-          };
-          await gremlinClient.saveMessage(chat.id, followUpMessage);
-          setMessages(prev => [...prev, followUpMessage]);
-          callbacksRef.current.onMessageAppended(chatId, followUpMessage);
-        }
-
-        await sessionRef.current.continueLoop();
       }
+      const toolResultMessage: Message<unknown> = {
+        id: generateUniqueId('msg_user'),
+        role: 'user',
+        content: {
+          type: 'text',
+          content: '',
+          modelFamily: apiType,
+          toolResults,
+          renderingContent: [{ category: 'backstage', blocks: toolResultRenderBlocks }],
+        },
+        timestamp: new Date(),
+      };
+      await gremlinClient.saveMessage(chat.id, toolResultMessage);
+      updateMessages(prev => [...prev, toolResultMessage]);
+      callbacksRef.current.onMessageAppended(chatId, toolResultMessage);
     } catch (err) {
-      console.error('[useChat] resolvePendingToolCalls error:', err);
+      console.debug('[useChat] saving the tool rejection failed: %o', err);
       setLoopPhase('idle');
+      void showAlert('Tool calls not resolved', describeLoopStartError(err));
+      return false;
     }
-  };
 
-  const resendFromMessage = async (messageId: string) => {
-    if (!chat || !project || !sessionRef.current) return;
-    setLoopPhase('pending');
-    try {
-      await sessionRef.current.retry(messageId);
-    } catch (err) {
-      console.error('[useChat] resendFromMessage error:', err);
-      setLoopPhase('idle');
-    }
+    return startLoopWith(
+      session =>
+        hasFollowUp ? session.send(userMessage ?? '', attachments) : session.continueLoop(),
+      'Message not sent'
+    );
   };
 
   const requestSoftStop = useCallback(() => {
@@ -1303,14 +1481,8 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
   }, []);
 
   const continueAfterToolStop = async () => {
-    if (!chat || !project || !sessionRef.current) return;
-    setLoopPhase('pending');
-    try {
-      await sessionRef.current.continueLoop();
-    } catch (err) {
-      console.error('[useChat] continueAfterToolStop error:', err);
-      setLoopPhase('idle');
-    }
+    if (!chat || !project) return;
+    await startLoopWith(session => session.continueLoop(), "Couldn't continue");
   };
 
   return {
@@ -1334,13 +1506,12 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     snapshotLoading,
     sendMessage,
     editMessage,
-    copyMessage,
+    sendEditedMessage,
     forkChat,
     overrideModel,
     updateAgentConfig,
     updateChatName,
     resolvePendingToolCalls,
-    resendFromMessage,
     rollbackToMessage,
     requestSoftStop,
     continueAfterToolStop,

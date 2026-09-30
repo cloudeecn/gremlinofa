@@ -871,25 +871,30 @@ export class GremlinServer {
     }
     this.registry.broadcastChatEvent(params.chatId, first.value);
 
-    // Continue draining the generator in the background. Errors thrown
-    // mid-loop are caught and broadcast as a synthetic `loop_ended {error}`
-    // so subscribers transition out of the running state.
+    // Continue draining the generator in the background. ChatRunner yields
+    // its own `loop_ended {error}` before rethrowing; only a throw that comes
+    // before it gets a synthetic one, so subscribers see exactly one and
+    // transition out of the running state.
     void (async () => {
+      let ended = false;
       try {
         while (true) {
           const r = await gen.next();
           if (r.done) break;
+          if (r.value.type === 'loop_ended') ended = true;
           this.registry.broadcastChatEvent(params.chatId, r.value);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error('[GremlinServer.startLoop] background loop error:', message);
-        this.registry.broadcastChatEvent(params.chatId, {
-          type: 'loop_ended',
-          loopId,
-          status: 'error',
-          detail: message,
-        });
+        if (!ended) {
+          this.registry.broadcastChatEvent(params.chatId, {
+            type: 'loop_ended',
+            loopId,
+            status: 'error',
+            detail: message,
+          });
+        }
       }
     })();
 
@@ -949,8 +954,14 @@ export class GremlinServer {
    *   2. Read the chat + messages from storage and yield them as
    *      `chat_updated` / `message_created` events (the frontend handles
    *      these the same way it handles live events).
-   *   3. Drain the queued live events.
-   *   4. Continue yielding live events as they arrive, blocking on a
+   *   3. Read the running loop and the registry's in-flight caches (pending
+   *      tool results, streaming groups) in one synchronous step, taking
+   *      every event queued so far with them. Replay the loop and the
+   *      pending tool results.
+   *   4. After `snapshot_complete`, yield the events taken in step 3, minus
+   *      their deltas (the caches already folded those in; replaying one
+   *      would apply it twice), then the `streaming_snapshot`.
+   *   5. Continue yielding live events as they arrive, blocking on a
    *      promise waiter when the queue is empty.
    *
    * The snapshot phase yields a `lock_state_changed` event before
@@ -1007,6 +1018,17 @@ export class GremlinServer {
         yield { type: 'message_created', message: prepareMessageForWire(messages[i]) };
       }
 
+      // Read the running loop and both caches, and take everything queued so
+      // far, with no yield or await in between. The registry folds each delta
+      // into its caches before the fan-out, so every delta taken here is in
+      // these snapshots and none queued later is, and the caches belong to
+      // `runningLoop`. The caches are copy-on-write, so the snapshots stay as
+      // read while the yields below suspend.
+      const runningLoop = this.registry.list().find(loop => loop.chatId === chatId);
+      const pending = this.registry.getPendingToolResults(chatId);
+      const streamingGroups = this.registry.getStreamingGroups(chatId);
+      const queuedBeforeRead = queue.splice(0);
+
       // Replay running-loop state. The chat-pubsub subscription set up
       // above only catches *future* events; if a loop was already running
       // when the consumer re-attached, its original `loop_started` was
@@ -1016,8 +1038,9 @@ export class GremlinServer {
       // CHAT_BUSY (one loop per chat at a time), so at most one entry will
       // match. A duplicate `loop_started` from a race with the queue is
       // harmless: the frontend handler resets loopPhase to `pending` and
-      // clears soft-stop, both idempotent for an already-running loop.
-      const runningLoop = this.registry.list().find(loop => loop.chatId === chatId);
+      // clears soft-stop, both idempotent for an already-running loop. A
+      // queued `loop_ended` of an earlier loop is dropped by `GremlinSession`,
+      // which by then tracks this loop's id.
       if (runningLoop) {
         yield {
           type: 'loop_started',
@@ -1034,7 +1057,6 @@ export class GremlinServer {
       // merged accumulated block state. The frontend handler accumulates
       // updates with the same `{...existing, ...new}` semantics, so any
       // live event arriving immediately after lands cleanly on top.
-      const pending = this.registry.getPendingToolResults(chatId);
       // Group by message id so we yield each placeholder message once
       // even when it covers multiple toolUseIds (parallel tool calls).
       const seenMessageIds = new Set<string>();
@@ -1066,19 +1088,6 @@ export class GremlinServer {
         }
       }
 
-      // Rehydrate the in-flight assistant bubble (partially-streamed text +
-      // thinking + any provider-side tool results) captured by the live
-      // broadcast path while no one was subscribed. Without this a reconnecting
-      // / re-navigating subscriber stares at a blank bubble until the next live
-      // `streaming_chunk` — instant for token-streaming providers, but seconds
-      // for claude-agent during its internal tool/subprocess gaps. The synthetic
-      // `loop_started` yielded above already set the loop active, so the
-      // frontend renders this immediately.
-      const streamingGroups = this.registry.getStreamingGroups(chatId);
-      if (streamingGroups && streamingGroups.length > 0) {
-        yield { type: 'streaming_snapshot', groups: streamingGroups };
-      }
-
       // Authoritative incomplete-tail lock state, computed from the same
       // messages we just delivered. Yielded directly (not broadcast through
       // the chat pubsub) so the consumer always sees its own snapshot value
@@ -1089,7 +1098,36 @@ export class GremlinServer {
       // fire `onMessagesLoaded` and clear any "loading" placeholders.
       yield { type: 'snapshot_complete' };
 
-      // Drain queued live events + continue blocking for new ones until the
+      // Events broadcast before the cache read go out after
+      // `snapshot_complete` like any live event: during a reconnect replay
+      // `useChat` matches `message_created` by position, and a queued copy of
+      // a message storage already returned would be appended twice. Their
+      // deltas are already in the snapshots, so they are dropped.
+      for (const event of queuedBeforeRead) {
+        if (event.type === 'streaming_delta' || event.type === 'tool_groups_delta') continue;
+        yield event;
+      }
+
+      // Rehydrate the in-flight assistant bubble (partially-streamed text +
+      // thinking + any provider-side tool results) captured by the live
+      // broadcast path while no one was subscribed. Without this a reconnecting
+      // / re-navigating subscriber stares at a blank bubble until the next live
+      // `streaming_delta` — instant for token-streaming providers, but seconds
+      // for claude-agent during its internal tool/subprocess gaps. The synthetic
+      // `loop_started` yielded above already set the loop active, so the
+      // frontend renders this immediately. Later deltas apply on top of it.
+      // It comes after the events taken with the cache read, so it has the
+      // last word on the bubble: an earlier iteration's assistant
+      // `message_created` among them clears the client's streaming state and
+      // would otherwise blank a snapshot that already holds the next
+      // iteration. A tool's `tool_groups_snapshot` needs no such care: only
+      // `loop_ended` clears those on the client, and a queued one either
+      // names an earlier loop (GremlinSession drops it) or emptied the cache.
+      if (streamingGroups && streamingGroups.length > 0) {
+        yield { type: 'streaming_snapshot', groups: streamingGroups };
+      }
+
+      // Drain live events + continue blocking for new ones until the
       // consumer cancels the stream (which fires the finally below).
       while (true) {
         if (queue.length > 0) {

@@ -25,7 +25,6 @@ import {
   resolveRetryStash,
   stripVerifyFeedbackNote,
   hasInjectSpecs,
-  buildInlineContent,
 } from '../minionTool';
 import { LoopRegistry } from '../../../engine/LoopRegistry';
 import type {
@@ -1730,21 +1729,6 @@ describe('hasInjectSpecs', () => {
   it('is false for empty or absent batches', () => {
     expect(hasInjectSpecs({})).toBe(false);
     expect(hasInjectSpecs({ injectFiles: [], injectFilesAfter: [] })).toBe(false);
-  });
-});
-
-describe('buildInlineContent', () => {
-  it('keeps a real message byte-for-byte, separators included', () => {
-    expect(
-      buildInlineContent('=== a ===\nx\n\n', '=== end of files ===\n\n', 'go\n', '\n\ny')
-    ).toBe('=== a ===\nx\n\n=== end of files ===\n\ngo\n\n\ny');
-  });
-
-  it('trims the separators when there is no message text', () => {
-    expect(buildInlineContent('=== a ===\nx\n\n', '=== end of files ===\n\n', '', '')).toBe(
-      '=== a ===\nx\n\n=== end of files ==='
-    );
-    expect(buildInlineContent('', '', '', '\n\n=== b ===\ny')).toBe('=== b ===\ny');
   });
 });
 

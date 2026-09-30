@@ -14,7 +14,7 @@ export function ErrorFloatingButton() {
       {/* Floating Error Button */}
       <button
         onClick={() => setIsErrorViewOpen(true)}
-        className="error-floating-button fixed bottom-4 left-4 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-red-600 text-white shadow-lg transition-all hover:scale-105 hover:bg-red-700"
+        className="error-floating-button fixed bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] left-4 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-red-600 text-white shadow-lg transition-all hover:scale-105 hover:bg-red-700 md:bottom-4"
         aria-label={`View ${errors.length} error${errors.length > 1 ? 's' : ''}`}
       >
         <span className="text-xl">⚠️</span>

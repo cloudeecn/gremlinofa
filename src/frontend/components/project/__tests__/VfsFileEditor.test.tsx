@@ -9,6 +9,7 @@ const mockAdapter = {
 describe('VfsFileEditor', () => {
   const defaultProps = {
     adapter: mockAdapter as any,
+    projectId: 'p1',
     path: '/docs/notes.txt',
     initialContent: 'Initial file content',
     onSave: vi.fn(),
@@ -242,14 +243,14 @@ describe('VfsFileEditor', () => {
         vi.advanceTimersByTime(600);
       });
 
-      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_p1_${encodeURIComponent('/docs/notes.txt')}`;
       const stored = localStorage.getItem(draftKey);
       expect(stored).not.toBeNull();
       expect(JSON.parse(stored!).content).toBe('Draft content');
     });
 
     it('restores draft on mount', () => {
-      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_p1_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Restored draft', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -259,7 +260,7 @@ describe('VfsFileEditor', () => {
     });
 
     it('shows draft warning when restored draft differs from initial', () => {
-      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_p1_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Different draft', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -270,7 +271,7 @@ describe('VfsFileEditor', () => {
     });
 
     it('does not show draft warning when draft matches initial', () => {
-      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_p1_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Same content', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -283,7 +284,7 @@ describe('VfsFileEditor', () => {
       vi.useRealTimers();
 
       // Pre-populate a draft
-      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_p1_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Draft to clear on save', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -300,7 +301,7 @@ describe('VfsFileEditor', () => {
     });
 
     it('clears draft on cancel', () => {
-      const draftKey = `draft_vfs-editor_vfs_${encodeURIComponent('/docs/notes.txt')}`;
+      const draftKey = `draft_vfs-editor_vfs_p1_${encodeURIComponent('/docs/notes.txt')}`;
       const draftData = { content: 'Draft to clear', createdAt: Date.now() };
       localStorage.setItem(draftKey, JSON.stringify(draftData));
 
@@ -309,6 +310,19 @@ describe('VfsFileEditor', () => {
       fireEvent.click(screen.getByText('Cancel'));
 
       expect(localStorage.getItem(draftKey)).toBeNull();
+    });
+
+    it("does not restore another project's draft for the same path", () => {
+      const otherProjectKey = `draft_vfs-editor_vfs_p2_${encodeURIComponent('/docs/notes.txt')}`;
+      localStorage.setItem(
+        otherProjectKey,
+        JSON.stringify({ content: "p2's draft", createdAt: Date.now() })
+      );
+
+      render(<VfsFileEditor {...defaultProps} />);
+
+      expect(screen.getByRole('textbox')).toHaveValue('Initial file content');
+      expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument();
     });
 
     it('uses encoded path in draft key to handle slashes', () => {
@@ -322,7 +336,7 @@ describe('VfsFileEditor', () => {
       });
 
       // Path should be URL-encoded in the key
-      const expectedKey = `draft_vfs-editor_vfs_${encodeURIComponent('/deep/nested/path.txt')}`;
+      const expectedKey = `draft_vfs-editor_vfs_p1_${encodeURIComponent('/deep/nested/path.txt')}`;
       expect(localStorage.getItem(expectedKey)).not.toBeNull();
     });
   });

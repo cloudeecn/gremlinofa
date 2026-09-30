@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { GremlinServer, ProtocolError } from '../GremlinServer';
 import { LoopRegistry } from '../LoopRegistry';
+import { ChatRunner } from '../ChatRunner';
 import type { BackendDeps } from '../backendDeps';
 import type { APIService } from '../../services/api/apiService';
 import type { EncryptionCore } from '../../services/encryption/encryptionCore';
@@ -8,6 +9,9 @@ import { createVfsService } from '../../services/vfs/vfsService';
 import type { UnifiedStorage } from '../../services/storage/unifiedStorage';
 import type { ClientSideToolRegistry } from '../../services/tools/clientSideTools';
 import type { APIDefinition, Chat, Project, RenderingBlockGroup } from '../../protocol/types';
+import type { LoopEvent } from '../../protocol/protocol';
+import { applyStreamingGroupsOps } from '../../services/streaming/streamingGroupsOps';
+import { applyGroupsDelta, type ToolGroupsState } from '../../services/tools/toolGroupsDelta';
 
 const mkProject = (id: string): Project => ({
   id,
@@ -600,8 +604,8 @@ describe('GremlinServer', () => {
     });
 
     it('attachChat replays cached in-flight streaming groups as a streaming_snapshot', async () => {
-      // Parallel to the pending-tool-result replay: a turn mid-stream caches its
-      // latest streaming_chunk groups in the registry. On reattach the snapshot
+      // Parallel to the pending-tool-result replay: a turn mid-stream folds its
+      // streaming_delta ops into the registry's groups. On reattach the snapshot
       // must replay them as a `streaming_snapshot` so the in-flight assistant
       // bubble rehydrates immediately instead of going blank until the next
       // token — worst on claude-agent, whose turns have long no-token gaps.
@@ -612,19 +616,403 @@ describe('GremlinServer', () => {
       const groups: RenderingBlockGroup[] = [
         { category: 'text', blocks: [{ type: 'text', text: 'partial answer' }] },
       ];
-      server.registry.broadcastChatEvent('c_stream', { type: 'streaming_chunk', groups });
+      server.registry.broadcastChatEvent('c_stream', {
+        type: 'streaming_delta',
+        ops: [
+          { op: 'reset' },
+          { op: 'add', g: 0, category: 'text', block: { type: 'text', text: 'partial' } },
+        ],
+      });
+      server.registry.broadcastChatEvent('c_stream', {
+        type: 'streaming_delta',
+        ops: [{ op: 'append', g: 0, b: 0, text: ' answer' }],
+      });
 
       const gen = server.handleStream('attachChat', { chatId: 'c_stream' });
       const first = await gen.next();
       expect(first.value).toMatchObject({ type: 'chat_updated', chat: { id: 'c_stream' } });
-      const snapshot = await gen.next();
-      expect(snapshot.value).toMatchObject({ type: 'streaming_snapshot', groups });
       const lockEvent = await gen.next();
       expect(lockEvent.value).toMatchObject({ type: 'lock_state_changed', locked: false });
       const marker = await gen.next();
       expect(marker.value).toMatchObject({ type: 'snapshot_complete' });
+      const snapshot = await gen.next();
+      expect(snapshot.value).toMatchObject({ type: 'streaming_snapshot', groups });
 
       await gen.return(undefined);
+    });
+
+    describe('attachChat deltas racing the snapshot', () => {
+      const appendOp = (text: string): LoopEvent => ({
+        type: 'streaming_delta',
+        ops: [{ op: 'append', g: 0, b: 0, text }],
+      });
+      const startReply = (text: string): LoopEvent => ({
+        type: 'streaming_delta',
+        ops: [
+          { op: 'reset' },
+          { op: 'add', g: 0, category: 'text', block: { type: 'text', text } },
+        ],
+      });
+      const textGroups = (text: string): RenderingBlockGroup[] => [
+        { category: 'text', blocks: [{ type: 'text', text }] },
+      ];
+      const infoGroup: RenderingBlockGroup = {
+        category: 'backstage',
+        blocks: [{ type: 'tool_info', input: 'go' }],
+      };
+      const toolAppend = (text: string): LoopEvent => ({
+        type: 'tool_groups_delta',
+        toolUseId: 'tu_m',
+        delta: { kind: 'streaming_ops', ops: [{ op: 'append', g: 0, b: 0, text }] },
+      });
+
+      /** A minion tool call whose streaming reply so far is `text`. */
+      function seedMinion(chatId: string, text: string): void {
+        server.registry.broadcastChatEvent(chatId, {
+          type: 'pending_tool_result',
+          message: {
+            id: 'msg_placeholder',
+            role: 'user',
+            timestamp: new Date(),
+            content: {
+              type: 'text',
+              content: '',
+              modelFamily: 'anthropic',
+              toolResults: [
+                { type: 'tool_result', tool_use_id: 'tu_m', name: 'minion', content: '' },
+              ],
+            },
+          } as never,
+        });
+        server.registry.broadcastChatEvent(chatId, {
+          type: 'tool_groups_delta',
+          toolUseId: 'tu_m',
+          delta: {
+            kind: 'init',
+            infoGroup,
+            accumulatedGroups: [],
+            streamingGroups: textGroups(text),
+          },
+        });
+      }
+
+      function registerLoop(loopId: string, chatId: string): void {
+        server.registry.register(
+          {
+            loopId,
+            chatId,
+            startedAt: Date.now(),
+            status: 'running',
+            apiDefinitionId: 'api_1',
+            modelId: 'm1',
+          },
+          new AbortController()
+        );
+      }
+
+      /** Pull events until one of type `last`, inclusive. */
+      async function readUntil(
+        gen: AsyncGenerator<unknown>,
+        last: LoopEvent['type']
+      ): Promise<LoopEvent[]> {
+        const events: LoopEvent[] = [];
+        for (;;) {
+          const r = await gen.next();
+          const event = r.value as LoopEvent;
+          events.push(event);
+          if (event.type === last) return events;
+        }
+      }
+
+      const assistantMessage = (id: string): LoopEvent => ({
+        type: 'message_created',
+        message: {
+          id,
+          role: 'assistant',
+          timestamp: new Date(),
+          content: { type: 'text', content: '', modelFamily: 'anthropic' },
+        } as never,
+      });
+
+      /**
+       * Rebuild what the client shows from the attach events, with the rules
+       * of GremlinSession (a `loop_ended` for a loop other than the tracked
+       * one is stale) and useChat (snapshots replace, deltas apply, an
+       * assistant `message_created` and `loop_ended` clear).
+       */
+      function reassemble(events: LoopEvent[]): {
+        streaming: RenderingBlockGroup[];
+        tool: ToolGroupsState | undefined;
+      } {
+        let streaming: RenderingBlockGroup[] = [];
+        let tool: ToolGroupsState | undefined;
+        let loopId: string | null = null;
+        for (const e of events) {
+          switch (e.type) {
+            case 'loop_started':
+              loopId = e.loopId;
+              break;
+            case 'loop_ended':
+              if (loopId !== null && e.loopId !== loopId) break;
+              loopId = null;
+              streaming = [];
+              tool = undefined;
+              break;
+            case 'streaming_snapshot':
+              streaming = e.groups;
+              break;
+            case 'streaming_delta':
+              streaming = applyStreamingGroupsOps(streaming, e.ops);
+              break;
+            case 'message_created':
+              if (e.message.role === 'assistant') streaming = [];
+              break;
+            case 'tool_groups_snapshot':
+              tool = {
+                infoGroup: e.infoGroup,
+                accumulatedGroups: e.accumulatedGroups,
+                streamingGroups: e.streamingGroups,
+              };
+              break;
+            case 'tool_groups_delta':
+              tool = applyGroupsDelta(tool, e.delta);
+              break;
+          }
+        }
+        return { streaming, tool };
+      }
+
+      it('does not replay streaming deltas already folded into the streaming_snapshot', async () => {
+        const chatId = 'c_race';
+        vi.mocked(storage.getChat).mockResolvedValue(mkChat(chatId, 'p1'));
+        // The loop keeps streaming while attachChat reads storage: these
+        // deltas are queued for the subscriber AND folded into the cache
+        // the snapshot is read from.
+        vi.mocked(storage.getMessages).mockImplementation(async () => {
+          server.registry.broadcastChatEvent(chatId, appendOp('lo'));
+          server.registry.broadcastChatEvent(chatId, appendOp(' wor'));
+          return [];
+        });
+        server.registry.broadcastChatEvent(chatId, startReply('Hel'));
+
+        const gen = server.handleStream('attachChat', { chatId });
+        const events = await readUntil(gen, 'streaming_snapshot');
+        expect(events.at(-1)).toEqual({
+          type: 'streaming_snapshot',
+          groups: textGroups('Hello wor'),
+        });
+
+        // Live after the snapshot: must still arrive.
+        server.registry.broadcastChatEvent(chatId, appendOp('ld'));
+        server.registry.broadcastChatEvent(chatId, { type: 'first_chunk' });
+        events.push((await gen.next()).value as LoopEvent);
+        events.push((await gen.next()).value as LoopEvent);
+        expect(events.slice(-2).map(e => e.type)).toEqual(['streaming_delta', 'first_chunk']);
+
+        expect(reassemble(events).streaming).toEqual(textGroups('Hello world'));
+        expect(server.registry.getStreamingGroups(chatId)).toEqual(textGroups('Hello world'));
+
+        await gen.return(undefined);
+      });
+
+      it('does not replay minion tool_groups_delta already folded into the tool_groups_snapshot', async () => {
+        const chatId = 'c_race_minion';
+        vi.mocked(storage.getChat).mockResolvedValue(mkChat(chatId, 'p1'));
+        vi.mocked(storage.getMessages).mockImplementation(async () => {
+          server.registry.broadcastChatEvent(chatId, toolAppend('ni'));
+          server.registry.broadcastChatEvent(chatId, toolAppend('on'));
+          return [];
+        });
+        seedMinion(chatId, 'Mi');
+
+        const gen = server.handleStream('attachChat', { chatId });
+        const events = await readUntil(gen, 'snapshot_complete');
+        server.registry.broadcastChatEvent(chatId, toolAppend(' works'));
+        events.push((await gen.next()).value as LoopEvent);
+        expect(events.at(-1)).toEqual(toolAppend(' works'));
+
+        expect(reassemble(events).tool?.streamingGroups).toEqual(textGroups('Minion works'));
+        expect(
+          server.registry.getPendingToolResults(chatId)[0].groupsState?.streamingGroups
+        ).toEqual(textGroups('Minion works'));
+
+        await gen.return(undefined);
+      });
+
+      it('reads both caches and takes the queue in one step, so deltas sent mid-replay arrive exactly once', async () => {
+        // The replay suspends at every yield. Deltas broadcast while it sits
+        // on the first `pending_tool_result` are newer than both caches and
+        // the queue taken with them, so they must be drained, once. Reading
+        // either cache or taking the queue after a yield would duplicate or
+        // lose them.
+        const chatId = 'c_race_both';
+        vi.mocked(storage.getChat).mockResolvedValue(mkChat(chatId, 'p1'));
+        vi.mocked(storage.getMessages).mockResolvedValue([]);
+        seedMinion(chatId, 'Mi');
+        server.registry.broadcastChatEvent(chatId, startReply('Hel'));
+
+        const gen = server.handleStream('attachChat', { chatId });
+        const events: LoopEvent[] = [];
+        while (events.at(-1)?.type !== 'pending_tool_result') {
+          events.push((await gen.next()).value as LoopEvent);
+        }
+        server.registry.broadcastChatEvent(chatId, appendOp('lo'));
+        server.registry.broadcastChatEvent(chatId, toolAppend('nion'));
+
+        events.push(...(await readUntil(gen, 'streaming_snapshot')));
+        events.push((await gen.next()).value as LoopEvent);
+        events.push((await gen.next()).value as LoopEvent);
+        expect(events.slice(-2)).toEqual([appendOp('lo'), toolAppend('nion')]);
+
+        const client = reassemble(events);
+        expect(client.streaming).toEqual(textGroups('Hello'));
+        expect(client.tool?.streamingGroups).toEqual(textGroups('Minion'));
+        expect(server.registry.getStreamingGroups(chatId)).toEqual(textGroups('Hello'));
+        expect(
+          server.registry.getPendingToolResults(chatId)[0].groupsState?.streamingGroups
+        ).toEqual(textGroups('Minion'));
+
+        await gen.return(undefined);
+      });
+
+      it('replays the loop the caches belong to when loops change hands mid-replay', async () => {
+        // Loop A is mid-reply at the snapshot read. While the replay sits on
+        // the synthetic loop_started, A ends and B starts streaming. The
+        // snapshot must still be A's (it was read together with the running
+        // loop), so A's live loop_ended clears it and B's deltas, all newer
+        // than the snapshot, rebuild B's reply from its reset.
+        const chatId = 'c_race_handover';
+        vi.mocked(storage.getChat).mockResolvedValue(mkChat(chatId, 'p1'));
+        vi.mocked(storage.getMessages).mockResolvedValue([]);
+        registerLoop('loop_A', chatId);
+        server.registry.broadcastChatEvent(chatId, startReply('A says'));
+
+        const gen = server.handleStream('attachChat', { chatId });
+        const events: LoopEvent[] = [];
+        while (events.at(-1)?.type !== 'loop_started') {
+          events.push((await gen.next()).value as LoopEvent);
+        }
+        expect(events.at(-1)).toMatchObject({ loopId: 'loop_A' });
+
+        server.registry.broadcastChatEvent(chatId, {
+          type: 'loop_ended',
+          loopId: 'loop_A',
+          status: 'complete',
+        });
+        server.registry.end('loop_A', 'complete');
+        registerLoop('loop_B', chatId);
+        server.registry.broadcastChatEvent(chatId, { type: 'loop_started', loopId: 'loop_B' });
+        server.registry.broadcastChatEvent(chatId, startReply('B says'));
+
+        events.push(...(await readUntil(gen, 'streaming_snapshot')));
+        expect(events.at(-1)).toEqual({
+          type: 'streaming_snapshot',
+          groups: textGroups('A says'),
+        });
+        for (let i = 0; i < 3; i++) events.push((await gen.next()).value as LoopEvent);
+        server.registry.broadcastChatEvent(chatId, appendOp(' hi'));
+        events.push((await gen.next()).value as LoopEvent);
+
+        expect(reassemble(events).streaming).toEqual(textGroups('B says hi'));
+        expect(server.registry.getStreamingGroups(chatId)).toEqual(textGroups('B says hi'));
+
+        await gen.return(undefined);
+      });
+
+      it('leaves a stale loop_ended for the client to drop when the snapshot already shows the next loop', async () => {
+        // A ends and B starts while attachChat reads storage. The snapshot
+        // shows B; A's queued loop_ended is still replayed after the
+        // synthetic loop_started (GremlinSession drops it because it tracks B
+        // by then), and B's folded deltas aren't.
+        const chatId = 'c_race_stale_end';
+        vi.mocked(storage.getChat).mockResolvedValue(mkChat(chatId, 'p1'));
+        registerLoop('loop_A', chatId);
+        server.registry.broadcastChatEvent(chatId, startReply('A says'));
+        vi.mocked(storage.getMessages).mockImplementation(async () => {
+          server.registry.broadcastChatEvent(chatId, {
+            type: 'loop_ended',
+            loopId: 'loop_A',
+            status: 'complete',
+          });
+          server.registry.end('loop_A', 'complete');
+          registerLoop('loop_B', chatId);
+          server.registry.broadcastChatEvent(chatId, { type: 'loop_started', loopId: 'loop_B' });
+          server.registry.broadcastChatEvent(chatId, startReply('B says'));
+          return [];
+        });
+
+        const gen = server.handleStream('attachChat', { chatId });
+        const events = await readUntil(gen, 'snapshot_complete');
+        expect(events.find(e => e.type === 'loop_started')).toMatchObject({ loopId: 'loop_B' });
+        server.registry.broadcastChatEvent(chatId, appendOp(' hi'));
+        const drained: LoopEvent[] = [];
+        for (let i = 0; i < 4; i++) drained.push((await gen.next()).value as LoopEvent);
+        expect(drained.map(e => e.type)).toEqual([
+          'loop_ended',
+          'loop_started',
+          'streaming_snapshot',
+          'streaming_delta',
+        ]);
+
+        expect(reassemble([...events, ...drained]).streaming).toEqual(textGroups('B says hi'));
+
+        await gen.return(undefined);
+      });
+
+      it("replays an earlier iteration's queued assistant message before the streaming_snapshot", async () => {
+        // Iteration 1 ends and iteration 2 starts while attachChat reads
+        // storage, so the snapshot holds iteration 2. Iteration 1's queued
+        // assistant message clears the client's bubble; replayed after the
+        // snapshot it would blank iteration 2 until its next delta.
+        const chatId = 'c_race_iteration';
+        vi.mocked(storage.getChat).mockResolvedValue(mkChat(chatId, 'p1'));
+        server.registry.broadcastChatEvent(chatId, startReply('First'));
+        vi.mocked(storage.getMessages).mockImplementation(async () => {
+          server.registry.broadcastChatEvent(chatId, assistantMessage('msg_iter1'));
+          server.registry.broadcastChatEvent(chatId, startReply('Second'));
+          return [];
+        });
+
+        const gen = server.handleStream('attachChat', { chatId });
+        const events = await readUntil(gen, 'streaming_snapshot');
+        expect(events.slice(-3).map(e => e.type)).toEqual([
+          'snapshot_complete',
+          'message_created',
+          'streaming_snapshot',
+        ]);
+        expect(reassemble(events).streaming).toEqual(textGroups('Second'));
+
+        // Nothing else was queued: the next event is live.
+        server.registry.broadcastChatEvent(chatId, appendOp(' turn'));
+        events.push((await gen.next()).value as LoopEvent);
+        expect(reassemble(events).streaming).toEqual(textGroups('Second turn'));
+
+        await gen.return(undefined);
+      });
+
+      it('keeps an assistant message broadcast mid-replay behind the streaming_snapshot', async () => {
+        // Iteration 2 ends while the replay sits on `lock_state_changed`,
+        // after the cache read. The snapshot is iteration 2's reply, so its
+        // assistant message must land after it and clear it.
+        const chatId = 'c_race_iteration_live';
+        vi.mocked(storage.getChat).mockResolvedValue(mkChat(chatId, 'p1'));
+        vi.mocked(storage.getMessages).mockResolvedValue([]);
+        server.registry.broadcastChatEvent(chatId, startReply('Second'));
+
+        const gen = server.handleStream('attachChat', { chatId });
+        const events = await readUntil(gen, 'lock_state_changed');
+        server.registry.broadcastChatEvent(chatId, assistantMessage('msg_iter2'));
+        events.push(...(await readUntil(gen, 'message_created')));
+
+        expect(events.slice(-3).map(e => e.type)).toEqual([
+          'snapshot_complete',
+          'streaming_snapshot',
+          'message_created',
+        ]);
+        expect(reassemble(events).streaming).toEqual([]);
+
+        await gen.return(undefined);
+      });
     });
 
     it('attachChat omits streaming_snapshot when no turn is mid-stream', async () => {
@@ -634,9 +1022,13 @@ describe('GremlinServer', () => {
 
       const gen = server.handleStream('attachChat', { chatId: 'c_nostream' });
       await gen.next(); // chat_updated
-      // No cached streaming groups → snapshot goes straight to lock_state_changed.
+      await gen.next(); // lock_state_changed
+      const marker = await gen.next();
+      expect(marker.value).toMatchObject({ type: 'snapshot_complete' });
+      // No cached streaming groups → the next event is the first live one.
+      server.registry.broadcastChatEvent('c_nostream', { type: 'first_chunk' });
       const next = await gen.next();
-      expect(next.value).toMatchObject({ type: 'lock_state_changed' });
+      expect(next.value).toEqual({ type: 'first_chunk' });
 
       await gen.return(undefined);
     });
@@ -929,6 +1321,64 @@ describe('GremlinServer', () => {
           void _env;
         }
       }).rejects.toThrow(/Invalid CSV header/);
+    });
+  });
+
+  describe('startLoop background errors', () => {
+    function collectChatEvents(chatId: string): LoopEvent[] {
+      const events: LoopEvent[] = [];
+      const broadcast = deps.loopRegistry.broadcastChatEvent.bind(deps.loopRegistry);
+      vi.spyOn(deps.loopRegistry, 'broadcastChatEvent').mockImplementation((id, event) => {
+        if (id === chatId) events.push(event);
+        broadcast(id, event);
+      });
+      return events;
+    }
+
+    async function settle(): Promise<void> {
+      for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    it("broadcasts the runner's own loop_ended once when the loop throws after it", async () => {
+      const events = collectChatEvents('c1');
+      vi.spyOn(ChatRunner.prototype, 'run').mockImplementation(
+        async function* (_params, _abort, loopId) {
+          yield { type: 'loop_started', loopId };
+          yield { type: 'loop_ended', loopId, status: 'error', detail: 'boom' };
+          throw new Error('boom');
+        }
+      );
+
+      const { loopId } = (await server.handleRequest('startLoop', {
+        chatId: 'c1',
+        mode: 'send',
+        content: 'hi',
+      })) as { loopId: string };
+      await settle();
+
+      const ended = events.filter(e => e.type === 'loop_ended');
+      expect(ended).toEqual([{ type: 'loop_ended', loopId, status: 'error', detail: 'boom' }]);
+    });
+
+    it('synthesizes loop_ended when the loop throws before yielding one', async () => {
+      const events = collectChatEvents('c1');
+      vi.spyOn(ChatRunner.prototype, 'run').mockImplementation(
+        async function* (_params, _abort, loopId) {
+          yield { type: 'loop_started', loopId };
+          throw new Error('storage gone');
+        }
+      );
+
+      const { loopId } = (await server.handleRequest('startLoop', {
+        chatId: 'c1',
+        mode: 'send',
+        content: 'hi',
+      })) as { loopId: string };
+      await settle();
+
+      expect(events.filter(e => e.type === 'loop_ended')).toEqual([
+        { type: 'loop_ended', loopId, status: 'error', detail: 'storage gone' },
+      ]);
     });
   });
 

@@ -51,8 +51,7 @@ export default function ActiveLoopRow({
     onAfterNavigate?.();
   };
 
-  const handleAbort = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleAbort = () => {
     void activeLoopsStore.abort(loop.loopId);
   };
 
@@ -62,42 +61,45 @@ export default function ActiveLoopRow({
   // step. Hard abort takes visual precedence — it's the more forceful signal.
   const softStopping = !aborting && !!loop.softStopRequested;
 
+  // Two sibling buttons rather than STOP nested in a clickable row: a nested
+  // button's Enter/Space bubbled to the row's key handler, which navigated
+  // and cancelled the abort.
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={handleNavigate}
-      onKeyDown={e => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          handleNavigate();
-        }
-      }}
-      className={`group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-gray-800 ${
-        isChild ? 'border-l border-gray-700 pl-3' : ''
+      className={`group flex items-center gap-2 rounded-md pr-2 text-xs transition-colors hover:bg-gray-800 ${
+        isChild ? 'border-l border-gray-700' : ''
       } ${aborting ? 'opacity-60' : ''}`}
       // Indent scales with depth (0.75rem/level), matching the old single-level
       // `ml-3` at depth 1. Inline because Tailwind can't purge dynamic margins.
       style={isChild ? { marginLeft: `${depth * 0.75}rem` } : undefined}
     >
-      {/* Status pip — yellow aborting, amber soft-stopping, green running */}
-      <span
-        className={`h-2 w-2 flex-shrink-0 animate-pulse rounded-full ${
-          aborting ? 'bg-yellow-500' : softStopping ? 'bg-amber-400' : 'bg-green-500'
+      <button
+        type="button"
+        onClick={handleNavigate}
+        className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 text-left ${
+          isChild ? 'pl-3' : 'pl-2'
         }`}
-        aria-label={aborting ? 'Aborting' : softStopping ? 'Stopping' : 'Running'}
-      />
+      >
+        {/* Status pip — yellow aborting, amber soft-stopping, green running */}
+        <span
+          className={`h-2 w-2 flex-shrink-0 animate-pulse rounded-full ${
+            aborting ? 'bg-yellow-500' : softStopping ? 'bg-amber-400' : 'bg-green-500'
+          }`}
+          aria-label={aborting ? 'Aborting' : softStopping ? 'Stopping' : 'Running'}
+        />
 
-      {/* Label + model */}
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-gray-200">{loop.displayName ?? chatLabel}</div>
-        <div className="truncate text-[10px] text-gray-500">
-          {loop.modelId} · {softStopping ? 'stopping…' : elapsedLabel}
-        </div>
-      </div>
+        {/* Label + model */}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-gray-200">{loop.displayName ?? chatLabel}</span>
+          <span className="block truncate text-[10px] text-gray-500">
+            {loop.modelId} · {softStopping ? 'stopping…' : elapsedLabel}
+          </span>
+        </span>
+      </button>
 
       {/* Hard-abort button — disabled while already aborting */}
       <button
+        type="button"
         onClick={handleAbort}
         disabled={aborting}
         className="flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-red-400 transition-colors hover:bg-red-900/50 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"

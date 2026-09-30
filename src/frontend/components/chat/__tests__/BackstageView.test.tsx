@@ -122,6 +122,27 @@ describe('BackstageView', () => {
       // Preview shows title directly (header has "Fetch:")
       expect(screen.getByText('Example Page')).toBeInTheDocument();
     });
+
+    it('keeps only the tail of a huge tool result in the collapsed preview', () => {
+      const payload = 'x'.repeat(200_000) + 'END OF FILE';
+      const blocks: RenderingContentBlock[] = [
+        { type: 'tool_result', tool_use_id: 'tu_1', name: 'fs', content: payload },
+      ];
+      render(<BackstageView blocks={blocks} />);
+
+      const preview = screen.getByText(/END OF FILE$/);
+      expect(preview.textContent!.length).toBeLessThanOrEqual(201);
+    });
+
+    it('keeps only the tail of a huge tool input in the collapsed preview', () => {
+      const blocks: RenderingContentBlock[] = [
+        { type: 'tool_use', id: 'tu_1', name: 'fs', input: { content: 'y'.repeat(50_000) } },
+      ];
+      render(<BackstageView blocks={blocks} />);
+
+      const preview = screen.getByText(/y"}$/);
+      expect(preview.textContent!.length).toBeLessThanOrEqual(201);
+    });
   });
 
   describe('ThinkingSegment', () => {

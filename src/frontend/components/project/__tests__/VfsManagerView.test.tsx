@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import VfsManagerView from '../VfsManagerView';
+import { gremlinClient } from '../../../client';
+import type { VfsAdapter } from '../../../../shared/protocol/types/vfs';
 
 // Mock react-router-dom's useNavigate
 const mockNavigate = vi.fn();
@@ -301,6 +303,210 @@ describe('VfsManagerView', () => {
       await waitFor(() => {
         expect(screen.getByText('No files yet')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('Deep Link', () => {
+    const renderDeepLink = () => {
+      const ui = () => (
+        <MemoryRouter>
+          <VfsManagerView {...defaultProps} initialPath="/notes.txt" />
+        </MemoryRouter>
+      );
+      const view = render(ui());
+      return { rerender: () => view.rerender(ui()) };
+    };
+
+    it('does not re-run when the viewport crosses the mobile breakpoint', async () => {
+      mockIsMobile = true;
+      mockAdapter.isFile.mockImplementation(async (path: string) => path === '/notes.txt');
+      const { rerender } = renderDeepLink();
+
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+      // Rotate to desktop, pick a directory, rotate back
+      mockIsMobile = false;
+      rerender();
+      await waitFor(() => expect(screen.getByText('docs')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('docs'));
+      await waitFor(() => expect(screen.getByText('🗑️ Delete Directory')).toBeInTheDocument());
+
+      mockIsMobile = true;
+      rerender();
+
+      await waitFor(() => expect(screen.getByText('Selected:')).toBeInTheDocument());
+      expect(screen.getByText('Selected:').parentElement).toHaveTextContent('Selected: docs');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(mockAdapter.isFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not overwrite a selection made while the lookup is pending', async () => {
+      mockIsMobile = false;
+      let resolveIsFile!: (isFile: boolean) => void;
+      mockAdapter.isFile.mockImplementation(
+        () =>
+          new Promise<boolean>(resolve => {
+            resolveIsFile = resolve;
+          })
+      );
+      renderDeepLink();
+
+      await waitFor(() => expect(screen.getByText('docs')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('docs'));
+      await waitFor(() => expect(screen.getByText('🗑️ Delete Directory')).toBeInTheDocument());
+
+      await act(async () => {
+        resolveIsFile(true);
+      });
+
+      expect(screen.getByText('🗑️ Delete Directory')).toBeInTheDocument();
+      expect(mockAdapter.readFileWithMeta).not.toHaveBeenCalledWith('/notes.txt');
+    });
+
+    // App keys the route by project and path, so a project switch remounts the
+    // view (App.test.tsx). These cover the component's own guard for an
+    // `adapter` that changes under a mounted view: the `cancelled` flag and
+    // the `desktopMode` reset.
+    describe('project switch on the same path', () => {
+      const otherAdapter = {
+        ...mockAdapter,
+        isFile: vi.fn(),
+        isDirectory: vi.fn(),
+      };
+
+      // The fakes only cover what VfsManagerView calls
+      const asVfsAdapter = (fake: typeof mockAdapter) => fake as unknown as VfsAdapter;
+
+      beforeEach(() => {
+        vi.mocked(gremlinClient.getVfsAdapter).mockImplementation(projectId =>
+          asVfsAdapter(projectId === 'proj_other' ? otherAdapter : mockAdapter)
+        );
+      });
+
+      afterEach(() => {
+        vi.mocked(gremlinClient.getVfsAdapter).mockImplementation(() => asVfsAdapter(mockAdapter));
+        vi.restoreAllMocks();
+      });
+
+      const renderProject = (projectId: string, initialPath: string) => {
+        const ui = (id: string) => (
+          <MemoryRouter>
+            <VfsManagerView projectId={id} initialPath={initialPath} />
+          </MemoryRouter>
+        );
+        const view = render(ui(projectId));
+        return { switchTo: (id: string) => view.rerender(ui(id)) };
+      };
+
+      it("ignores the previous project's lookup once it resolves late", async () => {
+        mockIsMobile = false;
+        let resolveIsFile!: (isFile: boolean) => void;
+        mockAdapter.isFile.mockImplementation(
+          () =>
+            new Promise<boolean>(resolve => {
+              resolveIsFile = resolve;
+            })
+        );
+        otherAdapter.isFile.mockResolvedValue(false);
+        otherAdapter.isDirectory.mockResolvedValue(true);
+        const { switchTo } = renderProject(defaultProps.projectId, '/shared');
+
+        switchTo('proj_other');
+        await waitFor(() => expect(screen.getByText('🗑️ Delete Directory')).toBeInTheDocument());
+
+        await act(async () => {
+          resolveIsFile(true);
+        });
+
+        expect(screen.getByText('🗑️ Delete Directory')).toBeInTheDocument();
+        expect(mockAdapter.readFileWithMeta).not.toHaveBeenCalledWith('/shared');
+      });
+
+      it('does not open the deep-linked file in an editor holding another file', async () => {
+        mockIsMobile = false;
+        mockAdapter.readDir.mockResolvedValue([
+          { name: 'notes.txt', type: 'file', size: 100 },
+          { name: 'todo.txt', type: 'file', size: 50 },
+        ]);
+        mockAdapter.isFile.mockImplementation(async (path: string) => path === '/notes.txt');
+        mockAdapter.readFile.mockResolvedValue('todo body');
+        otherAdapter.isFile.mockResolvedValue(true);
+        const { switchTo } = renderProject(defaultProps.projectId, '/notes.txt');
+
+        await waitFor(() => expect(screen.getByText('todo.txt')).toBeInTheDocument());
+        fireEvent.click(screen.getByText('todo.txt'));
+        // The viewer disables Edit until its content has loaded
+        await waitFor(() => expect(screen.getByTitle('Edit file')).toBeEnabled());
+        fireEvent.click(screen.getByTitle('Edit file'));
+        await waitFor(() => expect(document.querySelector('textarea')).toHaveValue('todo body'));
+
+        await act(async () => {
+          switchTo('proj_other');
+        });
+
+        await waitFor(() => expect(otherAdapter.isFile).toHaveBeenCalledWith('/notes.txt'));
+        await waitFor(() => expect(document.querySelector('textarea')).toBeNull());
+        expect(screen.getByTitle('Edit file')).toBeInTheDocument();
+      });
+
+      it('leaves edit mode when the deep link resolves to a directory', async () => {
+        mockIsMobile = false;
+        mockAdapter.readFile.mockResolvedValue('notes body');
+        otherAdapter.isFile.mockResolvedValue(false);
+        otherAdapter.isDirectory.mockResolvedValue(true);
+        vi.spyOn(window, 'prompt').mockReturnValue('new.txt');
+        const { switchTo } = renderProject(defaultProps.projectId, '/docs');
+
+        await waitFor(() => expect(screen.getByText('notes.txt')).toBeInTheDocument());
+        fireEvent.click(screen.getByText('notes.txt'));
+        await waitFor(() => expect(screen.getByTitle('Edit file')).toBeEnabled());
+        fireEvent.click(screen.getByTitle('Edit file'));
+        await waitFor(() => expect(document.querySelector('textarea')).toHaveValue('notes body'));
+
+        switchTo('proj_other');
+        await waitFor(() => expect(screen.getByText('📄 New File')).toBeInTheDocument());
+
+        // A file created from the directory panel must open in the viewer, not in an
+        // editor still holding notes.txt's content
+        fireEvent.click(screen.getByText('📄 New File'));
+        await waitFor(() =>
+          expect(otherAdapter.createFile).toHaveBeenCalledWith('/docs/new.txt', '')
+        );
+        await waitFor(() => expect(screen.getByTitle('Edit file')).toBeInTheDocument());
+        expect(document.querySelector('textarea')).toBeNull();
+      });
+    });
+  });
+
+  describe('Desktop Edit', () => {
+    it('does not open the editor for a file picked while the previous one was loading', async () => {
+      mockIsMobile = false;
+      mockAdapter.readDir.mockResolvedValue([
+        { name: 'notes.txt', type: 'file', size: 100 },
+        { name: 'todo.txt', type: 'file', size: 50 },
+      ]);
+      let resolveReadFile!: (content: string) => void;
+      mockAdapter.readFile.mockImplementation(
+        () =>
+          new Promise<string>(resolve => {
+            resolveReadFile = resolve;
+          })
+      );
+      renderWithRouter(<VfsManagerView {...defaultProps} />);
+
+      await waitFor(() => expect(screen.getByText('notes.txt')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('notes.txt'));
+      // The viewer disables Edit until its content has loaded
+      await waitFor(() => expect(screen.getByTitle('Edit file')).toBeEnabled());
+      fireEvent.click(screen.getByTitle('Edit file'));
+
+      fireEvent.click(screen.getByText('todo.txt'));
+      await act(async () => {
+        resolveReadFile('notes body');
+      });
+
+      expect(document.querySelector('textarea')).toBeNull();
+      await waitFor(() => expect(screen.getByTitle('Edit file')).toBeInTheDocument());
     });
   });
 

@@ -10,18 +10,11 @@
  * single function in `src/frontend/lib/`.
  */
 
+import { downloadBlob } from './download';
+
 /** Trigger a browser download for the exported project blob. */
 export function triggerProjectDownload(blob: Blob, projectName: string): void {
   const date = new Date().toISOString().split('T')[0];
   const safeName = projectName.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const filename = `${safeName}-export-${date}.gremlin.json`;
-
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, `${safeName}-export-${date}.gremlin.json`);
 }

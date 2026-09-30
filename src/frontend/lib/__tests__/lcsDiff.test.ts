@@ -195,6 +195,143 @@ describe('lcsDiff', () => {
         expect(stats.removed).toBe(10);
         expect(stats.unchanged).toBe(90);
       });
+
+      it('diffs a one-line edit in 12k lines quickly', () => {
+        const oldLines = Array.from({ length: 12_000 }, (_, i) => `line ${i}`);
+        const newLines = [...oldLines];
+        newLines[6_000] = 'edited';
+
+        const start = performance.now();
+        const result = computeLcsDiff(oldLines, newLines);
+        const elapsed = performance.now() - start;
+
+        expect(elapsed).toBeLessThan(200);
+        expect(result).toHaveLength(12_001);
+        const changes = result.filter(line => line.type !== 'same');
+        expect(changes).toEqual([
+          { type: 'remove', content: 'line 6000' },
+          { type: 'add', content: 'edited' },
+        ]);
+        expect(result[6_000]).toEqual({ type: 'remove', content: 'line 6000' });
+      });
+    });
+
+    describe('prefix/suffix trimming', () => {
+      it('handles an edit with only a common prefix', () => {
+        expect(computeLcsDiff(['a', 'b', 'c'], ['a', 'b', 'x', 'y'])).toEqual([
+          { type: 'same', content: 'a' },
+          { type: 'same', content: 'b' },
+          { type: 'remove', content: 'c' },
+          { type: 'add', content: 'x' },
+          { type: 'add', content: 'y' },
+        ]);
+      });
+
+      it('handles an edit with only a common suffix', () => {
+        expect(computeLcsDiff(['a', 'b', 'c'], ['x', 'y', 'b', 'c'])).toEqual([
+          { type: 'remove', content: 'a' },
+          { type: 'add', content: 'x' },
+          { type: 'add', content: 'y' },
+          { type: 'same', content: 'b' },
+          { type: 'same', content: 'c' },
+        ]);
+      });
+
+      it('does not let prefix and suffix overlap on repeated lines', () => {
+        const result = computeLcsDiff(['a', 'a', 'a'], ['a', 'a']);
+        expect(getDiffStats(result)).toEqual({ added: 0, removed: 1, unchanged: 2 });
+        expect(result).toHaveLength(3);
+      });
+    });
+
+    describe('large changed middle', () => {
+      /** Old and new versions read back out of a diff */
+      const sides = (diff: DiffLine[]) => ({
+        old: diff.filter(line => line.type !== 'add').map(line => line.content),
+        new: diff.filter(line => line.type !== 'remove').map(line => line.content),
+      });
+
+      /** Reference LCS length, independent of the implementation under test */
+      const lcsLength = (a: string[], b: string[]) => {
+        let prev = new Uint16Array(b.length + 1);
+        let curr = new Uint16Array(b.length + 1);
+        for (let i = 1; i <= a.length; i++) {
+          for (let j = 1; j <= b.length; j++) {
+            curr[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], curr[j - 1]);
+          }
+          [prev, curr] = [curr, prev];
+        }
+        return prev[b.length];
+      };
+
+      it('finds the few edits when both ends of a long file change', () => {
+        // Differing first and last lines leave nothing to trim, so the middle is
+        // 2500 x 2501 lines (> 4M table cells).
+        const oldLines = Array.from({ length: 2_500 }, (_, i) => `L${i}`);
+        const newLines = ['N', ...oldLines.slice(0, -1), 'M'];
+
+        const result = computeLcsDiff(oldLines, newLines);
+
+        expect(getDiffStats(result)).toEqual({ added: 2, removed: 1, unchanged: 2_499 });
+        expect(result).toHaveLength(2_502);
+        expect(result[0]).toEqual({ type: 'add', content: 'N' });
+        expect(result[1]).toEqual({ type: 'same', content: 'L0' });
+        expect(result.slice(-2)).toEqual([
+          { type: 'remove', content: 'L2499' },
+          { type: 'add', content: 'M' },
+        ]);
+      });
+
+      it('keeps the diff minimal for scattered edits past the table cap', () => {
+        // Deterministic LCG so a failure is reproducible
+        let seed = 42;
+        const random = (below: number) => {
+          seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+          return seed % below;
+        };
+        const oldLines = Array.from({ length: 2_100 }, (_, i) => `line ${i % 700}`);
+        const newLines = [...oldLines];
+        newLines[0] = 'first edited';
+        newLines[newLines.length - 1] = 'last edited';
+        for (let edit = 0; edit < 60; edit++) {
+          const at = random(newLines.length);
+          const kind = random(3);
+          if (kind === 0) newLines.splice(at, 1);
+          else if (kind === 1) newLines.splice(at, 0, `inserted ${edit}`);
+          else newLines[at] = `replaced ${edit}`;
+        }
+
+        const result = computeLcsDiff(oldLines, newLines);
+
+        expect(sides(result)).toEqual({ old: oldLines, new: newLines });
+        expect(getDiffStats(result).unchanged).toBe(lcsLength(oldLines, newLines));
+      });
+
+      it('falls back to remove-all then add-all when a huge middle mostly changed', () => {
+        const oldLines = Array.from({ length: 2_500 }, (_, i) => `old ${i}`);
+        const newLines = Array.from({ length: 2_501 }, (_, i) => `new ${i}`);
+
+        const start = performance.now();
+        const result = computeLcsDiff(oldLines, newLines);
+        const elapsed = performance.now() - start;
+
+        expect(elapsed).toBeLessThan(1_000);
+        expect(getDiffStats(result)).toEqual({ added: 2_501, removed: 2_500, unchanged: 0 });
+        expect(result.slice(0, 2_500).every(line => line.type === 'remove')).toBe(true);
+        expect(result.slice(2_500).every(line => line.type === 'add')).toBe(true);
+        expect(result[0]).toEqual({ type: 'remove', content: 'old 0' });
+        expect(result[2_500]).toEqual({ type: 'add', content: 'new 0' });
+      });
+
+      it('still runs the LCS just under the cap', () => {
+        // 1998 x 1999 middle -> 1999 * 2000 = 3,998,000 cells
+        const oldLines = Array.from({ length: 1_998 }, (_, i) => `L${i}`);
+        const newLines = ['N', ...oldLines.slice(0, -1), 'M'];
+
+        const result = computeLcsDiff(oldLines, newLines);
+
+        expect(getDiffStats(result)).toEqual({ added: 2, removed: 1, unchanged: 1_997 });
+      });
     });
   });
 

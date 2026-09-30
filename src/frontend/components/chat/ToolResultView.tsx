@@ -7,16 +7,19 @@ import type {
   RenderingContentBlock,
 } from '../../../shared/protocol/types/content';
 import { usePreferences } from '../../hooks/usePreferences';
-import { useApp } from '../../hooks/useApp';
+import { useApiDefinitions } from '../../hooks/useApp';
 import { getApiDefinitionIcon } from '../../lib/apiTypeUtils';
+import { tailPreview } from '../../lib/messageFormatters';
 import { useMinionChatOverlay } from './MinionChatOverlayContext';
 import BackstageView from './BackstageView';
 import TextGroupView from './TextGroupView';
 import { InjectedFilesList } from './InjectedFilesList';
+import CopyButton from '../ui/CopyButton';
 import Modal from '../ui/Modal';
 
 export interface ToolResultViewProps {
   block: ToolResultRenderBlock;
+  disableMath?: boolean;
 }
 
 /**
@@ -47,15 +50,17 @@ function ModelDeliveryBadge({
  * and complex results with nested content (e.g., minion sub-agent work).
  *
  * Simple results: collapsible pre block with renderedContent/content.
- * Complex results: collapsible view with tool_info, activity groups, and final result box.
- *
- * Auto-expands when status is 'running', collapses when 'complete'.
+ * Complex results: a one-line header that opens a modal with tool_info, the
+ * activity groups and the final result box. Nothing opens on its own; while
+ * the tool runs the header shows its latest activity.
  */
-export default function ToolResultView({ block }: ToolResultViewProps) {
+export default function ToolResultView({ block, disableMath }: ToolResultViewProps) {
   const hasGroups = block.renderingGroups && block.renderingGroups.length > 0;
 
   if (hasGroups) {
-    return <ComplexToolResult block={block} groups={block.renderingGroups!} />;
+    return (
+      <ComplexToolResult block={block} groups={block.renderingGroups!} disableMath={disableMath} />
+    );
   }
 
   return <SimpleToolResult block={block} />;
@@ -188,14 +193,16 @@ function getLastActivityPreview(groups: RenderingBlockGroup[]): string {
 function ComplexToolResult({
   block,
   groups,
+  disableMath,
 }: {
   block: ToolResultRenderBlock;
   groups: RenderingBlockGroup[];
+  disableMath?: boolean;
 }) {
   const isRunning = block.status === 'running';
   const [showModal, setShowModal] = useState(false);
   const { iconOnRight } = usePreferences();
-  const { apiDefinitions } = useApp();
+  const apiDefinitions = useApiDefinitions();
   const overlayCtx = useMinionChatOverlay();
 
   // Extract tool_info block from first group (if present)
@@ -210,7 +217,7 @@ function ComplexToolResult({
   const hasResult = !isRunning && block.content;
 
   const defaultIcon = block.icon ?? '🤖';
-  const previewText = getLastActivityPreview(activityGroups);
+  const previewText = tailPreview(getLastActivityPreview(activityGroups));
   const lastIcon = getLastBlockIcon(activityGroups);
   const toolCost = block.tokenTotals?.cost;
   const displayLabel = toolInfo?.displayName ?? toolInfo?.persona;
@@ -333,13 +340,14 @@ function ComplexToolResult({
                           key={`backstage-${idx}`}
                           blocks={group.blocks}
                           isToolGenerated={group.isToolGenerated}
+                          disableMath={disableMath}
                         />
                       );
                     }
                     if (group.category === 'text') {
                       return (
                         <div key={`text-${idx}`}>
-                          <TextGroupView blocks={group.blocks} />
+                          <TextGroupView blocks={group.blocks} disableMath={disableMath} />
                         </div>
                       );
                     }
@@ -383,20 +391,12 @@ function ComplexToolResult({
                     💬 View Chat
                   </button>
                 )}
-                <button
-                  onClick={async e => {
-                    e.stopPropagation();
-                    try {
-                      await navigator.clipboard.writeText(JSON.stringify(block, null, 2));
-                    } catch {
-                      // Silently fail if clipboard access denied
-                    }
-                  }}
-                  className="text-xs text-gray-400 hover:text-gray-600"
+                <CopyButton
+                  getText={() => JSON.stringify(block, null, 2)}
+                  label="📋 Copy JSON"
                   title="Copy tool result data as JSON"
-                >
-                  📋 Copy JSON
-                </button>
+                  className="text-xs text-gray-400 hover:text-gray-600"
+                />
               </div>
             </div>
           </div>
@@ -422,7 +422,7 @@ function extractToolInfo(groups: RenderingBlockGroup[]): ToolInfoRenderBlock | u
  * the collapsed header bar or activity groups. Used by "Expand Minions" toggle.
  */
 export function FocusedMinionView({ block }: { block: ToolResultRenderBlock }) {
-  const { apiDefinitions } = useApp();
+  const apiDefinitions = useApiDefinitions();
 
   const groups = block.renderingGroups ?? [];
   const toolInfo = extractToolInfo(groups);

@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import ProjectSettingsView from '../ProjectSettingsView';
 import type { Project, APIDefinition } from '../../../../shared/protocol/types';
@@ -7,8 +8,10 @@ import type { Project, APIDefinition } from '../../../../shared/protocol/types';
 // Mock modules
 const mockNavigate = vi.fn();
 const mockShowDestructiveConfirm = vi.fn();
-const mockUpdateProject = vi.fn();
+const mockShowAlert = vi.fn();
+const mockUpdateProject = vi.fn(async (_updates: unknown) => true);
 const mockDeleteProject = vi.fn();
+const mockUseProjectArgs = vi.fn();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -19,8 +22,8 @@ vi.mock('react-router-dom', async () => {
 });
 
 vi.mock('../../../hooks/useApp', () => ({
-  useApp: () => ({
-    apiDefinitions: [
+  useApiDefinitions: () =>
+    [
       {
         id: 'api-1',
         name: 'Anthropic',
@@ -28,11 +31,12 @@ vi.mock('../../../hooks/useApp', () => ({
         apiKey: 'test-key',
       },
     ] as APIDefinition[],
-  }),
+  useModels: () => new Map(),
 }));
 
 vi.mock('../../../hooks/useAlert', () => ({
   useAlert: () => ({
+    showAlert: mockShowAlert,
     showDestructiveConfirm: mockShowDestructiveConfirm,
   }),
 }));
@@ -77,6 +81,21 @@ vi.mock('../../../client', () => ({
         displaySubtitle: 'Read/write VFS files (/memories readonly)',
         optionDefinitions: [],
       },
+      {
+        name: 'dummy',
+        displayName: 'DUMMY Hooks',
+        displaySubtitle: 'Mock-message hooks',
+        optionDefinitions: [
+          {
+            type: 'number',
+            id: 'hookContextDepth',
+            label: 'Hook Context Depth',
+            default: 0,
+            min: 0,
+            max: 50,
+          },
+        ],
+      },
     ]),
   },
 }));
@@ -104,12 +123,18 @@ const mockProject: Project = {
   lastUsedAt: new Date(),
 };
 
+// Set to hand the view a different project instance on the next render.
+let mockLoadedProject: Project | null = null;
+
 vi.mock('../../../hooks/useProject', () => ({
-  useProject: () => ({
-    project: mockProject,
-    updateProject: mockUpdateProject,
-    deleteProject: mockDeleteProject,
-  }),
+  useProject: (args: unknown) => {
+    mockUseProjectArgs(args);
+    return {
+      project: mockLoadedProject ?? mockProject,
+      updateProject: mockUpdateProject,
+      deleteProject: mockDeleteProject,
+    };
+  },
 }));
 
 vi.mock('../../../hooks/useDraftPersistence', () => ({
@@ -182,5 +207,174 @@ describe('ProjectSettingsView Memory Section', () => {
 
       expect(checkbox).toBeChecked();
     });
+  });
+});
+
+describe('ProjectSettingsView project loading', () => {
+  it('loads the project without its chat list', () => {
+    renderWithRouter();
+    expect(mockUseProjectArgs).toHaveBeenCalledWith({ projectId: 'project-1', withChats: false });
+  });
+});
+
+describe('ProjectSettingsView delete', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockShowDestructiveConfirm.mockResolvedValue(true);
+  });
+
+  async function clickDelete() {
+    fireEvent.click(screen.getByText('Danger Zone'));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Delete Project/ }));
+    });
+  }
+
+  it('navigates home only after the delete finishes', async () => {
+    let finishDelete: () => void = () => {};
+    mockDeleteProject.mockReturnValue(
+      new Promise<void>(resolve => {
+        finishDelete = resolve;
+      })
+    );
+    renderWithRouter();
+
+    await clickDelete();
+    expect(mockDeleteProject).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishDelete();
+    });
+    expect(mockNavigate).toHaveBeenCalledWith('/');
+  });
+
+  it('stays on the page and reports a failed delete', async () => {
+    mockDeleteProject.mockRejectedValue(new Error('backend gone'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderWithRouter();
+
+    await clickDelete();
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockShowAlert).toHaveBeenCalledWith('Error', 'Failed to delete project');
+    consoleError.mockRestore();
+  });
+
+  it('does nothing when the confirm is declined', async () => {
+    mockShowDestructiveConfirm.mockResolvedValue(false);
+    renderWithRouter();
+
+    await clickDelete();
+
+    expect(mockDeleteProject).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProjectSettingsView tool number options', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockProject.enabledTools = ['dummy'];
+    mockProject.toolOptions = { dummy: { hookContextDepth: 5 } };
+  });
+
+  afterEach(() => {
+    mockProject.enabledTools = [];
+    mockProject.toolOptions = undefined;
+  });
+
+  function renderSettings() {
+    return render(
+      <MemoryRouter>
+        <ProjectSettingsView projectId="project-1" />
+      </MemoryRouter>
+    );
+  }
+
+  it('clamps a value above max on blur and saves the clamped value', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    const input = (await screen.findByLabelText('Hook Context Depth')) as HTMLInputElement;
+
+    await user.clear(input);
+    await user.type(input, '99');
+    await user.tab();
+    expect(input.value).toBe('50');
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(mockUpdateProject).toHaveBeenCalledWith(
+      expect.objectContaining({ toolOptions: { dummy: { hookContextDepth: 50 } } })
+    );
+  });
+
+  it('backspace then type replaces the value', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    const input = (await screen.findByLabelText('Hook Context Depth')) as HTMLInputElement;
+
+    await user.type(input, '{Backspace}8');
+    expect(input.value).toBe('8');
+  });
+});
+
+describe('ProjectSettingsView form', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    mockLoadedProject = null;
+  });
+
+  it('saves only the fields it edits, then returns to the project', async () => {
+    const user = userEvent.setup();
+    renderWithRouter();
+
+    await user.click(screen.getByLabelText('Web Search'));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    const patch = mockUpdateProject.mock.calls[0][0];
+    expect(patch).toMatchObject({
+      webSearchEnabled: true,
+      apiDefinitionId: 'api-1',
+      modelId: 'claude-3-opus',
+      maxOutputTokens: 2048,
+      reasoningBudgetTokens: 2048,
+      temperature: null,
+    });
+    // Identity fields aren't the form's to write, so a rename elsewhere survives the save.
+    expect(patch).not.toHaveProperty('id');
+    expect(patch).not.toHaveProperty('name');
+    expect(patch).not.toHaveProperty('createdAt');
+    expect(patch).toHaveProperty('remoteVfsEncrypt', undefined);
+    expect(mockNavigate).toHaveBeenCalledWith('/project/project-1');
+  });
+
+  it('stays on the page with the edits when the save fails', async () => {
+    mockUpdateProject.mockResolvedValueOnce(false);
+    const user = userEvent.setup();
+    renderWithRouter();
+
+    await user.click(screen.getByLabelText('Web Search'));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(mockUpdateProject).toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Web Search')).toBeChecked();
+  });
+
+  it('reloads the form when a new project instance arrives', () => {
+    const { rerender } = renderWithRouter();
+    expect(screen.getByLabelText('Web Search')).not.toBeChecked();
+
+    mockLoadedProject = { ...mockProject, webSearchEnabled: true };
+    rerender(
+      <MemoryRouter>
+        <ProjectSettingsView projectId="project-1" />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByLabelText('Web Search')).toBeChecked();
   });
 });

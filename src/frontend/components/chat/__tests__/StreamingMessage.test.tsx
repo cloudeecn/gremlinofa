@@ -1,6 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import StreamingMessage from '../StreamingMessage';
+import { clearMarkdownCache, markdownCacheSize } from '../../../lib/markdownRenderer';
 import type { RenderingBlockGroup } from '../../../../shared/protocol/types/content';
 
 // Mock useIsMobile hook
@@ -153,7 +154,7 @@ describe('StreamingMessage', () => {
   });
 
   describe('text content rendering', () => {
-    it('renders raw text without markdown processing', () => {
+    it('renders markdown while streaming, like the finished message', () => {
       const groups: RenderingBlockGroup[] = [
         {
           category: 'text',
@@ -161,18 +162,18 @@ describe('StreamingMessage', () => {
         },
       ];
 
-      render(<StreamingMessage groups={groups} />);
+      const { container } = render(<StreamingMessage groups={groups} />);
 
-      // Should show raw markdown syntax, not rendered HTML
-      expect(screen.getByText('**bold** and _italic_')).toBeInTheDocument();
+      expect(container.querySelector('strong')).toHaveTextContent('bold');
+      expect(container.querySelector('em')).toHaveTextContent('italic');
     });
 
-    it('concatenates multiple text blocks', () => {
+    it('renders every text block', () => {
       const groups: RenderingBlockGroup[] = [
         {
           category: 'text',
           blocks: [
-            { type: 'text', text: 'First part ' },
+            { type: 'text', text: 'First part' },
             { type: 'text', text: 'Second part' },
           ],
         },
@@ -180,76 +181,53 @@ describe('StreamingMessage', () => {
 
       render(<StreamingMessage groups={groups} />);
 
-      expect(screen.getByText('First part Second part')).toBeInTheDocument();
+      expect(screen.getByText('First part')).toBeInTheDocument();
+      expect(screen.getByText('Second part')).toBeInTheDocument();
     });
 
-    it('applies whitespace-pre-wrap class for proper formatting', () => {
+    it('uses the finished message container on every screen size', () => {
+      for (const isMobile of [false, true]) {
+        vi.mocked(useIsMobile).mockReturnValue(isMobile);
+        const groups: RenderingBlockGroup[] = [
+          { category: 'text', blocks: [{ type: 'text', text: 'Hello' }] },
+        ];
+
+        const { container, unmount } = render(<StreamingMessage groups={groups} />);
+
+        expect(container.querySelector('[class*="rounded-2xl"]')).toBeNull();
+        expect(screen.getByText('Hello').closest('div.bg-transparent')).toBeInTheDocument();
+        unmount();
+      }
+    });
+
+    it('respects Disable Math', () => {
       const groups: RenderingBlockGroup[] = [
-        {
-          category: 'text',
-          blocks: [{ type: 'text', text: 'Line 1\nLine 2' }],
-        },
+        { category: 'text', blocks: [{ type: 'text', text: 'Energy: $E = mc^2$' }] },
       ];
 
-      const { container } = render(<StreamingMessage groups={groups} />);
+      const { container, rerender } = render(<StreamingMessage groups={groups} />);
+      expect(container.querySelector('.katex')).toBeInTheDocument();
 
-      // Find the element with whitespace-pre-wrap class
-      const textContainer = container.querySelector('.whitespace-pre-wrap');
-      expect(textContainer).toBeInTheDocument();
-      expect(textContainer?.textContent).toBe('Line 1\nLine 2');
+      rerender(<StreamingMessage groups={groups} disableMath />);
+      expect(container.querySelector('.katex')).toBeNull();
+      expect(screen.getByText(/\$E = mc\^2\$/)).toBeInTheDocument();
     });
 
-    it('applies desktop bubble styling', () => {
-      vi.mocked(useIsMobile).mockReturnValue(false);
-
+    it('does not store partial text in the markdown cache', () => {
+      clearMarkdownCache();
       const groups: RenderingBlockGroup[] = [
-        {
-          category: 'text',
-          blocks: [{ type: 'text', text: 'Hello' }],
-        },
-      ];
-
-      render(<StreamingMessage groups={groups} />);
-
-      const bubble = screen.getByText('Hello').closest('div[class*="rounded-2xl"]');
-      expect(bubble).toHaveClass('bg-gray-100');
-      expect(bubble).toHaveClass('shadow-sm');
-    });
-
-    it('applies mobile transparent styling', () => {
-      vi.mocked(useIsMobile).mockReturnValue(true);
-
-      const groups: RenderingBlockGroup[] = [
-        {
-          category: 'text',
-          blocks: [{ type: 'text', text: 'Hello' }],
-        },
+        { category: 'text', blocks: [{ type: 'text', text: 'partial reply' }] },
       ];
 
       render(<StreamingMessage groups={groups} />);
 
-      const bubble = screen.getByText('Hello').closest('div[class*="bg-transparent"]');
-      expect(bubble).toBeInTheDocument();
-    });
-
-    it('does not render text view when blocks are empty', () => {
-      const groups: RenderingBlockGroup[] = [
-        {
-          category: 'text',
-          blocks: [{ type: 'text', text: '' }],
-        },
-      ];
-
-      render(<StreamingMessage groups={groups} />);
-
-      // Should only show status text, no bubble
-      const bubbles = document.querySelectorAll('[class*="rounded-2xl bg-gray-100"]');
-      expect(bubbles.length).toBe(0);
+      expect(screen.getByText('partial reply')).toBeInTheDocument();
+      expect(markdownCacheSize()).toBe(0);
     });
   });
 
   describe('error content rendering', () => {
-    it('renders error blocks with warning icon', () => {
+    it('renders errors the same way as a finished message', () => {
       const groups: RenderingBlockGroup[] = [
         {
           category: 'error',
@@ -257,13 +235,14 @@ describe('StreamingMessage', () => {
         },
       ];
 
-      render(<StreamingMessage groups={groups} />);
+      const { container } = render(<StreamingMessage groups={groups} />);
 
-      expect(screen.getByText('⚠️')).toBeInTheDocument();
+      expect(screen.getByText('❌ Error')).toBeInTheDocument();
       expect(screen.getByText('API Error: Rate limited')).toBeInTheDocument();
+      expect(container.querySelector('.error-container')).toHaveClass('bg-red-50');
     });
 
-    it('renders multiple error blocks', () => {
+    it('lists every error once expanded', () => {
       const groups: RenderingBlockGroup[] = [
         {
           category: 'error',
@@ -275,25 +254,10 @@ describe('StreamingMessage', () => {
       ];
 
       render(<StreamingMessage groups={groups} />);
+      fireEvent.click(screen.getByText('❌ Error'));
 
       expect(screen.getByText('Error 1')).toBeInTheDocument();
       expect(screen.getByText('Error 2')).toBeInTheDocument();
-    });
-
-    it('applies error styling with red border', () => {
-      const groups: RenderingBlockGroup[] = [
-        {
-          category: 'error',
-          blocks: [{ type: 'error', message: 'Test error' }],
-        },
-      ];
-
-      render(<StreamingMessage groups={groups} />);
-
-      const errorBlock = screen.getByText('Test error').closest('div');
-      expect(errorBlock).toHaveClass('border-red-300');
-      expect(errorBlock).toHaveClass('bg-red-50');
-      expect(errorBlock).toHaveClass('text-red-700');
     });
   });
 

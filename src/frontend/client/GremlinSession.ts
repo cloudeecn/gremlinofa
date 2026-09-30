@@ -41,7 +41,7 @@ import type {
   StreamEndStatus,
   StreamEventEnvelope,
 } from '../../shared/protocol/protocol';
-import type { MessageAttachment } from '../../shared/protocol/types';
+import type { CarriedInjection, MessageAttachment } from '../../shared/protocol/types';
 import type { GremlinClient } from './GremlinClient';
 
 /**
@@ -70,6 +70,8 @@ export class GremlinSession {
    * pass the id back through.
    */
   private currentLoopId: LoopId | null = null;
+  /** The last loop whose `loop_ended` reached the handlers; a repeat is dropped */
+  private lastEndedLoopId: LoopId | null = null;
   private eventHandler: SessionEventHandler | null = null;
   private endHandler: SessionEndHandler | null = null;
   private errorHandler: ((error: Error) => void) | null = null;
@@ -163,8 +165,12 @@ export class GremlinSession {
    * up the live events. Resolves once the loop has been *started* — not
    * once it ends. Loop completion is signaled via the `loop_ended` event.
    */
-  async send(content: string, attachments?: MessageAttachment[]): Promise<void> {
-    await this.startLoop({ chatId: this.chatId, mode: 'send', content, attachments });
+  async send(
+    content: string,
+    attachments?: MessageAttachment[],
+    injection?: CarriedInjection
+  ): Promise<void> {
+    await this.startLoop({ chatId: this.chatId, mode: 'send', content, attachments, injection });
   }
 
   /**
@@ -315,7 +321,8 @@ export class GremlinSession {
    * `loop_started` / `loop_ended` events update `currentLoopId` and call
    * the registered `endHandler` so the hook's `loopPhase` state machine
    * stays in sync regardless of who started the loop (chat-view send vs.
-   * project-view startLoop).
+   * project-view startLoop). A `loop_ended` naming another loop than the
+   * tracked one is dropped before it reaches either handler.
    */
   private async consumeAttach(): Promise<void> {
     try {
@@ -340,6 +347,23 @@ export class GremlinSession {
           if (event.type === 'loop_started') {
             this.currentLoopId = event.loopId;
           } else if (event.type === 'loop_ended') {
+            // One loop per chat, so a `loop_ended` for another loop than the
+            // one being tracked is stale: attachChat queued it before its
+            // cache read, and the snapshot already shows the newer loop.
+            // Handling it would idle the chat and wipe the replayed tool
+            // groups the newer loop's deltas apply to.
+            if (this.currentLoopId !== null && event.loopId !== this.currentLoopId) {
+              console.debug('[GremlinSession] dropped stale loop_ended %s', event.loopId);
+              continue;
+            }
+            // A loop ends once; a second `loop_ended` for it (an older
+            // backend broadcasting a synthetic one after a thrown loop) would
+            // report the same error twice.
+            if (event.loopId === this.lastEndedLoopId) {
+              console.debug('[GremlinSession] dropped repeated loop_ended %s', event.loopId);
+              continue;
+            }
+            this.lastEndedLoopId = event.loopId;
             this.endHandler?.(event.status as StreamEndStatus, event.detail);
             this.currentLoopId = null;
           }

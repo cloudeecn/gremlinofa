@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import MessageBubble from '../MessageBubble';
 import type { Message } from '../../../../shared/protocol/types';
 import type { MessageBubbleProps } from '../types';
+import { gremlinClient } from '../../../client';
 
 // Mock hooks - use vi.hoisted() to handle hoisting properly
 const mockUseIsMobile = vi.hoisted(() => vi.fn());
@@ -75,10 +76,10 @@ function createProps(overrides: Partial<MessageBubbleProps> = {}): MessageBubble
   return {
     message: createMessage(),
     onAction: vi.fn(),
-    isVisible: true,
+    isHidden: false,
     onRegister: vi.fn(),
     onMeasureHeight: vi.fn(),
-    cachedHeight: undefined,
+    getHeight: () => undefined,
     ...overrides,
   };
 }
@@ -140,10 +141,10 @@ describe('MessageBubble', () => {
   });
 
   describe('Virtual Scrolling', () => {
-    it('renders placeholder div when not visible and cachedHeight exists', () => {
+    it('renders placeholder div when hidden and a height was measured', () => {
       const props = createProps({
-        isVisible: false,
-        cachedHeight: 150,
+        isHidden: true,
+        getHeight: () => 150,
       });
       const { container } = render(<MessageBubble {...props} />);
 
@@ -152,10 +153,10 @@ describe('MessageBubble', () => {
       expect(placeholder).toHaveStyle({ height: '150px' });
     });
 
-    it('placeholder has correct height from cachedHeight prop', () => {
+    it('placeholder takes its height from getHeight', () => {
       const props = createProps({
-        isVisible: false,
-        cachedHeight: 250,
+        isHidden: true,
+        getHeight: () => 250,
       });
       const { container } = render(<MessageBubble {...props} />);
 
@@ -165,8 +166,8 @@ describe('MessageBubble', () => {
 
     it('placeholder has aria-hidden attribute', () => {
       const props = createProps({
-        isVisible: false,
-        cachedHeight: 150,
+        isHidden: true,
+        getHeight: () => 150,
       });
       const { container } = render(<MessageBubble {...props} />);
 
@@ -176,8 +177,8 @@ describe('MessageBubble', () => {
 
     it('placeholder maintains proper spacing', () => {
       const props = createProps({
-        isVisible: false,
-        cachedHeight: 150,
+        isHidden: true,
+        getHeight: () => 150,
       });
       const { container } = render(<MessageBubble {...props} />);
 
@@ -185,10 +186,10 @@ describe('MessageBubble', () => {
       expect(placeholder).toHaveClass('mb-4', 'px-4');
     });
 
-    it('renders full content when visible', () => {
+    it('renders full content when not hidden', () => {
       const props = createProps({
-        isVisible: true,
-        cachedHeight: 150,
+        isHidden: false,
+        getHeight: () => 150,
         message: createMessage({
           content: {
             type: 'text',
@@ -201,10 +202,10 @@ describe('MessageBubble', () => {
       expect(screen.getByText('Full content visible')).toBeInTheDocument();
     });
 
-    it('renders full content when no cachedHeight', () => {
+    it('renders full content when hidden but never measured', () => {
       const props = createProps({
-        isVisible: false,
-        cachedHeight: undefined,
+        isHidden: true,
+        getHeight: () => undefined,
         message: createMessage({
           content: {
             type: 'text',
@@ -261,8 +262,8 @@ describe('MessageBubble', () => {
       expect(onRegister).toHaveBeenCalledWith('msg_test_123', null);
     });
 
-    it('ResizeObserver created when visible', () => {
-      const props = createProps({ isVisible: true });
+    it('ResizeObserver created when not hidden', () => {
+      const props = createProps({ isHidden: false });
 
       render(<MessageBubble {...props} />);
 
@@ -273,7 +274,7 @@ describe('MessageBubble', () => {
     it('ResizeObserver calls onMeasureHeight on height changes', () => {
       const onMeasureHeight = vi.fn();
       const props = createProps({
-        isVisible: true,
+        isHidden: false,
         onMeasureHeight,
       });
 
@@ -306,7 +307,7 @@ describe('MessageBubble', () => {
     });
 
     it('ResizeObserver disconnects when component unmounts', () => {
-      const props = createProps({ isVisible: true });
+      const props = createProps({ isHidden: false });
 
       const { unmount } = render(<MessageBubble {...props} />);
 
@@ -318,15 +319,15 @@ describe('MessageBubble', () => {
       expect(observerInstance!.disconnect).toHaveBeenCalled();
     });
 
-    it('ResizeObserver disconnects when becomes not visible', () => {
-      const props = createProps({ isVisible: true });
+    it('ResizeObserver disconnects when it becomes hidden', () => {
+      const props = createProps({ isHidden: false });
 
       const { rerender } = render(<MessageBubble {...props} />);
 
       const observerInstance = mockResizeObserverInstance;
       expect(observerInstance).not.toBeNull();
 
-      rerender(<MessageBubble {...props} isVisible={false} cachedHeight={150} />);
+      rerender(<MessageBubble {...props} isHidden getHeight={() => 150} />);
 
       expect(observerInstance!.disconnect).toHaveBeenCalled();
     });
@@ -428,9 +429,12 @@ describe('MessageBubble', () => {
       });
       const { container } = render(<MessageBubble {...props} />);
 
-      // Should render placeholder, not the tool result content
+      // Zero-height stub, not the tool result content — and no margin, so
+      // consecutive hidden tool results don't stack up as gaps
       const placeholder = container.querySelector('[aria-hidden="true"]');
       expect(placeholder).toBeInTheDocument();
+      expect(placeholder).not.toHaveClass('mb-4');
+      expect(placeholder).toBeEmptyDOMElement();
     });
 
     it('shows user messages in focus mode without metadata', () => {
@@ -461,6 +465,29 @@ describe('MessageBubble', () => {
       const { container } = render(<MessageBubble {...props} />);
 
       expect(container.querySelector('.w-full')).toBeInTheDocument();
+    });
+  });
+
+  describe('Attachments', () => {
+    it('fetches attachments once across hide/show cycles', async () => {
+      const attachment = { id: 'att_1', type: 'image', mimeType: 'image/png', data: 'AAAA' };
+      vi.mocked(gremlinClient.getAttachments).mockResolvedValue([attachment] as never);
+      const props = createProps({
+        message: createMessage({
+          content: { type: 'text', content: 'with image', attachmentIds: ['att_1'] },
+        }),
+      });
+
+      const { rerender } = render(<MessageBubble {...props} />);
+      await waitFor(() => expect(screen.getByAltText('Attachment')).toBeInTheDocument());
+
+      rerender(<MessageBubble {...props} isHidden getHeight={() => 150} />);
+      rerender(<MessageBubble {...props} isHidden={false} getHeight={() => 150} />);
+      rerender(<MessageBubble {...props} isHidden getHeight={() => 150} />);
+      rerender(<MessageBubble {...props} isHidden={false} getHeight={() => 150} />);
+
+      expect(screen.getByAltText('Attachment')).toBeInTheDocument();
+      expect(gremlinClient.getAttachments).toHaveBeenCalledTimes(1);
     });
   });
 });

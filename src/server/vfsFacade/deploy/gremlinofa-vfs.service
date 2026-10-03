@@ -8,7 +8,7 @@ Type=simple
 User=gremlinofa
 Group=gremlinofa
 WorkingDirectory=/opt/gremlinofa-vfs
-ExecStart=/usr/bin/node /opt/gremlinofa-vfs/dist/index.js
+ExecStart=/usr/bin/node /opt/gremlinofa-vfs/index.js
 Restart=on-failure
 RestartSec=5
 

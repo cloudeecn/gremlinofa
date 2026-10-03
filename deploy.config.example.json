@@ -1,0 +1,14 @@
+{
+  "frontend": {
+    "dest": "you@gremlin.example.com:/var/www/gremlinofa",
+    "exclude": [".well-known/"]
+  },
+  "server": {
+    "dest": "you@gremlin.example.com:/opt/gremlinofa-server",
+    "postDeploy": "npm install --omit=dev"
+  },
+  "vfs-server": {
+    "dest": "/opt/gremlinofa-vfs",
+    "postDeploy": "npm install --omit=dev"
+  }
+}

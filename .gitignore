@@ -25,5 +25,7 @@ dist-ssr
 *.sw?
 /.claude
 
-/deploy.sh
+/deploy.config.json
+/deploy.config.*.json
+!/deploy.config.example.json
 

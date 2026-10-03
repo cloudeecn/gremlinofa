@@ -208,21 +208,6 @@ describe('AssistantMessageBubble', () => {
       await expandInfoBar();
       expect(screen.getByTitle('Copy message')).toBeInTheDocument();
     });
-
-    it('renders without crashing in focus mode when renderingContent is missing', () => {
-      const props = createProps({
-        focusMode: true,
-        message: createMessage({
-          content: {
-            type: 'text',
-            content: 'Legacy message text',
-          },
-        }),
-      });
-      render(<AssistantMessageBubble {...props} />);
-
-      expect(screen.queryByTestId('text-group-view')).not.toBeInTheDocument();
-    });
   });
 
   describe('Action Buttons', () => {
@@ -464,82 +449,6 @@ describe('AssistantMessageBubble', () => {
 
       const textContainer = container.querySelector('.bg-transparent');
       expect(textContainer).toBeInTheDocument();
-    });
-  });
-
-  describe('Focus Mode', () => {
-    it('hides backstage groups in focus mode', () => {
-      const props = createProps({
-        focusMode: true,
-        message: createMessage({
-          content: {
-            type: 'text',
-            content: '',
-            renderingContent: [
-              {
-                category: 'backstage',
-                blocks: [{ type: 'thinking', thinking: 'Thinking...' }],
-              },
-              {
-                category: 'text',
-                blocks: [{ type: 'text', text: 'Response' }],
-              },
-            ],
-          },
-        }),
-      });
-      render(<AssistantMessageBubble {...props} />);
-
-      expect(screen.queryByTestId('backstage-view')).not.toBeInTheDocument();
-      expect(screen.getByTestId('text-group-view')).toBeInTheDocument();
-    });
-
-    it('hides metadata line in focus mode', () => {
-      const props = createProps({
-        focusMode: true,
-        message: createMessage({
-          timestamp: new Date('2024-01-01T12:00:00Z'),
-        }),
-      });
-      render(<AssistantMessageBubble {...props} />);
-
-      expect(screen.queryByText('2024-01-01')).not.toBeInTheDocument();
-      expect(screen.queryByTitle('Copy message')).not.toBeInTheDocument();
-    });
-
-    it('still shows error groups in focus mode', () => {
-      const props = createProps({
-        focusMode: true,
-        message: createMessage({
-          content: {
-            type: 'text',
-            content: '',
-            renderingContent: [
-              {
-                category: 'error',
-                blocks: [{ type: 'error', message: 'API Error' }],
-              },
-            ],
-          },
-        }),
-      });
-      render(<AssistantMessageBubble {...props} />);
-
-      expect(screen.getByTestId('error-block-view')).toBeInTheDocument();
-    });
-
-    it('shows metadata when focus mode is off', async () => {
-      const props = createProps({
-        focusMode: false,
-        message: createMessage({
-          timestamp: new Date('2024-01-01T12:00:00Z'),
-        }),
-      });
-      render(<AssistantMessageBubble {...props} />);
-
-      expect(screen.getByText('2024-01-01')).toBeInTheDocument();
-      await expandInfoBar();
-      expect(screen.getByTitle('Copy message')).toBeInTheDocument();
     });
   });
 });

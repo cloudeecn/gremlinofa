@@ -1,7 +1,7 @@
 import { useAppActions } from './useApp';
 import { useEffect, useState } from 'react';
 import { useStableCallback } from './useStableCallback';
-import { gremlinClient } from '../client';
+import { activeLoopsStore, gremlinClient } from '../client';
 import type { Chat, MessageAttachment, Project } from '../../shared/protocol/types';
 import { generateUniqueId } from '../../shared/protocol/idGenerator';
 import { showAlert } from '../lib/alerts';
@@ -67,6 +67,24 @@ export function useProject({
   useEffect(() => {
     let isCancelled = false;
 
+    // A running loop's chat rows replace the listed ones as they change. Rows
+    // that arrive while getChats is in flight win over its answer, which may
+    // have been read before them. Rows are never inserted or re-sorted.
+    const liveRows = new Map<string, Chat>();
+    const unsubscribeLiveRows = withChats
+      ? activeLoopsStore.onChatUpdated(chat => {
+          if (chat.projectId !== projectId) return;
+          liveRows.set(chat.id, chat);
+          setChats(prev => {
+            const index = prev.findIndex(c => c.id === chat.id);
+            if (index < 0) return prev;
+            const next = prev.slice();
+            next[index] = chat;
+            return next;
+          });
+        })
+      : undefined;
+
     const loadProjectData = async () => {
       console.debug('[useProject] Starting load sequence for:', projectId);
       setIsLoading(true);
@@ -86,7 +104,9 @@ export function useProject({
         if (!withChats) return;
 
         // 2. Load chats
-        const loadedChats = await gremlinClient.getChats(projectId);
+        const loadedChats = (await gremlinClient.getChats(projectId)).map(
+          chat => liveRows.get(chat.id) ?? chat
+        );
         if (isCancelled) return;
 
         console.debug('[useProject] Chats loaded, count:', loadedChats.length);
@@ -110,6 +130,7 @@ export function useProject({
 
     return () => {
       isCancelled = true;
+      unsubscribeLiveRows?.();
     };
   }, [projectId, withChats, notifyProjectLoaded, notifyChatsLoaded]);
 

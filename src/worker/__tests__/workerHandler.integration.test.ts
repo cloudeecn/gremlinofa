@@ -11,12 +11,13 @@
  * routing, stream_cancel propagation, and error envelope wrapping.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WorkerTransport } from '../../frontend/client/transports/worker';
 import { GremlinClient } from '../../frontend/client/GremlinClient';
 import { createWorkerHandler, type WorkerScope } from '../workerHandler';
 import type { GremlinServer } from '../../shared/engine/GremlinServer';
 import type { Project } from '../../shared/protocol/types';
+import { ProtocolError } from '../../shared/protocol/protocolError';
 
 // Valid 50-char base32 CEK (same one used in encryptionCore.test.ts).
 const TEST_CEK = 'abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst';
@@ -57,12 +58,14 @@ class BridgedFakeWorker {
     for (const l of [...this.workerListeners]) l(ev);
   }
 
-  addEventListener(_type: 'message', handler: (ev: MessageEvent) => void): void {
-    this.mainListeners.push(handler);
+  // Only 'message' carries traffic; the transport's 'error' / 'messageerror'
+  // listeners must not see it
+  addEventListener(type: string, handler: (ev: MessageEvent) => void): void {
+    if (type === 'message') this.mainListeners.push(handler);
   }
 
-  removeEventListener(_type: 'message', handler: (ev: MessageEvent) => void): void {
-    this.mainListeners = this.mainListeners.filter(l => l !== handler);
+  removeEventListener(type: string, handler: (ev: MessageEvent) => void): void {
+    if (type === 'message') this.mainListeners = this.mainListeners.filter(l => l !== handler);
   }
 
   terminate(): void {
@@ -186,6 +189,22 @@ describe('workerHandler (bridged integration)', () => {
   });
 
   // ---- streaming ----
+
+  it('still answers when the error data cannot be cloned', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const deliver = ctx.bridge.scope.postMessage;
+    // Clone like the real worker boundary, which throws DataCloneError
+    ctx.bridge.scope.postMessage = (msg: unknown) => deliver(structuredClone(msg));
+    vi.spyOn(ctx.server, 'handleRequest').mockRejectedValueOnce(
+      new ProtocolError('INTERNAL_ERROR', 'boom', { callback: () => {} })
+    );
+
+    await expect(ctx.client.getProjects()).rejects.toMatchObject({
+      code: 'INTERNAL_ERROR',
+      message: 'boom',
+    });
+    consoleError.mockRestore();
+  });
 
   it('dispatches subscribeActiveLoops as a stream (not one-shot)', async () => {
     const events: unknown[] = [];

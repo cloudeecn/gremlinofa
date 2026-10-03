@@ -34,25 +34,23 @@ function MessageList({
   onPendingToolAccept,
   suspendedAfterTools,
   onContinueAfterToolStop,
-  focusMode,
-  expandMinions,
   disableMath,
-  alwaysAutoScroll,
   snapshotLoading,
   dummyHookStatus,
   isClaudeAgentChat,
   ref,
 }: MessageListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const scrollContainerId = useId();
   const shouldAutoScrollRef = useRef(true);
   const prevScrollTopRef = useRef(0);
   const prevIsLoadingRef = useRef(isLoading);
 
-  // Virtual scrolling with 5 screen heights buffer. View toggles change message
-  // heights, so they reset the hidden set instead of leaving stale placeholders.
+  // Virtual scrolling with 5 screen heights buffer. Disable Math changes message
+  // heights, so it resets the hidden set instead of leaving stale placeholders.
   const { hiddenMessageIds, registerMessage, measureHeight, getHeight, getElement } =
-    useVirtualScroll(scrollContainerRef, 5, `${!!focusMode}|${!!disableMath}|${!!expandMinions}`);
+    useVirtualScroll(scrollContainerRef, 5, `${!!disableMath}`);
 
   // Mount a window of a long chat: the tail at first, grown by sentinels at
   // either end, moved anywhere by the scrubber
@@ -127,6 +125,22 @@ function MessageList({
     }
   }, [messages, streamingGroups, snapshotLoading, followingTail]);
 
+  // Follow the tail through height changes the effect above can't see: the
+  // dots and banners that toggle with loop state, content that settles after
+  // mount, and the composer or mobile keyboard shrinking the list.
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    const content = contentRef.current;
+    if (!container || !content || !followingTail || snapshotLoading) return;
+
+    const observer = new ResizeObserver(() => {
+      if (shouldAutoScrollRef.current) container.scrollTop = container.scrollHeight;
+    });
+    observer.observe(container);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [followingTail, snapshotLoading]);
+
   // When snapshot finishes, scroll to bottom — but only if the user was
   // already following the tail (auto-scroll active). Preserves scroll
   // position for users reading history on a spotty connection.
@@ -163,20 +177,6 @@ function MessageList({
     }
   }, [isLoading]);
 
-  // Disable auto-scroll in focus mode (reading back, not following live output)
-  useEffect(() => {
-    if (focusMode && !alwaysAutoScroll) {
-      shouldAutoScrollRef.current = false;
-    }
-  }, [focusMode, alwaysAutoScroll]);
-
-  // When always-auto-scroll is toggled on, re-enable and snap to bottom
-  useEffect(() => {
-    if (alwaysAutoScroll) {
-      handleJumpToLatest();
-    }
-  }, [alwaysAutoScroll, handleJumpToLatest]);
-
   // Track if user has scrolled up (disable auto-scroll). Scrolling never
   // re-renders the list: the scrubber tracks position on its own.
   const handleScroll = () => {
@@ -194,8 +194,6 @@ function MessageList({
     // Near the bottom of a window in history is not the live tail
     if (!followingTail) {
       shouldAutoScrollRef.current = false;
-    } else if (alwaysAutoScroll) {
-      shouldAutoScrollRef.current = true;
     } else if (scrolledUp) {
       shouldAutoScrollRef.current = isNearBottom;
     } else if (isNearBottom) {
@@ -212,7 +210,7 @@ function MessageList({
         onScroll={handleScroll}
         className="ios-scroll absolute inset-0 min-h-0 max-w-full scrollbar-none overflow-x-hidden overflow-y-auto overscroll-contain bg-white"
       >
-        <div className="py-4">
+        <div ref={contentRef} className="py-4">
           {/* Initial snapshot still replaying: nothing to show yet */}
           {snapshotLoading && messages.length === 0 && (
             <div className="flex justify-center py-8" data-testid="snapshot-loading">
@@ -234,8 +232,6 @@ function MessageList({
               onRegister={registerMessage}
               onMeasureHeight={measureHeight}
               getHeight={getHeight}
-              focusMode={focusMode}
-              expandMinions={expandMinions}
               disableMath={disableMath}
               isLastMessage={start + offset === messages.length - 1}
               isClaudeAgentChat={isClaudeAgentChat}
@@ -255,7 +251,6 @@ function MessageList({
               {isLoading && streamingGroups.length > 0 && (
                 <StreamingMessage
                   groups={streamingGroups}
-                  focusMode={focusMode}
                   disableMath={disableMath}
                   dummyHookStatus={dummyHookStatus}
                   expandedGroups={

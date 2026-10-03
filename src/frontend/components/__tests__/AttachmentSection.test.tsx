@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import type { AttachmentSection as AttachmentSectionType } from '../../../shared/protocol/types';
 import { AttachmentSection } from '../AttachmentSection';
 import { AttachmentManagerView } from '../AttachmentManagerView';
@@ -144,7 +145,7 @@ describe('AttachmentSection', () => {
     });
 
     it('does not recreate observers when the view re-renders', async () => {
-      render(<AttachmentManagerView />);
+      render(<AttachmentManagerView />, { wrapper: MemoryRouter });
       await waitFor(() => expect(observers).toHaveLength(sections.length));
 
       // The scroller is the observer root, so rootMargin measures against it

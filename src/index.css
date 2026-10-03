@@ -438,3 +438,29 @@ body {
 .animate-slide-up {
   animation: slide-up 0.3s ease-out;
 }
+
+/* Chat list entry whose chat has a running agent loop. Literal colors
+   (Tailwind green-300 / green-500): v4 only emits theme variables in use.
+   The ring is a box-shadow, so the breathing doesn't shift layout. */
+@keyframes running-border {
+  0%,
+  100% {
+    border-color: oklch(87.1% 0.15 154.449);
+    box-shadow: 0 0 0 0 oklch(72.3% 0.219 149.579 / 0);
+  }
+  50% {
+    border-color: oklch(72.3% 0.219 149.579);
+    box-shadow: 0 0 0 3px oklch(72.3% 0.219 149.579 / 0.25);
+  }
+}
+
+.animate-running-border {
+  border-color: oklch(72.3% 0.219 149.579);
+  animation: running-border 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-running-border {
+    animation: none;
+  }
+}

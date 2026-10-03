@@ -217,7 +217,7 @@ export class WebSocketTransportServer {
         result,
       });
     } catch (err) {
-      this.send(session, toErrorEnvelope(envelope.requestId, err));
+      this.sendError(session, envelope.requestId, err);
       // Drop connection on authentication failure — prevents any post-init
       // RPCs from sneaking through on the same socket.
       if (
@@ -260,7 +260,7 @@ export class WebSocketTransportServer {
         status: controller.signal.aborted ? 'aborted' : 'complete',
       });
     } catch (err) {
-      this.send(session, toErrorEnvelope(envelope.requestId, err));
+      this.sendError(session, envelope.requestId, err);
       this.send(session, {
         kind: 'stream_end',
         requestId: envelope.requestId,
@@ -282,6 +282,20 @@ export class WebSocketTransportServer {
   ): void {
     if (session.ws.readyState === WebSocket.OPEN) {
       session.ws.send(JSON.stringify(envelope, binaryReplacer));
+    }
+  }
+
+  /**
+   * The error reply must always arrive: a lost one leaves the caller waiting
+   * forever. `data` that JSON can't encode (BigInt, cycles) is dropped.
+   */
+  private sendError(session: ClientSession, requestId: string, err: unknown): void {
+    const envelope = toErrorEnvelope(requestId, err);
+    try {
+      this.send(session, envelope);
+    } catch (sendErr) {
+      console.error('[server] Error data for %s could not be sent: %o', requestId, sendErr);
+      this.send(session, { ...envelope, data: undefined });
     }
   }
 

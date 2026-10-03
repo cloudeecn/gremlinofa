@@ -345,9 +345,12 @@ export class LoopRegistry {
     this.recordPendingToolResultEvent(chatId, event);
 
     // Pipe chat title changes to the active-loops stream so the sidebar
-    // Running Loops section updates without a full re-fetch.
+    // Running Loops section updates without a full re-fetch, and the loop's
+    // chat rows so a project page's chat list shows live stats.
     if (event.type === 'chat_metadata_updated' && event.name !== undefined) {
       this.broadcast({ type: 'chat_title_changed', chatId, title: event.name });
+    } else if (event.type === 'chat_updated') {
+      this.broadcast({ type: 'chat_updated', chat: event.chat });
     }
 
     const set = this.chatSubscribers.get(chatId);

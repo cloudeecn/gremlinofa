@@ -12,25 +12,36 @@ import { WorkerTransport } from '../transports/worker';
  */
 class FakeWorker {
   public posted: unknown[] = [];
-  private listeners: ((ev: MessageEvent) => void)[] = [];
+  private listeners = new Map<string, ((ev: Event) => void)[]>();
   private terminated = false;
 
   postMessage(msg: unknown): void {
     if (this.terminated) throw new Error('worker terminated');
     this.posted.push(msg);
   }
-  addEventListener(_kind: 'message', listener: (ev: MessageEvent) => void): void {
-    this.listeners.push(listener);
+  addEventListener(kind: string, listener: (ev: Event) => void): void {
+    this.listeners.set(kind, [...(this.listeners.get(kind) ?? []), listener]);
   }
-  removeEventListener(_kind: 'message', listener: (ev: MessageEvent) => void): void {
-    this.listeners = this.listeners.filter(l => l !== listener);
+  removeEventListener(kind: string, listener: (ev: Event) => void): void {
+    this.listeners.set(
+      kind,
+      (this.listeners.get(kind) ?? []).filter(l => l !== listener)
+    );
+  }
+  listenerCount(kind: string): number {
+    return this.listeners.get(kind)?.length ?? 0;
   }
   terminate(): void {
     this.terminated = true;
   }
   simulateMessage(data: unknown): void {
     const ev = { data } as MessageEvent;
-    for (const l of this.listeners) l(ev);
+    for (const l of this.listeners.get('message') ?? []) l(ev);
+  }
+  /** What the browser fires when the worker script fails or throws. */
+  simulateError(fields: Partial<ErrorEvent> = {}): void {
+    const ev = { type: 'error', ...fields } as Event;
+    for (const l of this.listeners.get('error') ?? []) l(ev);
   }
 }
 
@@ -372,5 +383,77 @@ describe('WorkerTransport', () => {
     const terminate = vi.spyOn(worker, 'terminate');
     transport.dispose();
     expect(terminate).toHaveBeenCalled();
+  });
+
+  it('dispose() removes its error listeners', () => {
+    transport.dispose();
+    expect(worker.listenerCount('error')).toBe(0);
+    expect(worker.listenerCount('messageerror')).toBe(0);
+  });
+
+  it('logs an error raised after worker_ready without failing anything', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    worker.simulateError({ message: 'boom in a handler' });
+    expect(consoleError).toHaveBeenCalled();
+
+    const promise = transport.request('listProjects', {});
+    await Promise.resolve();
+    await Promise.resolve();
+    const envelope = worker.posted.find(
+      m => (m as { method?: string }).method === 'listProjects'
+    ) as { requestId: string };
+    worker.simulateMessage({ kind: 'response', requestId: envelope.requestId, result: [] });
+    await expect(promise).resolves.toEqual([]);
+    consoleError.mockRestore();
+  });
+});
+
+describe('WorkerTransport before worker_ready', () => {
+  it('fails every caller when the worker script errors before it is ready', async () => {
+    const worker = new FakeWorker();
+    const transport = new WorkerTransport(worker as unknown as Worker);
+    const configure = transport.configureWorker({ type: 'local' });
+    const init = transport.request('init', {});
+
+    worker.simulateError({
+      message: 'SyntaxError: Unexpected token',
+      filename: 'gremlinWorker.js',
+      lineno: 12,
+    });
+
+    await expect(configure).rejects.toThrow(
+      'Backend worker failed to start: SyntaxError: Unexpected token (gremlinWorker.js:12)'
+    );
+    await expect(init).rejects.toThrow('Backend worker failed to start');
+    // Later calls fail fast too
+    await expect(transport.request('generateNewCEK', {})).rejects.toThrow(
+      'Backend worker failed to start'
+    );
+  });
+
+  it('names a script that failed to load when the error carries no message', async () => {
+    const worker = new FakeWorker();
+    const transport = new WorkerTransport(worker as unknown as Worker);
+    const init = transport.request('init', {});
+    worker.simulateError();
+    await expect(init).rejects.toThrow('Backend worker failed to start: script failed to load');
+  });
+
+  it('dispose() rejects callers parked on the ready gate', async () => {
+    const worker = new FakeWorker();
+    const transport = new WorkerTransport(worker as unknown as Worker);
+    const init = transport.request('init', {});
+    transport.dispose();
+    await expect(init).rejects.toThrow('transport disposed');
+  });
+
+  it('dispose() rejects callers parked on the init gate', async () => {
+    const worker = new FakeWorker();
+    const transport = new WorkerTransport(worker as unknown as Worker);
+    worker.simulateMessage({ kind: 'worker_ready' });
+    const queued = transport.request('listProjects', {});
+    await Promise.resolve();
+    transport.dispose();
+    await expect(queued).rejects.toThrow('transport disposed');
   });
 });

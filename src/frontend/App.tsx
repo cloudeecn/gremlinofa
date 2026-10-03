@@ -1,13 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react';
-import {
-  HashRouter,
-  Outlet,
-  Routes,
-  Route,
-  useLocation,
-  useNavigate,
-  useParams,
-} from 'react-router-dom';
+import { HashRouter, Outlet, Routes, Route, useLocation, useParams } from 'react-router-dom';
 import { AppProvider } from './contexts/AppContext';
 import { AlertProvider } from './contexts/AlertProvider';
 import { ErrorProvider } from './contexts/ErrorProvider';
@@ -17,20 +9,24 @@ import { ErrorFloatingButton } from './components/ErrorFloatingButton';
 import Sidebar from './components/Sidebar';
 import SettingsPage from './components/SettingsPage';
 import DataManagerPage from './components/DataManagerPage';
-import { useApp, useAppStatus } from './hooks/useApp';
+import { useAppStatus } from './hooks/useApp';
 import { useIsMobile } from './hooks/useIsMobile';
 import { useOverlay } from './hooks/useOverlay';
 import ProjectView from './components/project/ProjectView';
 import ProjectSettingsView from './components/project/ProjectSettingsView';
-import VfsManagerView from './components/project/VfsManagerView';
+import VfsManagerView from './components/vfs/VfsManagerView';
+import { normalizePath } from './lib/vfsPath';
 import ChatView from './components/chat/ChatView';
 import { AttachmentManagerView } from './components/AttachmentManagerView';
+import HomePage from './components/HomePage';
 import { ConnectionStatusBanner } from './components/ConnectionStatusBanner';
+import { BootScreen } from './components/BootScreen';
+import { UpdateBanner } from './components/UpdateBanner';
 import { activeLoopsStore } from './client';
+import type { BootHandle } from './client/bootstrapClient';
 import { OOBEScreen } from './components/OOBEScreen';
 import { OOBEComplete } from './components/OOBEComplete';
-import { getCachedCEKString, getStorageConfig } from './lib/localStorageBoot';
-import { formatStorageDisplay, shouldShowStorageWarning } from './lib/formatBytes';
+import { getCachedCEKString } from './lib/localStorageBoot';
 
 // OOBE result type
 interface OOBEResult {
@@ -57,11 +53,11 @@ export function AppContent() {
   const [isDrawerSidebarMounted, setIsDrawerSidebarMounted] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [wasMobile, setWasMobile] = useState(isMobile);
-  const [isInitErrorDismissed, setIsInitErrorDismissed] = useState(false);
+  const [isBootScreenDismissed, setIsBootScreenDismissed] = useState(false);
 
   // No useNavigate here: under a non-data router it subscribes to the
   // location, and every navigation would re-render the shell.
-  const { isInitializing, initError } = useAppStatus();
+  const { isInitializing, initError, bootStep } = useAppStatus();
 
   // The running-loops stream can't wait for a Sidebar: on a phone the drawer's
   // Sidebar mounts only while open, and useChat reads the store's snapshot
@@ -110,7 +106,7 @@ export function AppContent() {
     () => (
       <Routes>
         <Route element={<RouteBoundary onMenuPress={openMobileSidebar} />}>
-          <Route path="/" element={<WelcomeScreen onMenuPress={openMobileSidebar} />} />
+          <Route path="/" element={<HomePage onMenuPress={openMobileSidebar} />} />
           <Route
             path="/project/:projectId"
             element={<ProjectViewRoute onMenuPress={openMobileSidebar} />}
@@ -133,23 +129,14 @@ export function AppContent() {
     [openMobileSidebar]
   );
 
-  // Show loading screen while initializing storage
-  if (isInitializing) {
+  if ((isInitializing || initError) && !isBootScreenDismissed) {
     return (
-      <div className="flex h-dvh items-center justify-center bg-gray-50">
-        <div className="text-center">
-          <div className="mb-4 text-4xl">⏳</div>
-          <h2 className="mb-2 text-xl font-semibold text-gray-800">
-            Initializing Gremlin Of The Friday Afternoon
-          </h2>
-          <p className="text-gray-600">Setting up storage...</p>
-        </div>
-      </div>
+      <BootScreen
+        step={bootStep}
+        error={initError}
+        onDismiss={() => setIsBootScreenDismissed(true)}
+      />
     );
-  }
-
-  if (initError && !isInitErrorDismissed) {
-    return <InitErrorScreen message={initError} onDismiss={() => setIsInitErrorDismissed(true)} />;
   }
 
   return (
@@ -218,111 +205,6 @@ export function AppContent() {
   );
 }
 
-function InitErrorScreen({ message, onDismiss }: { message: string; onDismiss: () => void }) {
-  const navigate = useNavigate();
-  return (
-    <div className="flex h-dvh items-center justify-center bg-gray-50 p-4">
-      <div role="alert" className="max-w-md text-center">
-        <div className="mb-4 text-4xl">🙀</div>
-        <h2 className="mb-2 text-xl font-semibold text-gray-800">Couldn't start</h2>
-        <p className="mb-6 break-words text-gray-600">{message}</p>
-        <div className="flex flex-col items-center gap-3">
-          <button
-            onClick={() => window.location.reload()}
-            className="rounded-lg bg-gray-900 px-6 py-3 text-white transition-colors hover:bg-gray-800"
-          >
-            Reload
-          </button>
-          {/* Escape hatch: server mode's Disconnect Backend only clears this
-            device, so it works without a backend. Worker-side Detach calls
-            clearCek, which waits on the init gate forever, so no button there. */}
-          {getStorageConfig().type === 'server' && (
-            <button
-              onClick={() => {
-                onDismiss();
-                navigate('/data');
-              }}
-              className="text-sm text-gray-600 underline hover:text-gray-800"
-            >
-              Open Data Manager
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Welcome screen component
-function WelcomeScreen({ onMenuPress }: { onMenuPress?: () => void }) {
-  const { storageQuota, refreshStorageQuota } = useApp();
-
-  useEffect(() => {
-    refreshStorageQuota();
-  }, [refreshStorageQuota]);
-
-  // Calculate storage display info (irrelevant in server mode — already using remote storage)
-  const isServerMode = getStorageConfig().type === 'server';
-  const storageInfo =
-    !isServerMode && storageQuota
-      ? formatStorageDisplay(storageQuota.usage, storageQuota.quota)
-      : null;
-  const showWarning =
-    !isServerMode && storageQuota
-      ? shouldShowStorageWarning(storageQuota.usage, storageQuota.quota)
-      : false;
-
-  return (
-    <div className="flex flex-1 items-center justify-center bg-white">
-      <div className="p-10 text-center">
-        <h1 className="mb-3 text-3xl font-semibold text-gray-800">
-          Welcome to Gremlin Of The Friday Afternoon
-        </h1>
-        <p className="hidden text-lg text-gray-600 md:block">
-          Create or select a project to get started
-        </p>
-
-        {/* Storage quota display */}
-        {storageInfo && (
-          <div className="mt-4">
-            <p className={`text-sm ${storageInfo.colorClass}`}>💾 Storage: {storageInfo.text}</p>
-          </div>
-        )}
-
-        {/* Storage warning */}
-        {showWarning && (
-          <div className="mx-auto mt-4 max-w-md rounded-lg border border-yellow-300 bg-yellow-50 p-3 text-left">
-            <p className="text-sm text-yellow-800">
-              <span className="mr-1">⚠️</span>
-              If you are seriously using this, please consider migrating to{' '}
-              <a
-                className="text-blue-600"
-                href="https://github.com/cloudeecn/gremlinofa/blob/main/storage-backend/README.md"
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                self hosted remote storage
-              </a>{' '}
-              for data persistance
-            </p>
-          </div>
-        )}
-
-        {onMenuPress && (
-          <p>
-            <button
-              onClick={onMenuPress}
-              className="mt-6 rounded-lg bg-gray-900 px-6 py-3 text-white transition-colors hover:bg-gray-800 md:hidden"
-            >
-              Get started
-            </button>
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /**
  * One error boundary around whichever page is showing, so a page that throws
  * leaves the sidebar usable. Reads the location itself (AppContent must not
@@ -364,16 +246,11 @@ function ProjectSettingsViewRoute({ onMenuPress }: { onMenuPress?: () => void })
 function VfsManagerViewRoute() {
   const { projectId, '*': splatPath } = useParams<{ projectId: string; '*': string }>();
   if (!projectId) return null;
-  // Convert splat path to VFS path (add leading slash if present)
-  const initialPath = splatPath ? `/${splatPath}` : undefined;
-  // Keyed by project too: switching projects on the same path must not carry
-  // the old project's selection or open editor over to the new adapter.
+  // The splat is the selection; the view rewrites it as the user picks
+  // entries, so it must not remount on a path change. A project switch does
+  // remount: the tree and any open editor belong to the old adapter.
   return (
-    <VfsManagerView
-      key={`${projectId}:${initialPath ?? ''}`}
-      projectId={projectId}
-      initialPath={initialPath}
-    />
+    <VfsManagerView key={projectId} projectId={projectId} path={normalizePath(splatPath ?? '')} />
   );
 }
 
@@ -387,7 +264,7 @@ function ChatViewRoute({ onMenuPress }: { onMenuPress?: () => void }) {
   return <ChatView key={chatId} chatId={chatId} onMenuPress={onMenuPress} />;
 }
 
-function App() {
+function App({ boot }: { boot: BootHandle }) {
   // Decide OOBE-vs-launched up front by reading the cached CEK out of
   // localStorage. The main thread doesn't hold an encryption instance —
   // the worker owns the per-server encryption built from the cek posted
@@ -424,7 +301,7 @@ function App() {
   } else {
     // Normal app - CEK exists, initialize and run
     screen = (
-      <AppProvider>
+      <AppProvider boot={boot}>
         <HashRouter>
           <AppContent />
         </HashRouter>
@@ -436,7 +313,10 @@ function App() {
   // error boundary and in-page dialogs too
   return (
     <ErrorProvider>
-      <AlertProvider>{screen}</AlertProvider>
+      <AlertProvider>
+        {screen}
+        <UpdateBanner />
+      </AlertProvider>
       <ErrorFloatingButton />
     </ErrorProvider>
   );

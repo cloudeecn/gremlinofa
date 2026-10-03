@@ -67,13 +67,36 @@ export class IndexedDBAdapter implements StorageAdapter {
     // Open IndexedDB
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+      let isBlocked = false;
 
       request.onerror = () => {
-        reject(new Error('Failed to open IndexedDB'));
+        reject(new Error(`Failed to open IndexedDB: ${request.error?.message ?? 'unknown error'}`));
+      };
+
+      // A tab still running an older build holds the database open. Waiting
+      // for it would hang boot until that tab closes, with nothing saying why.
+      request.onblocked = () => {
+        isBlocked = true;
+        reject(
+          new Error(
+            'Database upgrade blocked by another open GremlinOFA tab. Close other tabs and reload.'
+          )
+        );
       };
 
       request.onsuccess = () => {
-        this.db = request.result;
+        const db = request.result;
+        if (isBlocked) {
+          // The other tab let go after this boot already gave up
+          db.close();
+          return;
+        }
+        // Let a newer build in another tab upgrade instead of blocking it
+        db.onversionchange = () => {
+          db.close();
+          this.db = null;
+        };
+        this.db = db;
         resolve();
       };
 

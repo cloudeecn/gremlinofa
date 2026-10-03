@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { GremlinServer, ProtocolError } from '../GremlinServer';
 import { LoopRegistry } from '../LoopRegistry';
 import { ChatRunner } from '../ChatRunner';
-import type { BackendDeps } from '../backendDeps';
+import type { BackendDeps, CreateVfsAdapter } from '../backendDeps';
+import { IndexedDBAdapter } from '../../../worker/adapters/IndexedDBAdapter';
+import { CachedStorageAdapter } from '../../services/storage/adapters/CachedStorageAdapter';
 import type { APIService } from '../../services/api/apiService';
 import type { EncryptionCore } from '../../services/encryption/encryptionCore';
 import { createVfsService } from '../../services/vfs/vfsService';
@@ -277,6 +279,20 @@ describe('GremlinServer', () => {
       expect(result).toEqual([]);
     });
 
+    it("deleteMessageAndAfter recounts a chat's messages after the delete", async () => {
+      vi.mocked(storage.getChat).mockResolvedValue(mkChat('c1', 'p1'));
+      vi.mocked(storage.getMessageCount).mockResolvedValue(3);
+      await server.handleRequest('deleteMessageAndAfter', { chatId: 'c1', messageId: 'm4' });
+      expect(storage.deleteMessageAndAfter).toHaveBeenCalledWith('c1', 'm4');
+      expect(storage.patchChat).toHaveBeenCalledWith('c1', { messageCount: 3 });
+    });
+
+    it('deleteMessageAndAfter leaves minion chats uncounted', async () => {
+      await server.handleRequest('deleteMessageAndAfter', { chatId: 'minion_1', messageId: 'm4' });
+      expect(storage.deleteMessageAndAfter).toHaveBeenCalledWith('minion_1', 'm4');
+      expect(storage.patchChat).not.toHaveBeenCalled();
+    });
+
     it('discoverModels resolves the API def first then calls apiService', async () => {
       const apiDef = mkAPIDef('api1');
       vi.mocked(storage.getAPIDefinition).mockResolvedValue(apiDef);
@@ -346,6 +362,45 @@ describe('GremlinServer', () => {
       await expect(server.handleRequest('init', { cek: candidateCek })).rejects.toMatchObject({
         code: 'CEK_MISMATCH',
       });
+    });
+
+    it('runs concurrent first inits one at a time, building storage once', async () => {
+      const deferred = new GremlinServer(null);
+      deferred.setBootstrapStorageConfig({ type: 'local' });
+      const createStorageAdapter = vi.fn(() => new CachedStorageAdapter(new IndexedDBAdapter()));
+      deferred.setBootstrapAdapterFactories({
+        createStorageAdapter,
+        createVfsAdapter: vi.fn() as unknown as CreateVfsAdapter,
+      });
+      const cek = 'abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst';
+
+      const results = await Promise.all([
+        deferred.handleRequest('init', { cek }),
+        deferred.handleRequest('init', { cek }),
+      ]);
+
+      expect(results.map(r => r.ok)).toEqual([true, true]);
+      expect(createStorageAdapter).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a queued init retry after the first one fails', async () => {
+      const deferred = new GremlinServer(null);
+      // No storage config posted yet: the first init fails
+      await expect(
+        deferred.handleRequest('init', {
+          cek: 'abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst',
+        })
+      ).rejects.toMatchObject({ code: 'NOT_INITIALIZED' });
+      deferred.setBootstrapStorageConfig({ type: 'local' });
+      deferred.setBootstrapAdapterFactories({
+        createStorageAdapter: () => new CachedStorageAdapter(new IndexedDBAdapter()),
+        createVfsAdapter: vi.fn() as unknown as CreateVfsAdapter,
+      });
+      await expect(
+        deferred.handleRequest('init', {
+          cek: 'abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst',
+        })
+      ).resolves.toMatchObject({ ok: true });
     });
 
     it('treats re-init with the same CEK as idempotent', async () => {

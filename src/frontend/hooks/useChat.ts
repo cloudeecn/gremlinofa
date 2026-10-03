@@ -273,6 +273,12 @@ export interface UseChatReturn {
    * rejects with the change rolled back.
    */
   updateAgentConfig: (agentConfig: ChatAgentConfig | undefined) => Promise<void>;
+  /**
+   * Attach a DUMMY hook by name (`/hooks/<name>.js` in the chat's namespace),
+   * or detach with `null`. A running loop keeps the hook it started with.
+   * Rejects with the change rolled back.
+   */
+  setActiveHook: (hookName: string | null) => Promise<void>;
   /** Rejects (with the name rolled back) when the backend refuses it. */
   updateChatName: (chatId: string, name: string) => Promise<void>;
   /**
@@ -1370,6 +1376,27 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     callbacksRef.current.onChatMetadataChanged?.(merged.id, merged);
   };
 
+  const setActiveHook = async (hookName: string | null) => {
+    if (!chat) return;
+
+    const touchedBefore = pickChatFields(chat, ['activeHook']);
+    setChat(prev => (prev ? { ...prev, activeHook: hookName ?? undefined } : prev));
+
+    let merged: Chat;
+    try {
+      merged = hookName
+        ? await gremlinClient.patchChat(chat.id, { activeHook: hookName }, { touch: true })
+        : await gremlinClient.patchChat(chat.id, {}, { touch: true, unset: ['activeHook'] });
+    } catch (err) {
+      setChat(prev => (prev ? { ...prev, ...touchedBefore } : prev));
+      throw err;
+    }
+
+    if (!verifyChatId(chat.id, 'setActiveHook')) return;
+    setChat(merged);
+    callbacksRef.current.onChatMetadataChanged?.(merged.id, merged);
+  };
+
   const updateChatName = async (incomingChatId: string, name: string) => {
     if (!verifyChatId(incomingChatId, 'updateChatName')) return;
     if (!chat || !name.trim()) return;
@@ -1510,6 +1537,7 @@ export function useChat({ chatId, callbacks }: UseChatProps): UseChatReturn {
     forkChat,
     overrideModel,
     updateAgentConfig,
+    setActiveHook,
     updateChatName,
     resolvePendingToolCalls,
     rollbackToMessage,

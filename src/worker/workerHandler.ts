@@ -91,7 +91,7 @@ export function createWorkerHandler(scope: WorkerScope): GremlinServer {
         result,
       });
     } catch (err) {
-      postEnvelope(toErrorEnvelope(envelope.requestId, err));
+      postError(envelope.requestId, err);
     }
   }
 
@@ -119,7 +119,7 @@ export function createWorkerHandler(scope: WorkerScope): GremlinServer {
         status: controller.signal.aborted ? 'aborted' : 'complete',
       });
     } catch (err) {
-      postEnvelope(toErrorEnvelope(envelope.requestId, err));
+      postError(envelope.requestId, err);
       postEnvelope({
         kind: 'stream_end',
         requestId: envelope.requestId,
@@ -128,6 +128,20 @@ export function createWorkerHandler(scope: WorkerScope): GremlinServer {
       });
     } finally {
       activeStreams.delete(envelope.requestId);
+    }
+  }
+
+  /**
+   * The error reply must always arrive: a lost one leaves the caller waiting
+   * forever. `data` that can't be structured-cloned is dropped.
+   */
+  function postError(requestId: string, err: unknown): void {
+    const envelope = toErrorEnvelope(requestId, err);
+    try {
+      postEnvelope(envelope);
+    } catch (postErr) {
+      console.error('[worker] Error data for %s could not be posted: %o', requestId, postErr);
+      postEnvelope({ ...envelope, data: undefined });
     }
   }
 

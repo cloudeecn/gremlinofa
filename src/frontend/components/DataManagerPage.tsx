@@ -4,6 +4,7 @@
  */
 
 import { useState, useEffect, useRef, useSyncExternalStore } from 'react';
+import { Link } from 'react-router-dom';
 import { useApp } from '../hooks/useApp';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { showAlert, showDestructiveConfirm } from '../lib/alerts';
@@ -206,18 +207,29 @@ export default function DataManagerPage({ onMenuPress }: DataManagerPageProps) {
       <div className="border-b border-gray-200 bg-white">
         <div className="safe-area-inset-top" />
         <div className="flex h-14 items-center px-4">
-          {isMobile && onMenuPress && (
+          {isMobile && onMenuPress ? (
             <button
               onClick={onMenuPress}
               aria-label="Open menu"
-              className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
+              className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
             >
               <span className="text-2xl text-gray-700">☰</span>
             </button>
+          ) : (
+            // Balances the Home link so the title stays centered
+            <div className="-ml-2 w-11 shrink-0" />
           )}
-          <h1 className="flex-1 text-center text-lg font-semibold text-gray-900">Manage Data</h1>
-          {/* Spacer for centering on mobile */}
-          {isMobile && onMenuPress && <div className="w-11" />}
+          <h1 className="min-w-0 flex-1 truncate text-center text-lg font-semibold text-gray-900">
+            Manage Data
+          </h1>
+          <Link
+            to="/"
+            aria-label="Home"
+            title="Home"
+            className="-mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-gray-100"
+          >
+            <span className="text-xl">🏠</span>
+          </Link>
         </div>
       </div>
 

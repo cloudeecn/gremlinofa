@@ -40,7 +40,9 @@ describe('RemoteStorageAdapter', () => {
 
       await adapter.initialize();
 
-      expect(mockFetch).toHaveBeenCalledWith(`${mockBaseUrl}/health`);
+      expect(mockFetch).toHaveBeenCalledWith(`${mockBaseUrl}/health`, {
+        signal: expect.any(AbortSignal),
+      });
     });
 
     it('should use relative path when baseUrl is empty', async () => {
@@ -52,7 +54,7 @@ describe('RemoteStorageAdapter', () => {
 
       await relativeAdapter.initialize();
 
-      expect(mockFetch).toHaveBeenCalledWith('/health');
+      expect(mockFetch).toHaveBeenCalledWith('/health', { signal: expect.any(AbortSignal) });
     });
 
     it('should strip trailing slash from baseUrl', async () => {
@@ -68,7 +70,9 @@ describe('RemoteStorageAdapter', () => {
 
       await trailingSlashAdapter.initialize();
 
-      expect(mockFetch).toHaveBeenCalledWith('https://example.com/health');
+      expect(mockFetch).toHaveBeenCalledWith('https://example.com/health', {
+        signal: expect.any(AbortSignal),
+      });
     });
   });
 
@@ -80,7 +84,9 @@ describe('RemoteStorageAdapter', () => {
       });
 
       await expect(adapter.initialize()).resolves.toBeUndefined();
-      expect(mockFetch).toHaveBeenCalledWith(`${mockBaseUrl}/health`);
+      expect(mockFetch).toHaveBeenCalledWith(`${mockBaseUrl}/health`, {
+        signal: expect.any(AbortSignal),
+      });
     });
 
     it('should throw on health check HTTP error', async () => {
@@ -105,6 +111,14 @@ describe('RemoteStorageAdapter', () => {
       mockFetch.mockRejectedValueOnce(new Error('Network failure'));
 
       await expect(adapter.initialize()).rejects.toThrow('Failed to connect to storage backend');
+    });
+
+    it('should name the host when the health check times out', async () => {
+      mockFetch.mockRejectedValueOnce(new DOMException('signal timed out', 'TimeoutError'));
+
+      await expect(adapter.initialize()).rejects.toThrow(
+        `Remote storage at ${mockBaseUrl} didn't answer within 15s`
+      );
     });
   });
 

@@ -12,10 +12,10 @@ vi.mock('../../hooks/useApp', () => ({
 vi.mock('../../hooks/useAlert', () => ({ useAlert: () => ({ showAlert: vi.fn() }) }));
 vi.mock('../activeLoops/RunningLoopsSection', () => ({ default: () => null }));
 
-function renderSidebar() {
+function renderSidebar(onClose?: () => void) {
   return render(
     <MemoryRouter>
-      <Sidebar />
+      <Sidebar onClose={onClose} />
     </MemoryRouter>
   );
 }
@@ -62,6 +62,25 @@ describe('Sidebar', () => {
     expect(mockSaveProject).toHaveBeenCalledTimes(1);
 
     await act(async () => finishSave());
+  });
+
+  it('closes the drawer once a new project is saved', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false }))
+    );
+    mockSaveProject.mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    renderSidebar(onClose);
+
+    fireEvent.click(screen.getByRole('button', { name: '+ New Project' }));
+    fireEvent.change(screen.getByPlaceholderText('Project name'), {
+      target: { value: 'Garden' },
+    });
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Create' })));
+
+    expect(mockSaveProject).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('opens with a notch spacer, so the header clears the iOS status bar', () => {

@@ -16,8 +16,6 @@ export interface MessageBubbleProps {
   onRegister: (messageId: string, element: HTMLElement | null) => void;
   onMeasureHeight: (messageId: string, height: number) => void;
   getHeight: (messageId: string) => number | undefined;
-  focusMode?: boolean;
-  expandMinions?: boolean;
   disableMath?: boolean;
   isLastMessage?: boolean;
   /** True for chats backed by the Claude Agent SDK — hides Fork and user-message Rollback. */
@@ -34,7 +32,6 @@ export interface UserMessageBubbleProps {
   onAction?: (action: MessageAction, messageId: string) => void;
   actions?: ReadonlySet<MessageAction>;
   onDeleteMessage?: (messageId: string) => void;
-  focusMode?: boolean;
   isLastMessage?: boolean;
   /** True for chats backed by the Claude Agent SDK — hides Fork and Rollback. */
   isClaudeAgentChat?: boolean;
@@ -44,7 +41,6 @@ export interface AssistantMessageBubbleProps {
   message: Message<unknown>;
   onAction?: (action: 'rollback', messageId: string) => void;
   onDeleteMessage?: (messageId: string) => void;
-  focusMode?: boolean;
   disableMath?: boolean;
   isLastMessage?: boolean;
   expandedGroups?: ReadonlySet<number>;
@@ -52,7 +48,6 @@ export interface AssistantMessageBubbleProps {
 
 export interface StreamingMessageProps {
   groups: RenderingBlockGroup[];
-  focusMode?: boolean;
   disableMath?: boolean;
   dummyHookStatus?: DummyHookStatus | null;
   expandedGroups?: ReadonlySet<number>;
@@ -75,10 +70,7 @@ export interface MessageListProps {
   streamingGroups: RenderingBlockGroup[];
   currentApiDefId: string | null;
   currentModelId: string | null;
-  focusMode?: boolean;
-  expandMinions?: boolean;
   disableMath?: boolean;
-  alwaysAutoScroll?: boolean;
   /** True for chats backed by the Claude Agent SDK — hides Fork and user-message Rollback. */
   isClaudeAgentChat?: boolean;
   /** Number of pending tool calls (for banner display) */

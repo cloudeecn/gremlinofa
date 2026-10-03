@@ -64,6 +64,8 @@ export class WebSocketTransport implements Transport {
   private connectPromise: Promise<void>;
   private resolveConnect!: () => void;
   private rejectConnect!: (err: Error) => void;
+  /** Whether `connectPromise` has resolved; a pending gate is never replaced. */
+  private connectGateResolved = false;
 
   /** Whether `dispose()` was called — suppresses reconnect. */
   private disposed = false;
@@ -145,8 +147,12 @@ export class WebSocketTransport implements Transport {
    * rejection when no RPC is awaiting it.
    */
   private createConnectGate(): Promise<void> {
+    this.connectGateResolved = false;
     const gate = new Promise<void>((resolve, reject) => {
-      this.resolveConnect = resolve;
+      this.resolveConnect = () => {
+        this.connectGateResolved = true;
+        resolve();
+      };
       this.rejectConnect = reject;
     });
     gate.catch(() => {});
@@ -350,8 +356,12 @@ export class WebSocketTransport implements Transport {
       if (!isReconnect) return;
 
       // Close the init gate so RPCs issued from reconnect callbacks block
-      // until this socket has re-authenticated.
-      this.initPromise = this.createInitGate();
+      // until this socket has re-authenticated. A gate that never opened
+      // (first init still pending, or the last replay never acked) stays:
+      // replacing it would strand whoever is already parked on it.
+      if (!this.resolveInit) {
+        this.initPromise = this.createInitGate();
+      }
 
       if (this.lastInitParams) {
         // Re-issue init strictly BEFORE anything else — the server's
@@ -397,8 +407,12 @@ export class WebSocketTransport implements Transport {
   private scheduleReconnect(): void {
     if (this.disposed || this.authFailed) return;
 
-    // Reset the connect promise for the next connection attempt
-    this.connectPromise = this.createConnectGate();
+    // Only an opened gate gets replaced. A pending one keeps its waiters,
+    // which the next `open` releases; replacing it stranded them (a server
+    // that was down at page load hung bootstrap's init forever).
+    if (this.connectGateResolved) {
+      this.connectPromise = this.createConnectGate();
+    }
 
     this.setConnectionState('reconnecting');
 
@@ -531,7 +545,7 @@ export class WebSocketTransport implements Transport {
         this.ws.send(JSON.stringify({ kind: 'ping' }));
         // Only arm the dead-connection timeout if one isn't already ticking.
         // Without this guard, stacked timeouts accumulate when pongs stop
-        // arriving (each 2s tick would add another 5s timer).
+        // arriving (each 2s tick would add another timer).
         if (!this.heartbeatTimeout) {
           this.heartbeatTimeout = setTimeout(() => {
             this.ws?.close();
@@ -627,6 +641,16 @@ export class WebSocketTransport implements Transport {
       this.handleVisibilityChange = null;
     }
     const err = new Error('transport disposed');
+    // Callers still parked on a gate aren't in pendingRequests yet
+    if (!this.connectGateResolved) {
+      this.rejectConnect(err);
+    }
+    if (this.rejectInit) {
+      const r = this.rejectInit;
+      this.rejectInit = null;
+      this.resolveInit = null;
+      r(err);
+    }
     for (const pending of this.pendingRequests.values()) {
       pending.reject(err);
     }

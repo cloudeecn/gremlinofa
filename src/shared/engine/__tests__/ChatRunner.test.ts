@@ -326,7 +326,7 @@ describe('ChatRunner', () => {
       vi.mocked(storage.getMessages).mockResolvedValue([]);
     });
 
-    it('yields loop_started, adapts stream events, and ends with chat_updated + project_updated', async () => {
+    it('yields loop_started, adapts stream events, and reports chat + project updates', async () => {
       const assistantMsg = mkAssistantMessage('msg_a1', 'hello world');
       runAgenticLoopMock.mockImplementation(() =>
         fakeLoopGen(
@@ -502,17 +502,167 @@ describe('ChatRunner', () => {
       const tokensEvent = events.find(e => e.type === 'tokens_consumed');
       expect(tokensEvent).toBeDefined();
 
-      // patchChat should have been called at least twice: once on
-      // tokens_consumed and once on the final chat update — surgically, never
-      // a whole-object saveChat.
-      expect(
-        (storage.patchChat as ReturnType<typeof vi.fn>).mock.calls.length
-      ).toBeGreaterThanOrEqual(2);
+      // Surgical patches (loop start, tokens_consumed), never a whole-object
+      // saveChat. The token patch doesn't touch lastModifiedAt.
+      expect(storage.patchChat).toHaveBeenCalledWith(
+        'c1',
+        expect.objectContaining({ totalInputTokens: 100 })
+      );
       expect(storage.saveChat).not.toHaveBeenCalled();
 
-      // The chat_updated event carries the running token totals.
-      const chatUpdated = events.find(e => e.type === 'chat_updated');
-      expect(chatUpdated).toMatchObject({ chat: { totalInputTokens: 100, totalOutputTokens: 50 } });
+      // The chat_updated right after it carries the running token totals.
+      const chatUpdated = events[events.indexOf(tokensEvent!) + 1];
+      expect(chatUpdated).toMatchObject({
+        type: 'chat_updated',
+        chat: { totalInputTokens: 100, totalOutputTokens: 50 },
+      });
+    });
+  });
+
+  describe('chat list fields', () => {
+    const noTokens = {
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      webSearchCount: 0,
+      cost: 0,
+      costUnreliable: false,
+    };
+    const storedChat = { ...mkChat('c1', 'p1'), messageCount: 1, contextWindowUsage: 1234 };
+
+    beforeEach(() => {
+      vi.mocked(storage.getChat).mockResolvedValue(storedChat);
+      vi.mocked(storage.getProject).mockResolvedValue(mkProject('p1'));
+      vi.mocked(storage.getAPIDefinition).mockResolvedValue(mkAPIDef('api_1'));
+      vi.mocked(storage.getModel).mockResolvedValue(mkModel('m1'));
+    });
+
+    const drain = async (gen: AsyncGenerator<LoopEvent, unknown, void>) => {
+      const events: LoopEvent[] = [];
+      for await (const ev of gen) events.push(ev);
+      return events;
+    };
+
+    const patchedCounts = () =>
+      vi
+        .mocked(storage.patchChat)
+        .mock.calls.map(([, fields]) => fields.messageCount)
+        .filter(count => count !== undefined);
+
+    it('counts the sent user message and each reply from the stored messages', async () => {
+      // The stored count (1) drifted: three messages are really stored.
+      vi.mocked(storage.getMessages).mockResolvedValue([
+        mkUserMessage('u1', 'one'),
+        mkAssistantMessage('a1', 'two'),
+        mkUserMessage('u2', 'three'),
+      ]);
+      const reply: Message<unknown> = {
+        ...mkAssistantMessage('a2', 'four'),
+        metadata: { contextWindowUsage: 5000, costUnreliable: true },
+      };
+      runAgenticLoopMock.mockImplementation(() =>
+        fakeLoopGen([{ type: 'message_created', message: reply }], {
+          status: 'complete',
+          messages: [reply],
+          tokens: noTokens,
+        })
+      );
+
+      const events = await drain(
+        runner.run({ chatId: 'c1', mode: 'send', content: 'hi' }, new AbortController(), 'l1')
+      );
+
+      // 3 stored + the sent message at loop start, then the reply
+      expect(patchedCounts()).toEqual([4, 5]);
+      expect(storage.patchChat).toHaveBeenNthCalledWith(
+        1,
+        'c1',
+        { messageCount: 4 },
+        { touch: true }
+      );
+      expect(storage.patchChat).toHaveBeenNthCalledWith(
+        2,
+        'c1',
+        { messageCount: 5, contextWindowUsage: 5000, costUnreliable: true },
+        { touch: true }
+      );
+
+      const replyEvent = events.findIndex(
+        e => e.type === 'message_created' && e.message.id === 'a2'
+      );
+      expect(events[replyEvent + 1]).toMatchObject({
+        type: 'chat_updated',
+        chat: { messageCount: 5, contextWindowUsage: 5000, costUnreliable: true },
+      });
+    });
+
+    it('re-baselines a retry to the kept messages', async () => {
+      vi.mocked(storage.getMessages).mockResolvedValue([
+        mkUserMessage('u1', 'one'),
+        mkAssistantMessage('a1', 'two'),
+        mkUserMessage('u2', 'three'),
+        mkAssistantMessage('a2', 'four'),
+      ]);
+      const reply = mkAssistantMessage('a1b', 'two again');
+      runAgenticLoopMock.mockImplementation(() =>
+        fakeLoopGen([{ type: 'message_created', message: reply }], {
+          status: 'complete',
+          messages: [reply],
+          tokens: noTokens,
+        })
+      );
+
+      await drain(
+        runner.run(
+          { chatId: 'c1', mode: 'retry', fromMessageId: 'u1' },
+          new AbortController(),
+          'l2'
+        )
+      );
+
+      expect(patchedCounts()).toEqual([1, 2]);
+    });
+
+    it('counts a trailing user message saved for a continue', async () => {
+      vi.mocked(storage.getMessages).mockResolvedValue([
+        mkUserMessage('u1', 'one'),
+        mkAssistantMessage('a1', 'two'),
+      ]);
+      runAgenticLoopMock.mockImplementation(() =>
+        fakeLoopGen([], { status: 'complete', messages: [], tokens: noTokens })
+      );
+
+      await drain(
+        runner.run(
+          { chatId: 'c1', mode: 'continue', pendingTrailingContent: 'and also' },
+          new AbortController(),
+          'l3'
+        )
+      );
+
+      expect(patchedCounts()).toEqual([3]);
+    });
+
+    it('keeps the context usage when a run ends without a reply', async () => {
+      vi.mocked(storage.getMessages).mockResolvedValue([]);
+      runAgenticLoopMock.mockImplementation(() =>
+        fakeLoopGen([], {
+          status: 'error',
+          messages: [],
+          tokens: noTokens,
+          error: new Error('boom'),
+        })
+      );
+
+      await drain(
+        runner.run({ chatId: 'c1', mode: 'send', content: 'hi' }, new AbortController(), 'l4')
+      );
+
+      for (const [, fields] of vi.mocked(storage.patchChat).mock.calls) {
+        expect(fields).not.toHaveProperty('contextWindowUsage');
+      }
     });
   });
 

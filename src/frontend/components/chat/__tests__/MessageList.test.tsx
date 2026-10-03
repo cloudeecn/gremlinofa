@@ -6,6 +6,15 @@ import type { MessageListHandle } from '../types';
 import type { Message, MessageRole } from '../../../../shared/protocol/types';
 import type { RenderingBlockGroup } from '../../../../shared/protocol/types/content';
 
+// The list's tail-follow ResizeObservers; `fireResize` reports a size change
+// to the ones still connected
+let resizeObservers: { callback: ResizeObserverCallback; connected: boolean }[];
+const fireResize = () => {
+  for (const observer of resizeObservers) {
+    if (observer.connected) observer.callback([], observer as unknown as ResizeObserver);
+  }
+};
+
 // Mock IntersectionObserver
 let mockObserver: {
   observe: ReturnType<typeof vi.fn>;
@@ -27,6 +36,21 @@ beforeEach(() => {
   global.IntersectionObserver = vi.fn(function () {
     return mockObserver as unknown as IntersectionObserver;
   }) as unknown as typeof IntersectionObserver;
+
+  resizeObservers = [];
+  global.ResizeObserver = vi.fn(function (callback: ResizeObserverCallback) {
+    const observer = {
+      callback,
+      connected: true,
+      observe: vi.fn(),
+      unobserve: vi.fn(),
+      disconnect: () => {
+        observer.connected = false;
+      },
+    };
+    resizeObservers.push(observer);
+    return observer;
+  }) as unknown as typeof ResizeObserver;
 });
 
 afterEach(() => {
@@ -454,6 +478,66 @@ describe('MessageList', () => {
     });
   });
 
+  describe('Following through resizes', () => {
+    const setScrollMetrics = (
+      scrollContainer: HTMLElement,
+      metrics: Partial<Record<'scrollTop' | 'scrollHeight' | 'clientHeight', number>>
+    ) => {
+      for (const [key, value] of Object.entries(metrics)) {
+        Object.defineProperty(scrollContainer, key, { value, writable: true, configurable: true });
+      }
+    };
+
+    const renderList = (props: { snapshotLoading?: boolean } = {}) =>
+      render(
+        <MessageList
+          messages={[createMessage('msg-1')]}
+          onAction={mockOnAction}
+          isLoading={false}
+          streamingGroups={[]}
+          currentApiDefId={null}
+          currentModelId={null}
+          {...props}
+        />
+      );
+
+    it('keeps the bottom in view when content grows without new messages', () => {
+      const { container } = renderList();
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+      setScrollMetrics(scrollContainer, { scrollTop: 500, scrollHeight: 1000, clientHeight: 500 });
+
+      // A banner or late-loading image grows the content by 300px
+      setScrollMetrics(scrollContainer, { scrollHeight: 1300 });
+      fireResize();
+
+      expect(scrollContainer.scrollTop).toBe(1300);
+    });
+
+    it('leaves a reader who scrolled up where they are', () => {
+      const { container } = renderList();
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+      setScrollMetrics(scrollContainer, { scrollTop: 500, scrollHeight: 1000, clientHeight: 500 });
+      fireEvent.scroll(scrollContainer);
+      scrollContainer.scrollTop = 100;
+      fireEvent.scroll(scrollContainer);
+
+      setScrollMetrics(scrollContainer, { scrollHeight: 1300 });
+      fireResize();
+
+      expect(scrollContainer.scrollTop).toBe(100);
+    });
+
+    it('waits out snapshot replay', () => {
+      const { container } = renderList({ snapshotLoading: true });
+      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
+      setScrollMetrics(scrollContainer, { scrollTop: 0, scrollHeight: 1000, clientHeight: 500 });
+
+      fireResize();
+
+      expect(scrollContainer.scrollTop).toBe(0);
+    });
+  });
+
   describe('Virtual Scrolling Integration', () => {
     it('should pass isHidden prop based on hiddenMessageIds.has(message.id)', () => {
       const messages = [createMessage('msg-1'), createMessage('msg-2'), createMessage('msg-3')];
@@ -766,125 +850,6 @@ describe('MessageList', () => {
       act(() => scrubber.props.onJumpToLatest('smooth'));
 
       expect(scrollContainer.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' });
-    });
-  });
-
-  describe('Always Auto Scroll', () => {
-    it('should keep auto-scrolling after user scrolls up when alwaysAutoScroll is enabled', () => {
-      vi.useFakeTimers();
-
-      const { container, rerender } = render(
-        <MessageList
-          messages={[createMessage('msg-1')]}
-          onAction={mockOnAction}
-          isLoading={false}
-          streamingGroups={[]}
-          currentApiDefId={null}
-          currentModelId={null}
-          alwaysAutoScroll={true}
-        />
-      );
-
-      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
-      // Simulate user scrolled far from bottom
-      Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, writable: true });
-      Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, writable: true });
-      Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, writable: true });
-
-      fireEvent.scroll(scrollContainer);
-      vi.advanceTimersByTime(250);
-
-      // Even though far from bottom, auto-scroll should still work on new messages
-      rerender(
-        <MessageList
-          messages={[createMessage('msg-1'), createMessage('msg-2')]}
-          onAction={mockOnAction}
-          isLoading={false}
-          streamingGroups={[]}
-          currentApiDefId={null}
-          currentModelId={null}
-          alwaysAutoScroll={true}
-        />
-      );
-
-      // scrollTop should be set to scrollHeight (auto-scroll triggered)
-      expect(scrollContainer.scrollTop).toBe(scrollContainer.scrollHeight);
-
-      vi.useRealTimers();
-    });
-
-    it('should not disable auto-scroll in focus mode when alwaysAutoScroll is enabled', () => {
-      vi.useFakeTimers();
-
-      const { container, rerender } = render(
-        <MessageList
-          messages={[createMessage('msg-1')]}
-          onAction={mockOnAction}
-          isLoading={false}
-          streamingGroups={[]}
-          currentApiDefId={null}
-          currentModelId={null}
-          alwaysAutoScroll={true}
-          focusMode={true}
-        />
-      );
-
-      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
-      Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, writable: true });
-      Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, writable: true });
-      Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, writable: true });
-
-      // Add a new message - should still auto-scroll despite focus mode
-      rerender(
-        <MessageList
-          messages={[createMessage('msg-1'), createMessage('msg-2')]}
-          onAction={mockOnAction}
-          isLoading={false}
-          streamingGroups={[]}
-          currentApiDefId={null}
-          currentModelId={null}
-          alwaysAutoScroll={true}
-          focusMode={true}
-        />
-      );
-
-      expect(scrollContainer.scrollTop).toBe(scrollContainer.scrollHeight);
-
-      vi.useRealTimers();
-    });
-
-    it('should snap to bottom when alwaysAutoScroll is toggled on', () => {
-      const { container, rerender } = render(
-        <MessageList
-          messages={[createMessage('msg-1')]}
-          onAction={mockOnAction}
-          isLoading={false}
-          streamingGroups={[]}
-          currentApiDefId={null}
-          currentModelId={null}
-          alwaysAutoScroll={false}
-        />
-      );
-
-      const scrollContainer = container.querySelector('.overflow-y-auto') as HTMLElement;
-      Object.defineProperty(scrollContainer, 'scrollTop', { value: 0, writable: true });
-      Object.defineProperty(scrollContainer, 'scrollHeight', { value: 1000, writable: true });
-      Object.defineProperty(scrollContainer, 'clientHeight', { value: 500, writable: true });
-
-      // Toggle on
-      rerender(
-        <MessageList
-          messages={[createMessage('msg-1')]}
-          onAction={mockOnAction}
-          isLoading={false}
-          streamingGroups={[]}
-          currentApiDefId={null}
-          currentModelId={null}
-          alwaysAutoScroll={true}
-        />
-      );
-
-      expect(scrollContainer.scrollTop).toBe(scrollContainer.scrollHeight);
     });
   });
 });

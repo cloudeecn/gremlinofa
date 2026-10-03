@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useId, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { AlertContext } from './AlertContext';
-import type { AlertOptions, ConfirmOptions } from './AlertContext';
+import type { AlertOptions, ConfirmOptions, PromptOptions } from './AlertContext';
 import { setAlertContext } from '../lib/alerts';
 import { useOverlay } from '../hooks/useOverlay';
+import { useImeSafeEnter } from '../hooks/useImeSafeEnter';
 
 interface AlertDialog extends AlertOptions {
   id: number;
@@ -17,7 +18,18 @@ interface ConfirmDialog extends ConfirmOptions {
   resolve: (confirmed: boolean) => void;
 }
 
-type Dialog = AlertDialog | ConfirmDialog;
+interface PromptDialog extends PromptOptions {
+  id: number;
+  type: 'prompt';
+  resolve: (value: string | null) => void;
+}
+
+type Dialog = AlertDialog | ConfirmDialog | PromptDialog;
+
+const CANCEL_BUTTON_CLASS =
+  'rounded-lg border border-gray-300 px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-50';
+const PRIMARY_BUTTON_CLASS =
+  'rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700';
 
 // Keys the dialog card so a queued dialog that replaces another remounts and
 // its autoFocus button takes focus.
@@ -72,10 +84,30 @@ export function AlertProvider({ children }: { children: ReactNode }) {
     [enqueue]
   );
 
-  /** Settles a dialog and lets the next one in. A double click settles nothing twice. */
-  const settle = useCallback((dialog: Dialog, confirmed: boolean) => {
-    if (dialog.type === 'confirm') dialog.resolve(confirmed);
-    else dialog.resolve();
+  const showPrompt = useCallback(
+    (options: PromptOptions): Promise<string | null> =>
+      new Promise(resolve => {
+        enqueue({ ...options, id: nextDialogId++, type: 'prompt', resolve });
+      }),
+    [enqueue]
+  );
+
+  /**
+   * Settles a dialog and lets the next one in. A double click settles nothing
+   * twice. `answer` is the prompt's text, or true/false for confirm/cancel.
+   */
+  const settle = useCallback((dialog: Dialog, answer: boolean | string) => {
+    switch (dialog.type) {
+      case 'alert':
+        dialog.resolve();
+        break;
+      case 'confirm':
+        dialog.resolve(answer === true);
+        break;
+      case 'prompt':
+        dialog.resolve(typeof answer === 'string' ? answer : null);
+        break;
+    }
     setQueue(current => current.filter(entry => entry.id !== dialog.id));
   }, []);
 
@@ -95,8 +127,8 @@ export function AlertProvider({ children }: { children: ReactNode }) {
   });
 
   const contextValue = useMemo(
-    () => ({ showAlert, showConfirm, showDestructiveConfirm }),
-    [showAlert, showConfirm, showDestructiveConfirm]
+    () => ({ showAlert, showConfirm, showDestructiveConfirm, showPrompt }),
+    [showAlert, showConfirm, showDestructiveConfirm, showPrompt]
   );
 
   // Register alert context globally for utility functions (non-React code)
@@ -114,8 +146,8 @@ export function AlertProvider({ children }: { children: ReactNode }) {
           <div
             className="animate-fade-in fixed inset-0 z-50 bg-black/50"
             onClick={() => {
-              // Only a confirm has an obvious answer for a backdrop click
-              if (dialogState.type === 'confirm') settle(dialogState, false);
+              // An alert has no obvious answer for a backdrop click; the others cancel
+              if (dialogState.type !== 'alert') settle(dialogState, false);
             }}
           />
           {/* Dialog Content */}
@@ -126,7 +158,7 @@ export function AlertProvider({ children }: { children: ReactNode }) {
               role="alertdialog"
               aria-modal="true"
               aria-labelledby={titleId}
-              aria-describedby={messageId}
+              aria-describedby={dialogState.message ? messageId : undefined}
               tabIndex={-1}
               className="animate-scale-in pointer-events-auto w-full max-w-md rounded-lg bg-white p-6 shadow-xl outline-none"
               onClick={e => e.stopPropagation()}
@@ -134,46 +166,138 @@ export function AlertProvider({ children }: { children: ReactNode }) {
               <h2 id={titleId} className="mb-3 text-xl font-semibold text-gray-900">
                 {dialogState.title}
               </h2>
-              <p id={messageId} className="mb-6 break-words whitespace-pre-wrap text-gray-700">
-                {dialogState.message}
-              </p>
-              <div className="flex justify-end gap-3">
-                {dialogState.type === 'alert' ? (
-                  <button
-                    className="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700"
-                    onClick={() => settle(dialogState, true)}
-                    autoFocus
-                  >
-                    OK
-                  </button>
-                ) : (
-                  <>
-                    {/* A destructive confirm starts on Cancel so Enter/Space can't delete */}
+              {dialogState.message && (
+                <p id={messageId} className="mb-6 break-words whitespace-pre-wrap text-gray-700">
+                  {dialogState.message}
+                </p>
+              )}
+              {dialogState.type === 'prompt' ? (
+                <PromptForm
+                  dialog={dialogState}
+                  onSubmit={value => settle(dialogState, value)}
+                  onCancel={() => settle(dialogState, false)}
+                />
+              ) : (
+                <div className="flex justify-end gap-3">
+                  {dialogState.type === 'alert' ? (
                     <button
-                      className="rounded-lg border border-gray-300 px-4 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-50"
-                      onClick={() => settle(dialogState, false)}
-                      autoFocus={dialogState.isDestructive}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      className={`rounded-lg px-4 py-2 font-medium transition-colors ${
-                        dialogState.isDestructive
-                          ? 'bg-red-600 text-white hover:bg-red-700'
-                          : 'bg-blue-600 text-white hover:bg-blue-700'
-                      }`}
+                      className={PRIMARY_BUTTON_CLASS}
                       onClick={() => settle(dialogState, true)}
-                      autoFocus={!dialogState.isDestructive}
+                      autoFocus
                     >
-                      {dialogState.confirmLabel || 'Confirm'}
+                      OK
                     </button>
-                  </>
-                )}
-              </div>
+                  ) : (
+                    <>
+                      {/* A destructive confirm starts on Cancel so Enter/Space can't delete */}
+                      <button
+                        className={CANCEL_BUTTON_CLASS}
+                        onClick={() => settle(dialogState, false)}
+                        autoFocus={dialogState.isDestructive}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className={
+                          dialogState.isDestructive
+                            ? 'rounded-lg bg-red-600 px-4 py-2 font-medium text-white transition-colors hover:bg-red-700'
+                            : PRIMARY_BUTTON_CLASS
+                        }
+                        onClick={() => settle(dialogState, true)}
+                        autoFocus={!dialogState.isDestructive}
+                      >
+                        {dialogState.confirmLabel || 'Confirm'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </>
       )}
     </AlertContext.Provider>
+  );
+}
+
+interface PromptFormProps {
+  dialog: PromptDialog;
+  onSubmit: (value: string) => void;
+  onCancel: () => void;
+}
+
+function PromptForm({ dialog, onSubmit, onCancel }: PromptFormProps) {
+  const [value, setValue] = useState(dialog.defaultValue ?? '');
+  // Shown only after a rejected submit, then kept in step with the typing
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const inputId = useId();
+  const errorId = useId();
+  const { onCompositionEnd, isImeEnter } = useImeSafeEnter();
+
+  // No autoFocus: on a phone, focusing the field pops the keyboard over the
+  // dialog before the user asked for it. Keyboard devices get the caret
+  // right away. This runs before useOverlay focuses the card, which then
+  // leaves focus where it is.
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input || window.matchMedia?.('(pointer: coarse)').matches) return;
+    input.focus();
+    input.select();
+  }, []);
+
+  const check = (text: string) =>
+    dialog.validate ? dialog.validate(text) : text ? null : 'Enter a value.';
+
+  const submit = () => {
+    const trimmed = value.trim();
+    const problem = check(trimmed);
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    onSubmit(trimmed);
+  };
+
+  return (
+    <>
+      <label htmlFor={inputId} className="sr-only">
+        {dialog.label}
+      </label>
+      <input
+        ref={inputRef}
+        id={inputId}
+        type="text"
+        value={value}
+        placeholder={dialog.placeholder}
+        aria-invalid={error !== null}
+        aria-describedby={error ? errorId : undefined}
+        autoComplete="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        onChange={e => {
+          setValue(e.target.value);
+          if (error) setError(check(e.target.value.trim()));
+        }}
+        onCompositionEnd={onCompositionEnd}
+        onKeyDown={e => {
+          if (e.key !== 'Enter' || isImeEnter(e)) return;
+          e.preventDefault();
+          submit();
+        }}
+        className="w-full rounded-lg border border-gray-300 px-4 py-2 text-base focus:ring-2 focus:ring-blue-500 focus:outline-none aria-[invalid=true]:border-red-400"
+      />
+      <p id={errorId} role="alert" className="mt-1 min-h-5 text-sm text-red-600">
+        {error}
+      </p>
+      <div className="mt-4 flex justify-end gap-3">
+        <button className={CANCEL_BUTTON_CLASS} onClick={onCancel}>
+          Cancel
+        </button>
+        <button className={PRIMARY_BUTTON_CLASS} onClick={submit}>
+          {dialog.confirmLabel || 'OK'}
+        </button>
+      </div>
+    </>
   );
 }

@@ -498,3 +498,32 @@ describe('IndexedDBAdapter', () => {
     });
   });
 });
+
+describe('IndexedDBAdapter open', () => {
+  /** Open `chatbot` at `version` the way an older build would: no versionchange handler. */
+  function openRaw(version: number): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('chatbot', version);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  it('fails with a close-other-tabs message when an older tab blocks the upgrade', async () => {
+    const oldTab = await openRaw(1);
+    await expect(new IndexedDBAdapter().initialize()).rejects.toThrow(
+      'Database upgrade blocked by another open GremlinOFA tab'
+    );
+    oldTab.close();
+  });
+
+  it('lets a newer build upgrade instead of blocking it', async () => {
+    const adapter = new IndexedDBAdapter();
+    await adapter.initialize();
+
+    const newer = await openRaw(100);
+    expect(newer.version).toBe(100);
+    newer.close();
+    await expect(adapter.count(Tables.PROJECTS)).rejects.toThrow('IndexedDB not initialized');
+  });
+});

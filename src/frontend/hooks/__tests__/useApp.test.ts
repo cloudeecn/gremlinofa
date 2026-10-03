@@ -8,6 +8,7 @@ import {
   useAppStatus,
   useModels,
   useProjects,
+  useStorageInfo,
 } from '../useApp';
 import {
   ApiDefinitionsContext,
@@ -46,7 +47,7 @@ const apiDefinitions = [{ id: 'api_1' }] as APIDefinition[];
 const projects = [{ id: 'proj_1' }] as Project[];
 const models = new Map();
 const storageInfo: StorageInfo = { cek: 'abc', isCEKBase32: true, storageQuota: null };
-const status: AppStatus = { isInitializing: false, initError: null };
+const status: AppStatus = { isInitializing: false, initError: null, bootStep: 'data' };
 
 function Providers({ children }: { children: ReactNode }) {
   return createElement(
@@ -80,6 +81,7 @@ describe('useApp hooks', () => {
     ['useProjects', useProjects],
     ['useModels', useModels],
     ['useAppStatus', useAppStatus],
+    ['useStorageInfo', useStorageInfo],
   ])('%s throws outside AppProvider', (name, hook) => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(() => renderHook(() => hook())).toThrow(`${name} must be used within an AppProvider`);
@@ -94,6 +96,7 @@ describe('useApp hooks', () => {
         projects: useProjects(),
         models: useModels(),
         status: useAppStatus(),
+        storageInfo: useStorageInfo(),
       }),
       { wrapper: Providers }
     );
@@ -102,6 +105,7 @@ describe('useApp hooks', () => {
     expect(result.current.projects).toBe(projects);
     expect(result.current.models).toBe(models);
     expect(result.current.status).toBe(status);
+    expect(result.current.storageInfo).toBe(storageInfo);
   });
 
   it('useApp combines every slice and keeps its identity across re-renders', () => {

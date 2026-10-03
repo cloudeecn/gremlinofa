@@ -7,6 +7,7 @@ import type {
   StreamEndEnvelope,
   StreamEventEnvelope,
 } from '../../../shared/protocol/protocol';
+import type { Chat } from '../../../shared/protocol/types';
 
 /**
  * Drive the store from a controllable async iterable so we can fire deltas
@@ -288,6 +289,47 @@ describe('ActiveLoopsStore', () => {
       await flush();
       expect(store.getTitlesSnapshot()).toBe(titles);
       expect(listener).toHaveBeenCalledTimes(1);
+
+      unsubscribe();
+      close();
+    });
+  });
+
+  describe('chat rows', () => {
+    const chat: Chat = {
+      id: 'c1',
+      projectId: 'p1',
+      name: 'Running',
+      createdAt: new Date(),
+      lastModifiedAt: new Date(),
+      apiDefinitionId: null,
+      modelId: null,
+      messageCount: 4,
+    };
+
+    it('hands chat_updated rows to listeners without republishing', async () => {
+      const listener = vi.fn();
+      const unsubscribe = store.subscribe(listener);
+      push({ type: 'snapshot', loops: [makeLoop()] });
+      await flush();
+      const loops = store.getSnapshot();
+      const titles = store.getTitlesSnapshot();
+      listener.mockClear();
+
+      const onChat = vi.fn();
+      const offChat = store.onChatUpdated(onChat);
+      push({ type: 'chat_updated', chat });
+      await flush();
+
+      expect(onChat).toHaveBeenCalledWith(chat);
+      expect(listener).not.toHaveBeenCalled();
+      expect(store.getSnapshot()).toBe(loops);
+      expect(store.getTitlesSnapshot()).toBe(titles);
+
+      offChat();
+      push({ type: 'chat_updated', chat });
+      await flush();
+      expect(onChat).toHaveBeenCalledTimes(1);
 
       unsubscribe();
       close();

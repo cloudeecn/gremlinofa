@@ -2,46 +2,43 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '../index.css';
 import App from './App.tsx';
-import { bootstrap } from './client/bootstrapClient';
+import { startBootstrap } from './client/bootstrapClient';
+import { CrashView } from './components/ErrorBoundary';
 
 // Tool registration happens inside `GremlinServer.init()` against the
 // per-server `ClientSideToolRegistry`. The frontend never reads from a
 // module-level registry — it goes through `gremlinClient.listTools()`
 // for the inventory and through the streaming RPCs for everything else.
 
-// Bring up the worker via gremlinClient.init before mounting React. The
-// bootstrap call reads CEK + storage config from localStorage on the main
-// thread and posts them through the protocol's `init` method. If either is
-// missing, we still mount React — `App` routes to OOBE which calls
-// gremlinClient.init itself once the user picks a flow.
-//
-// On a hard error (corrupted CEK, mismatched remote storage), we mount
-// anyway. AppProvider's own `init` call fails the same way and AppContent
-// shows a "Couldn't start" screen with the message, a Reload button and, in
-// server mode, a way into Data Manager (whose Disconnect needs no backend).
-async function main() {
-  try {
-    const result = await bootstrap();
-    if (result.error) {
-      console.error('[main] bootstrap failed:', result.error);
-    } else if (result.needsOOBE) {
-      console.debug('[main] bootstrap returned needsOOBE — App will route to OOBE');
-    } else {
-      console.debug('[main] bootstrap complete');
-    }
-  } catch (err) {
-    console.error('[main] bootstrap threw unexpectedly:', err);
-  }
+// Start bringing up the backend, but mount right away: React replaces the
+// index.html splash with a boot screen that shows which step is running
+// and where it failed. Awaiting the bootstrap here left a blank page
+// whenever the backend never answered. With no CEK, `App` routes to OOBE,
+// which calls gremlinClient.init itself once the user picks a flow.
+const boot = startBootstrap();
 
-  const app = import.meta.env.DEV ? (
-    <StrictMode>
-      <App />
-    </StrictMode>
-  ) : (
-    <App />
-  );
+const app = import.meta.env.DEV ? (
+  <StrictMode>
+    <App boot={boot} />
+  </StrictMode>
+) : (
+  <App boot={boot} />
+);
 
-  createRoot(document.getElementById('root')!).render(app);
-}
-
-void main();
+let hasCrashed = false;
+const root = createRoot(document.getElementById('root')!, {
+  // ErrorProvider's boundary covers everything below App; an error above it
+  // would otherwise unmount the whole tree and leave the page blank. Once
+  // only, so a CrashView that throws can't loop.
+  onUncaughtError: error => {
+    console.error('[main] Uncaught render error:', error);
+    if (hasCrashed) return;
+    hasCrashed = true;
+    root.render(
+      <div className="flex h-dvh">
+        <CrashView error={error instanceof Error ? error : new Error(String(error))} />
+      </div>
+    );
+  },
+});
+root.render(app);

@@ -609,8 +609,9 @@ export class UnifiedStorage {
       minionTotalCacheCreationTokens: sourceChat.minionTotalCacheCreationTokens,
       minionTotalCacheReadTokens: sourceChat.minionTotalCacheReadTokens,
       minionTotalCost: sourceChat.minionTotalCost,
-      // Recalculate context window from copied messages
+      // Recalculate context window and count from copied messages
       contextWindowUsage: contextWindowUsage,
+      messageCount: messagesToCopy.length,
       // Set fork tracking fields
       isForked: true,
       forkedFromChatId: chatId,
@@ -1487,8 +1488,9 @@ export class UnifiedStorage {
     ] as const;
 
     const existing = await this.getAPIDefinitions();
-    console.debug(`[Storage] initializeDefaults: Found ${existing.length} existing definitions`);
+    console.debug('[Storage] initializeDefaults: Found %d existing definitions', existing.length);
 
+    let createdCount = 0;
     for (const { apiType, name, baseUrl } of apiTypes) {
       // Only spawn if no definition of this apiType exists yet
       const exists = existing.find(def => def.apiType === apiType);
@@ -1506,16 +1508,18 @@ export class UnifiedStorage {
           updatedAt: new Date(),
         };
         await this.saveAPIDefinition(defaultDef);
-        console.debug(`[Storage] initializeDefaults: Saved ${name}`);
+        createdCount++;
+        console.debug('[Storage] initializeDefaults: Saved %s', name);
       } else {
         console.debug(`[Storage] initializeDefaults: ${name} already exists, skipping`);
       }
     }
 
-    // Verify what was saved
-    const finalCount = await this.getAPIDefinitions();
+    // Counted, not re-read: a second full scan is one more round trip on
+    // every remote-storage boot
     console.debug(
-      `[Storage] initializeDefaults: Complete! Total definitions: ${finalCount.length}`
+      '[Storage] initializeDefaults: Complete! Total definitions: %d',
+      existing.length + createdCount
     );
   }
 }

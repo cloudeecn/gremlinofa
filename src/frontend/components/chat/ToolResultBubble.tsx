@@ -6,7 +6,7 @@ import type {
 import type { Message } from '../../../shared/protocol/types';
 import { usePreferences } from '../../hooks/usePreferences';
 import { tailPreview } from '../../lib/messageFormatters';
-import ToolResultView, { FocusedMinionView } from './ToolResultView';
+import ToolResultView from './ToolResultView';
 import MessageInfoBar, { INFO_BAR_BUTTON } from './MessageInfoBar';
 import type { MessageAction } from './types';
 
@@ -14,8 +14,6 @@ export interface ToolResultBubbleProps {
   message: Message<unknown>;
   onAction?: (action: MessageAction, messageId: string) => void;
   onDeleteMessage?: (messageId: string) => void;
-  focusMode?: boolean;
-  expandMinions?: boolean;
   disableMath?: boolean;
   isLastMessage?: boolean;
 }
@@ -31,8 +29,6 @@ export default function ToolResultBubble({
   message,
   onAction,
   onDeleteMessage,
-  focusMode,
-  expandMinions,
   disableMath,
   isLastMessage,
 }: ToolResultBubbleProps) {
@@ -84,8 +80,8 @@ export default function ToolResultBubble({
 
   return (
     <div className="flex flex-col items-start">
-      {/* Simple tool results in collapsible group (hidden in focus mode) */}
-      {hasSimple && !focusMode && (
+      {/* Simple tool results in collapsible group */}
+      {hasSimple && (
         <div className="mb-2 w-full overflow-hidden rounded-r-lg border-l-4 border-purple-400 bg-purple-50">
           <button
             onClick={() => setIsExpanded(!isExpanded)}
@@ -160,45 +156,40 @@ export default function ToolResultBubble({
       {/* Complex results (with renderingGroups) */}
       {complexResults.map(result => (
         <div key={result.tool_use_id} className="mb-2 w-full">
-          {expandMinions ? (
-            <FocusedMinionView block={result} />
-          ) : (
-            <ToolResultView block={result} disableMath={disableMath} />
-          )}
+          <ToolResultView block={result} disableMath={disableMath} />
         </div>
       ))}
 
-      {/* Timestamp, cost, and actions — hidden in focus mode or while any tool is still in progress */}
-      {!focusMode &&
-        toolResults.every(r => !r.status || r.status === 'complete' || r.status === 'error') && (
-          <MessageInfoBar
-            timestamp={message.timestamp}
-            cost={hasCost ? message.metadata?.messageCost : undefined}
-            tokens={hasCost ? message.metadata : undefined}
-            actions={
-              <>
-                {onAction && !isLastMessage && (
-                  <button
-                    onClick={() => onAction('rollback', message.id)}
-                    className={`${INFO_BAR_BUTTON} text-gray-400 hover:text-orange-600`}
-                    title="Roll back to here"
-                  >
-                    ⏪
-                  </button>
-                )}
-                {onDeleteMessage && (
-                  <button
-                    onClick={() => onDeleteMessage(message.id)}
-                    className={`${INFO_BAR_BUTTON} text-gray-400 hover:text-red-600`}
-                    title="Delete this message"
-                  >
-                    ❌
-                  </button>
-                )}
-              </>
-            }
-          />
-        )}
+      {/* Timestamp, cost, and actions — hidden while any tool is still in progress */}
+      {toolResults.every(r => !r.status || r.status === 'complete' || r.status === 'error') && (
+        <MessageInfoBar
+          timestamp={message.timestamp}
+          cost={hasCost ? message.metadata?.messageCost : undefined}
+          tokens={hasCost ? message.metadata : undefined}
+          actions={
+            <>
+              {onAction && !isLastMessage && (
+                <button
+                  onClick={() => onAction('rollback', message.id)}
+                  className={`${INFO_BAR_BUTTON} text-gray-400 hover:text-orange-600`}
+                  title="Roll back to here"
+                >
+                  ⏪
+                </button>
+              )}
+              {onDeleteMessage && (
+                <button
+                  onClick={() => onDeleteMessage(message.id)}
+                  className={`${INFO_BAR_BUTTON} text-gray-400 hover:text-red-600`}
+                  title="Delete this message"
+                >
+                  ❌
+                </button>
+              )}
+            </>
+          }
+        />
+      )}
     </div>
   );
 }

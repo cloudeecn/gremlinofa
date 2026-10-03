@@ -15,6 +15,9 @@ import type {
 } from '../../shared/services/storage/StorageAdapter';
 import { Tables } from '../../shared/services/storage/StorageAdapter';
 
+/** How long `/health` gets before boot reports the storage as unreachable. */
+const HEALTH_TIMEOUT_MS = 15_000;
+
 export class RemoteStorageAdapter implements StorageAdapter {
   private baseUrl: string;
   private authHeader: string;
@@ -88,7 +91,9 @@ export class RemoteStorageAdapter implements StorageAdapter {
   async initialize(): Promise<void> {
     const url = this.buildUrl('/health');
     try {
-      const response = await fetch(url);
+      // A host that drops packets would otherwise hold boot until the
+      // browser's own network timeout, minutes later
+      const response = await fetch(url, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
       if (!response.ok) {
         throw new Error(`Health check failed: HTTP ${response.status}`);
       }
@@ -99,6 +104,11 @@ export class RemoteStorageAdapter implements StorageAdapter {
       console.debug('[RemoteStorage] Connection verified');
     } catch (error) {
       console.error('[RemoteStorage] Health check failed:', error);
+      if ((error as { name?: string } | null)?.name === 'TimeoutError') {
+        throw new Error(
+          `Remote storage at ${this.baseUrl || url} didn't answer within ${HEALTH_TIMEOUT_MS / 1000}s`
+        );
+      }
       throw new Error(
         `Failed to connect to storage backend: ${error instanceof Error ? error.message : 'Unknown error'}`
       );

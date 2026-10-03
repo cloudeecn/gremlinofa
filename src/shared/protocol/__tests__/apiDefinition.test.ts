@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { apiKeyOptional, isConfiguredApiDefinition } from '../apiDefinition';
+import {
+  apiKeyOptional,
+  hasUsableApiDefinition,
+  isConfiguredApiDefinition,
+} from '../apiDefinition';
 import type { APIDefinition } from '../types';
 
 describe('apiKeyOptional', () => {
@@ -15,6 +19,28 @@ describe('apiKeyOptional', () => {
   it('is false for remote providers without the local flag', () => {
     expect(apiKeyOptional({ apiType: 'anthropic' })).toBe(false);
     expect(apiKeyOptional({ isLocal: false, apiType: 'responses_api' })).toBe(false);
+  });
+});
+
+describe('hasUsableApiDefinition', () => {
+  it('is false for an empty list and for keyless remote definitions', () => {
+    expect(hasUsableApiDefinition([])).toBe(false);
+    expect(
+      hasUsableApiDefinition([
+        { apiType: 'anthropic', apiKey: '' },
+        { apiType: 'responses_api', apiKey: '   ' },
+      ])
+    ).toBe(false);
+  });
+
+  it('is true once any definition holds a key or needs none', () => {
+    expect(
+      hasUsableApiDefinition([
+        { apiType: 'anthropic', apiKey: '' },
+        { apiType: 'google', apiKey: 'k' },
+      ])
+    ).toBe(true);
+    expect(hasUsableApiDefinition([{ apiType: 'chatgpt', apiKey: '', isLocal: true }])).toBe(true);
   });
 });
 

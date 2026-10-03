@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChat } from '../../hooks/useChat';
 import { useApiDefinitions } from '../../hooks/useApp';
@@ -7,18 +7,20 @@ import { formatTokenGroup, messagePreviewLine, userMessageText } from '../../lib
 import { clearDraft, useDraftPersistence } from '../../hooks/useDraftPersistence';
 import { useImageDropZone } from '../../hooks/useImageDropZone';
 import { useImeSafeEnter } from '../../hooks/useImeSafeEnter';
-import { useOverlay } from '../../hooks/useOverlay';
 import { useStableCallback } from '../../hooks/useStableCallback';
 import { useViewOptions } from '../../hooks/useViewOptions';
 import { processImages } from '../../lib/imageProcessor';
 import { gremlinClient } from '../../client';
 import { getApiDefinitionIcon } from '../../lib/apiTypeUtils';
+import { hookFilePath, hookNameFromPath, hooksDir } from '../../lib/dummyHook';
 import { hasChatAgentOverrides } from '../../../shared/protocol/types';
 import type { CarriedInjection, MessageAttachment } from '../../../shared/protocol/types';
 import { carriesFiles, extractCarriedInjection } from '../../../shared/protocol/carriedInjection';
 import ModelSelector from '../project/ModelSelector';
 import ChatSettingsPanel from './ChatSettingsPanel';
 import Modal from '../ui/Modal';
+import VfsPathPickerModal from '../vfs/VfsPathPickerModal';
+import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '../ui/DropdownMenu';
 import Spinner from '../ui/Spinner';
 import CarriedFilesStrip from './CarriedFilesStrip';
 import ChatInput from './ChatInput';
@@ -67,15 +69,13 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
   const [isSavingRename, setIsSavingRename] = useState(false);
   const renameIme = useImeSafeEnter();
   const {
-    options: { focusMode, expandMinions, disableMath, alwaysAutoScroll },
+    options: { disableMath },
     toggle: toggleViewOption,
   } = useViewOptions();
   const messageListRef = useRef<MessageListHandle>(null);
   const chatInputRef = useRef<ChatInputHandle>(null);
-  const [showViewMenu, setShowViewMenu] = useState(false);
   const [showChatSettings, setShowChatSettings] = useState(false);
-  const viewMenuRef = useRef<HTMLDivElement>(null);
-  const viewMenuPanelRef = useRef<HTMLDivElement>(null);
+  const [isPickingHook, setIsPickingHook] = useState(false);
   const viewMenuButtonRef = useRef<HTMLButtonElement>(null);
   // Editing an earlier user message: the composer holds its text, and nothing
   // is deleted until the edit is sent
@@ -87,27 +87,6 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
 
   // Get API definitions for icon display
   const apiDefinitions = useApiDefinitions();
-
-  // Close view menu when clicking outside
-  useEffect(() => {
-    if (!showViewMenu) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (viewMenuRef.current && !viewMenuRef.current.contains(e.target as Node)) {
-        setShowViewMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showViewMenu]);
-
-  useOverlay({
-    active: showViewMenu,
-    onEscape: () => {
-      setShowViewMenu(false);
-      viewMenuButtonRef.current?.focus();
-    },
-    containerRef: viewMenuPanelRef,
-  });
 
   // Memoize callbacks to prevent unnecessary re-renders
   const handleMessagesLoaded = React.useCallback(
@@ -207,6 +186,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     forkChat,
     overrideModel,
     updateAgentConfig,
+    setActiveHook,
     updateChatName,
     resolvePendingToolCalls,
     rollbackToMessage,
@@ -437,6 +417,38 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
     }
   };
 
+  // Hook files are read through the chat's namespace, like the loop does
+  const hookNamespace = chat?.agentConfig?.namespace || undefined;
+  const projectId = chat?.projectId;
+  const projectVfs = useMemo(
+    () => (projectId ? gremlinClient.getVfsAdapter(projectId) : null),
+    [projectId]
+  );
+
+  const closeHookPicker = () => {
+    setIsPickingHook(false);
+    viewMenuButtonRef.current?.focus();
+  };
+
+  const handleAttachHook = async (path: string) => {
+    const hookName = hookNameFromPath(path, hookNamespace);
+    if (!hookName) return;
+    closeHookPicker();
+    try {
+      await setActiveHook(hookName);
+    } catch (err) {
+      showAlert('Hook not attached', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleDetachHook = async () => {
+    try {
+      await setActiveHook(null);
+    } catch (err) {
+      showAlert('Hook not detached', err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const handleStartRename = () => {
     setRenameChatText(chat?.name || '');
     setIsRenamingChat(true);
@@ -524,77 +536,40 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
                 {currentModelId || 'No model'} ▼
               </button>
             </div>
-            {/* View menu */}
-            <div ref={viewMenuRef} className="relative">
-              <button
-                ref={viewMenuButtonRef}
-                onClick={() => setShowViewMenu(prev => !prev)}
-                aria-label="Chat menu"
-                aria-haspopup="menu"
-                aria-expanded={showViewMenu}
-                className="flex h-11 w-11 items-center justify-center text-gray-600 hover:text-gray-900"
+            <DropdownMenu label="Chat menu" icon="⋯" buttonRef={viewMenuButtonRef}>
+              <DropdownMenuItem
+                checked={disableMath}
+                onSelect={() => toggleViewOption('disableMath')}
               >
-                <span className="text-xl">⋯</span>
-              </button>
-              {showViewMenu && (
-                <div
-                  ref={viewMenuPanelRef}
-                  tabIndex={-1}
-                  className="absolute top-full right-0 z-10 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg outline-none"
+                Disable Math
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {/* A running loop keeps the hook it started with */}
+              <DropdownMenuItem
+                icon="✨"
+                disabled={loopPhase !== 'idle'}
+                onSelect={() => setIsPickingHook(true)}
+              >
+                {chat.activeHook ? 'Change Hook…' : 'Attach Hook…'}
+              </DropdownMenuItem>
+              {chat.activeHook && (
+                <DropdownMenuItem
+                  icon="⏏"
+                  disabled={loopPhase !== 'idle'}
+                  onSelect={handleDetachHook}
                 >
-                  <button
-                    onClick={() => toggleViewOption('focusMode')}
-                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                  >
-                    <span className="w-5 text-center">{focusMode ? '✓' : ''}</span>
-                    <span>Focus Mode</span>
-                  </button>
-                  <button
-                    onClick={() => toggleViewOption('expandMinions')}
-                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                  >
-                    <span className="w-5 text-center">{expandMinions ? '✓' : ''}</span>
-                    <span>Expand Minions</span>
-                  </button>
-                  <button
-                    onClick={() => toggleViewOption('disableMath')}
-                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                  >
-                    <span className="w-5 text-center">{disableMath ? '✓' : ''}</span>
-                    <span>Disable Math</span>
-                  </button>
-                  <button
-                    onClick={() => toggleViewOption('alwaysAutoScroll')}
-                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                  >
-                    <span className="w-5 text-center">{alwaysAutoScroll ? '✓' : ''}</span>
-                    <span>Always Auto Scroll</span>
-                  </button>
-                  <div className="my-1 border-t border-gray-200" />
-                  <button
-                    onClick={() => {
-                      setShowViewMenu(false);
-                      setShowChatSettings(true);
-                    }}
-                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                  >
-                    <span className="w-5 text-center">⚙</span>
-                    <span>Chat Settings</span>
-                  </button>
-                  <div className="my-1 border-t border-gray-200" />
-                  <button
-                    onClick={() => {
-                      setShowViewMenu(false);
-                      handleClose();
-                    }}
-                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                  >
-                    <span className="w-5 text-center">↩</span>
-                    <span>Exit Chat</span>
-                  </button>
-                </div>
+                  <span className="block max-w-56 truncate">Detach {chat.activeHook}</span>
+                </DropdownMenuItem>
               )}
-            </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem icon="⚙" onSelect={() => setShowChatSettings(true)}>
+                Chat Settings
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem icon="↩" onSelect={handleClose}>
+                Exit Chat
+              </DropdownMenuItem>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -606,7 +581,11 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           return (
             <div className="flex flex-col items-end border-b border-gray-200 bg-white px-4 py-1">
               <div className="text-[10px] text-gray-600">
-                {chat.activeHook && <span className="text-green-600">● </span>}
+                {chat.activeHook && (
+                  <span className="text-green-600" title={`DUMMY hook: ${chat.activeHook}`}>
+                    ●{' '}
+                  </span>
+                )}
                 {hasMinionData ? (
                   <>
                     {formatTokenGroup('↑', tokenUsage.input - minionTokenUsage.input, [
@@ -685,10 +664,7 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
           onPendingToolAccept={handlePendingToolAccept}
           suspendedAfterTools={showContinueBanner}
           onContinueAfterToolStop={handleContinueAfterToolStop}
-          focusMode={focusMode}
-          expandMinions={expandMinions}
           disableMath={disableMath}
-          alwaysAutoScroll={alwaysAutoScroll}
           dummyHookStatus={dummyHookStatus}
           snapshotLoading={snapshotLoading}
         />
@@ -869,6 +845,23 @@ export default function ChatView({ chatId, onMenuPress }: ChatViewProps) {
               setShowChatSettings(false);
               viewMenuButtonRef.current?.focus();
             }}
+          />
+        )}
+
+        {isPickingHook && projectVfs && (
+          <VfsPathPickerModal
+            isOpen
+            adapter={projectVfs}
+            initialPath={chat.activeHook ? hookFilePath(chat.activeHook, hookNamespace) : undefined}
+            openDir={hooksDir(hookNamespace)}
+            validate={path =>
+              hookNameFromPath(path, hookNamespace)
+                ? null
+                : `Hooks live in ${hooksDir(hookNamespace)}/ and end in .js`
+            }
+            title="Choose a DUMMY hook"
+            onCancel={closeHookPicker}
+            onSelect={handleAttachHook}
           />
         )}
 

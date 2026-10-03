@@ -17,7 +17,93 @@
     <meta name="apple-mobile-web-app-title" content="GremlinOFA" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Replaced by React's first render. Until then it says the app files
+        are still loading, or why they failed: a frontend problem, before the
+        backend was ever contacted. -->
+      <div
+        id="boot-splash"
+        style="
+          display: flex;
+          min-height: 100vh;
+          min-height: 100dvh;
+          align-items: center;
+          justify-content: center;
+          padding: 16px;
+          background: #f9fafb;
+          color: #1f2937;
+          font-family:
+            system-ui,
+            -apple-system,
+            'Segoe UI',
+            Roboto,
+            sans-serif;
+          text-align: center;
+        "
+      >
+        <div style="max-width: 28rem">
+          <p data-boot-title style="margin: 0 0 8px; font-size: 1.25rem; font-weight: 600">
+            Loading GremlinOFA…
+          </p>
+          <p
+            data-boot-detail
+            hidden
+            style="margin: 0 0 24px; color: #4b5563; overflow-wrap: anywhere; white-space: pre-line"
+          ></p>
+          <button
+            data-boot-reload
+            hidden
+            onclick="location.reload()"
+            style="
+              padding: 12px 24px;
+              border: 0;
+              border-radius: 8px;
+              background: #111827;
+              color: #fff;
+              font: inherit;
+            "
+          >
+            Reload
+          </button>
+        </div>
+      </div>
+    </div>
+    <noscript>GremlinOFA needs JavaScript to run.</noscript>
+    <script>
+      (function () {
+        function show(title, detail) {
+          var splash = document.getElementById('boot-splash');
+          if (!splash) return; // React is up; its own screens take it from here
+          splash.querySelector('[data-boot-title]').textContent = title;
+          var detailEl = splash.querySelector('[data-boot-detail]');
+          detailEl.textContent = detail + '\nThe backend has not been contacted yet.';
+          detailEl.hidden = false;
+          splash.querySelector('[data-boot-reload]').hidden = false;
+        }
+        // Capture phase: a <script> that fails to download doesn't bubble
+        window.addEventListener(
+          'error',
+          function (event) {
+            var target = event.target;
+            if (target && target.tagName === 'SCRIPT') {
+              show('The app failed to load', 'Could not load ' + target.src);
+            } else if (event.message) {
+              show('The app failed to load', event.message);
+            }
+          },
+          true
+        );
+        window.addEventListener('unhandledrejection', function (event) {
+          var reason = event.reason;
+          show('The app failed to load', String((reason && reason.message) || reason));
+        });
+        setTimeout(function () {
+          var splash = document.getElementById('boot-splash');
+          if (!splash || !splash.querySelector('[data-boot-detail]').hidden) return;
+          show('Still loading the app files…', 'Slow connection, or the files failed to download.');
+        }, 15000);
+      })();
+    </script>
     <script type="module" src="/src/frontend/main.js"></script>
   </body>
 </html>

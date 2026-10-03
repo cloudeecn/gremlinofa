@@ -1,4 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+  useSyncExternalStore,
+} from 'react';
 import { useNavigate } from 'react-router-dom';
 import Spinner from '../ui/Spinner';
 import { useApiDefinitions } from '../../hooks/useApp';
@@ -14,25 +21,33 @@ import { clipboardImageFiles, pickImageFiles } from '../../lib/imageFiles';
 import { processImages } from '../../lib/imageProcessor';
 import { describeLoopStartError } from '../../lib/loopStartError';
 import { generateUniqueId } from '../../../shared/protocol/idGenerator';
-import { gremlinClient } from '../../client';
+import { activeLoopsStore, gremlinClient } from '../../client';
 import ModelSelector from './ModelSelector';
 import ProjectNameIconModal from './ProjectNameIconModal';
 import SystemPromptModal from './SystemPromptModal';
 import CompactModal from './CompactModal';
 import ExportProjectModal from './ExportProjectModal';
+import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '../ui/DropdownMenu';
 
 // Memoized chat list item to prevent re-renders when parent state changes
 const ChatListItem = React.memo(function ChatListItem({
   chat,
+  isRunning,
   onNavigate,
   onDelete,
 }: {
   chat: Chat;
+  /** An agent loop is running on this chat: green breathing border */
+  isRunning: boolean;
   onNavigate: (chatId: string) => void;
   onDelete: (chatId: string, chatName: string) => void;
 }) {
   return (
-    <div className="flex gap-3 rounded-lg border border-gray-200 bg-white p-4 transition-colors hover:border-gray-300">
+    <div
+      className={`flex gap-3 rounded-lg border bg-white p-4 transition-colors ${
+        isRunning ? 'animate-running-border' : 'border-gray-200 hover:border-gray-300'
+      }`}
+    >
       <div
         onClick={() => onNavigate(chat.id)}
         onKeyDown={e => {
@@ -46,6 +61,7 @@ const ChatListItem = React.memo(function ChatListItem({
         className="min-w-0 flex-1 cursor-pointer text-left"
       >
         <h3 className="mb-1 truncate font-semibold text-gray-900">{chat.name}</h3>
+        {isRunning && <span className="sr-only">Agent loop running.</span>}
         <p className="text-xs text-gray-600">
           {chat.lastModifiedAt.toLocaleDateString()}
           {' • '}
@@ -93,6 +109,16 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
 
   const vfsAdapter = useMemo(() => gremlinClient.getVfsAdapter(projectId), [projectId]);
 
+  const activeLoops = useSyncExternalStore(
+    activeLoopsStore.subscribe,
+    activeLoopsStore.getSnapshot,
+    activeLoopsStore.getSnapshot
+  );
+  const runningChatIds = useMemo(
+    () => new Set(activeLoops.map(loop => loop.chatId)),
+    [activeLoops]
+  );
+
   // UI state
   const [newChatMessage, setNewChatMessage] = useState('');
   // Store processed attachments (MessageAttachment[]) instead of raw Files
@@ -126,14 +152,12 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
   });
 
   const [showNameIcon, setShowNameIcon] = useState(false);
-  const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
   const [newChatApiDefId, setNewChatApiDefId] = useState<string | null>(null);
   const [newChatModelId, setNewChatModelId] = useState<string | null>(null);
   const [showNewChatModelSelector, setShowNewChatModelSelector] = useState(false);
   const [showCompact, setShowCompact] = useState(false);
   const [showExport, setShowExport] = useState(false);
-  const settingsDropdownRef = useRef<HTMLDivElement>(null);
 
   // Reset new chat model override when project changes
   useEffect(() => {
@@ -184,18 +208,6 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
       return () => clearTimeout(timer);
     }
   }, [validationError]);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    if (!showSettingsDropdown) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (settingsDropdownRef.current && !settingsDropdownRef.current.contains(e.target as Node)) {
-        setShowSettingsDropdown(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showSettingsDropdown]);
 
   // Stable callbacks for memoized ChatListItem
   const handleNavigateToChat = useCallback(
@@ -391,69 +403,27 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
                 : 'set default model in project settings →'}
             </span>
           </div>
-          {/* Settings Dropdown */}
-          <div ref={settingsDropdownRef} className="relative">
-            <button
-              onClick={() => setShowSettingsDropdown(prev => !prev)}
-              className="flex h-11 w-11 items-center justify-center text-gray-600 hover:text-gray-900"
-            >
-              <span className="text-2xl">🔧</span>
-            </button>
-            {showSettingsDropdown && (
-              <div className="absolute top-full right-0 z-10 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
-                <button
-                  onClick={() => {
-                    setShowSettingsDropdown(false);
-                    navigate(`/project/${projectId}/settings`);
-                  }}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                >
-                  <span>⚙️</span>
-                  <span>Project Settings</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setShowSettingsDropdown(false);
-                    setShowSystemPrompt(true);
-                  }}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                >
-                  <span>📝</span>
-                  <span>Project Instructions</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setShowSettingsDropdown(false);
-                    navigate(`/project/${projectId}/vfs`);
-                  }}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                >
-                  <span>📁</span>
-                  <span>Files</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setShowSettingsDropdown(false);
-                    setShowCompact(true);
-                  }}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                >
-                  <span>🗜️</span>
-                  <span>Compact Project</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setShowSettingsDropdown(false);
-                    setShowExport(true);
-                  }}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-                >
-                  <span>📦</span>
-                  <span>Export Project</span>
-                </button>
-              </div>
-            )}
-          </div>
+          <DropdownMenu label="Project menu" icon="🔧">
+            <DropdownMenuItem icon="⚙️" onSelect={() => navigate(`/project/${projectId}/settings`)}>
+              Project Settings
+            </DropdownMenuItem>
+            <DropdownMenuItem icon="📝" onSelect={() => setShowSystemPrompt(true)}>
+              Project Instructions
+            </DropdownMenuItem>
+            <DropdownMenuItem icon="📁" onSelect={() => navigate(`/project/${projectId}/vfs`)}>
+              Files
+            </DropdownMenuItem>
+            <DropdownMenuItem icon="🗜️" onSelect={() => setShowCompact(true)}>
+              Compact Project
+            </DropdownMenuItem>
+            <DropdownMenuItem icon="📦" onSelect={() => setShowExport(true)}>
+              Export Project
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem icon="🏠" onSelect={() => navigate('/')}>
+              Home
+            </DropdownMenuItem>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -674,6 +644,7 @@ export default function ProjectView({ projectId, onMenuPress }: ProjectViewProps
               <ChatListItem
                 key={chat.id}
                 chat={chat}
+                isRunning={runningChatIds.has(chat.id)}
                 onNavigate={handleNavigateToChat}
                 onDelete={handleDeleteChat}
               />

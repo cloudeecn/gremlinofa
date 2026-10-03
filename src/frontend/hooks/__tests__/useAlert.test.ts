@@ -3,16 +3,7 @@ import { renderHook } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { useAlert } from '../useAlert';
 import { AlertContext } from '../../contexts/AlertContext';
-
-interface AlertContextType {
-  showAlert: (title: string, message: string) => Promise<void>;
-  showConfirm: (title: string, message: string, confirmLabel?: string) => Promise<boolean>;
-  showDestructiveConfirm: (
-    title: string,
-    message: string,
-    confirmLabel?: string
-  ) => Promise<boolean>;
-}
+import type { AlertContextType } from '../../contexts/AlertContext';
 
 describe('useAlert', () => {
   it('should throw error when used outside AlertProvider', () => {
@@ -36,6 +27,7 @@ describe('useAlert', () => {
       showAlert: mockShowAlert,
       showConfirm: mockShowConfirm,
       showDestructiveConfirm: mockShowDestructiveConfirm,
+      showPrompt: vi.fn(),
     };
 
     const { result } = renderHook(() => useAlert(), {
@@ -58,6 +50,7 @@ describe('useAlert', () => {
       showAlert: mockShowAlert,
       showConfirm: mockShowConfirm,
       showDestructiveConfirm: mockShowDestructiveConfirm,
+      showPrompt: vi.fn(),
     };
 
     const { result } = renderHook(() => useAlert(), {
@@ -85,6 +78,7 @@ describe('useAlert', () => {
       showAlert: mockShowAlert,
       showConfirm: vi.fn(),
       showDestructiveConfirm: vi.fn(),
+      showPrompt: vi.fn(),
     };
 
     const { result } = renderHook(() => useAlert(), {
@@ -103,6 +97,7 @@ describe('useAlert', () => {
       showAlert: vi.fn(),
       showConfirm: mockShowConfirm,
       showDestructiveConfirm: vi.fn(),
+      showPrompt: vi.fn(),
     };
 
     const { result } = renderHook(() => useAlert(), {
@@ -122,6 +117,7 @@ describe('useAlert', () => {
       showAlert: vi.fn(),
       showConfirm: vi.fn(),
       showDestructiveConfirm: mockShowDestructiveConfirm,
+      showPrompt: vi.fn(),
     };
 
     const { result } = renderHook(() => useAlert(), {

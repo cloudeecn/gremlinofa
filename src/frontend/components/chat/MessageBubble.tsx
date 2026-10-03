@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { type MessageAttachment } from '../../../shared/protocol/types';
-import type { RenderingBlockGroup } from '../../../shared/protocol/types/content';
 import { gremlinClient } from '../../client';
 import { isToolResultMessage } from '../../lib/messageFormatters';
 import type { MessageBubbleProps } from './types';
@@ -17,8 +16,6 @@ function MessageBubble({
   onRegister,
   onMeasureHeight,
   getHeight,
-  focusMode,
-  expandMinions,
   disableMath,
   isLastMessage,
   isClaudeAgentChat,
@@ -116,24 +113,7 @@ function MessageBubble({
     );
   }
 
-  const renderingContent = message.content.renderingContent as RenderingBlockGroup[] | undefined;
-
   const isToolResult = isToolResultMessage(message);
-
-  // In focus mode, hide tool result messages unless expandMinions is on and they have complex results
-  if (focusMode && isToolResult) {
-    const hasComplexResults =
-      expandMinions &&
-      renderingContent
-        ?.flatMap(g => g.blocks)
-        .some(b => b.type === 'tool_result' && b.renderingGroups && b.renderingGroups.length > 0);
-
-    if (!hasComplexResults) {
-      // Zero height (no margin) so hidden tool results don't stack up as gaps;
-      // still registered so the element keeps its slot in the observers.
-      return <div ref={measureRef} aria-hidden="true" />;
-    }
-  }
 
   return (
     <div
@@ -147,10 +127,9 @@ function MessageBubble({
           loadingAttachmentCount={
             attachmentKey && loadedAttachmentKey !== attachmentKey ? attachmentIds!.length : 0
           }
-          onAction={focusMode ? undefined : onAction}
+          onAction={onAction}
           actions={actions}
           onDeleteMessage={onDeleteMessage}
-          focusMode={focusMode}
           isLastMessage={isLastMessage}
           isClaudeAgentChat={isClaudeAgentChat}
         />
@@ -159,10 +138,8 @@ function MessageBubble({
       {isToolResult && (
         <ToolResultBubble
           message={message}
-          onAction={focusMode ? undefined : onAction}
+          onAction={onAction}
           onDeleteMessage={onDeleteMessage}
-          focusMode={focusMode}
-          expandMinions={expandMinions}
           disableMath={disableMath}
           isLastMessage={isLastMessage}
         />
@@ -171,9 +148,8 @@ function MessageBubble({
       {!isUser && (
         <AssistantMessageBubble
           message={message}
-          onAction={focusMode ? undefined : onAction}
+          onAction={onAction}
           onDeleteMessage={onDeleteMessage}
-          focusMode={focusMode}
           disableMath={disableMath}
           isLastMessage={isLastMessage}
           expandedGroups={expandedGroups}

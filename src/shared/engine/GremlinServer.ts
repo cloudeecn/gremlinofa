@@ -114,6 +114,13 @@ export class GremlinServer {
    * constructor to skip the deferred-init dance.
    */
   private initialized = false;
+  /**
+   * Tail of the `init` queue. Inits run one at a time: two concurrent first
+   * inits (two tabs reconnecting after a restart) both passed the
+   * `_deps === null` check and built two storage stacks, and a second
+   * same-key init answered `ok` before the first had opened storage.
+   */
+  private initQueue: Promise<unknown> = Promise.resolve();
   private subscriberCounter = 0;
   private _deps: BackendDeps | null;
   /**
@@ -314,8 +321,11 @@ export class GremlinServer {
   private async dispatchOneShot(method: string, params: any): Promise<any> {
     switch (method) {
       // ----- lifecycle -----
-      case 'init':
-        return this.init(params as InitParams);
+      case 'init': {
+        const run = this.initQueue.then(() => this.init(params as InitParams));
+        this.initQueue = run.catch(() => {});
+        return run;
+      }
 
       // ----- projects -----
       case 'listProjects':
@@ -435,6 +445,13 @@ export class GremlinServer {
           );
         }
         await this.storage.deleteMessageAndAfter(params.chatId, params.messageId);
+        // Keep the chat list's count right. Minion chat ids aren't in the
+        // chats table, so getChat skips them.
+        if (await this.storage.getChat(params.chatId)) {
+          await this.storage.patchChat(params.chatId, {
+            messageCount: await this.storage.getMessageCount(params.chatId),
+          });
+        }
         await this.broadcastChatLockState(params.chatId);
         return { ok: true };
       }

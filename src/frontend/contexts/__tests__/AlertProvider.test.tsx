@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { AlertProvider } from '../AlertProvider';
+import type { PromptOptions } from '../AlertContext';
 import { useAlert } from '../../hooks/useAlert';
 
 type Kind = 'alert' | 'confirm' | 'destructive';
@@ -189,5 +190,137 @@ describe('AlertProvider queue', () => {
 
     expect(screen.getByRole('alertdialog', { name: 'Second' })).toBeInTheDocument();
     expect(settled).toEqual(['first']);
+  });
+});
+
+describe('AlertProvider prompt', () => {
+  type BeforePrompt = (dialogs: ReturnType<typeof useAlert>) => void;
+
+  function PromptTrigger({ before, options }: { before?: BeforePrompt; options: PromptOptions }) {
+    const dialogs = useAlert();
+    const [result, setResult] = useState('pending');
+    const open = async () => {
+      before?.(dialogs);
+      const value = await dialogs.showPrompt(options);
+      setResult(value === null ? 'null' : `value:${value}`);
+    };
+    return (
+      <>
+        <button onClick={open}>open</button>
+        <span data-testid="result">{result}</span>
+      </>
+    );
+  }
+
+  function renderPrompt(options: PromptOptions, before?: BeforePrompt) {
+    render(
+      <AlertProvider>
+        <PromptTrigger options={options} before={before} />
+      </AlertProvider>
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'open' }));
+  }
+
+  const NEW_FILE: PromptOptions = {
+    title: 'New file',
+    message: 'In /notes',
+    label: 'File name',
+    placeholder: 'notes.md',
+    confirmLabel: 'Create',
+  };
+
+  it('labels the field, focuses it on keyboard devices and resolves the trimmed value', async () => {
+    renderPrompt({ ...NEW_FILE, defaultValue: 'draft' });
+
+    const dialog = screen.getByRole('alertdialog', { name: 'New file' });
+    expect(dialog).toHaveAccessibleDescription('In /notes');
+    const input = screen.getByRole('textbox', { name: 'File name' });
+    expect(input).toHaveValue('draft');
+    expect(input).toHaveFocus();
+
+    fireEvent.change(input, { target: { value: '  todo.md ' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    });
+
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('result')).toHaveTextContent('value:todo.md');
+  });
+
+  it('submits on Enter but not on the Enter that confirms an IME candidate', async () => {
+    renderPrompt(NEW_FILE);
+    const input = screen.getByRole('textbox', { name: 'File name' });
+    fireEvent.change(input, { target: { value: '日本' } });
+
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' });
+    });
+    expect(screen.getByTestId('result')).toHaveTextContent('value:日本');
+  });
+
+  it('resolves null on Escape, Cancel and a backdrop click', async () => {
+    renderPrompt(NEW_FILE);
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'Escape' });
+    });
+    expect(screen.getByTestId('result')).toHaveTextContent('null');
+
+    fireEvent.click(screen.getByRole('button', { name: 'open' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    });
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('result')).toHaveTextContent('null');
+
+    fireEvent.click(screen.getByRole('button', { name: 'open' }));
+    const backdrop = document.querySelector('.bg-black\\/50');
+    expect(backdrop).not.toBeNull();
+    await act(async () => {
+      fireEvent.click(backdrop!);
+    });
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps the dialog open with an error while the value is rejected', async () => {
+    renderPrompt({
+      ...NEW_FILE,
+      validate: value => (value.includes('/') ? 'No slashes' : null),
+    });
+    const input = screen.getByRole('textbox', { name: 'File name' });
+
+    fireEvent.change(input, { target: { value: 'a/b' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('No slashes');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAccessibleDescription('No slashes');
+
+    // The error follows the typing once shown
+    fireEvent.change(input, { target: { value: 'ab' } });
+    expect(screen.getByRole('alert')).toBeEmptyDOMElement();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    });
+    expect(screen.getByTestId('result')).toHaveTextContent('value:ab');
+  });
+
+  it('refuses an empty value when there is no validate', () => {
+    renderPrompt(NEW_FILE);
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a value.');
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+  });
+
+  it('waits behind a dialog opened before it', async () => {
+    renderPrompt(NEW_FILE, ({ showAlert }) => void showAlert('First', 'one'));
+
+    expect(screen.getByRole('alertdialog', { name: 'First' })).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'OK' }));
+    });
+    expect(screen.getByRole('alertdialog', { name: 'New file' })).toBeInTheDocument();
   });
 });

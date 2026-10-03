@@ -23,6 +23,10 @@
  * kept only while the chat has a running loop: a manual rename doesn't reach
  * this stream, so the chat's next loop looks the title up again.
  *
+ * Chat rows: a running loop's `chat_updated` rows (message count, context
+ * usage, cost, date) go to `onChatUpdated` listeners as they arrive. The store
+ * keeps none of them; a project page patches its own chat list.
+ *
  * Lifecycle:
  *   - `start()` opens the upstream stream. The app shell calls it once init
  *     succeeds, because `useChat` reads `getSnapshot()` without subscribing
@@ -37,15 +41,18 @@
  */
 
 import type { ActiveLoop, ActiveLoopsChange, LoopId } from '../../shared/protocol/protocol';
+import type { Chat } from '../../shared/protocol/types';
 import type { GremlinClient } from './GremlinClient';
 
 export type ActiveLoopsListener = () => void;
+export type ChatUpdatedListener = (chat: Chat) => void;
 
 export class ActiveLoopsStore {
   private readonly client: GremlinClient;
   private loops: Map<LoopId, ActiveLoop> = new Map();
   private snapshot: ActiveLoop[] = [];
   private listeners: Set<ActiveLoopsListener> = new Set();
+  private chatListeners: Set<ChatUpdatedListener> = new Set();
   /** Set by `start()`; from then on a reconnect reopens the stream. */
   private wanted = false;
   private streamStarted = false;
@@ -117,6 +124,18 @@ export class ActiveLoopsStore {
   getPendingTitlesSnapshot = (): ReadonlySet<string> => this.pendingTitlesSnapshot;
 
   /**
+   * Listen for the stored rows of chats whose running loop changed them.
+   * Doesn't open the stream: `start()` (app shell) does. Returns an
+   * unsubscribe function.
+   */
+  onChatUpdated = (listener: ChatUpdatedListener): (() => void) => {
+    this.chatListeners.add(listener);
+    return () => {
+      this.chatListeners.delete(listener);
+    };
+  };
+
+  /**
    * Hard-abort a loop. Wraps `gremlinClient.abortLoop` so the sidebar UI
    * doesn't have to import the client directly. Errors are swallowed and
    * logged — the registry's `ended` broadcast removes the row regardless.
@@ -145,6 +164,7 @@ export class ActiveLoopsStore {
     this.pendingTitlesSnapshot = new Set();
     this.attemptedTitles.clear();
     this.listeners.clear();
+    this.chatListeners.clear();
   }
 
   // ==========================================================================
@@ -221,6 +241,9 @@ export class ActiveLoopsStore {
           titlesChanged = true;
         }
         break;
+      case 'chat_updated':
+        for (const listener of this.chatListeners) listener(change.chat);
+        return;
     }
     if (loopsChanged) {
       const forgot = this.forgetIdleChats();

@@ -48,7 +48,7 @@ const BANNERS: Record<
 /**
  * App-wide banner that surfaces WebSocket connection problems.
  *
- * - Stale (no pong > 4s): amber "Checking connection..." — shown immediately
+ * - Stale (no pong > 8s): amber "Checking connection..." — shown immediately
  *   (no debounce) so the user pauses before sending.
  * - Disconnected: red "Connection lost — reconnecting..."
  * - Reconnecting: amber "Reconnecting..."

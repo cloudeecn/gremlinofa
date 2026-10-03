@@ -1,12 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import Spinner from './ui/Spinner';
 import RunningLoopsSection from './activeLoops/RunningLoopsSection';
-import { useAppActions, useProjects } from '../hooks/useApp';
-import { useAlert } from '../hooks/useAlert';
+import { useProjects } from '../hooks/useApp';
+import { useCreateProject } from '../hooks/useCreateProject';
 import { useImeSafeEnter } from '../hooks/useImeSafeEnter';
-import type { Project } from '../../shared/protocol/types';
-import { generateUniqueId } from '../../shared/protocol/idGenerator';
 
 interface SidebarProps {
   onClose?: () => void;
@@ -33,13 +31,11 @@ export default function Sidebar({ onClose, onCollapse }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const projects = useProjects();
-  const { saveProject } = useAppActions();
-  const { showAlert } = useAlert();
+  const { createProject, isSaving: isSavingProject } = useCreateProject();
 
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [devAvailable, setDevAvailable] = useState(() => devBuildAvailable);
-  const [isSavingProject, setIsSavingProject] = useState(false);
   const { onCompositionEnd, isImeEnter } = useImeSafeEnter();
 
   const baseUrl = import.meta.env.BASE_URL;
@@ -67,44 +63,12 @@ export default function Sidebar({ onClose, onCollapse }: SidebarProps) {
     onClose?.();
   };
 
-  const handleCreateProject = useCallback(async () => {
-    if (!newProjectName.trim()) {
-      await showAlert('Error', 'Project name cannot be empty');
-      return;
-    }
-
-    setIsSavingProject(true);
-    try {
-      const newProject: Project = {
-        id: generateUniqueId('project'),
-        name: newProjectName.trim(),
-        icon: '📁',
-        createdAt: new Date(),
-        lastUsedAt: new Date(),
-        systemPrompt: '',
-        preFillResponse: '',
-        apiDefinitionId: null, // User must configure
-        modelId: null, // User must configure
-        webSearchEnabled: false,
-        temperature: null, // Use API-level default
-        maxOutputTokens: 1536,
-        enableReasoning: false,
-        reasoningBudgetTokens: 1024,
-        // Message metadata defaults
-        sendMessageMetadata: false,
-        metadataTimestampMode: 'utc',
-        metadataIncludeContextWindow: false,
-        metadataIncludeCost: false,
-      };
-
-      await saveProject(newProject);
-      setNewProjectName('');
-      setIsCreatingProject(false);
-      navigate(`/project/${newProject.id}`);
-    } finally {
-      setIsSavingProject(false);
-    }
-  }, [newProjectName, saveProject, navigate, showAlert]);
+  const handleCreateProject = async () => {
+    if (!(await createProject(newProjectName))) return;
+    setNewProjectName('');
+    setIsCreatingProject(false);
+    onClose?.();
+  };
 
   return (
     <div className="flex h-full w-full flex-col bg-gray-900 text-white">

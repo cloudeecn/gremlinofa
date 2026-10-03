@@ -20,9 +20,9 @@ let wss: WebSocketServer;
 let port: number;
 let serverSocket: WsWebSocket | null;
 
-/** Start a ws server on a random port. */
-async function startServer(): Promise<void> {
-  wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+/** Start a ws server on `onPort` (a random free port by default). */
+async function startServer(onPort = 0): Promise<void> {
+  wss = new WebSocketServer({ port: onPort, host: '127.0.0.1' });
   await new Promise<void>(resolve => wss.on('listening', resolve));
   const addr = wss.address();
   port = typeof addr === 'object' && addr ? addr.port : 0;
@@ -37,6 +37,32 @@ async function stopServer(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     wss.close(err => (err ? reject(err) : resolve()));
   });
+}
+
+/** Take the server down the way a crash does: live sockets die with it. */
+async function killServer(): Promise<void> {
+  for (const client of wss.clients) client.terminate();
+  await stopServer();
+}
+
+/** A port nothing listens on (bound once, then released). */
+async function reservePort(): Promise<number> {
+  const probe = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>(resolve => probe.on('listening', resolve));
+  const addr = probe.address();
+  const freePort = typeof addr === 'object' && addr ? addr.port : 0;
+  await new Promise<void>(resolve => probe.close(() => resolve()));
+  return freePort;
+}
+
+/** Resolves once `states` holds `count` entries equal to `state`. */
+async function waitForStateCount(states: string[], state: string, count: number): Promise<void> {
+  await vi.waitFor(
+    () => expect(states.filter(s => s === state).length).toBeGreaterThanOrEqual(count),
+    {
+      timeout: 8000,
+    }
+  );
 }
 
 /** Wait for the server to receive a connected client. */
@@ -502,6 +528,102 @@ describe('WebSocketTransport', () => {
   });
 
   // --------------------------------------------------------------------------
+  // Outages: callers parked on a gate before the socket opens
+  // --------------------------------------------------------------------------
+
+  describe('outage before the gates open', () => {
+    /** Next request envelope, skipping heartbeat pings. */
+    async function nextRequest(msgs: ReturnType<typeof bufferMessages>): Promise<RequestEnvelope> {
+      for (;;) {
+        const msg = await msgs.next();
+        if (msg.kind === 'request') return msg;
+      }
+    }
+
+    it('resolves an init issued while the server was down at startup', async () => {
+      const downPort = await reservePort();
+      transport = new WebSocketTransport(`ws://127.0.0.1:${downPort}`);
+      const states: string[] = [];
+      transport.onConnectionStateChange(state => states.push(state));
+
+      // Bootstrap's init parks on the connect gate of the first attempt
+      const initPromise = transport.request('init', { cek: 'test' });
+
+      // Two failed attempts: each one used to swap the gate for a new one
+      await waitForStateCount(states, 'disconnected', 2);
+
+      await stopServer();
+      await startServer(downPort);
+      const ws = await waitForServerConnection();
+      const msgs = bufferMessages(ws);
+
+      const initMsg = await nextRequest(msgs);
+      expect(initMsg.method).toBe('init');
+      serverSend(ws, { kind: 'response', requestId: initMsg.requestId, result: { ok: true } });
+
+      await expect(initPromise).resolves.toEqual({ ok: true });
+      expect(transport.connectionState).toBe('connected');
+    }, 15000);
+
+    it('releases an RPC issued mid-outage after a reconnect attempt fails', async () => {
+      transport = new WebSocketTransport(`ws://127.0.0.1:${port}`);
+      let ws = await waitForServerConnection();
+      const initPromise = transport.request('init', { cek: 'test' });
+      const initMsg = (await nextServerMessage(ws)) as RequestEnvelope;
+      serverSend(ws, { kind: 'response', requestId: initMsg.requestId, result: { ok: true } });
+      await initPromise;
+
+      const states: string[] = [];
+      transport.onConnectionStateChange(state => states.push(state));
+      const serverPort = port;
+      await killServer();
+      await waitForStateCount(states, 'disconnected', 1);
+
+      // Parks on the gate made by the first reconnect schedule
+      const reqPromise = transport.request('listProjects', {});
+      // A failed attempt schedules again, which used to replace that gate
+      await waitForStateCount(states, 'disconnected', 2);
+
+      await startServer(serverPort);
+      ws = await waitForServerConnection();
+      const msgs = bufferMessages(ws);
+
+      const replayedInit = await nextRequest(msgs);
+      expect(replayedInit.method).toBe('init');
+      serverSend(ws, { kind: 'response', requestId: replayedInit.requestId, result: { ok: true } });
+
+      const listMsg = await nextRequest(msgs);
+      expect(listMsg.method).toBe('listProjects');
+      serverSend(ws, { kind: 'response', requestId: listMsg.requestId, result: [] });
+      await expect(reqPromise).resolves.toEqual([]);
+    }, 15000);
+
+    it('keeps a never-opened init gate across a reconnect', async () => {
+      transport = new WebSocketTransport(`ws://127.0.0.1:${port}`);
+      let ws = await waitForServerConnection();
+
+      // Parks on the init gate: nothing has inited yet
+      const reqPromise = transport.request('listProjects', {});
+
+      serverSocket = null;
+      ws.close();
+      ws = await waitForServerConnection();
+      const msgs = bufferMessages(ws);
+
+      const initPromise = transport.request('init', { cek: 'test' });
+      const initMsg = await nextRequest(msgs);
+      expect(initMsg.method).toBe('init');
+      serverSend(ws, { kind: 'response', requestId: initMsg.requestId, result: { ok: true } });
+      await initPromise;
+
+      const listMsg = await nextRequest(msgs);
+      expect(listMsg.method).toBe('listProjects');
+      serverSend(ws, { kind: 'response', requestId: listMsg.requestId, result: [] });
+      await expect(reqPromise).resolves.toEqual([]);
+    }, 10000);
+  });
+
+  // --------------------------------------------------------------------------
   // Connection state
   // --------------------------------------------------------------------------
 
@@ -615,5 +737,22 @@ describe('WebSocketTransport', () => {
       await new Promise(r => setTimeout(r, 2000));
       expect(reconnectFired).not.toHaveBeenCalled();
     }, 10000);
+
+    it('rejects a caller parked on the connect gate', async () => {
+      transport = new WebSocketTransport(`ws://127.0.0.1:${await reservePort()}`);
+      const initPromise = transport.request('init', { cek: 'test' });
+      transport.dispose();
+      await expect(initPromise).rejects.toThrow('transport disposed');
+    });
+
+    it('rejects a caller parked on the init gate', async () => {
+      transport = new WebSocketTransport(`ws://127.0.0.1:${port}`);
+      await waitForServerConnection();
+      const reqPromise = transport.request('listProjects', {});
+      // Let the request get past the connect gate
+      await new Promise(r => setTimeout(r, 50));
+      transport.dispose();
+      await expect(reqPromise).rejects.toThrow('transport disposed');
+    });
   });
 });

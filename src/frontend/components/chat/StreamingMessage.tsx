@@ -9,7 +9,6 @@ import BouncingDots from './BouncingDots';
  */
 export default function StreamingMessage({
   groups,
-  focusMode,
   disableMath,
   dummyHookStatus,
   expandedGroups,
@@ -23,7 +22,6 @@ export default function StreamingMessage({
         )}
         <AssistantGroups
           groups={groups}
-          focusMode={focusMode}
           disableMath={disableMath}
           streaming
           expandedGroups={expandedGroups}

@@ -13,7 +13,6 @@ export default function AssistantMessageBubble({
   message,
   onAction,
   onDeleteMessage,
-  focusMode,
   disableMath,
   isLastMessage,
   expandedGroups,
@@ -37,82 +36,78 @@ export default function AssistantMessageBubble({
         )}
         <AssistantGroups
           groups={renderingContent}
-          focusMode={focusMode}
           disableMath={disableMath}
           expandedGroups={expandedGroups}
         />
       </div>
 
-      {/* Assistant info bar (hidden in focus mode) */}
-      {!focusMode && (
-        <MessageInfoBar
-          timestamp={message.timestamp}
-          tone={isDummy ? 'dummy' : 'default'}
-          model={
-            isDummy
-              ? undefined
-              : { requested: message.metadata?.model, served: message.metadata?.servedModel }
-          }
-          contextText={formatContextWindow(
-            message.metadata?.contextWindowUsage,
-            message.metadata?.contextWindow
-          )}
-          cost={message.metadata?.messageCost}
-          tokens={isDummy ? undefined : message.metadata}
-          badge={
-            isDummy ? (
-              <span>✨ DUMMY</span>
-            ) : message.content.stopReason && message.content.stopReason !== 'end_turn' ? (
-              <StopReasonBadge stopReason={message.content.stopReason} />
-            ) : undefined
-          }
-          quickActions={
+      <MessageInfoBar
+        timestamp={message.timestamp}
+        tone={isDummy ? 'dummy' : 'default'}
+        model={
+          isDummy
+            ? undefined
+            : { requested: message.metadata?.model, served: message.metadata?.servedModel }
+        }
+        contextText={formatContextWindow(
+          message.metadata?.contextWindowUsage,
+          message.metadata?.contextWindow
+        )}
+        cost={message.metadata?.messageCost}
+        tokens={isDummy ? undefined : message.metadata}
+        badge={
+          isDummy ? (
+            <span>✨ DUMMY</span>
+          ) : message.content.stopReason && message.content.stopReason !== 'end_turn' ? (
+            <StopReasonBadge stopReason={message.content.stopReason} />
+          ) : undefined
+        }
+        quickActions={
+          <CopyButton
+            getText={() => stripMetadata(message.content.content)}
+            label="📋"
+            title="Copy message"
+            className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+          />
+        }
+        actions={
+          <>
             <CopyButton
-              getText={() => stripMetadata(message.content.content)}
-              label="📋"
-              title="Copy message"
+              getText={() => JSON.stringify(message, null, 2)}
+              label="🔍"
+              title="Copy message JSON"
               className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
             />
-          }
-          actions={
-            <>
-              <CopyButton
-                getText={() => JSON.stringify(message, null, 2)}
-                label="🔍"
-                title="Copy message JSON"
+            {claudeAgentUuid && (
+              <button
+                onClick={() => setShowAgentDebug(true)}
                 className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-              />
-              {claudeAgentUuid && (
-                <button
-                  onClick={() => setShowAgentDebug(true)}
-                  className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-                  title="View SDK session entry"
-                >
-                  🔬
-                </button>
-              )}
-              {onAction && !isLastMessage && (
-                <button
-                  onClick={() => onAction('rollback', message.id)}
-                  className={`${INFO_BAR_BUTTON} hover:text-orange-600`}
-                  title="Roll back to here"
-                >
-                  ⏪
-                </button>
-              )}
-              {onDeleteMessage && (
-                <button
-                  onClick={() => onDeleteMessage(message.id)}
-                  className={`${INFO_BAR_BUTTON} hover:text-red-600`}
-                  title="Delete this message"
-                >
-                  ❌
-                </button>
-              )}
-            </>
-          }
-        />
-      )}
+                title="View SDK session entry"
+              >
+                🔬
+              </button>
+            )}
+            {onAction && !isLastMessage && (
+              <button
+                onClick={() => onAction('rollback', message.id)}
+                className={`${INFO_BAR_BUTTON} hover:text-orange-600`}
+                title="Roll back to here"
+              >
+                ⏪
+              </button>
+            )}
+            {onDeleteMessage && (
+              <button
+                onClick={() => onDeleteMessage(message.id)}
+                className={`${INFO_BAR_BUTTON} hover:text-red-600`}
+                title="Delete this message"
+              >
+                ❌
+              </button>
+            )}
+          </>
+        }
+      />
 
       {claudeAgentUuid && showAgentDebug && (
         <ClaudeAgentDebugModal

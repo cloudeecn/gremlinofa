@@ -1,19 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 
 export interface ViewOptions {
-  focusMode: boolean;
-  expandMinions: boolean;
   disableMath: boolean;
-  alwaysAutoScroll: boolean;
 }
 
 const STORAGE_KEY = 'chatViewOptions';
 
 const DEFAULT_VIEW_OPTIONS: ViewOptions = {
-  focusMode: false,
-  expandMinions: false,
   disableMath: false,
-  alwaysAutoScroll: false,
 };
 
 function readViewOptions(): ViewOptions {

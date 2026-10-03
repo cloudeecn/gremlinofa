@@ -6,7 +6,7 @@ import type {
   FallbackRenderBlock,
   NotifyRenderBlock,
 } from '../../../shared/protocol/types/content';
-import { copyText } from '../../lib/clipboard';
+import { handleCodeCopyClick } from '../../lib/clipboard';
 import { renderMarkdownSafe } from '../../lib/markdownRenderer';
 
 export interface TextGroupViewProps {
@@ -70,21 +70,7 @@ interface TextSegmentProps {
 
 function TextSegment({ block, disableMath, streaming }: TextSegmentProps) {
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLElement;
-    if (!target.classList.contains('code-copy-button')) return;
-    e.preventDefault();
-    // Still showing feedback from the last click
-    if (target.classList.contains('copied') || target.classList.contains('failed')) return;
-    void copyText(target.dataset.code || '').then(copied => {
-      const originalText = target.textContent;
-      const feedbackClass = copied ? 'copied' : 'failed';
-      target.textContent = copied ? '✓' : '✗';
-      target.classList.add(feedbackClass);
-      setTimeout(() => {
-        target.textContent = originalText;
-        target.classList.remove(feedbackClass);
-      }, 1500);
-    });
+    if (handleCodeCopyClick(e.target as HTMLElement)) e.preventDefault();
   }, []);
 
   // Memoize the wrapper object, not just the string: React 19 compares

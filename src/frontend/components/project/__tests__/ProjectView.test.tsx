@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { StrictMode } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { Chat, Project } from '../../../../shared/protocol/types';
+import type { ActiveLoop } from '../../../../shared/protocol/protocol';
 
 /**
  * ProjectView with the real useProject hook. Regression guards for plans/08
@@ -15,6 +16,23 @@ vi.mock('react-router-dom', async importOriginal => ({
   useNavigate: () => mockNavigate,
 }));
 
+/** Stand-in for activeLoopsStore: running loops plus relayed chat rows */
+const liveLoops = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  const chatListeners = new Set<(chat: Chat) => void>();
+  const state = {
+    loops: [] as ActiveLoop[],
+    listeners,
+    chatListeners,
+    setLoops(loops: ActiveLoop[]) {
+      state.loops = loops;
+      listeners.forEach(listener => listener());
+    },
+    emitChat: (chat: Chat) => chatListeners.forEach(listener => listener(chat)),
+  };
+  return state;
+});
+
 vi.mock('../../../client', () => ({
   gremlinClient: {
     getProject: vi.fn(),
@@ -23,6 +41,17 @@ vi.mock('../../../client', () => ({
     deleteChat: vi.fn(),
     saveChat: vi.fn(),
     startLoop: vi.fn(),
+  },
+  activeLoopsStore: {
+    subscribe: (listener: () => void) => {
+      liveLoops.listeners.add(listener);
+      return () => liveLoops.listeners.delete(listener);
+    },
+    getSnapshot: () => liveLoops.loops,
+    onChatUpdated: (listener: (chat: Chat) => void) => {
+      liveLoops.chatListeners.add(listener);
+      return () => liveLoops.chatListeners.delete(listener);
+    },
   },
 }));
 
@@ -122,6 +151,7 @@ describe('ProjectView', () => {
     vi.mocked(showModuleAlert).mockClear();
     mockNavigate.mockClear();
     rowRenders.count = 0;
+    liveLoops.loops = [];
   });
 
   const composer = () => screen.getByPlaceholderText('Type your message here...');
@@ -257,6 +287,73 @@ describe('ProjectView', () => {
     expect(mockNavigate).toHaveBeenCalledTimes(1);
     expect(mockNavigate).toHaveBeenCalledWith('/project/p1/settings');
     expect(screen.queryByText('Project Settings')).not.toBeInTheDocument();
+  });
+
+  it('goes home from the bottom of the 🔧 menu', async () => {
+    render(<ProjectView projectId="p1" />);
+    await screen.findByText('Chat 0');
+
+    fireEvent.click(screen.getByText('🔧'));
+    fireEvent.click(screen.getByText('Home'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/');
+    expect(screen.queryByText('Home')).not.toBeInTheDocument();
+  });
+
+  describe('running chats', () => {
+    const loopOn = (chatId: string): ActiveLoop => ({
+      loopId: `loop_${chatId}`,
+      chatId,
+      startedAt: 0,
+      status: 'running',
+      apiDefinitionId: 'api_1',
+      modelId: 'model_1',
+    });
+    const rowOf = (name: string) =>
+      screen.getByRole('heading', { name }).parentElement!.parentElement!;
+
+    it('breathes green on a chat with a running loop until the loop ends', async () => {
+      vi.mocked(gremlinClient.getChats).mockResolvedValue(buildChats(3));
+      liveLoops.loops = [loopOn('chat_1')];
+      render(<ProjectView projectId="p1" />);
+      await screen.findByText('Chat 2');
+
+      expect(rowOf('Chat 1')).toHaveClass('animate-running-border');
+      expect(rowOf('Chat 0')).not.toHaveClass('animate-running-border');
+      expect(rowOf('Chat 0')).toHaveClass('border-gray-200');
+      expect(screen.getAllByText('Agent loop running.')).toHaveLength(1);
+
+      act(() => liveLoops.setLoops([]));
+
+      expect(rowOf('Chat 1')).not.toHaveClass('animate-running-border');
+      expect(screen.queryByText('Agent loop running.')).not.toBeInTheDocument();
+    });
+
+    it("shows a running chat's live stats, re-rendering only its row", async () => {
+      const chats = buildChats(3);
+      vi.mocked(gremlinClient.getChats).mockResolvedValue(chats);
+      liveLoops.loops = [loopOn('chat_1')];
+      render(<ProjectView projectId="p1" />);
+      await screen.findByText('Chat 2');
+
+      const lastModifiedAt = new Date(2026, 9, 10);
+      const live: Chat = {
+        ...chats[1],
+        name: 'Chat 1',
+        lastModifiedAt,
+        messageCount: 12,
+        contextWindowUsage: 3456,
+        totalCost: 0.25,
+      };
+      rowRenders.count = 0;
+      act(() => liveLoops.emitChat(live));
+
+      expect(rowOf('Chat 1')).toHaveTextContent(
+        `${lastModifiedAt.toLocaleDateString()} • 12 msgs • ctx: 3456 • $0.2500`
+      );
+      // The other rows' getter-backed names weren't read again
+      expect(rowRenders.count).toBe(0);
+    });
   });
 
   // jsdom has no layout, so this pins the classes that keep an unbreakable title from

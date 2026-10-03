@@ -4,7 +4,7 @@ import { showDestructiveConfirm } from '../../lib/alerts';
 import { useOverlay } from '../../hooks/useOverlay';
 import { useToolInventory } from '../../hooks/useToolInventory';
 import ReasoningEffortSelect from '../project/ReasoningEffortSelect';
-import VfsPathPickerModal from '../project/VfsPathPickerModal';
+import VfsPathPickerModal from '../vfs/VfsPathPickerModal';
 import Spinner from '../ui/Spinner';
 import InheritableField from './chatSettings/InheritableField';
 import PromptFileList from './chatSettings/PromptFileList';

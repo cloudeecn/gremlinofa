@@ -11,6 +11,7 @@ import {
 } from '../../hooks/useApp';
 import type { AppActions, AppStatus } from '../createAppContext';
 import type { APIDefinition, Model, Project } from '../../../shared/protocol/types';
+import type { BootHandle, BootPhase, BootstrapResult } from '../../client/bootstrapClient';
 
 const backend = vi.hoisted(() => ({
   modelNames: ['model-a'],
@@ -46,6 +47,14 @@ vi.mock('../../client', () => {
 
 import { gremlinClient } from '../../client';
 
+/** A bootstrap that already settled, or `result` when the test holds it open. */
+function fakeBoot(
+  result: Promise<BootstrapResult> = Promise.resolve({ ready: true, needsOOBE: false }),
+  phase: BootPhase = 'done'
+): BootHandle {
+  return { result, getPhase: () => phase, subscribe: () => () => {} };
+}
+
 interface Probes {
   apiDefinitionRenders: number;
   projectRenders: number;
@@ -57,7 +66,7 @@ interface Probes {
   storageQuota: unknown[];
 }
 
-function renderProvider() {
+function renderProvider(boot: BootHandle = fakeBoot()) {
   const probes: Probes = {
     apiDefinitionRenders: 0,
     projectRenders: 0,
@@ -96,7 +105,7 @@ function renderProvider() {
     return null;
   }
   render(
-    <AppProvider>
+    <AppProvider boot={boot}>
       <ApiDefinitionsProbe />
       <ProjectsProbe />
       <ActionsProbe />
@@ -188,39 +197,56 @@ describe('AppProvider', () => {
     expect(probes.models.at(-1)!.size).toBe(0);
   });
 
-  it('reports a failed init instead of leaving an empty app', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.mocked(gremlinClient.init).mockRejectedValueOnce(new Error('CEK_MISMATCH'));
+  it('waits on the bootstrap instead of calling init again', async () => {
+    vi.mocked(gremlinClient.init).mockClear();
+    await renderInitialized();
+    expect(gremlinClient.init).not.toHaveBeenCalled();
+  });
 
-    const probes = renderProvider();
+  it('stays on the boot step the bootstrap is in', async () => {
+    const probes = renderProvider(fakeBoot(new Promise(() => {}), 'backend'));
+    await act(async () => {});
+    expect(probes.status).toMatchObject({ isInitializing: true, bootStep: 'backend' });
+  });
+
+  it('reports a failed bootstrap on the step that failed', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const boot = fakeBoot(
+      Promise.resolve({ ready: false, needsOOBE: false, error: 'CEK_MISMATCH' }),
+      'unlock'
+    );
+
+    const probes = renderProvider(boot);
     await waitFor(() => expect(probes.status?.isInitializing).toBe(false));
 
-    expect(probes.status?.initError).toBe('CEK_MISMATCH');
+    expect(probes.status).toMatchObject({ initError: 'CEK_MISMATCH', bootStep: 'unlock' });
+    expect(gremlinClient.getProjects).not.toHaveBeenCalled();
     expect(consoleError).toHaveBeenCalled();
     consoleError.mockRestore();
   });
 
-  it('reports an init that throws synchronously (no Worker support)', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.mocked(gremlinClient.init).mockImplementationOnce(() => {
-      throw new Error('no Web Workers');
-    });
-
-    const probes = renderProvider();
-    await waitFor(() => expect(probes.status?.isInitializing).toBe(false));
-
-    expect(probes.status?.initError).toBe('no Web Workers');
-    consoleError.mockRestore();
-  });
-
-  it('reports a failed first project load as an init failure', async () => {
+  it('reports a failed first project load on the data step', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(gremlinClient.getProjects).mockRejectedValueOnce(new Error('storage offline'));
 
     const probes = renderProvider();
     await waitFor(() => expect(probes.status?.isInitializing).toBe(false));
 
-    expect(probes.status?.initError).toBe('storage offline');
+    expect(probes.status).toMatchObject({ initError: 'storage offline', bootStep: 'data' });
     consoleError.mockRestore();
+  });
+
+  it('opens the app without waiting for the storage quota', async () => {
+    vi.mocked(gremlinClient.getStorageQuota).mockReturnValueOnce(new Promise(() => {}));
+    const probes = renderProvider();
+    await waitFor(() => expect(probes.status?.isInitializing).toBe(false));
+    expect(probes.status?.initError).toBeNull();
+  });
+
+  it('loads projects without waiting for the API definitions', async () => {
+    vi.mocked(gremlinClient.getAPIDefinitions).mockReturnValueOnce(new Promise(() => {}));
+    vi.mocked(gremlinClient.getProjects).mockClear();
+    renderProvider();
+    await waitFor(() => expect(gremlinClient.getProjects).toHaveBeenCalled());
   });
 });

@@ -161,8 +161,15 @@ export class ChatRunner {
         }
       }
 
-      // 7. Drive the agentic loop and adapt its events.
-      const consumeResult = yield* this.consumeLoop(options, contextMessages, ctx);
+      // 7. Drive the agentic loop and adapt its events. Everything the
+      //    context holds plus the trailing user message is already stored.
+      const storedMessageCount = contextMessages.length + (trailingUserMessage ? 1 : 0);
+      const consumeResult = yield* this.consumeLoop(
+        options,
+        contextMessages,
+        ctx,
+        storedMessageCount
+      );
       terminalStatus = consumeResult.status;
     } catch (err) {
       terminalStatus = 'error';
@@ -368,19 +375,23 @@ export class ChatRunner {
    * Persists messages on `message_created`, updates chat totals on
    * `tokens_consumed`, and reports the terminal status to the caller.
    *
-   * Mirrors `consumeAgenticLoop` in `useChat.ts` but yields events instead
-   * of dispatching to React state setters.
+   * The chat-list fields (`messageCount`, `contextWindowUsage`,
+   * `lastModifiedAt`, `costUnreliable`) are patched as each message lands,
+   * not at the end, so a project page shows them live through the relayed
+   * `chat_updated`. `storedMessageCount` comes from the messages this run
+   * just read and saved, so a count that drifted (deletes) heals each run.
    */
   private async *consumeLoop(
     options: Parameters<typeof runAgenticLoop>[0],
     context: Message<unknown>[],
-    ctx: ChatLoopContext
+    ctx: ChatLoopContext,
+    storedMessageCount: number
   ): AsyncGenerator<LoopEvent, { status: ChatRunnerResult['status'] }, void> {
     const totals = createTokenTotals();
-    let currentChat = ctx.chat;
-    let lastContextWindowUsage = 0;
-    let hasUnreliableCost = false;
+    let messageCount = storedMessageCount;
+    let currentChat = await this.storage.patchChat(ctx.chat.id, { messageCount }, { touch: true });
 
+    yield { type: 'chat_updated', chat: currentChat };
     yield { type: 'streaming_start' };
 
     try {
@@ -410,19 +421,21 @@ export class ChatRunner {
               yield { type: 'first_chunk' };
               break;
 
-            case 'message_created':
+            case 'message_created': {
               await this.storage.saveMessage(ctx.chat.id, event.message);
-              if (
-                event.message.role === 'assistant' &&
-                event.message.metadata?.contextWindowUsage
-              ) {
-                lastContextWindowUsage = event.message.metadata.contextWindowUsage;
+              messageCount += 1;
+              const listFields: Partial<Chat> = { messageCount };
+              const metadata = event.message.metadata;
+              if (event.message.role === 'assistant' && metadata?.contextWindowUsage) {
+                listFields.contextWindowUsage = metadata.contextWindowUsage;
               }
-              if (event.message.metadata?.costUnreliable) {
-                hasUnreliableCost = true;
-              }
+              // Sticky: only ever set, never cleared
+              if (metadata?.costUnreliable) listFields.costUnreliable = true;
+              currentChat = await this.storage.patchChat(ctx.chat.id, listFields, { touch: true });
               yield { type: 'message_created', message: prepareMessageForWire(event.message) };
+              yield { type: 'chat_updated', chat: currentChat };
               break;
+            }
 
             case 'tokens_consumed': {
               addTokens(totals, event.tokens);
@@ -523,20 +536,6 @@ export class ChatRunner {
       // result.done — final result is in result.value
       const finalResult = result.value;
 
-      // Final chat patch: roll in lastContextWindowUsage + new messageCount and
-      // bump lastModifiedAt (touch). costUnreliable is sticky — only ever set
-      // true, never cleared (a clear here would wipe a flag an earlier turn
-      // raised).
-      const finalFields: Partial<Chat> = {
-        contextWindowUsage: lastContextWindowUsage,
-        messageCount: (ctx.chat.messageCount ?? 0) + finalResult.messages.length - context.length,
-      };
-      if (hasUnreliableCost || currentChat.costUnreliable) {
-        finalFields.costUnreliable = true;
-      }
-      currentChat = await this.storage.patchChat(ctx.chat.id, finalFields, { touch: true });
-      yield { type: 'chat_updated', chat: currentChat };
-
       // Project patch: only bump lastUsedAt. Reading-merging under the project
       // lock means two loops in the same project (and a concurrent settings
       // edit) no longer clobber each other's whole-object writes.
@@ -556,7 +555,6 @@ export class ChatRunner {
  * absolutes are safe). Returns only those fields so `patchChat` can merge them
  * onto the latest stored chat without disturbing user-owned fields (name,
  * model override, …). `costUnreliable` is only ever set true, never cleared.
- * Mirrors the equivalent block in `useChat.ts`'s `consumeAgenticLoop`.
  */
 function tokenFieldsFor(
   chat: Chat,

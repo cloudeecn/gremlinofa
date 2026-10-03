@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { LoopRegistry } from '../LoopRegistry';
 import type { ActiveLoop, LoopEvent } from '../../protocol/protocol';
-import type { Message, RenderingBlockGroup, ToolResultBlock } from '../../protocol/types';
+import type { Chat, Message, RenderingBlockGroup, ToolResultBlock } from '../../protocol/types';
 
 const mkLoop = (overrides: Partial<ActiveLoop> = {}): ActiveLoop => ({
   loopId: `loop_${Math.random().toString(36).slice(2, 8)}`,
@@ -224,6 +224,32 @@ describe('LoopRegistry', () => {
 
       // okSub: snapshot + started
       expect(okSub).toHaveBeenCalledTimes(2);
+    });
+
+    it('relays chat_updated and title changes from chat events, nothing else', () => {
+      const reg = new LoopRegistry();
+      const sub = vi.fn();
+      reg.subscribe(sub); // snapshot
+      const chat: Chat = {
+        id: 'chat_1',
+        projectId: 'p1',
+        name: 'Live',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        apiDefinitionId: null,
+        modelId: null,
+        messageCount: 7,
+      };
+
+      reg.broadcastChatEvent('chat_1', { type: 'chat_updated', chat });
+      reg.broadcastChatEvent('chat_1', { type: 'chat_metadata_updated', name: 'Live' });
+      reg.broadcastChatEvent('chat_1', { type: 'streaming_delta', ops: [{ op: 'reset' }] });
+      reg.broadcastChatEvent('chat_1', { type: 'first_chunk' });
+
+      expect(sub.mock.calls.slice(1).map(([change]) => change)).toEqual([
+        { type: 'chat_updated', chat },
+        { type: 'chat_title_changed', chatId: 'chat_1', title: 'Live' },
+      ]);
     });
   });
 

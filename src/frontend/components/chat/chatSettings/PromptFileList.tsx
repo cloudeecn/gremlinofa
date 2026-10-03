@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { VfsAdapter } from '../../../../shared/protocol/types/vfs';
-import VfsPathPickerModal from '../../project/VfsPathPickerModal';
+import VfsPathPickerModal from '../../vfs/VfsPathPickerModal';
 
 interface PromptFileListProps {
   paths: string[];

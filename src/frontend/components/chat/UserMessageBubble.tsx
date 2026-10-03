@@ -15,7 +15,6 @@ export default function UserMessageBubble({
   onAction,
   actions,
   onDeleteMessage,
-  focusMode,
   isLastMessage,
   isClaudeAgentChat,
 }: UserMessageBubbleProps) {
@@ -107,72 +106,69 @@ export default function UserMessageBubble({
         </div>
       )}
 
-      {/* User info bar (hidden in focus mode) */}
-      {!focusMode && (
-        <MessageInfoBar
-          timestamp={message.timestamp}
-          align="end"
-          quickActions={
-            <>
-              <CopyButton
-                getText={() => displayContent}
-                label="📋"
-                title="Copy message"
-                className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-              />
-              {/* Edit works for claude-agent too: sending the edit rewinds the
+      <MessageInfoBar
+        timestamp={message.timestamp}
+        align="end"
+        quickActions={
+          <>
+            <CopyButton
+              getText={() => displayContent}
+              label="📋"
+              title="Copy message"
+              className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+            />
+            {/* Edit works for claude-agent too: sending the edit rewinds the
                   SDK to the prior assistant turn. */}
-              {canEdit && (
-                <button
-                  onClick={handleEdit}
-                  className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-                  title="Edit message"
-                  aria-label="Edit message"
-                >
-                  📝
-                </button>
-              )}
-            </>
-          }
-          actions={
-            <>
-              {canFork && (
-                <button
-                  onClick={handleFork}
-                  className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-                  title="Fork chat from here"
-                >
-                  🔀 Fork
-                </button>
-              )}
-              {canRollback && (
-                <button
-                  onClick={handleRollback}
-                  className={`${INFO_BAR_BUTTON} hover:text-orange-600`}
-                  title="Roll back to here"
-                >
-                  ⏪ Rollback
-                </button>
-              )}
-              <CopyButton
-                getText={() => JSON.stringify(message, null, 2)}
-                label="🔍"
-                title="Copy message JSON"
+            {canEdit && (
+              <button
+                onClick={handleEdit}
                 className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
-              />
-              {onDeleteMessage && (
-                <button
-                  onClick={() => onDeleteMessage(message.id)}
-                  className={`${INFO_BAR_BUTTON} hover:text-red-600`}
-                  title="Delete this message"
-                >
-                  ❌
-                </button>
-              )}
-            </>
-          }
-        />
-      )}
+                title="Edit message"
+                aria-label="Edit message"
+              >
+                📝
+              </button>
+            )}
+          </>
+        }
+        actions={
+          <>
+            {canFork && (
+              <button
+                onClick={handleFork}
+                className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+                title="Fork chat from here"
+              >
+                🔀 Fork
+              </button>
+            )}
+            {canRollback && (
+              <button
+                onClick={handleRollback}
+                className={`${INFO_BAR_BUTTON} hover:text-orange-600`}
+                title="Roll back to here"
+              >
+                ⏪ Rollback
+              </button>
+            )}
+            <CopyButton
+              getText={() => JSON.stringify(message, null, 2)}
+              label="🔍"
+              title="Copy message JSON"
+              className={`${INFO_BAR_BUTTON} hover:text-gray-700`}
+            />
+            {onDeleteMessage && (
+              <button
+                onClick={() => onDeleteMessage(message.id)}
+                className={`${INFO_BAR_BUTTON} hover:text-red-600`}
+                title="Delete this message"
+              >
+                ❌
+              </button>
+            )}
+          </>
+        }
+      />
 
       {/* Image lightbox */}
       {lightboxImage && (

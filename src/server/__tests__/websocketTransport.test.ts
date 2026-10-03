@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { WebSocketTransportServer } from '../websocketTransport';
 import type { GremlinServer } from '../../shared/engine/GremlinServer';
+import { ProtocolError } from '../../shared/protocol/protocolError';
 import type {
   ErrorEnvelope,
   ResponseEnvelope,
@@ -189,6 +190,30 @@ describe('WebSocketTransportServer', () => {
       expect((response as ErrorEnvelope).message).toBe('something broke');
 
       ws.close();
+    });
+
+    it('still answers when the error data cannot be encoded', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      (mockServer.handleRequest as ReturnType<typeof vi.fn>).mockImplementation(
+        (method: string) => {
+          if (method === 'init') return Promise.resolve({ ok: true });
+          // JSON.stringify throws on a BigInt
+          return Promise.reject(new ProtocolError('INTERNAL_ERROR', 'boom', { size: 1n }));
+        }
+      );
+
+      const ws = await connectAndAuth(port);
+      const msgPromise = nextMessage(ws);
+      ws.send(
+        JSON.stringify({ kind: 'request', requestId: 'req_3', method: 'listProjects', params: {} })
+      );
+
+      const response = (await msgPromise) as ErrorEnvelope;
+      expect(response).toMatchObject({ kind: 'error', requestId: 'req_3', message: 'boom' });
+      expect(response.data).toBeUndefined();
+
+      ws.close();
+      consoleError.mockRestore();
     });
   });
 

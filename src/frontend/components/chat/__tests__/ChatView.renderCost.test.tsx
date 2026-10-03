@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { Message } from '../../../../shared/protocol/types';
 
@@ -24,9 +24,26 @@ vi.mock('../../../lib/markdownRenderer', async importOriginal => {
   };
 });
 
+// A project VFS with one hook and one file the hook picker must refuse
+const projectVfs = vi.hoisted(() => {
+  const entry = (name: string, type: 'file' | 'dir') => ({
+    name,
+    type,
+    deleted: false,
+    createdAt: 0,
+    updatedAt: 0,
+  });
+  const listings: Record<string, unknown[]> = {
+    '/': [entry('hooks', 'dir'), entry('notes.md', 'file')],
+    '/hooks': [entry('example.js', 'file')],
+  };
+  return { readDir: async (path: string) => listings[path] ?? [] };
+});
+
 vi.mock('../../../client', () => ({
   gremlinClient: {
     getAttachments: vi.fn().mockResolvedValue([]),
+    getVfsAdapter: () => projectVfs,
   },
   activeLoopsStore: { getSnapshot: () => [] },
 }));
@@ -113,6 +130,7 @@ function useChatReturn(messages: Message<unknown>[]) {
     forkChat: async () => null,
     overrideModel: noop,
     updateAgentConfig: noop,
+    setActiveHook: noop,
     updateChatName: noop,
     resolvePendingToolCalls: handedOff,
     rollbackToMessage: noop,
@@ -446,7 +464,7 @@ describe('ChatView with the real message list', () => {
       expect(menuButton).toHaveAttribute('aria-expanded', 'true');
       await act(async () => fireEvent.keyDown(document, { key: 'Escape' }));
 
-      expect(screen.queryByText('Focus Mode')).not.toBeInTheDocument();
+      expect(screen.queryByText('Disable Math')).not.toBeInTheDocument();
       expect(menuButton).toHaveFocus();
     });
 
@@ -461,7 +479,68 @@ describe('ChatView with the real message list', () => {
       await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Chat menu' })));
 
       expect(screen.getByText('Disable Math').closest('button')).toHaveTextContent('✓');
-      expect(screen.getByText('Focus Mode').closest('button')).not.toHaveTextContent('✓');
+    });
+
+    const openMenu = async () =>
+      act(async () => fireEvent.click(screen.getByRole('button', { name: 'Chat menu' })));
+
+    it('attaches a hook picked from /hooks', async () => {
+      const setActiveHook = vi.fn(async () => {});
+      chatState.current = { ...useChatReturn(buildMessages(1)), setActiveHook };
+      renderChat();
+
+      await openMenu();
+      await act(async () => fireEvent.click(screen.getByText('Attach Hook…')));
+      const picker = screen.getByRole('dialog', { name: 'Choose a DUMMY hook' });
+
+      // Only files under /hooks ending in .js can be picked
+      await act(async () =>
+        fireEvent.click(within(picker).getByRole('treeitem', { name: /notes\.md/ }))
+      );
+      expect(within(picker).getByRole('alert')).toHaveTextContent('/hooks/');
+      expect(within(picker).getByRole('button', { name: 'Select' })).toBeDisabled();
+
+      await act(async () =>
+        fireEvent.click(within(picker).getByRole('treeitem', { name: /example\.js/ }))
+      );
+      await act(async () =>
+        fireEvent.click(within(picker).getByRole('button', { name: 'Select' }))
+      );
+
+      expect(setActiveHook).toHaveBeenCalledWith('example');
+      expect(screen.queryByRole('dialog', { name: 'Choose a DUMMY hook' })).not.toBeInTheDocument();
+    });
+
+    it('detaches the attached hook', async () => {
+      const setActiveHook = vi.fn(async () => {});
+      const base = useChatReturn(buildMessages(1));
+      chatState.current = {
+        ...base,
+        chat: { ...base.chat, activeHook: 'example' },
+        setActiveHook,
+      };
+      renderChat();
+
+      await openMenu();
+      expect(screen.getByText('Change Hook…')).toBeInTheDocument();
+      await act(async () => fireEvent.click(screen.getByText('Detach example')));
+
+      expect(setActiveHook).toHaveBeenCalledWith(null);
+    });
+
+    it('locks the hook while a loop runs', async () => {
+      const base = useChatReturn(buildMessages(1));
+      chatState.current = {
+        ...base,
+        chat: { ...base.chat, activeHook: 'example' },
+        loopPhase: 'streaming',
+      };
+      renderChat();
+
+      await openMenu();
+
+      expect(screen.getByText('Change Hook…').closest('button')).toBeDisabled();
+      expect(screen.getByText('Detach example').closest('button')).toBeDisabled();
     });
   });
 

@@ -83,10 +83,17 @@ export interface StorageInfo {
   storageQuota: StorageQuota | null;
 }
 
+/**
+ * Where the boot screen is: reaching the backend, unlocking storage, or
+ * loading the first data. Once `initError` is set, the step that failed.
+ */
+export type BootStep = 'backend' | 'unlock' | 'data';
+
 export interface AppStatus {
   isInitializing: boolean;
   /** Message of the failed `init` (bad CEK, backend down); null while healthy. */
   initError: string | null;
+  bootStep: BootStep;
 }
 
 /** Models keyed by API definition ID. */

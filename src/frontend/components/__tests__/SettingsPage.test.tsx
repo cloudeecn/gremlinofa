@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import SettingsPage from '../SettingsPage';
 import type { APIDefinition } from '../../../shared/protocol/types';
 
@@ -61,9 +62,31 @@ const chatgptSubscriptionDef: APIDefinition = {
   updatedAt: createdAt,
 };
 
+function renderSettings() {
+  return render(
+    <MemoryRouter initialEntries={['/settings']}>
+      <Routes>
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/" element={<div>Home page</div>} />
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
 function checkbox(label: string) {
   return screen.getByLabelText(label) as HTMLInputElement;
 }
+
+describe('SettingsPage header', () => {
+  it('links home from the upper right', async () => {
+    mockApiDefinitions = [];
+    const user = userEvent.setup();
+    renderSettings();
+
+    await user.click(screen.getByRole('link', { name: 'Home' }));
+    expect(screen.getByText('Home page')).toBeInTheDocument();
+  });
+});
 
 describe('SettingsPage add form', () => {
   beforeEach(() => {
@@ -81,7 +104,7 @@ describe('SettingsPage add form', () => {
 
   it('offers "Subscription service" and "Enforce genuine Anthropic" under Advanced', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await openAddAdvanced(user);
 
@@ -92,7 +115,7 @@ describe('SettingsPage add form', () => {
 
   it('hides the knobs that do not apply to chatgpt-subscription, like the edit form', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await openAddAdvanced(user, 'ChatGPT \\(subscription\\)');
 
@@ -104,7 +127,7 @@ describe('SettingsPage add form', () => {
 
   it('saves the advanced flags set before going back', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await openAddAdvanced(user, 'Anthropic');
     await user.click(checkbox('Subscription service'));
@@ -131,7 +154,7 @@ describe('SettingsPage add form', () => {
 
   it('does not save a flag ticked under one type after switching to a type that hides it', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     // Default type is the Responses API, which shows the flex tier.
     await openAddAdvanced(user);
@@ -150,7 +173,7 @@ describe('SettingsPage add form', () => {
 
   it('requires a name', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await user.click(screen.getByRole('button', { name: '+ Add API Definition' }));
     await user.click(screen.getByRole('button', { name: 'Add' }));
@@ -161,7 +184,7 @@ describe('SettingsPage add form', () => {
 
   it('requires an API key unless the provider is local', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await user.click(screen.getByRole('button', { name: '+ Add API Definition' }));
     await user.type(screen.getByPlaceholderText('e.g., xAI, OpenRouter, My OpenAI'), 'Ollama');
@@ -188,7 +211,7 @@ describe('SettingsPage edit forms', () => {
 
   it('loads the definition into the edit form and saves it under the same id', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await user.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
     const name = screen.getByPlaceholderText(
@@ -216,7 +239,7 @@ describe('SettingsPage edit forms', () => {
 
   it('Cancel discards edits', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await user.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
     await user.type(screen.getByPlaceholderText('e.g., xAI, OpenRouter, My OpenAI'), ' typo');
@@ -231,7 +254,7 @@ describe('SettingsPage edit forms', () => {
 
   it('Advanced saves only the advanced settings', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await user.click(screen.getAllByRole('button', { name: 'Advanced' })[0]);
     expect(checkbox('Prune previous thinking blocks')).toBeChecked();
@@ -249,7 +272,7 @@ describe('SettingsPage edit forms', () => {
 
   it('shows the same chatgpt-subscription advanced fields as the add form', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await user.click(screen.getAllByRole('button', { name: 'Advanced' })[1]);
 
@@ -260,7 +283,7 @@ describe('SettingsPage edit forms', () => {
   it('keeps the edit form open with the edits when the save fails', async () => {
     mockSaveAPIDefinition.mockRejectedValueOnce(new Error('storage offline'));
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await user.click(screen.getAllByRole('button', { name: 'Edit' })[0]);
     const name = screen.getByPlaceholderText('e.g., xAI, OpenRouter, My OpenAI');
@@ -277,7 +300,7 @@ describe('SettingsPage edit forms', () => {
     mockShowDestructiveConfirm.mockResolvedValueOnce(true);
     mockDeleteAPIDefinition.mockRejectedValueOnce(new Error('LOOPS_RUNNING'));
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await user.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
 
@@ -287,7 +310,7 @@ describe('SettingsPage edit forms', () => {
 
   it('shows the sign-in panel instead of an API key for chatgpt-subscription', async () => {
     const user = userEvent.setup();
-    render(<SettingsPage />);
+    renderSettings();
 
     await user.click(screen.getAllByRole('button', { name: 'Edit' })[1]);
 

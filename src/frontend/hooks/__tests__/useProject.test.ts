@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useProject } from '../useProject';
 import { generateUniqueId } from '../../../shared/protocol/idGenerator';
@@ -10,6 +10,15 @@ const mockSaveProject = vi.fn();
 const mockPatchProject = vi.fn();
 const mockDeleteProject = vi.fn();
 
+// Chat rows relayed by the active-loops stream
+const liveRows = vi.hoisted(() => {
+  const listeners = new Set<(chat: Chat) => void>();
+  return {
+    listeners,
+    emit: (chat: Chat) => listeners.forEach(listener => listener(chat)),
+  };
+});
+
 // Mock dependencies
 vi.mock('../../client', () => ({
   gremlinClient: {
@@ -18,6 +27,7 @@ vi.mock('../../client', () => ({
     saveChat: vi.fn(),
     deleteChat: vi.fn(),
   },
+  activeLoopsStore: { onChatUpdated: vi.fn() },
 }));
 vi.mock('../../../shared/protocol/idGenerator');
 vi.mock('../../lib/alerts');
@@ -29,7 +39,7 @@ vi.mock('../useApp', () => ({
   }),
 }));
 
-import { gremlinClient } from '../../client';
+import { activeLoopsStore, gremlinClient } from '../../client';
 
 describe('useProject', () => {
   const mockProject: Project = {
@@ -70,6 +80,11 @@ describe('useProject', () => {
     vi.mocked(gremlinClient.deleteChat).mockResolvedValue(undefined);
     vi.mocked(generateUniqueId).mockReturnValue('chat_new_123');
     vi.mocked(alerts.showAlert).mockResolvedValue();
+    liveRows.listeners.clear();
+    vi.mocked(activeLoopsStore.onChatUpdated).mockImplementation(listener => {
+      liveRows.listeners.add(listener);
+      return () => liveRows.listeners.delete(listener);
+    });
     // The backend's merged row: what is stored, plus the patch
     let stored = { ...mockProject };
     mockPatchProject.mockImplementation(async (_id: string, fields: Partial<Project>) => {
@@ -80,6 +95,62 @@ describe('useProject', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  describe('Live chat rows', () => {
+    const loaded = async () => {
+      const hook = renderHook(() => useProject({ projectId: 'proj_123' }));
+      await waitFor(() => expect(hook.result.current.isLoading).toBe(false));
+      return hook;
+    };
+
+    it("replaces a listed chat's row with the relayed one", async () => {
+      const { result } = await loaded();
+      const live = { ...mockChat, messageCount: 9, totalCost: 0.5 };
+
+      act(() => liveRows.emit(live));
+
+      expect(result.current.chats).toEqual([live]);
+    });
+
+    it('ignores rows of other projects and of chats not in the list', async () => {
+      const { result } = await loaded();
+      const chats = result.current.chats;
+
+      act(() => liveRows.emit({ ...mockChat, projectId: 'proj_other', messageCount: 9 }));
+      act(() => liveRows.emit({ ...mockChat, id: 'chat_unlisted', messageCount: 9 }));
+
+      expect(result.current.chats).toBe(chats);
+    });
+
+    it('keeps a row that arrived while the list was loading', async () => {
+      let resolveChats: (chats: Chat[]) => void = () => {};
+      vi.mocked(gremlinClient.getChats).mockReturnValue(
+        new Promise(resolve => {
+          resolveChats = resolve;
+        })
+      );
+      const { result } = renderHook(() => useProject({ projectId: 'proj_123' }));
+      await waitFor(() => expect(gremlinClient.getChats).toHaveBeenCalled());
+      const live = { ...mockChat, messageCount: 9 };
+
+      act(() => liveRows.emit(live));
+      // The list was read before that update landed
+      await act(async () => resolveChats([mockChat]));
+
+      expect(result.current.chats).toEqual([live]);
+    });
+
+    it('listens only while mounted, and not without a chat list', async () => {
+      const { unmount } = await loaded();
+      expect(liveRows.listeners.size).toBe(1);
+      unmount();
+      expect(liveRows.listeners.size).toBe(0);
+
+      vi.mocked(activeLoopsStore.onChatUpdated).mockClear();
+      renderHook(() => useProject({ projectId: 'proj_123', withChats: false }));
+      expect(activeLoopsStore.onChatUpdated).not.toHaveBeenCalled();
+    });
   });
 
   describe('Initial Loading', () => {

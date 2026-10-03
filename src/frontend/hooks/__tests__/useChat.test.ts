@@ -534,6 +534,60 @@ describe('useChat', () => {
     });
   });
 
+  describe('setActiveHook', () => {
+    const mount = async () => {
+      const hook = renderHook(() => useChat({ chatId: 'chat_123', callbacks: mockCallbacks }));
+      await waitFor(() => expect(hook.result.current.chat).toBeTruthy());
+      return hook;
+    };
+
+    it('attaches a hook by name and adopts the merged row', async () => {
+      vi.mocked(gremlinClient.patchChat).mockResolvedValue({
+        ...mockChat,
+        activeHook: 'example',
+      } as never);
+
+      const { result } = await mount();
+      await act(async () => {
+        await result.current.setActiveHook('example');
+      });
+
+      expect(gremlinClient.patchChat).toHaveBeenCalledWith(
+        'chat_123',
+        { activeHook: 'example' },
+        { touch: true }
+      );
+      expect(result.current.chat?.activeHook).toBe('example');
+    });
+
+    it('detaches through unset', async () => {
+      vi.mocked(gremlinClient.patchChat).mockResolvedValue({ ...mockChat } as never);
+
+      const { result } = await mount();
+      await act(async () => {
+        await result.current.setActiveHook(null);
+      });
+
+      expect(gremlinClient.patchChat).toHaveBeenCalledWith(
+        'chat_123',
+        {},
+        { touch: true, unset: ['activeHook'] }
+      );
+      expect(result.current.chat?.activeHook).toBeUndefined();
+    });
+
+    it('rolls back and rejects when the patch fails', async () => {
+      vi.mocked(gremlinClient.patchChat).mockRejectedValueOnce(new Error('offline'));
+
+      const { result } = await mount();
+      await act(async () => {
+        await expect(result.current.setActiveHook('example')).rejects.toThrow('offline');
+      });
+
+      expect(result.current.chat?.activeHook).toBeUndefined();
+    });
+  });
+
   describe('sendMessage', () => {
     it('delegates to GremlinSession.send and transitions loopPhase to pending', async () => {
       const { result } = renderHook(() =>

@@ -34,3 +34,25 @@ function copyWithExecCommand(text: string): boolean {
     previouslyFocused?.focus?.();
   }
 }
+
+/**
+ * Handles a click on the copy button the markdown renderer puts on code
+ * blocks: copies the block and flashes ✓ or ✗ for 1.5 s. Returns false when
+ * the click landed anywhere else.
+ */
+export function handleCodeCopyClick(target: HTMLElement): boolean {
+  if (!target.classList.contains('code-copy-button')) return false;
+  // Still showing feedback from the last click
+  if (target.classList.contains('copied') || target.classList.contains('failed')) return true;
+  void copyText(target.dataset.code || '').then(copied => {
+    const originalText = target.textContent;
+    const feedbackClass = copied ? 'copied' : 'failed';
+    target.textContent = copied ? '✓' : '✗';
+    target.classList.add(feedbackClass);
+    setTimeout(() => {
+      target.textContent = originalText;
+      target.classList.remove(feedbackClass);
+    }, 1500);
+  });
+  return true;
+}

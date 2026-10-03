@@ -1,5 +1,14 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { gremlinClient } from '../client';
+import type { BootHandle } from '../client/bootstrapClient';
 import type { APIDefinition, Model, Project } from '../../shared/protocol/types';
 import { apiKeyOptional } from '../../shared/protocol/apiDefinition';
 import {
@@ -11,6 +20,7 @@ import {
   StorageInfoContext,
   type AppActions,
   type AppStatus,
+  type BootStep,
   type ImportOptions,
   type ModelsByApiDefinition,
   type StorageInfo,
@@ -68,7 +78,12 @@ async function refreshAfterWrite(refresh: () => Promise<void>, what: string): Pr
   }
 }
 
-export function AppProvider({ children }: { children: ReactNode }) {
+/**
+ * `boot` is the bootstrap `main.tsx` started before mounting: the provider
+ * waits on it instead of calling `init` itself, and reports its phase so
+ * the boot screen can show what the app is waiting on.
+ */
+export function AppProvider({ boot, children }: { boot: BootHandle; children: ReactNode }) {
   const [apiDefinitions, setAPIDefinitions] = useState<APIDefinition[]>([]);
   // clearAllModelsCache reads the list through this ref so it doesn't depend
   // on it, which keeps the actions object stable.
@@ -78,6 +93,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const [isInitializing, setIsInitializing] = useState(true);
   const [initError, setInitError] = useState<string | null>(null);
+  const bootPhase = useSyncExternalStore(boot.subscribe, boot.getPhase);
+  // A failed bootstrap stays on its phase; past it, only the data load is left
+  const bootStep: BootStep = bootPhase === 'done' ? 'data' : bootPhase;
   const [storageQuota, setStorageQuota] = useState<StorageQuota | null>(null);
 
   const refreshStorageQuota = useCallback(async () => {
@@ -426,50 +444,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Runs once the backend's `init` succeeded
   const loadInitialData = useCallback(async () => {
-    console.debug('[AppContext] Backend initialized, refreshing API definitions...');
-    await refreshAPIDefinitions();
-    console.debug('[AppContext] API definitions refreshed, refreshing projects...');
-    // Load models for all API definitions with credentials
-    const defsWithCredentials = apiDefinitionsRef.current.filter(
-      d => apiKeyOptional(d) || (d.apiKey && d.apiKey.trim() !== '')
-    );
-    console.debug(
-      `[AppContext] Loading models for ${defsWithCredentials.length} configured providers...`
-    );
-    // Projects load alongside the models (skipWaitingModelRefresh for faster
-    // init). Awaited, so a failure lands on the init error screen.
-    await Promise.all([
-      refreshProjects(),
-      Promise.allSettled(defsWithCredentials.map(def => refreshModels(def.id, false, true))),
-    ]);
+    console.debug('[AppContext] Backend initialized, loading API definitions and projects...');
+    // Only the model lookups need the definitions; projects load alongside.
+    // Model discovery isn't awaited (skipWaitingModelRefresh), only the cache.
+    const loadDefinitionsAndModels = async () => {
+      await refreshAPIDefinitions();
+      const defsWithCredentials = apiDefinitionsRef.current.filter(
+        d => apiKeyOptional(d) || (d.apiKey && d.apiKey.trim() !== '')
+      );
+      console.debug(
+        '[AppContext] Loading models for %d configured providers...',
+        defsWithCredentials.length
+      );
+      await Promise.allSettled(defsWithCredentials.map(def => refreshModels(def.id, false, true)));
+    };
+    // Awaited, so a failure lands on the boot screen as an error
+    await Promise.all([refreshProjects(), loadDefinitionsAndModels()]);
     console.debug('[AppContext] App initialization complete!');
 
-    // Refresh storage quota after initialization
-    await refreshStorageQuota();
+    // The first screen doesn't need it, and HomePage refreshes it on mount
+    void refreshStorageQuota();
   }, [refreshAPIDefinitions, refreshProjects, refreshModels, refreshStorageQuota]);
 
   useEffect(() => {
-    // async so a synchronous throw (no Worker support, blocked storage) lands
-    // in the catch below too
-    const initBackend = async () => {
-      console.debug('[AppContext] Starting app initialization...');
-
-      // Clean up expired drafts early in initialization
-      cleanupExpiredDrafts();
-
-      const cachedCek = getCachedCEKString();
-      await gremlinClient.init(cachedCek ? { cek: cachedCek } : {});
-    };
-    initBackend()
-      .then(loadInitialData)
+    console.debug('[AppContext] Waiting for the backend...');
+    cleanupExpiredDrafts();
+    boot.result
+      .then(result => {
+        if (result.error) throw new Error(result.error);
+        // App only mounts the provider when a CEK exists; it vanished since
+        if (!result.ready)
+          throw new Error('No encryption key in this browser. Reload to run setup.');
+        return loadInitialData();
+      })
       .catch((error: unknown) => {
-        // Bad CEK, unreachable backend: AppContent shows a "Couldn't start"
-        // screen instead of an empty shell.
+        // Bad CEK, unreachable backend: the boot screen shows the failed
+        // step instead of an empty shell.
         console.error('[AppContext] App initialization failed:', error);
         setInitError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => setIsInitializing(false));
-  }, [loadInitialData]);
+  }, [boot, loadInitialData]);
 
   // Every member is a stable callback, so this object keeps its identity for
   // the provider's lifetime.
@@ -518,8 +533,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const status = useMemo<AppStatus>(
-    () => ({ isInitializing, initError }),
-    [isInitializing, initError]
+    () => ({ isInitializing, initError, bootStep }),
+    [isInitializing, initError, bootStep]
   );
 
   return (

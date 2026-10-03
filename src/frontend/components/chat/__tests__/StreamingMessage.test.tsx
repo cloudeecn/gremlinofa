@@ -352,59 +352,26 @@ describe('StreamingMessage', () => {
     });
   });
 
-  describe('Focus Mode', () => {
-    it('hides backstage groups in focus mode', () => {
-      const groups: RenderingBlockGroup[] = [
-        {
-          category: 'backstage',
-          blocks: [{ type: 'thinking', thinking: 'Hidden thinking' }],
-        },
-        {
-          category: 'text',
-          blocks: [{ type: 'text', text: 'Visible text' }],
-        },
-      ];
+  it('renders backstage, text and error groups', () => {
+    const groups: RenderingBlockGroup[] = [
+      {
+        category: 'backstage',
+        blocks: [{ type: 'thinking', thinking: 'Visible thinking' }],
+      },
+      {
+        category: 'text',
+        blocks: [{ type: 'text', text: 'Visible text' }],
+      },
+      {
+        category: 'error',
+        blocks: [{ type: 'error', message: 'Visible error' }],
+      },
+    ];
 
-      render(<StreamingMessage groups={groups} focusMode={true} />);
+    render(<StreamingMessage groups={groups} />);
 
-      expect(screen.queryByText('Hidden thinking')).not.toBeInTheDocument();
-      expect(screen.getByText('Visible text')).toBeInTheDocument();
-    });
-
-    it('shows all groups when focus mode is off', () => {
-      const groups: RenderingBlockGroup[] = [
-        {
-          category: 'backstage',
-          blocks: [{ type: 'thinking', thinking: 'Visible thinking' }],
-        },
-        {
-          category: 'text',
-          blocks: [{ type: 'text', text: 'Visible text' }],
-        },
-      ];
-
-      render(<StreamingMessage groups={groups} focusMode={false} />);
-
-      expect(screen.getByText('Visible thinking')).toBeInTheDocument();
-      expect(screen.getByText('Visible text')).toBeInTheDocument();
-    });
-
-    it('still shows error groups in focus mode', () => {
-      const groups: RenderingBlockGroup[] = [
-        {
-          category: 'backstage',
-          blocks: [{ type: 'thinking', thinking: 'Hidden' }],
-        },
-        {
-          category: 'error',
-          blocks: [{ type: 'error', message: 'Visible error' }],
-        },
-      ];
-
-      render(<StreamingMessage groups={groups} focusMode={true} />);
-
-      expect(screen.queryByText('Hidden')).not.toBeInTheDocument();
-      expect(screen.getByText('Visible error')).toBeInTheDocument();
-    });
+    expect(screen.getByText('Visible thinking')).toBeInTheDocument();
+    expect(screen.getByText('Visible text')).toBeInTheDocument();
+    expect(screen.getByText('Visible error')).toBeInTheDocument();
   });
 });

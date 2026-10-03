@@ -13,7 +13,7 @@ const harness = vi.hoisted(() => {
       this.isMobile = isMobile;
       for (const listener of viewportListeners) listener();
     },
-    status: { isInitializing: false, initError: null } as AppStatus,
+    status: { isInitializing: false, initError: null, bootStep: 'data' } as AppStatus,
     startLoops: vi.fn(),
     sidebarMounts: 0,
     chatViewRenders: 0,
@@ -40,12 +40,13 @@ vi.mock('../hooks/useIsMobile', () => ({
 
 vi.mock('../hooks/useApp', () => ({
   useAppStatus: () => harness.status,
-  useApp: () => ({ storageQuota: null, refreshStorageQuota: async () => {} }),
 }));
 
 vi.mock('../client', () => ({
   activeLoopsStore: { start: harness.startLoops },
 }));
+
+vi.mock('../hooks/useConnectionState', () => ({ useConnectionState: () => 'connected' }));
 
 vi.mock('../components/Sidebar', async () => {
   const { useEffect } = await import('react');
@@ -71,6 +72,7 @@ vi.mock('../components/chat/ChatView', () => ({
   },
 }));
 
+vi.mock('../components/HomePage', () => ({ default: () => <div>Home page</div> }));
 vi.mock('../components/DataManagerPage', () => ({
   default: () => <div>Data manager page</div>,
 }));
@@ -98,16 +100,16 @@ vi.mock('../components/project/ProjectSettingsView', async () => {
     },
   };
 });
-vi.mock('../components/project/VfsManagerView', async () => {
+vi.mock('../components/vfs/VfsManagerView', async () => {
   const { useEffect } = await import('react');
   return {
-    default: function VfsManagerViewStub(props: { projectId: string; initialPath?: string }) {
+    default: function VfsManagerViewStub(props: { projectId: string; path: string }) {
       useEffect(() => {
         harness.vfsMounts++;
       }, []);
       return (
         <div data-testid="vfs-view">
-          {props.projectId}:{props.initialPath}
+          {props.projectId}:{props.path}
         </div>
       );
     },
@@ -146,7 +148,7 @@ describe('AppContent', () => {
   beforeEach(() => {
     harness.isMobile = false;
     harness.viewportListeners.clear();
-    harness.status = { isInitializing: false, initError: null };
+    harness.status = { isInitializing: false, initError: null, bootStep: 'data' };
     harness.sidebarMounts = 0;
     harness.chatViewRenders = 0;
     harness.shellRenders = 0;
@@ -186,11 +188,11 @@ describe('AppContent', () => {
   });
 
   it('starts the running-loops stream only once the backend is up', () => {
-    harness.status = { isInitializing: true, initError: null };
+    harness.status = { isInitializing: true, initError: null, bootStep: 'unlock' };
     const { rerender } = renderShell();
     expect(harness.startLoops).not.toHaveBeenCalled();
 
-    harness.status = { isInitializing: false, initError: 'CEK_MISMATCH' };
+    harness.status = { isInitializing: false, initError: 'CEK_MISMATCH', bootStep: 'unlock' };
     rerender(
       <MemoryRouter initialEntries={['/chat/chat_1']}>
         <AppContent />
@@ -299,6 +301,16 @@ describe('AppContent', () => {
     expect(harness.vfsMounts).toBe(2);
   });
 
+  it('keeps the VFS manager mounted while the selected path changes', () => {
+    renderShell('/project/p1/vfs');
+    expect(screen.getByTestId('vfs-view')).toHaveTextContent('p1:/');
+
+    act(() => harness.navigate!('/project/p1/vfs/notes/todo.md'));
+    expect(screen.getByTestId('vfs-view')).toHaveTextContent('p1:/notes/todo.md');
+    // The URL follows the selection; a remount per click would drop the tree
+    expect(harness.vfsMounts).toBe(1);
+  });
+
   it('remounts the project page and its settings when the project changes', () => {
     renderShell('/project/p1');
     act(() => harness.navigate!('/project/p2'));
@@ -324,8 +336,16 @@ describe('AppContent', () => {
     consoleError.mockRestore();
   });
 
+  it('shows the boot screen instead of the shell while the backend starts', () => {
+    harness.status = { isInitializing: true, initError: null, bootStep: 'backend' };
+    renderShell('/');
+    expect(screen.getByText('App loaded')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar')).toBeNull();
+    expect(harness.startLoops).not.toHaveBeenCalled();
+  });
+
   it("shows a Couldn't start screen when init fails", () => {
-    harness.status = { isInitializing: false, initError: 'CEK_MISMATCH' };
+    harness.status = { isInitializing: false, initError: 'CEK_MISMATCH', bootStep: 'unlock' };
     renderShell('/');
     expect(screen.getByRole('alert')).toHaveTextContent("Couldn't start");
     expect(screen.getByText('CEK_MISMATCH')).toBeInTheDocument();
@@ -337,7 +357,11 @@ describe('AppContent', () => {
 
   it('offers Data Manager from the error screen in server mode', () => {
     setStorageConfig({ type: 'server', wsUrl: 'ws://localhost:1234' });
-    harness.status = { isInitializing: false, initError: 'connect ECONNREFUSED' };
+    harness.status = {
+      isInitializing: false,
+      initError: 'connect ECONNREFUSED',
+      bootStep: 'unlock',
+    };
     renderShell('/');
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Data Manager' }));

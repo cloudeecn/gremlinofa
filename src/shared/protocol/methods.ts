@@ -852,7 +852,7 @@ export interface GremlinMethods {
     streams: LoopEvent;
   };
 
-  /** Subscribe to changes in the set of running loops (sidebar UI). */
+  /** Subscribe to changes in the set of running loops (sidebar UI) and their chat rows. */
   subscribeActiveLoops: {
     params: Record<string, never>;
     result: { ok: true };

@@ -4,11 +4,13 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAttachmentManager } from '../hooks/useAttachmentManager';
 import { useStableCallback } from '../hooks/useStableCallback';
 import { showDestructiveConfirm } from '../lib/alerts';
 import { AttachmentSection } from './AttachmentSection';
 import DeleteOlderThanModal from './DeleteOlderThanModal';
+import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from './ui/DropdownMenu';
 
 interface AttachmentManagerViewProps {
   onMenuPress?: () => void;
@@ -37,6 +39,7 @@ export function AttachmentManagerView({ onMenuPress }: AttachmentManagerViewProp
     null
   );
   const [isDeleteOlderModalOpen, setIsDeleteOlderModalOpen] = useState(false);
+  const navigate = useNavigate();
   // State, not a ref: sections need the element as their observer root on first render
   const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
 
@@ -97,25 +100,33 @@ export function AttachmentManagerView({ onMenuPress }: AttachmentManagerViewProp
           {onMenuPress && (
             <button
               onClick={onMenuPress}
-              className="-ml-2 flex h-11 w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100 md:hidden"
+              className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-gray-100 md:hidden"
               aria-label="Open menu"
             >
               <span className="text-2xl text-gray-700">☰</span>
             </button>
           )}
+          {/* Balances the ⋯ button so the title stays centered */}
+          <div className={`-ml-2 w-11 shrink-0 ${onMenuPress ? 'hidden md:block' : ''}`} />
 
-          <h1 className="flex-1 text-center text-lg font-semibold text-gray-900">
+          <h1 className="min-w-0 flex-1 truncate text-center text-lg font-semibold text-gray-900">
             Manage Attachments
           </h1>
 
-          {/* Delete older than button */}
-          <button
-            onClick={() => setIsDeleteOlderModalOpen(true)}
-            className="rounded-lg bg-red-50 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={sections.length === 0 || isLoading}
-          >
-            Delete older...
-          </button>
+          <DropdownMenu label="Attachments menu" icon="⋯" className="-mr-2">
+            <DropdownMenuItem
+              icon="🗑️"
+              destructive
+              disabled={sections.length === 0 || isLoading}
+              onSelect={() => setIsDeleteOlderModalOpen(true)}
+            >
+              Delete older...
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem icon="🏠" onSelect={() => navigate('/')}>
+              Home
+            </DropdownMenuItem>
+          </DropdownMenu>
         </div>
       </div>
 

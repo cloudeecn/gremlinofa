@@ -39,9 +39,14 @@ export function useAppStatus() {
   return useAppSlice(AppStatusContext, 'useAppStatus');
 }
 
+/** CEK display state and the storage quota. */
+export function useStorageInfo() {
+  return useAppSlice(StorageInfoContext, 'useStorageInfo');
+}
+
 /**
  * Every slice combined. Re-renders on any app data change, so it's kept for
- * DataManagerPage and WelcomeScreen; prefer the narrow hooks elsewhere.
+ * DataManagerPage; prefer the narrow hooks elsewhere.
  */
 export function useApp(): AppContextType {
   const actions = useAppSlice(AppActionsContext, 'useApp');

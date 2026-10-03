@@ -61,6 +61,8 @@ export class WorkerTransport implements Transport {
   private readonly pendingStreams = new Map<string, PendingStream>();
   /** Resolves once the worker has posted `worker_ready`. */
   private readyPromise: Promise<void>;
+  /** Fails the ready gate; null once it settled. */
+  private rejectReady: ((err: Error) => void) | null = null;
   /** Resolves once `init` has been awaited successfully. */
   private initPromise: Promise<void>;
   private resolveInit: (() => void) | null = null;
@@ -69,16 +71,22 @@ export class WorkerTransport implements Transport {
   constructor(worker: Worker) {
     this.worker = worker;
     this.worker.addEventListener('message', this.handleMessage);
+    this.worker.addEventListener('error', this.handleError);
+    this.worker.addEventListener('messageerror', this.handleMessageError);
 
-    this.readyPromise = new Promise<void>(resolve => {
+    this.readyPromise = new Promise<void>((resolve, reject) => {
+      this.rejectReady = reject;
       const onReady = (ev: MessageEvent<WorkerIncoming>) => {
         if (ev.data.kind === 'worker_ready') {
           this.worker.removeEventListener('message', onReady);
+          this.rejectReady = null;
           resolve();
         }
       };
       this.worker.addEventListener('message', onReady);
     });
+    // Same unhandled-rejection guard as the init gate
+    this.readyPromise.catch(() => {});
 
     this.initPromise = this.createInitGate();
   }
@@ -264,6 +272,31 @@ export class WorkerTransport implements Transport {
     }
   };
 
+  /**
+   * Before `worker_ready`, an error event means the worker script never ran
+   * (chunk 404, parse error, throw during module eval): fail every caller
+   * instead of leaving boot waiting forever. After it, the error is an
+   * uncaught exception in a running worker; its requests settle on their own.
+   */
+  private handleError = (ev: Event): void => {
+    const { message, filename, lineno } = ev as Partial<ErrorEvent>;
+    if (this.rejectReady) {
+      const reject = this.rejectReady;
+      this.rejectReady = null;
+      const where = filename ? ` (${filename}:${lineno ?? 0})` : '';
+      reject(
+        new Error(`Backend worker failed to start: ${message || 'script failed to load'}${where}`)
+      );
+      return;
+    }
+    console.error('[WorkerTransport] Uncaught error in the backend worker:', message);
+  };
+
+  /** A reply that can't be deserialized is lost, and its caller with it. */
+  private handleMessageError = (): void => {
+    console.error('[WorkerTransport] A message from the backend worker could not be deserialized');
+  };
+
   private send(msg: WorkerOutgoing): void {
     this.worker.postMessage(msg);
   }
@@ -271,8 +304,22 @@ export class WorkerTransport implements Transport {
   /** Tear down the worker; used by transport rebind and tests. */
   dispose(): void {
     this.worker.removeEventListener('message', this.handleMessage);
+    this.worker.removeEventListener('error', this.handleError);
+    this.worker.removeEventListener('messageerror', this.handleMessageError);
     this.worker.terminate();
     const err = new Error('transport disposed');
+    // Callers still parked on a gate aren't in pendingRequests yet
+    if (this.rejectReady) {
+      const reject = this.rejectReady;
+      this.rejectReady = null;
+      reject(err);
+    }
+    if (this.rejectInit) {
+      const reject = this.rejectInit;
+      this.rejectInit = null;
+      this.resolveInit = null;
+      reject(err);
+    }
     for (const pending of this.pendingRequests.values()) {
       pending.reject(err);
     }

@@ -12,6 +12,16 @@ export function apiKeyOptional(def: Pick<APIDefinition, 'isLocal' | 'apiType'>):
 }
 
 /**
+ * Whether any definition can serve requests: holds a key, or doesn't need
+ * one. False on a fresh install, whose seeded defaults carry no keys.
+ */
+export function hasUsableApiDefinition(
+  defs: readonly Pick<APIDefinition, 'isLocal' | 'apiType' | 'apiKey'>[]
+): boolean {
+  return defs.some(def => apiKeyOptional(def) || !!def.apiKey?.trim());
+}
+
+/**
  * Whether every call's cost is tracked as $0 because the definition bills a
  * flat-rate subscription. Opt-in through the Advanced `isSubscription`
  * checkbox for every apiType — including the subscription providers, which

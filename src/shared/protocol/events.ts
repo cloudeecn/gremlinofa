@@ -187,7 +187,13 @@ export type ActiveLoopsChange =
       loopId: LoopId;
       status: 'complete' | 'error' | 'aborted' | 'soft_stopped' | 'max_iterations';
     }
-  | { type: 'chat_title_changed'; chatId: string; title: string };
+  | { type: 'chat_title_changed'; chatId: string; title: string }
+  /**
+   * The stored row of a chat whose running loop just changed it (message
+   * count, context usage, cost, title, …). Delta-only: never part of a
+   * `snapshot`, so a subscriber that missed it reads the chat from storage.
+   */
+  | { type: 'chat_updated'; chat: Chat };
 
 // ============================================================================
 // Export / import streams

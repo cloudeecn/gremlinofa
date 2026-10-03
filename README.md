@@ -57,7 +57,7 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 
 - Real-time streaming responses, delta-encoded: each update carries only what changed, not the whole reply so far, which is what every chunk used to resend
 - Virtual scrolling for 1000+ message histories
-- PWA with offline support
+- PWA with offline support, plus a "new version is ready" prompt, so a phone that never closes the app still gets updates
 
 **Security**
 
@@ -88,7 +88,7 @@ npm install
 npm run dev
 ```
 
-Then open `http://localhost:5199` and add your API key in Settings.
+Then open `http://localhost:5199`, finish the setup wizard, and let the home page checklist walk you through the rest (API key → project → model).
 
 ### Production Build (Browser-Only)
 
@@ -362,7 +362,7 @@ Implements Anthropic's memory tool spec, so Claude already knows how to use it. 
 - **Tree operations** — Create, view, edit, rename, delete, recursive directory ops
 - **Readonly `/memories`, by default** — The memory tool's space is look-don't-touch for the filesystem tool. Flip its "Writable /memories" option when you want the agent to edit memories with the full toolbox
 
-All tools persist data in the project's encrypted VFS. **Filesystem Manager** lets you peek behind the curtain — view files, diff versions, or wipe the slate clean.
+All tools persist data in the project's encrypted VFS. **Filesystem Manager** lets you peek behind the curtain — read Markdown, SVG and images rendered (sanitized, because the agent wrote them), edit files, step through versions and roll back, ZIP folders in and out, or wipe the slate clean. Every file gets its own URL, so a reload lands right where you were, and the tree works from the keyboard like a civilized file browser.
 
 ### Minion Sub-Agents 🤖
 
@@ -396,6 +396,7 @@ The DUMMY system (Dynamic Un-inferencing Mock-Message Yielding System) lets LLMs
 - **QuickJS sandbox** — Hooks run isolated with async/await support, VFS read access, and a 120s timeout. No DOM, no network, no footguns.
 - **History context** — Configurable sliding window of previous messages, so hooks can make decisions based on conversation flow, not just the last message.
 - **Hot-swappable** — Register and unregister hooks mid-conversation. The AI picks its own automation strategy as the task evolves.
+- **You can plug one in too** — ⋯ → Attach Hook… picks any `/hooks/*.js` in the chat's namespace; Detach unplugs it. Locked while a reply runs, since the loop already decided who's piloting.
 
 **The pitch:** An agentic loop that calls the API 15 times to do 3 interesting things and 12 obvious ones is wasting your money. DUMMY lets the model front-load the boring decisions into a JS function and only phone home when it actually needs to think.
 
@@ -447,6 +448,8 @@ What started as a single React app got a full-blown architectural glow-up. The e
 **Node WebSocket Server (self-hosted)** — The same engine, but running as a standalone Node.js process with SQLite storage and real filesystem VFS. Your browser becomes a thin client over WebSocket. Files on disk are actual files — `ls` them, `grep` them, edit them in vim. And you can finally re-enable your screen lock on your phone — the server keeps working whether your screen is on or not. Same caveat as the VFS backend: `VFS_MODE=filesystem` means real, **unencrypted** files, and it's single-tenant — serve yourself, and put TLS + auth in front via a reverse proxy.
 
 **Auto-reconnect** — WebSocket drops? The transport reconnects with exponential backoff, re-authenticates, and re-attaches all active chat subscriptions. Your session picks up where it left off.
+
+**No more white page of mystery** — The page shows up before the backend does. While it boots you get a checklist: app loaded, backend reached, storage unlocked, projects loaded. If a step hangs or dies, it says which one and why, and after a few seconds it offers a hint and a Reload button. Server down when you open the app? It says so, keeps retrying, and walks in on its own once the server answers. (It used to sit on a white page forever, even after the server came back. Ask us how we know.)
 
 The setup wizard lets you pick your deployment: IndexedDB (local), Remote Storage (sync server), or Remote Backend (full WebSocket server). Pick one, enter a URL if needed, done.
 

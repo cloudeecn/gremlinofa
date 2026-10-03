@@ -119,8 +119,11 @@ server.setBootstrapClaudeAgentClientFactory(
 // Best-effort: warn at startup if the host `claude` CLI is missing.
 // The SDK fails at first use otherwise, with a less obvious error.
 try {
-  const probe = spawnSync('claude', ['--version'], { stdio: 'ignore' });
-  if (probe.status !== 0) {
+  // Runs before the listener binds: a hung CLI must not keep clients out
+  const probe = spawnSync('claude', ['--version'], { stdio: 'ignore', timeout: 5000 });
+  if ((probe.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+    console.warn('[server] `claude --version` gave no answer within 5s; skipped the CLI check');
+  } else if (probe.status !== 0) {
     console.warn(
       '[server] `claude` CLI not detected on PATH — claude-agent provider will fail until it is installed (see https://docs.anthropic.com/claude-code)'
     );

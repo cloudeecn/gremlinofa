@@ -8,7 +8,8 @@
  * `gremlinofa_storage_config`.
  *
  * The frontend uses these helpers in two places:
- *   1. `bootstrapClient.ts` reads CEK + config to pass through `init`.
+ *   1. `bootstrapClient.ts` reads CEK + config to pass through `init`, and
+ *      writes back the userId it derives for remote configs that lack one.
  *   2. OOBE / Data Manager write CEK + config when the user picks a flow.
  *
  * Anything that needs the *bytes* of the CEK (or any base32/base64 ↔ bytes

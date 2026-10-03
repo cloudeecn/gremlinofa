@@ -64,6 +64,15 @@ describe('UnifiedStorage', () => {
       expect(saveCalls.length).toBeGreaterThanOrEqual(3);
     });
 
+    it('should read the API definitions once while seeding defaults', async () => {
+      await storage.initialize();
+
+      const definitionReads = adapter.query.mock.calls.filter(
+        ([table]: any) => table === 'api_definitions'
+      );
+      expect(definitionReads).toHaveLength(1);
+    });
+
     it('should skip initialization if already initialized', async () => {
       await storage.initialize();
       adapter.initialize.mockClear();
@@ -387,7 +396,7 @@ describe('UnifiedStorage', () => {
     });
 
     it('should clone chat up to specific message', async () => {
-      const chat = createTestChat();
+      const chat = createTestChat({ messageCount: 3 });
       const msg1 = createTestMessage({
         id: 'msg-1',
         timestamp: new Date('2024-01-01'),
@@ -417,6 +426,8 @@ describe('UnifiedStorage', () => {
       // Should have exactly 1 message (msg-1 only, with new ID but same content)
       expect(messages.length).toBe(1);
       expect(messages[0].content.content).toBe('First message');
+      // The fork counts its own messages, not the source's
+      expect(cloned!.messageCount).toBe(1);
     });
   });
 

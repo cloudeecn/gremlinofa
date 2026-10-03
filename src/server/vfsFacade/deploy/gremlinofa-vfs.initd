@@ -11,7 +11,7 @@ description="GremlinOFA VFS Backend - Filesystem-based virtual file storage"
 : ${GREMLINOFA_ENVFILE:=${GREMLINOFA_DIR}/.env}
 
 command="/usr/bin/node"
-command_args="${GREMLINOFA_DIR}/dist/index.js"
+command_args="${GREMLINOFA_DIR}/index.js"
 command_user="${GREMLINOFA_USER}:${GREMLINOFA_GROUP}"
 command_background=true
 

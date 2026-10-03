@@ -58,6 +58,7 @@ GremlinOFA (Gremlin Of The Friday Afternoon) is a general-purpose AI chatbot web
 - [x] CORS proxy backend (`cors-proxy/` - Express, SSE streaming) with per-API-definition proxy URL + optional caller auth: set `PROXY_AUTH_TOKEN` on the proxy and a per-API-definition `proxyAuthToken` in the app; sent as the `X-Proxy-Auth` header (distinct from the upstream `Authorization` key) and stripped before forwarding. Unset = open proxy (deploy behind an authenticating reverse proxy)
 - [ ] Bundle size analysis (chunk splitting for the large KaTeX bundle; highlight.js is already down to `lib/core` + 41 grammars, see Code highlighting policy). Main chunk was 1.2 MB raw / 359 KB gzip with every route eager and no `React.lazy`, and in local mode the 1.2 MB worker chunk loads only after it. Next step: lazy ChatView / VfsManagerView / SettingsPage / DataManagerPage / project views so katex + highlight.js leave the main chunk
 - [x] Multi-instance server mode: `--instance-env <path>` loads a specific env file; relative data paths resolve against the file's directory; `gremlinofa-server@.service` systemd template + OpenRC symlink convention for per-user instances
+- [x] Deploy script (`scripts/deploy.ts`, `npm run deploy[:frontend|:server|:vfs-server]`) driven by a gitignored `deploy.config.json` (example committed); local or SSH destinations
 - [ ] Native TLS termination in the Node WebSocket server (currently requires reverse proxy)
 - [ ] Configurable DB backend for the server (currently hardcoded to `better-sqlite3`; candidates: `node:sqlite` (built-in, zero deps, Node 22.5+), external DB via pure JS drivers (`pg`, `mysql2`), or custom adapters)
 
@@ -2420,6 +2421,16 @@ Chat loop state is managed by a single `loopPhase` enum (`'idle' | 'pending' | '
 - Normal app flow resumes after reload (CEK now exists in localStorage)
 
 ### Build & Deployment
+
+**Deploy Script (`scripts/deploy.ts`):**
+
+- Plain TypeScript run by Node's built-in type stripping (Node >= 22.18); type-checked via `tsconfig.node.json`, tests in `scripts/__tests__/` (vitest includes `scripts/**`)
+- Targets: `frontend` (`dist/frontend`), `server` (`dist/server`), `vfs-server` (`dist/vfs-server`); `npm run deploy` = frontend + server, mirroring `npm run build`
+- Config: `deploy.config.json` at the repo root (`--config` overrides; `deploy.config*.json` gitignored except `deploy.config.example.json`). Per target: `dest` (rsync syntax, colon before the first slash = SSH host), optional `postDeploy`, `exclude`, `rsyncArgs`. Unknown targets/fields are errors
+- Flow: validate config and dests → build all selected targets (`--no-build` skips) → per target `rsync -rc --delete` + `postDeploy`. Unconfigured targets are skipped; none configured = exit 1
+- Safety: sync refuses when the dist sanity file (`index.html` / `server.js` / `index.js`) is missing; server targets always pass `--filter` rules that exclude `.env`, `.env.*`, `*.env`, `/data`, `/node_modules`, `/package-lock.json` so neither the sync nor `--delete` can touch runtime state (no trailing slash, so a `data` symlink survives too). `+ .env.example` comes first (first match wins) so the shipped example still updates; user `exclude` patterns go before the filters so excluding `.env.example` still works
+- `postDeploy` runs with `cwd` = dest locally, or over `ssh host 'exec "$SHELL" -lc ...'` remotely (login shell, so profile/nvm PATH applies). `--dry-run` itemizes rsync changes and prints `postDeploy` without running it
+- `dist/vfs-server/` ships its own `package.json` (express + dotenv are esbuild externals); its service/initd run `/opt/gremlinofa-vfs/index.js`
 
 **Dual-mode Configuration:**
 

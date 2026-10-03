@@ -165,6 +165,31 @@ handle /ws {
 
 Point the frontend at `wss://gremlin.example.com/ws` and you're set.
 
+### Deploy Script
+
+Tired of typing rsync incantations? Copy `deploy.config.example.json` to `deploy.config.json` (gitignored, so your hostnames stay yours) and point each target somewhere:
+
+```json
+{
+  "frontend": { "dest": "you@gremlin.example.com:/var/www/gremlinofa" },
+  "server": {
+    "dest": "you@gremlin.example.com:/opt/gremlinofa-server",
+    "postDeploy": "npm install --omit=dev"
+  },
+  "vfs-server": { "dest": "/opt/gremlinofa-vfs", "postDeploy": "npm install --omit=dev" }
+}
+```
+
+Then `npm run deploy` (frontend + server, same pair as `npm run build`), or one at a time with `deploy:frontend`, `deploy:server`, `deploy:vfs-server`. Each one builds first, then syncs. Targets missing from the config get skipped.
+
+- **`dest`** uses rsync syntax: `[user@]host:/path` goes over SSH, anything else is a path on this machine (relative paths resolve against the config file). Custom port or key? Give the host an alias in `~/.ssh/config`.
+- **`postDeploy`** runs inside `dest` after the sync. Remote runs go through your login shell, so nvm and friends are on PATH. Chain a `systemctl restart` on the end if you like living fast.
+- **`exclude`** / **`rsyncArgs`** add rsync patterns and flags (`.well-known/`, `--chown=…`).
+- The sync is `rsync --delete`, but the server targets always protect `.env`, `.env.*` (except `.env.example`, which ships fresh each deploy), `*.env`, `data` (a directory or a symlink to one), `node_modules` and `package-lock.json` on the destination. No footguns here, as long as your data lives in `data/`.
+- `npm run deploy -- --dry-run` itemizes what would change and only prints `postDeploy`. `--no-build` ships whatever's already in `dist/`, and `--config <file>` picks another config (`deploy.config.*.json` is gitignored too, for staging setups).
+
+Needs Node 22.18+ (the script is TypeScript, run directly by Node), plus `rsync` and `ssh` on your PATH.
+
 ### Reverse Proxy Examples
 
 Assuming you've deployed `dist` to `/var/www/gremlinofa/`. Remember: **HTTPS is required** for Web Crypto and PWA features.

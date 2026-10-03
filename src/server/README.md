@@ -73,6 +73,8 @@ rsync -a dist/server/ you@server:/opt/gremlinofa-server/
 ssh you@server 'cd /opt/gremlinofa-server && cp .env.example .env && npm install && node server.js'
 ```
 
+For repeat deploys, `npm run deploy:server` does the build, the rsync, and the `npm install` in one go. Your `.env`, `data/` and `node_modules/` on the target are left alone. See "Deploy Script" in the [main README](../../README.md#deploy-script).
+
 ### systemd (Debian, Ubuntu, RHEL, etc.)
 
 ```bash

@@ -27,6 +27,8 @@ command_args="${GREMLINOFA_DIR}/server.js"
 [ -f "${GREMLINOFA_ENVFILE}" ] && command_args="${command_args} --instance-env ${GREMLINOFA_ENVFILE}"
 command_user="${GREMLINOFA_USER}:${GREMLINOFA_GROUP}"
 command_background=true
+# Without an env file, relative data paths (./data/...) resolve against this
+directory="${GREMLINOFA_DIR}"
 
 pidfile="/run/${RC_SVCNAME}.pid"
 output_log="/var/log/${RC_SVCNAME}.log"

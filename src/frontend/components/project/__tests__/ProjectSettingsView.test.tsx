@@ -82,6 +82,26 @@ vi.mock('../../../client', () => ({
         optionDefinitions: [],
       },
       {
+        name: 'minion',
+        displayName: 'Minion',
+        displaySubtitle: 'Delegate tasks',
+        optionDefinitions: [
+          {
+            type: 'text',
+            id: 'remoteEndpoint',
+            label: 'Remote Minion Endpoint',
+            default: '',
+          },
+          {
+            type: 'text',
+            id: 'remotePassword',
+            label: 'Remote Minion Password',
+            default: '',
+            secret: true,
+          },
+        ],
+      },
+      {
         name: 'dummy',
         displayName: 'DUMMY Hooks',
         displaySubtitle: 'Mock-message hooks',
@@ -315,6 +335,61 @@ describe('ProjectSettingsView tool number options', () => {
 
     await user.type(input, '{Backspace}8');
     expect(input.value).toBe('8');
+  });
+});
+
+describe('ProjectSettingsView tool text options', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockProject.enabledTools = ['minion'];
+    mockProject.toolOptions = {
+      minion: { remoteEndpoint: 'https://grass.example.test', remotePassword: 'hunter2' },
+    };
+  });
+
+  afterEach(() => {
+    mockProject.enabledTools = [];
+    mockProject.toolOptions = undefined;
+  });
+
+  function renderSettings() {
+    return render(
+      <MemoryRouter>
+        <ProjectSettingsView projectId="project-1" />
+      </MemoryRouter>
+    );
+  }
+
+  it('masks a secret option behind a reveal toggle and leaves plain text options visible', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+
+    const password = (await screen.findByLabelText('Remote Minion Password')) as HTMLInputElement;
+    const endpoint = screen.getByLabelText('Remote Minion Endpoint') as HTMLInputElement;
+    expect(password.type).toBe('password');
+    expect(password.value).toBe('hunter2');
+    expect(endpoint.type).toBe('text');
+
+    await user.click(screen.getByRole('button', { name: 'Show Remote Minion Password' }));
+    expect(password.type).toBe('text');
+  });
+
+  it('saves an edited secret option', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+
+    const password = await screen.findByLabelText('Remote Minion Password');
+    await user.clear(password);
+    await user.type(password, 'swordfish');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(mockUpdateProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolOptions: {
+          minion: { remoteEndpoint: 'https://grass.example.test', remotePassword: 'swordfish' },
+        },
+      })
+    );
   });
 });
 

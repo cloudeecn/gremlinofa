@@ -176,16 +176,20 @@ Tired of typing rsync incantations? Copy `deploy.config.example.json` to `deploy
     "dest": "you@gremlin.example.com:/opt/gremlinofa-server",
     "postDeploy": "npm install --omit=dev"
   },
-  "vfs-server": { "dest": "/opt/gremlinofa-vfs", "postDeploy": "npm install --omit=dev" }
+  "vfs-server": { "dest": "/opt/gremlinofa-vfs", "postDeploy": "npm install --omit=dev" },
+  "touch-grass": {
+    "dest": "you@gremlin.example.com:/opt/gremlinofa-touch-grass",
+    "postDeploy": "npm install --omit=dev"
+  }
 }
 ```
 
-Then `npm run deploy` (frontend + server, same pair as `npm run build`), or one at a time with `deploy:frontend`, `deploy:server`, `deploy:vfs-server`. Each one builds first, then syncs. Targets missing from the config get skipped.
+Then `npm run deploy` (frontend + server, same pair as `npm run build`), or one at a time with `deploy:frontend`, `deploy:server`, `deploy:vfs-server`, `deploy:touch-grass`. Each one builds first, then syncs. Targets missing from the config get skipped. `touch-grass` builds inside its own package, so run `npm ci` in `touch-grass-backend/` once before the first deploy.
 
 - **`dest`** uses rsync syntax: `[user@]host:/path` goes over SSH, anything else is a path on this machine (relative paths resolve against the config file). Custom port or key? Give the host an alias in `~/.ssh/config`.
 - **`postDeploy`** runs inside `dest` after the sync. Remote runs go through your login shell, so nvm and friends are on PATH. Chain a `systemctl restart` on the end if you like living fast.
 - **`exclude`** / **`rsyncArgs`** add rsync patterns and flags (`.well-known/`, `--chown=…`).
-- The sync is `rsync --delete`, but the server targets always protect `.env`, `.env.*` (except `.env.example`, which ships fresh each deploy), `*.env`, `data` (a directory or a symlink to one), `node_modules` and `package-lock.json` on the destination. No footguns here, as long as your data lives in `data/`.
+- The sync is `rsync --delete`, but the server targets always protect `.env`, `.env.*` (except `.env.example`, which ships fresh each deploy), `*.env`, `data` (a directory or a symlink to one), `node_modules` and `package-lock.json` on the destination. `touch-grass` also keeps any `*.db*` file at the top level, where its old default put the database. No footguns here, as long as your data lives in `data/`.
 - `npm run deploy -- --dry-run` itemizes what would change and only prints `postDeploy`. `--no-build` ships whatever's already in `dist/`, and `--config <file>` picks another config (`deploy.config.*.json` is gitignored too, for staging setups).
 
 Needs Node 22.18+ (the script is TypeScript, run directly by Node), plus `rsync` and `ssh` on your PATH.
@@ -427,15 +431,23 @@ The DUMMY system (Dynamic Un-inferencing Mock-Message Yielding System) lets LLMs
 
 ### Touch Grass (Remote Human Minion) 🌿
 
-Sometimes the best model for the job runs on coffee, not electricity. Touch Grass flips the minion system inside out — instead of delegating to another LLM, your AI delegates to _you_ (or any human with a browser and a password).
+Sometimes the best model for the job runs on coffee, not electricity. Touch Grass flips the minion system inside out: instead of delegating to another LLM, your AI delegates to _you_ (or any human with a browser and a password).
 
-- **Same interface, different species** — The LLM calls the minion tool with `remote: true` and the message lands in a web UI. It doesn't know (or care) that the "sub-agent" is a person.
-- **Long-poll, not long wait** — The backend holds the connection for 30 seconds at a time, retrying up to 10 minutes total. Plenty of time to read, think, and type like a civilized person.
-- **Session continuity** — Each remote minion gets a persistent session. The AI can send follow-ups to the same human conversation, just like continuing a regular minion chat.
-- **File context** — Injected files from the VFS are sent along with the message and displayed as collapsible code blocks. The human sees what the AI sees.
-- **Self-hosted** — Same deployment story as the other backends: SQLite, Express, systemd service file, done. No cloud dependency, no third-party accounts.
+- **Same tool, different species.** The LLM calls the minion tool with `remote: true` and the message lands in a small web UI. The tool description tells it a human is on the other end, so it writes a self-contained question instead of assuming the human can read its mind (or its VFS).
+- **Sticky by design.** A remote minion chat stays remote. Follow-ups with its `minionChatId` reach the same human conversation without repeating the flag, so a forgetful orchestrator can't quietly hand your approval question to an LLM that answers in your voice.
+- **Long-poll with a deadline.** The backend holds each poll for up to 30 seconds and the client keeps polling until the Remote Timeout (default 10 minutes). Blips and backend restarts are retried. When the AI gives up, or you hit Stop, the question is withdrawn and the human's screen says so: no answers typed into the void.
+- **Markdown, rendered.** The AI's message arrives rendered, with a toggle back to the raw text. Raw HTML stays text, because the AI wrote it.
+- **File context.** Injected VFS files arrive as collapsible blocks, above or below the message the way the AI attached them. The human sees what the AI sees, and the same toggle renders markdown files properly (`.md` opens rendered, line numbers stripped).
+- **Fire and forget.** `async: true` sends a note instead of a question: the tool returns "Message sent." at once and the human gets a "no reply needed" tag. Status updates without parking the whole loop on a human.
+- **Gets your attention (if you let it).** Opt-in sound and system notifications, a `(N) Touch Grass` tab title, a countdown to the AI's deadline, and drafts that survive a reload or a surprise follow-up question.
+- **Self-hosted.** SQLite, Express, systemd or OpenRC, done. No cloud dependency, no third-party accounts.
 
-**Setup:** Deploy `touch-grass-backend/`, set `API_PASSWORD` and `WEB_PASSWORD` in `.env`, then configure the minion tool's "Remote Minion Endpoint" in your project settings. The human opens `http://your-server:3004/web/`, logs in, and waits for the AI to need help.
+**Setup** (details in [`touch-grass-backend/README.md`](touch-grass-backend/README.md)):
+
+1. Deploy `touch-grass-backend/` (`npm run deploy:touch-grass` works). Set `API_PASSWORD` and `WEB_PASSWORD` in `.env`; the server refuses to start without them.
+2. Using the browser app (worker mode, including the hosted one)? Set `CORS_ORIGIN` to the app's origin (e.g. `https://cloudeecn.github.io`, no path) and put the backend behind HTTPS. An `https://` page can't call an `http://` backend. Server mode talks to it from Node and needs neither.
+3. In Project Settings, give the minion tool a **Remote Minion Endpoint** (the backend root, like `https://grass.example.com`), the **Remote Minion Password** (`API_PASSWORD`; masked, and left out of project exports) and, optionally, a **Remote Timeout**.
+4. The human opens `https://grass.example.com/web/`, logs in with `WEB_PASSWORD`, and waits for the AI to need help.
 
 **Use cases:** Human-in-the-loop approval for risky actions. Expert consultation mid-task ("hey, should I normalize this column?"). Or just a very elaborate way to text yourself from your AI.
 

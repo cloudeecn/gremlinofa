@@ -71,6 +71,11 @@ describe('ExportProjectModal', () => {
     vi.clearAllMocks();
   });
 
+  it('warns before export that passwords stay behind', () => {
+    render(<Harness onClose={vi.fn()} />);
+    expect(screen.getByText(/Passwords are left out/)).toBeInTheDocument();
+  });
+
   it('downloads the bundle and shows the summary when the export finishes', async () => {
     const call = pendingExport();
     render(<Harness onClose={vi.fn()} />);

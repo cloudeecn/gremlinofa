@@ -8,7 +8,8 @@ Type=simple
 User=gremlinofa
 Group=gremlinofa
 WorkingDirectory=/opt/gremlinofa-touch-grass
-ExecStart=/usr/bin/node /opt/gremlinofa-touch-grass/dist/index.js
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/gremlinofa-touch-grass/index.js
 Restart=on-failure
 RestartSec=5
 

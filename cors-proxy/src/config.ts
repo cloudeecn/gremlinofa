@@ -1,4 +1,21 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import path from 'node:path';
+
+// Not `import 'dotenv/config'`: that skips an env file it can't read without a
+// word, and the proxy would start open (no PROXY_AUTH_TOKEN, no ALLOWED_TARGETS).
+// A missing file is fine (plain environment variables work too).
+const envFilePath = process.env.DOTENV_CONFIG_PATH || undefined;
+const envFileError: NodeJS.ErrnoException | undefined = dotenv.config({
+  path: envFilePath,
+  quiet: true,
+}).error;
+if (envFileError && envFileError.code !== 'ENOENT') {
+  console.error(
+    `Cannot read env file ${path.resolve(envFilePath ?? '.env')} (${envFileError.code ?? envFileError.message}). ` +
+      'It must be readable by the user the proxy runs as; refusing to start without it.'
+  );
+  process.exit(1);
+}
 
 function parseCorsOrigin(): string[] | '*' | null {
   const origin = process.env.CORS_ORIGIN;

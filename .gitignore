@@ -13,6 +13,11 @@ dev-dist
 dist-ssr
 *.local
 
+# Env files hold secrets (cors-proxy and the root have no .gitignore of their own for them)
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

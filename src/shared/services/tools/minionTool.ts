@@ -3,7 +3,9 @@
  *
  * Allows the primary chat LLM to delegate tasks to a sub-agent LLM.
  * Each minion runs its own agentic loop with scoped-down tools and
- * returns results to the caller.
+ * returns results to the caller. A minion chat created with `remote: true`
+ * goes to a human operator on the Touch Grass backend instead, for its whole
+ * life (see `executeRemoteMinion`).
  *
  * Key features:
  * - Real-time streaming via generator yields (groups_delta events)
@@ -31,7 +33,8 @@ import type {
 } from '../../protocol/types';
 import type { ToolInfoRenderBlock, ToolResultRenderBlock } from '../../protocol/types/content';
 import type { ActiveLoop, LoopId } from '../../protocol/protocol';
-import { isModelReference, isModelReferenceArray } from '../../protocol/types';
+import { isModelReference, isModelReferenceArray, isRemoteMinionChat } from '../../protocol/types';
+import { splitInjectedFileBlocks } from '../../protocol/carriedInjection';
 import {
   generateChecksummedId,
   generateUniqueId,
@@ -54,6 +57,7 @@ import {
   buildMockToolCallPair,
   effectiveInjectionMode,
   hasCustomFraming,
+  wrapInjectedFile,
 } from '../api/fileInjectionHelper';
 import { NUDGE_THINKING_DEFAULT } from '../api/apiService';
 import { JsVMContext } from './jsvm/JsVMContext';
@@ -79,6 +83,22 @@ import {
   personaNamespace,
   resolveAgentSystemPrompt,
 } from '../agentic/agentSystemPrompt';
+import {
+  TouchGrassClient,
+  TouchGrassError,
+  isTouchGrassAbort,
+  normalizeTouchGrassEndpoint,
+  validateTouchGrassEndpoint,
+  waitForAnswer,
+  postMessageWithRetry,
+  retryCancelInBackground,
+  withRetry,
+  type CancelOutcome,
+  type PendingRequestRef,
+  type PostedMessage,
+  type RemoteInjectedFile,
+  type WaitOutcome,
+} from './touchGrassClient';
 
 /** Truncate error messages to avoid wasting parent LLM context tokens */
 export function truncateError(message: string, limit = 200): string {
@@ -353,8 +373,17 @@ interface MinionInput {
   injectFiles?: Array<string | InjectFileSpec>;
   /** Same as injectFiles, but the content lands after the message instead of before it. */
   injectFilesAfter?: Array<string | InjectFileSpec>;
-  /** Delegate to a remote human operator instead of an LLM sub-agent */
-  remote?: boolean;
+  /**
+   * Delegate to a remote human operator instead of an LLM sub-agent. Only
+   * decides routing for a new chat; LLMs sometimes send it as a string, so
+   * read it through `readRemoteFlag`.
+   */
+  remote?: boolean | 'true' | 'false';
+  /**
+   * Remote chats only: post the message as a note the human can't reply to,
+   * and return at once. Read it through `readAsyncFlag`.
+   */
+  async?: boolean | 'true' | 'false';
   /** Hook file name (without .js) in /hooks/ to verify minion output before savepoint advances */
   verifyHook?: string;
   /** Override reasoning on/off for this minion call */
@@ -457,11 +486,28 @@ function stashHasInjectedFiles(stash: StashedRetryContent | undefined): boolean 
 }
 
 /**
+ * The text of a user message's own text group ('' for an inject-only message),
+ * or undefined when it has none.
+ */
+function userTextOf(groups: RenderingBlockGroup[] | undefined): string | undefined {
+  const textGroup = groups?.find(g => g.category === 'text' && !g.isToolGenerated);
+  if (!textGroup) return undefined;
+  return textGroup.blocks
+    .map(b => (b.type === 'text' ? b.text : ''))
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+/**
  * Roll back a minion chat to its savepoint.
  *
  * Slices messages after the savepoint, stashes content from the first
  * rolled-back message for re-use, recovers the original message text,
  * subtracts rolled-back token metadata, and deletes the messages from storage.
+ *
+ * `remote` marks a human chat, whose stored `content` is the inline text
+ * (files framed around the message) while the human got the message and the
+ * files apart: the original message is recovered from the text group instead.
  *
  * Returns `{ undefined, undefined }` when nothing to roll back.
  */
@@ -469,7 +515,8 @@ async function rollbackToSavepoint(
   storage: UnifiedStorage,
   minionChat: MinionChat,
   existingMessages: Message<unknown>[],
-  savepoint: string
+  savepoint: string,
+  remote: boolean
 ): Promise<RollbackResult> {
   let rolledBack: Message<unknown>[];
 
@@ -517,7 +564,12 @@ async function rollbackToSavepoint(
   let recoveredMessage: string | undefined;
   const firstAfter = rolledBack[0];
   const textContent = firstAfter.content.content as string;
-  if (textContent) {
+  // Messages from before the remote path stored file bars have no text group
+  // and fall through to `content`.
+  const remoteText = remote ? userTextOf(stashedRetryContent?.renderingContent) : undefined;
+  if (remoteText !== undefined) {
+    recoveredMessage = remoteText;
+  } else if (textContent) {
     recoveredMessage = stripVerifyFeedbackNote(textContent);
   } else if (stashHasInjectedFiles(stashedRetryContent)) {
     // Inject-only message in a structured mode: the text is legitimately empty
@@ -566,10 +618,6 @@ async function rollbackToSavepoint(
   return { stashedRetryContent, recoveredMessage };
 }
 
-/**
- * Resolve the effective return mode from tool options, with backward
- * compat for legacy `noReturnTool` / `returnOnly` booleans.
- */
 /**
  * Walk back through stored minion messages to find the most recent assistant
  * message at-or-before `savepoint` that carries a `claudeAgentMessageUuid`.
@@ -681,6 +729,10 @@ function finalStopReason(messages: Message<unknown>[]): string {
   return (lastMsg.content.stopReason as string) ?? 'end_turn';
 }
 
+/**
+ * Resolve the effective return mode from tool options, with backward
+ * compat for legacy `noReturnTool` / `returnOnly` booleans.
+ */
 function resolveReturnMode(opts: ToolOptions): string {
   if (typeof opts.returnMode === 'string') return opts.returnMode;
   if (opts.noReturnTool === true) return 'no-return';
@@ -797,130 +849,628 @@ function buildInfoGroup(
   return { category: 'backstage', blocks: [infoBlock] };
 }
 
+/**
+ * The `remote` flag as the caller sent it. LLMs sometimes pass booleans as
+ * strings, so 'true'/'false' count too; anything else means "not specified".
+ * The executor and `renderMinionInput` both read it through here, so the call
+ * block can't say "Remote: human" for a call that ran on an LLM.
+ */
+export function readRemoteFlag(input: { remote?: unknown }): boolean | undefined {
+  if (input.remote === true || input.remote === 'true') return true;
+  if (input.remote === false || input.remote === 'false') return false;
+  return undefined;
+}
+
+/** The `async` flag, with the same string tolerance as `readRemoteFlag`. */
+export function readAsyncFlag(input: { async?: unknown }): boolean | undefined {
+  if (input.async === true || input.async === 'true') return true;
+  if (input.async === false || input.async === 'false') return false;
+  return undefined;
+}
+
+export function isRemoteCall(input: { remote?: unknown }): boolean {
+  return readRemoteFlag(input) === true;
+}
+
 /** Default total remote timeout (10 minutes) */
 const REMOTE_DEFAULT_TIMEOUT_MS = 600_000;
+/** Same floor as the option's `min`: the settings form isn't the only writer of tool options. */
+const REMOTE_MIN_TIMEOUT_MS = 10_000;
+/** The backend contract's ceiling for `timeoutMs` (7 days). */
+const REMOTE_MAX_TIMEOUT_MS = 604_800_000;
+/** Remote errors carry setup hints (CORS, endpoint shape), so they get more room than truncateError's default. */
+const REMOTE_ERROR_LIMIT = 600;
+
+export function resolveRemoteTimeoutMs(opts: ToolOptions): number {
+  const configured =
+    typeof opts.remoteTimeoutMs === 'number' && Number.isFinite(opts.remoteTimeoutMs)
+      ? opts.remoteTimeoutMs
+      : REMOTE_DEFAULT_TIMEOUT_MS;
+  return Math.min(Math.max(configured, REMOTE_MIN_TIMEOUT_MS), REMOTE_MAX_TIMEOUT_MS);
+}
+
+/** "10 minutes", "1.5 minutes", "30 seconds" */
+function formatWaitDuration(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)} seconds`;
+  const minutes = Number((ms / 60_000).toFixed(1));
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+}
+
+function isRemoteConfigured(opts: ToolOptions): boolean {
+  return typeof opts.remoteEndpoint === 'string' && opts.remoteEndpoint.trim() !== '';
+}
+
+interface RemoteConfig {
+  endpoint: string;
+  password: string;
+}
 
 /**
- * Execute a remote human minion call.
- *
- * Creates or reuses a session on the Touch Grass backend, sends the message,
- * and long-polls until the human responds or the total timeout is exceeded.
+ * Check a call that routes to a human against the tool options. Returns the
+ * backend config, or a sentence saying why the call can't go remote.
  */
-async function* executeRemoteMinion(
-  storage: UnifiedStorage,
+function resolveRemoteConfig(
+  minionInput: MinionInput,
+  opts: ToolOptions
+): { config: RemoteConfig } | { problem: string } {
+  // A verify hook is a safety check. Skipping it for a human answer would let
+  // the savepoint advance on output nobody verified.
+  if (minionInput.verifyHook) {
+    return {
+      problem:
+        'verifyHook cannot be used with a remote (human) minion. Drop verifyHook and resend.',
+    };
+  }
+  const endpoint = normalizeTouchGrassEndpoint(
+    typeof opts.remoteEndpoint === 'string' ? opts.remoteEndpoint : ''
+  );
+  if (!endpoint) {
+    return {
+      problem:
+        'No Remote Minion Endpoint is configured in the minion tool options; ask the user to set it.',
+    };
+  }
+  const invalid = validateTouchGrassEndpoint(endpoint);
+  if (invalid) return { problem: `${invalid} Ask the user to fix it in the minion tool options.` };
+  const password = typeof opts.remotePassword === 'string' ? opts.remotePassword : '';
+  if (!password) {
+    return {
+      problem:
+        'No Remote Minion Password is configured in the minion tool options; ask the user to set it.',
+    };
+  }
+  return { config: { endpoint, password } };
+}
+
+/** UI label for a minion call: its displayName, else a non-default persona when personas are on. */
+function minionPersonaLabel(minionChat: MinionChat, toolOptions: ToolOptions): string | undefined {
+  return (
+    minionChat.displayName ??
+    (toolOptions.namespacedMinion !== 'off' &&
+    minionChat.persona &&
+    minionChat.persona !== 'default'
+      ? minionChat.persona
+      : undefined)
+  );
+}
+
+type InjectedEntry = {
+  path: string;
+  content: string;
+  preamble?: string;
+  postamble?: string;
+  error?: boolean;
+};
+
+/** Injected files read for one call, as entries and as inline text. */
+interface InjectedFileBatches {
+  /** Whether the content carries line numbers */
+  withLineNumbers: boolean;
+  /** `' with line numbers'` when the content carries them (part of the default framing) */
+  label: string;
+  /** `injectFiles`: lands before the message */
+  before: InjectedEntry[];
+  /** `injectFilesAfter`: lands after the message */
+  after: InjectedEntry[];
+  /** Inline text of `before`, for buildInlineContent */
+  prefix: string;
+  /** `=== end of files ===` when any leading file uses the default framing */
+  endMarker: string;
+  /** Inline text of `after`, for buildInlineContent */
+  suffix: string;
+}
+
+/**
+ * Whether injected file content carries line numbers: the call's
+ * fileLineNumbers override, else the one persisted on the minion chat, else
+ * the project default.
+ */
+function injectedFilesWithLineNumbers(
+  minionInput: MinionInput,
+  minionChat: MinionChat,
+  projectNoLineNumbers: boolean | undefined
+): boolean {
+  return minionInput.fileLineNumbers ?? minionChat.fileLineNumbers ?? !projectNoLineNumbers;
+}
+
+/** Default-framing label for injected files that carry line numbers. */
+const LINE_NUMBERS_LABEL = ' with line numbers';
+
+/**
+ * The line-number choice a retry stash's files were read with, so a re-send
+ * frames them as before even if the setting changed since. Each file bar holds
+ * `buildInlineSection(entry, label)` byte for byte (the invariant
+ * `extractCarriedInjection` relies on too), so the label that reproduces a
+ * default-framed bar is the original one. Undefined when every file is
+ * custom-framed: the label then appears nowhere.
+ */
+function stashedFilesWithLineNumbers(stash: StashedRetryContent): boolean | undefined {
+  const { before, after } = splitInjectedFileBlocks(stash.renderingContent);
+  const bars = [...before, ...after];
+  const entries = [...(stash.injectedFiles ?? []), ...(stash.injectedFilesAfter ?? [])];
+  const idx = entries.findIndex(f => !hasCustomFraming(f));
+  if (idx === -1 || !bars[idx]) return undefined;
+  return bars[idx].content === buildInlineSection(entries[idx], LINE_NUMBERS_LABEL);
+}
+
+/** Batches with their inline text, from entries already formatted for the reader. */
+function assembleInjectedBatches(
+  withLineNumbers: boolean,
+  before: InjectedEntry[],
+  after: InjectedEntry[]
+): InjectedFileBatches {
+  const label = withLineNumbers ? LINE_NUMBERS_LABEL : '';
+  // A failed read fails the whole call, so error entries never reach the text.
+  const inlineSections = (entries: InjectedEntry[]) =>
+    entries
+      .filter(f => !f.error)
+      .map(f => buildInlineSection(f, label))
+      .join('\n\n');
+  return {
+    withLineNumbers,
+    label,
+    before,
+    after,
+    prefix: before.length > 0 ? inlineSections(before) + '\n\n' : '',
+    // Custom-framed files delimit themselves; the meta end marker is only
+    // needed when at least one file carries the default `=== path ===` framing.
+    endMarker: before.some(f => !f.error && !hasCustomFraming(f)) ? '=== end of files ===\n\n' : '',
+    // No end marker: nothing follows the trailing batch.
+    suffix: after.length > 0 ? '\n\n' + inlineSections(after) : '',
+  };
+}
+
+/**
+ * Read `injectFiles` / `injectFilesAfter` from the VFS, formatted the way the
+ * minion (LLM or human) gets them: line numbers per the effective setting,
+ * display paths relative to the persona's namespace. Any failed read fails the
+ * call before anything is sent.
+ */
+async function readInjectedFiles(
   minionInput: MinionInput,
   minionChat: MinionChat,
   toolOptions: ToolOptions,
-  endpoint: string,
-  injectedFileEntries: Array<{ path: string; content: string; error?: boolean }>,
-  injectedFilesPrefix: string,
-  injectedFilesSuffix: string
-): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
-  const password = typeof toolOptions.remotePassword === 'string' ? toolOptions.remotePassword : '';
-  const callerId = 'gremlinofa';
-  const authHeader = 'Basic ' + btoa(`${callerId}:${password}`);
-  const totalTimeoutMs =
-    typeof toolOptions.remoteTimeoutMs === 'number'
-      ? toolOptions.remoteTimeoutMs
-      : REMOTE_DEFAULT_TIMEOUT_MS;
-
-  // Create or reuse remote session
-  let sessionId = minionChat.remoteSessionId;
-  if (!sessionId) {
-    try {
-      const createRes = await fetch(`${endpoint}/api/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-        body: JSON.stringify({ displayName: minionChat.displayName ?? minionInput.displayName }),
-      });
-      if (!createRes.ok) {
-        const errText = await createRes.text();
-        return {
-          content: truncateError(`Error creating remote session: ${createRes.status} ${errText}`),
-          isError: true,
-        };
-      }
-      const createBody = (await createRes.json()) as { sessionId: string };
-      sessionId = createBody.sessionId;
-      minionChat.remoteSessionId = sessionId;
-      await storage.saveMinionChat(minionChat);
-    } catch (err) {
-      return {
-        content: truncateError(
-          `Error connecting to remote backend: ${err instanceof Error ? err.message : String(err)}`
-        ),
-        isError: true,
-      };
-    }
+  projectNoLineNumbers: boolean | undefined,
+  createVfsAdapter: ToolContext['createVfsAdapter']
+): Promise<{ files: InjectedFileBatches } | { failure: ToolResult }> {
+  const withLineNumbers = injectedFilesWithLineNumbers(
+    minionInput,
+    minionChat,
+    projectNoLineNumbers
+  );
+  if (!hasInjectSpecs(minionInput)) {
+    return { files: assembleInjectedBatches(withLineNumbers, [], []) };
   }
 
-  // Send message + files to the remote session
-  const messageText = minionInput.message ?? '';
-  const fullMessage = buildInlineContent(injectedFilesPrefix, '', messageText, injectedFilesSuffix);
-  const files = injectedFileEntries
-    .filter(f => !f.error)
-    .map(f => ({ path: f.path, content: f.content }));
+  // Compute namespace prefix so display paths can be relative to the minion's root
+  const nsMode = toolOptions.namespacedMinion ?? 'off';
+  const persona = minionInput.persona ?? minionChat.persona ?? 'default';
+  const shouldNs = nsMode !== 'off' && (nsMode === 'all' || persona !== 'default');
+  const injectNsPrefix = shouldNs ? personaNamespace(persona) : undefined;
+  const rootAdapter = createVfsAdapter();
 
-  let requestId: string;
-  try {
-    const msgRes = await fetch(`${endpoint}/api/sessions/${sessionId}/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-      body: JSON.stringify({ content: fullMessage, files: files.length > 0 ? files : undefined }),
-    });
-    if (!msgRes.ok) {
-      const errText = await msgRes.text();
-      return {
-        content: truncateError(`Error sending remote message: ${msgRes.status} ${errText}`),
-        isError: true,
-      };
+  const readInjectBatch = async (specs: Array<string | InjectFileSpec> | undefined) => {
+    const entries: InjectedEntry[] = [];
+    for (const specOrPath of specs ?? []) {
+      const spec: InjectFileSpec =
+        typeof specOrPath === 'string' ? { path: specOrPath } : specOrPath;
+      const displayPath = stripNsPrefix(spec.path, injectNsPrefix);
+      try {
+        const fileContent = await rootAdapter.readFile(spec.path);
+        entries.push({
+          path: displayPath,
+          content: withLineNumbers ? formatFileWithLineNumbers(fileContent) : fileContent,
+          preamble: spec.preamble,
+          postamble: spec.postamble,
+        });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        entries.push({ path: spec.path, content: errMsg, error: true });
+      }
     }
-    const msgBody = (await msgRes.json()) as { requestId: string };
-    requestId = msgBody.requestId;
-  } catch (err) {
+    return entries;
+  };
+
+  const files = assembleInjectedBatches(
+    withLineNumbers,
+    await readInjectBatch(minionInput.injectFiles),
+    await readInjectBatch(minionInput.injectFilesAfter)
+  );
+  const failedFiles = [...files.before, ...files.after].filter(f => f.error);
+  if (failedFiles.length > 0) {
+    const paths = failedFiles.map(f => `${f.path}: ${f.content}`).join('\n');
+    return {
+      failure: {
+        content: truncateError(
+          `Error: Failed to read injected file(s):\n${paths}\nFix the paths and resend.`
+        ),
+        isError: true,
+      },
+    };
+  }
+  return { files };
+}
+
+/** tool_info entries for one batch; undefined when it's empty */
+function toInfoFileEntries(entries: InjectedEntry[], label: string) {
+  return entries.length > 0 ? entries.map(f => toInfoFileEntry(f, label)) : undefined;
+}
+
+/**
+ * Rendering for a minion user message: leading file bars, the message text,
+ * trailing file bars.
+ */
+function buildUserMessageGroups(
+  files: InjectedFileBatches,
+  messageText: string
+): RenderingBlockGroup[] {
+  const groups: RenderingBlockGroup[] = [];
+  if (files.before.length > 0) {
+    groups.push({
+      category: 'backstage',
+      blocks: files.before.map(f => toInjectedFileBlock(f, files.label)),
+    });
+  }
+  // The text group is the split point between leading and trailing file
+  // bars in the chat mirror, so an inject-only call still emits it — empty.
+  groups.push({
+    category: 'text',
+    blocks: messageText === '' ? [] : [{ type: 'text', text: messageText }],
+  });
+  if (files.after.length > 0) {
+    groups.push({
+      category: 'backstage',
+      blocks: files.after.map(f => toInjectedFileBlock(f, files.label)),
+    });
+  }
+  return groups;
+}
+
+interface MinionResultFields {
+  returnMode: string;
+  minionChatId: string;
+  stopReason: string;
+  hasCoT: boolean;
+  /** Assistant prose of the run, '' when there was none */
+  text: string;
+  /** What the minion handed back as its result; undefined when the return tool wasn't called */
+  returnValue: string | undefined;
+  /** A human answered through the remote backend */
+  remote?: boolean;
+}
+
+/**
+ * The tool result text the calling LLM reads. 'both' mode gets JSON (text and
+ * result can both be present); every other mode gets the `<minionChatId>` tag,
+ * optional `<hasCoT />` / `<remote />` marker lines, then the body.
+ * `parseSimplifiedOutput` reads the tag shape back; `renderMinionOutput` renders both.
+ */
+export function formatMinionResult(fields: MinionResultFields): string {
+  const { returnMode, minionChatId, stopReason, hasCoT, text, returnValue, remote } = fields;
+  if (returnMode === 'both') {
+    const resultJson: Record<string, unknown> = { stopReason, hasCoT, minionChatId, text };
+    if (returnValue !== undefined) resultJson.result = returnValue;
+    if (remote) resultJson.remote = true;
+    return JSON.stringify(resultJson);
+  }
+  let body: string;
+  if (returnValue !== undefined) {
+    body = returnValue;
+  } else if (returnMode === 'enforced' || returnMode === 'auto-enforced') {
+    body = 'Warning: Return tool was not called';
+  } else {
+    // no-return mode, or return-only fallback when return wasn't called
+    body = text;
+  }
+  const markers = (hasCoT ? '<hasCoT />\n' : '') + (remote ? '<remote />\n' : '');
+  return `<minionChatId>${minionChatId}</minionChatId>\n${markers}${body}`;
+}
+
+/** How long Stop waits for the cancel to report an answer that beat it. */
+const ABORT_CANCEL_WAIT_MS = 1_000;
+
+/** `promise`'s value, or undefined once `ms` pass first. `promise` must not reject. */
+function withinMs<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cap = new Promise<undefined>(resolve => {
+    timer = setTimeout(() => resolve(undefined), ms);
+  });
+  return Promise.race([promise, cap]).finally(() => clearTimeout(timer));
+}
+
+/** The human's answer when it beat the cancel, else undefined. */
+function answerThatBeatCancel(cancelled: CancelOutcome | undefined): string | undefined {
+  return cancelled && 'state' in cancelled && cancelled.state.status === 'answered'
+    ? cancelled.state.response.content
+    : undefined;
+}
+
+/** What the calling LLM gets back for an async note. */
+const ASYNC_SENT_RESULT = 'Message sent.';
+
+/** Told to the human when the backend no longer has the session their earlier messages lived in. */
+const REMOTE_LOST_CONTEXT_NOTE =
+  '[The earlier messages of this conversation were lost on the backend, so this one starts a new session.]';
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Why a question ended without an answer, for the calling LLM. */
+function describeUnanswered(
+  outcome: Exclude<WaitOutcome, { status: 'answered' }>,
+  timeoutMs: number
+): string {
+  if (outcome.status === 'timeout' || outcome.reason === 'timeout') {
+    const lastError =
+      outcome.status === 'timeout' && outcome.lastError
+        ? ` The backend was failing at the end: ${outcome.lastError}`
+        : '';
+    return `Remote minion: no human answer within ${formatWaitDuration(timeoutMs)}; the question was withdrawn.${lastError}`;
+  }
+  switch (outcome.reason) {
+    case 'cancelled':
+      return 'Remote minion: the question was cancelled on the backend before a human answered.';
+    case 'superseded':
+      return 'Remote minion: a newer message on the same remote session replaced the question before a human answered.';
+    case undefined:
+      // v1 backends expire without saying why.
+      return 'Remote minion: the question expired on the backend before a human answered.';
+  }
+}
+
+/**
+ * Execute a call on a remote (human) minion chat.
+ *
+ * Creates or reuses a Touch Grass session, posts the message with injected
+ * files as structured data, then long-polls until the human answers, the
+ * question expires, `remoteTimeoutMs` passes, or the user hits Stop. Whenever
+ * we stop waiting on a question that may still be open, it is cancelled on the
+ * backend so the human can't answer into the void.
+ *
+ * `retryStash` is set on a true retry: without fresh inject specs, the files
+ * the original question carried are re-sent from it rather than re-read.
+ */
+async function* executeRemoteMinion(
+  minionInput: MinionInput,
+  minionChat: MinionChat,
+  messageText: string,
+  toolOptions: ToolOptions,
+  remote: RemoteConfig,
+  retryStash: StashedRetryContent | undefined,
+  context: ToolContext
+): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
+  const storage = context.storage;
+  const signal = context.signal;
+  const asyncNote = readAsyncFlag(minionInput) === true;
+
+  const project = await storage.getProject(context.projectId);
+  if (!project) {
     return {
       content: truncateError(
-        `Error sending to remote backend: ${err instanceof Error ? err.message : String(err)}`
+        `Error: Project not found: ${context.projectId}. Resend to reattempt.`
       ),
       isError: true,
     };
   }
+  const injected =
+    retryStash && stashHasInjectedFiles(retryStash) && !hasInjectSpecs(minionInput)
+      ? {
+          files: assembleInjectedBatches(
+            stashedFilesWithLineNumbers(retryStash) ??
+              injectedFilesWithLineNumbers(minionInput, minionChat, project.noLineNumbers),
+            retryStash.injectedFiles ?? [],
+            retryStash.injectedFilesAfter ?? []
+          ),
+        }
+      : await readInjectedFiles(
+          minionInput,
+          minionChat,
+          toolOptions,
+          project.noLineNumbers,
+          context.createVfsAdapter
+        );
+  if ('failure' in injected) return injected.failure;
+  const { files } = injected;
 
-  // Save the AI message to local minion chat storage
-  const aiMessage: Message<unknown> = {
-    id: generateUniqueId('msg_user'),
-    role: 'user',
-    content: { type: 'text', content: fullMessage },
-    timestamp: new Date(),
+  const infoGroup = buildInfoGroup(
+    messageText,
+    minionChat.id,
+    minionPersonaLabel(minionChat, toolOptions),
+    minionChat.displayName,
+    undefined,
+    undefined,
+    toInfoFileEntries(files.before, files.label),
+    toInfoFileEntries(files.after, files.label)
+  );
+  const followUp = `To ask again, call minion with minionChatId "${minionChat.id}".`;
+  const remoteError = (detail: string): ToolResult => ({
+    content: `${truncateError(detail, REMOTE_ERROR_LIMIT)} ${followUp}`,
+    isError: true,
+    renderingGroups: [infoGroup],
+  });
+  const abortedResult: ToolResult = {
+    content: 'Minion was aborted',
+    isError: true,
+    renderingGroups: [infoGroup],
   };
-  await storage.saveMinionMessage(minionChat.id, aiMessage);
 
-  // Build info group for display
-  const personaLabel = minionChat.displayName ?? minionInput.displayName;
-  const infoBlock: ToolInfoRenderBlock = {
-    type: 'tool_info',
-    input: messageText,
-    chatId: minionChat.id,
-    persona: personaLabel,
-    displayName: minionChat.displayName ?? minionInput.displayName,
+  const client = new TouchGrassClient(remote);
+  const timeoutMs = resolveRemoteTimeoutMs(toolOptions);
+  const deadline = Date.now() + timeoutMs;
+
+  // Files travel as structured data only. Custom preamble/postamble rides in
+  // the content: it is part of what the caller wanted the reader to see.
+  const toRemoteFile = (f: InjectedEntry, placement: 'before' | 'after'): RemoteInjectedFile => ({
+    path: f.path,
+    content: wrapInjectedFile(f),
+    placement,
+    ...(files.withLineNumbers && { lineNumbers: true }),
+  });
+  const remoteFiles = [
+    ...files.before.map(f => toRemoteFile(f, 'before')),
+    ...files.after.map(f => toRemoteFile(f, 'after')),
+  ];
+  const persona =
+    minionChat.persona && minionChat.persona !== 'default' ? minionChat.persona : undefined;
+  const sessionLabel = `${project.name} · ${minionChat.displayName ?? persona ?? 'minion'}`.slice(
+    0,
+    200
+  );
+  // Setup requests retry briefly: a backend restart blip is worth riding out,
+  // a CORS or address mistake should surface its hint within seconds.
+  const setupRetry = { maxRetries: 2, deadline, signal };
+
+  const openSession = async (): Promise<string> => {
+    const sessionId = await withRetry(() => client.createSession(sessionLabel, signal), setupRetry);
+    minionChat.remoteSessionId = sessionId;
+    minionChat.lastModifiedAt = new Date();
+    await storage.saveMinionChat(minionChat);
+    return sessionId;
   };
-  const infoGroup: RenderingBlockGroup = { category: 'backstage', blocks: [infoBlock] };
+  const fileFields = remoteFiles.length > 0 ? { files: remoteFiles } : {};
+  // The backend closes the question at our deadline, so the human sees when it
+  // stops being answerable.
+  const postQuestion = (sessionId: string, content: string) =>
+    postMessageWithRetry(client, sessionId, { content, ...fileFields }, setupRetry);
+  const postNote = (sessionId: string, content: string) =>
+    postMessageWithRetry(
+      client,
+      sessionId,
+      { content, ...fileFields, awaitReply: false },
+      setupRetry
+    );
 
-  // Build the waiting-state group once — the touch-grass loop holds the
-  // same UI state across every poll iteration (delta encoding makes
-  // re-yielding identical snapshots wasteful, so we emit one `init`
-  // before the loop and stay silent until the human responds).
-  const waitingGroup: RenderingBlockGroup = {
-    category: 'backstage',
-    blocks: [
-      {
-        type: 'tool_result',
-        name: 'minion',
-        tool_use_id: '',
-        content: 'Waiting for human response...',
-        status: 'running',
-      } as ToolResultRenderBlock,
-    ],
+  /** Posts to the chat's session, opening one first when it has none. */
+  const postToSession = async <T>(
+    post: (sessionId: string, content: string) => Promise<T>
+  ): Promise<{ sessionId: string; posted: T }> => {
+    const knownSessionId = minionChat.remoteSessionId;
+    if (knownSessionId) {
+      try {
+        return { sessionId: knownSessionId, posted: await post(knownSessionId, messageText) };
+      } catch (err) {
+        // The backend lost the session (DB wiped, endpoint moved). Start a new
+        // one, once, and tell the human what they're missing.
+        if (!(err instanceof TouchGrassError && err.status === 404)) throw err;
+        console.debug('[minionTool] remote session %s is gone, opening a new one', knownSessionId);
+      }
+      const sessionId = await openSession();
+      const content = messageText
+        ? `${REMOTE_LOST_CONTEXT_NOTE}\n\n${messageText}`
+        : REMOTE_LOST_CONTEXT_NOTE;
+      return { sessionId, posted: await post(sessionId, content) };
+    }
+    const sessionId = await openSession();
+    return { sessionId, posted: await post(sessionId, messageText) };
+  };
+  const postFailed = (err: unknown): ToolResult =>
+    isTouchGrassAbort(err)
+      ? abortedResult
+      : remoteError(
+          `Error: posting the ${asyncNote ? 'message' : 'question'} to the remote backend failed. ${errorText(err)}`
+        );
+
+  // The local transcript keeps the inline text an LLM reading this chat would
+  // need (a clone into a regular chat keeps the files), plus the file bars.
+  // The files are stored as entries too, so a retry can re-send them the way
+  // the human got them. No `injectionMode`: API clients only build blocks from
+  // the entries when one is set, so a clone reads the inline text alone.
+  const saveUserMessage = async (): Promise<Message<string>> => {
+    const userMessage: Message<string> = {
+      id: generateUniqueId('msg_user'),
+      role: 'user',
+      content: {
+        type: 'text',
+        content: buildInlineContent(files.prefix, files.endMarker, messageText, files.suffix),
+        renderingContent: buildUserMessageGroups(files, messageText),
+        ...(files.before.length > 0 && { injectedFiles: files.before.map(toStoredInjectedFile) }),
+        ...(files.after.length > 0 && {
+          injectedFilesAfter: files.after.map(toStoredInjectedFile),
+        }),
+      },
+      timestamp: new Date(),
+    };
+    await storage.saveMinionMessage(minionChat.id, userMessage);
+    return userMessage;
+  };
+
+  if (asyncNote) {
+    let note: PostedMessage;
+    try {
+      ({ posted: note } = await postToSession(postNote));
+    } catch (err) {
+      return postFailed(err);
+    }
+    const userMessage = await saveUserMessage();
+    // No answer comes back, so the note is a finished exchange on its own: a
+    // retry or autoRollback must not take it back.
+    minionChat.savepoint = userMessage.id;
+    minionChat.lastModifiedAt = new Date();
+    await storage.saveMinionChat(minionChat);
+    if (note.requestId !== null) {
+      // A 2.0 backend ignored awaitReply and asked the human a question; withdraw it.
+      const cancelling = client.cancel(note.requestId);
+      if (!(await withinMs(cancelling, ABORT_CANCEL_WAIT_MS))?.reached) {
+        void retryCancelInBackground(client, note.requestId, cancelling, deadline);
+      }
+    }
+    return {
+      content: formatMinionResult({
+        returnMode: resolveReturnMode(toolOptions),
+        minionChatId: minionChat.id,
+        stopReason: 'end_turn',
+        hasCoT: false,
+        text: '',
+        // Not `remote`: the result is ours, not a human's answer.
+        returnValue: ASYNC_SENT_RESULT,
+      }),
+      renderingGroups: [infoGroup],
+    };
+  }
+
+  let sessionId: string;
+  let posted: PendingRequestRef;
+  try {
+    ({ sessionId, posted } = await postToSession(postQuestion));
+  } catch (err) {
+    return postFailed(err);
+  }
+  await saveUserMessage();
+
+  // One init carries the whole waiting state: nothing changes until the human
+  // answers, and delta encoding makes re-yielding identical snapshots wasteful.
+  const waitingBlock: ToolResultRenderBlock = {
+    type: 'tool_result',
+    name: 'minion',
+    tool_use_id: '',
+    icon: '⏳',
+    status: 'running',
+    content: [
+      'Waiting for a human answer.',
+      `Answer at: ${client.sessionUrl(sessionId)}`,
+      `Deadline: ${posted.expiresAt ?? new Date(deadline).toISOString()}`,
+    ].join('\n'),
   };
   yield {
     type: 'groups_delta',
@@ -928,90 +1478,94 @@ async function* executeRemoteMinion(
       kind: 'init',
       infoGroup,
       accumulatedGroups: [],
-      streamingGroups: [waitingGroup],
+      streamingGroups: [{ category: 'backstage', blocks: [waitingBlock] }],
     },
   };
 
-  // Long-poll loop
-  const startTime = Date.now();
-  let humanResponse: string | undefined;
+  // Runs while the busy guard is held, like every other write of this call.
+  const saveAnswer = async (content: string): Promise<RenderingBlockGroup> => {
+    const answerGroup: RenderingBlockGroup = {
+      category: 'text',
+      blocks: [{ type: 'text', text: content }],
+    };
+    const humanMessage: Message<string> = {
+      id: generateUniqueId('msg_asst'),
+      role: 'assistant',
+      content: { type: 'text', content, renderingContent: [answerGroup] },
+      timestamp: new Date(),
+    };
+    await storage.saveMinionMessage(minionChat.id, humanMessage);
+    minionChat.savepoint = humanMessage.id;
+    minionChat.lastModifiedAt = new Date();
+    await storage.saveMinionChat(minionChat);
+    return answerGroup;
+  };
 
-  while (Date.now() - startTime < totalTimeoutMs) {
-    try {
-      const pollRes = await fetch(`${endpoint}/api/requests/${requestId}/poll`, {
-        headers: { Authorization: authHeader },
-      });
-      if (!pollRes.ok) {
-        return {
-          content: truncateError(`Error polling remote: ${pollRes.status}`),
-          isError: true,
-        };
+  let outcome: WaitOutcome;
+  try {
+    outcome = await waitForAnswer(client, posted.requestId, { deadline, signal });
+  } catch (err) {
+    if (isTouchGrassAbort(err)) {
+      // Stop must unblock the parent promptly, so the cancel gets a short
+      // window to report an answer that won the race. A cancel that is slower,
+      // or can't reach the backend, carries on in the background until it
+      // gets through or the deadline closes the question anyway. That never
+      // touches storage: the guard is released by then.
+      const cancelling = client.cancel(posted.requestId);
+      const cancelled = await withinMs(cancelling, ABORT_CANCEL_WAIT_MS);
+      if (!cancelled?.reached) {
+        void retryCancelInBackground(client, posted.requestId, cancelling, deadline);
       }
-      const pollBody = (await pollRes.json()) as {
-        status: 'pending' | 'answered' | 'expired';
-        response?: { content: string };
-      };
-
-      if (pollBody.status === 'answered' && pollBody.response) {
-        humanResponse = pollBody.response.content;
-        break;
-      }
-      if (pollBody.status === 'expired') {
-        return {
-          content: truncateError('Remote request expired before human responded.'),
-          isError: true,
-          renderingGroups: [infoGroup],
-        };
-      }
-      // status === 'pending': loop again
-    } catch (err) {
+      const answer = answerThatBeatCancel(cancelled);
+      if (answer === undefined) return abortedResult;
+      const answerGroup = await saveAnswer(answer);
       return {
-        content: truncateError(
-          `Error polling remote: ${err instanceof Error ? err.message : String(err)}`
-        ),
+        content: `Minion was aborted, but the human had already answered. The exchange is saved in minionChatId "${minionChat.id}". Their answer:\n${answer}`,
+        isError: true,
+        renderingGroups: [infoGroup, { ...answerGroup, isToolGenerated: true }],
+      };
+    }
+    // The request goes with its session: nothing left to cancel, and the next
+    // post 404s too, which opens a new session.
+    if (err instanceof TouchGrassError && err.status === 404) {
+      return {
+        content: `Remote minion: the question is gone from the backend — the human deleted this conversation, or the backend lost its data. A follow-up with minionChatId "${minionChat.id}" starts a new session.`,
         isError: true,
         renderingGroups: [infoGroup],
       };
     }
+    // Cancel, and take the answer if the human beat us to it.
+    const answer = answerThatBeatCancel(await client.cancel(posted.requestId));
+    if (answer === undefined) {
+      return remoteError(`Error: waiting for the human answer failed. ${errorText(err)}`);
+    }
+    outcome = { status: 'answered', content: answer };
+  }
+  if (outcome.status === 'timeout') {
+    const answer = answerThatBeatCancel(await client.cancel(posted.requestId));
+    if (answer !== undefined) outcome = { status: 'answered', content: answer };
+  }
+  if (outcome.status !== 'answered') {
+    return remoteError(describeUnanswered(outcome, timeoutMs));
   }
 
-  if (humanResponse === undefined) {
-    return {
-      content: truncateError(
-        `Remote minion timed out after ${Math.round(totalTimeoutMs / 1000)}s without a human response.`
-      ),
-      isError: true,
-      renderingGroups: [infoGroup],
-    };
-  }
-
-  // Save human response to local minion chat storage
-  const humanMessage: Message<unknown> = {
-    id: generateUniqueId('msg_asst'),
-    role: 'assistant',
-    content: { type: 'text', content: humanResponse },
-    timestamp: new Date(),
-  };
-  await storage.saveMinionMessage(minionChat.id, humanMessage);
-
-  // Update savepoint
-  minionChat.savepoint = humanMessage.id;
-  minionChat.lastModifiedAt = new Date();
-  await storage.saveMinionChat(minionChat);
-
-  // Build result rendering
-  const resultBlock: ToolResultRenderBlock = {
-    type: 'tool_result',
-    name: 'minion',
-    tool_use_id: '',
-    content: humanResponse,
-    status: 'complete',
-  };
-  const resultGroup: RenderingBlockGroup = { category: 'text', blocks: [resultBlock] };
+  const answerGroup = await saveAnswer(outcome.content);
 
   return {
-    content: `[Remote human response]\n\nminionChatId: ${minionChat.id}\n\n${humanResponse}`,
-    renderingGroups: [infoGroup, resultGroup],
+    content: formatMinionResult({
+      returnMode: resolveReturnMode(toolOptions),
+      minionChatId: minionChat.id,
+      stopReason: 'end_turn',
+      hasCoT: false,
+      text: '',
+      // The answer is the deliberate final value of the exchange, so it fills
+      // the return slot in every mode: 'return-only' / 'enforced' never warn
+      // that a person "didn't call the return tool", and 'both' carries it as
+      // `result`, the field the output renderer shows.
+      returnValue: outcome.content,
+      remote: true,
+    }),
+    renderingGroups: [infoGroup, { ...answerGroup, isToolGenerated: true }],
   };
 }
 
@@ -1077,6 +1631,7 @@ async function* executeMinionInner(
   // ── Phase 1: Validate inputs + load/create chat ──
   // Errors here indicate no state change; caller can resend to reattempt.
 
+  const minionToolOptions = toolOptions ?? {};
   const autoRollbackEnabled = toolOptions?.autoRollback === true;
   const verifyFeedbackEnabled = toolOptions?.verifyFeedback === true;
   if (
@@ -1141,6 +1696,18 @@ async function* executeMinionInner(
   // Load or create minion chat + handle retry rollback
   let minionChat: MinionChat;
   let existingMessages: Message<unknown>[] = [];
+  // Set when this call goes to a human. Remote is a property of the chat,
+  // decided at creation; the call's `remote` flag only has to agree with it.
+  let remoteConfig: RemoteConfig | undefined;
+  const remoteFlag = readRemoteFlag(minionInput);
+  const asyncFlag = readAsyncFlag(minionInput) === true;
+  if (asyncFlag && !minionInput.minionChatId && remoteFlag !== true) {
+    return {
+      content:
+        'Error: async=true only works with remote (human) minions. Start the chat with remote=true, or drop async and resend.',
+      isError: true,
+    };
+  }
 
   if (minionInput.minionChatId) {
     if (validateIdChecksum(minionInput.minionChatId) === 'invalid') {
@@ -1163,40 +1730,80 @@ async function* executeMinionInner(
     minionChat = existing;
     existingMessages = await storage.getMinionMessages(minionInput.minionChatId);
 
-    // Merge caller-provided settings into existing chat
+    // Route before merging anything: a remote chat must not pick up LLM knobs.
+    const chatId = minionChat.id;
+    if (isRemoteMinionChat(minionChat)) {
+      if (remoteFlag === false) {
+        return {
+          content: `Error: Minion chat ${chatId} is a remote (human) chat, so remote=false is not allowed on it. Omit remote to continue it, or omit minionChatId to start an LLM minion.`,
+          isError: true,
+        };
+      }
+      const resolved = resolveRemoteConfig(minionInput, minionToolOptions);
+      if ('problem' in resolved) {
+        return {
+          content: `Error: Minion chat ${chatId} is a remote (human) chat. ${resolved.problem}`,
+          isError: true,
+        };
+      }
+      remoteConfig = resolved.config;
+      // Chats from before the flag existed are marked by their session id alone.
+      minionChat.remote = true;
+    } else if (remoteFlag === true) {
+      // Remote is decided at creation. Even an empty LLM chat stays LLM: it
+      // may hold LLM-only settings (a verifyHook) a human answer would skip.
+      return {
+        content: `Error: remote=true cannot be used on minion chat ${chatId}: it is an LLM minion chat. Omit minionChatId to start a new remote chat.`,
+        isError: true,
+      };
+    } else if (asyncFlag) {
+      return {
+        content: `Error: async=true cannot be used on minion chat ${chatId}: it is an LLM minion chat, and async only works with remote (human) minions. Drop async and resend.`,
+        isError: true,
+      };
+    }
+
+    // Merge caller-provided settings into existing chat. A human only needs
+    // what labels the chat and shapes the injected files; everything else is
+    // an LLM knob.
     if (minionInput.displayName !== undefined) minionChat.displayName = minionInput.displayName;
     if (minionInput.persona !== undefined) minionChat.persona = minionInput.persona;
-    if (minionInput.enabledTools !== undefined) minionChat.enabledTools = minionInput.enabledTools;
-    if (minionInput.allowNesting !== undefined) minionChat.allowNesting = minionInput.allowNesting;
-    if (minionInput.availablePersonas !== undefined)
-      minionChat.availablePersonas = minionInput.availablePersonas;
-    if (minionInput.verifyHook !== undefined) minionChat.verifyHook = minionInput.verifyHook;
-    if (minionInput.enableReasoning !== undefined)
-      minionChat.enableReasoning = minionInput.enableReasoning;
-    if (minionInput.reasoningBudgetTokens !== undefined)
-      minionChat.reasoningBudgetTokens = minionInput.reasoningBudgetTokens;
-    if (minionInput.reasoningEffort !== undefined)
-      minionChat.reasoningEffort = minionInput.reasoningEffort as ReasoningEffort;
-    if (minionInput.verbosity !== undefined)
-      minionChat.verbosity = minionInput.verbosity as Verbosity;
-    if (minionInput.temperature !== undefined) minionChat.temperature = minionInput.temperature;
-    if (minionInput.maxOutputTokens !== undefined)
-      minionChat.maxOutputTokens = minionInput.maxOutputTokens;
-    if (minionInput.fileInjectionMode !== undefined)
-      minionChat.fileInjectionMode = minionInput.fileInjectionMode;
     if (minionInput.fileLineNumbers !== undefined)
       minionChat.fileLineNumbers = minionInput.fileLineNumbers;
-    if (minionInput.systemPrompt !== undefined) minionChat.systemPrompt = minionInput.systemPrompt;
-    if (minionInput.systemPromptFile !== undefined)
-      minionChat.systemPromptFile = minionInput.systemPromptFile;
-    if (minionInput.prePersonaSystemPromptFile !== undefined)
-      minionChat.prePersonaSystemPromptFile = minionInput.prePersonaSystemPromptFile;
-    if (minionInput.nudgeThinking !== undefined)
-      minionChat.nudgeThinking = minionInput.nudgeThinking;
-    if (minionInput.thinkingKeepTurns !== undefined)
-      minionChat.thinkingKeepTurns = minionInput.thinkingKeepTurns;
-    if (minionInput.pruneThinkingBeforeApiCall !== undefined)
-      minionChat.pruneThinkingBeforeApiCall = minionInput.pruneThinkingBeforeApiCall;
+    if (!remoteConfig) {
+      if (minionInput.enabledTools !== undefined)
+        minionChat.enabledTools = minionInput.enabledTools;
+      if (minionInput.allowNesting !== undefined)
+        minionChat.allowNesting = minionInput.allowNesting;
+      if (minionInput.availablePersonas !== undefined)
+        minionChat.availablePersonas = minionInput.availablePersonas;
+      if (minionInput.verifyHook !== undefined) minionChat.verifyHook = minionInput.verifyHook;
+      if (minionInput.enableReasoning !== undefined)
+        minionChat.enableReasoning = minionInput.enableReasoning;
+      if (minionInput.reasoningBudgetTokens !== undefined)
+        minionChat.reasoningBudgetTokens = minionInput.reasoningBudgetTokens;
+      if (minionInput.reasoningEffort !== undefined)
+        minionChat.reasoningEffort = minionInput.reasoningEffort as ReasoningEffort;
+      if (minionInput.verbosity !== undefined)
+        minionChat.verbosity = minionInput.verbosity as Verbosity;
+      if (minionInput.temperature !== undefined) minionChat.temperature = minionInput.temperature;
+      if (minionInput.maxOutputTokens !== undefined)
+        minionChat.maxOutputTokens = minionInput.maxOutputTokens;
+      if (minionInput.fileInjectionMode !== undefined)
+        minionChat.fileInjectionMode = minionInput.fileInjectionMode;
+      if (minionInput.systemPrompt !== undefined)
+        minionChat.systemPrompt = minionInput.systemPrompt;
+      if (minionInput.systemPromptFile !== undefined)
+        minionChat.systemPromptFile = minionInput.systemPromptFile;
+      if (minionInput.prePersonaSystemPromptFile !== undefined)
+        minionChat.prePersonaSystemPromptFile = minionInput.prePersonaSystemPromptFile;
+      if (minionInput.nudgeThinking !== undefined)
+        minionChat.nudgeThinking = minionInput.nudgeThinking;
+      if (minionInput.thinkingKeepTurns !== undefined)
+        minionChat.thinkingKeepTurns = minionInput.thinkingKeepTurns;
+      if (minionInput.pruneThinkingBeforeApiCall !== undefined)
+        minionChat.pruneThinkingBeforeApiCall = minionInput.pruneThinkingBeforeApiCall;
+    }
 
     if (action === 'retry') {
       // Retry: roll back to savepoint before proceeding
@@ -1213,7 +1820,8 @@ async function* executeMinionInner(
         storage,
         minionChat,
         existingMessages,
-        minionChat.savepoint
+        minionChat.savepoint,
+        remoteConfig !== undefined
       );
 
       if (!rollback.stashedRetryContent && !rollback.recoveredMessage) {
@@ -1250,7 +1858,8 @@ async function* executeMinionInner(
           storage,
           minionChat,
           existingMessages,
-          minionChat.savepoint
+          minionChat.savepoint,
+          remoteConfig !== undefined
         );
         if (!minionInput.message && rollback.recoveredMessage !== undefined) {
           minionInput.message = rollback.recoveredMessage;
@@ -1262,6 +1871,28 @@ async function* executeMinionInner(
         await storage.saveMinionChat(minionChat);
       }
     }
+  } else if (remoteFlag === true) {
+    // Checked before the row exists, so a misconfigured call leaves nothing behind.
+    const resolved = resolveRemoteConfig(minionInput, minionToolOptions);
+    if ('problem' in resolved) {
+      return { content: `Error: ${resolved.problem}`, isError: true };
+    }
+    remoteConfig = resolved.config;
+    // Only what a human conversation needs; LLM knobs would be dead weight
+    // (and a lie, if the chat were ever cloned).
+    minionChat = {
+      id: generateChecksummedId('minion'),
+      parentChatId: context.chatId ?? 'standalone',
+      projectId: context.projectId,
+      savepoint: SAVEPOINT_START,
+      displayName: minionInput.displayName,
+      persona: minionInput.persona,
+      fileLineNumbers: minionInput.fileLineNumbers,
+      remote: true,
+      createdAt: new Date(),
+      lastModifiedAt: new Date(),
+    };
+    await storage.saveMinionChat(minionChat);
   } else {
     // Create new minion chat with initial savepoint
     const parentChatId = context.chatId ?? 'standalone';
@@ -1315,6 +1946,20 @@ async function* executeMinionInner(
   const messageText = minionInput.message ?? '';
   minionInput.message = messageText;
 
+  // A human needs none of the LLM validation below (model, API definition,
+  // tool subset, web search), so remote calls branch off here.
+  if (remoteConfig) {
+    return yield* executeRemoteMinion(
+      minionInput,
+      minionChat,
+      messageText,
+      minionToolOptions,
+      remoteConfig,
+      stashedRetryContent,
+      context
+    );
+  }
+
   // ── Phase 2: Validation + setup ──
   // No state change yet. Errors here mean caller should resend.
 
@@ -1328,7 +1973,6 @@ async function* executeMinionInner(
     };
   }
 
-  const minionToolOptions = toolOptions ?? {};
   const fileInjectionMode =
     (minionInput.fileInjectionMode as InjectionMode) ??
     (minionChat.fileInjectionMode as InjectionMode) ??
@@ -1515,126 +2159,26 @@ async function* executeMinionInner(
     }
   }
 
-  // Effective line-number setting for injected files: fileLineNumbers override
-  // (this call, else persisted on the minion chat) wins over the project default.
-  const injectFileLineNumbers =
-    minionInput.fileLineNumbers ?? minionChat.fileLineNumbers ?? !project.noLineNumbers;
-  const injectFileLabel = injectFileLineNumbers ? ' with line numbers' : '';
-
-  // Read injected files from VFS. `injectFiles` lands before the message,
-  // `injectFilesAfter` after it; both batches read and format identically.
-  type InjectedEntry = {
-    path: string;
-    content: string;
-    preamble?: string;
-    postamble?: string;
-    error?: boolean;
-  };
-  let injectedFileEntries: InjectedEntry[] = [];
-  let injectedFileAfterEntries: InjectedEntry[] = [];
-  let injectedFilesPrefix = '';
-  let injectedFilesEndMarker = '';
-  let injectedFilesSuffix = '';
-  if (minionInput.injectFiles?.length || minionInput.injectFilesAfter?.length) {
-    // Compute namespace prefix so display paths can be relative to the minion's root
-    const nsMode = minionToolOptions.namespacedMinion ?? 'off';
-    const persona = minionInput.persona ?? minionChat.persona ?? 'default';
-    const shouldNs = nsMode !== 'off' && (nsMode === 'all' || persona !== 'default');
-    const injectNsPrefix = shouldNs ? personaNamespace(persona) : undefined;
-    const rootAdapter = context.createVfsAdapter();
-
-    const readInjectBatch = async (specs: Array<string | InjectFileSpec>) => {
-      const entries: InjectedEntry[] = [];
-      const sections: string[] = [];
-      for (const specOrPath of specs) {
-        const spec: InjectFileSpec =
-          typeof specOrPath === 'string' ? { path: specOrPath } : specOrPath;
-        const displayPath = stripNsPrefix(spec.path, injectNsPrefix);
-        try {
-          const fileContent = await rootAdapter.readFile(spec.path);
-          const formatted = injectFileLineNumbers
-            ? formatFileWithLineNumbers(fileContent)
-            : fileContent;
-          const entry = {
-            path: displayPath,
-            content: formatted,
-            preamble: spec.preamble,
-            postamble: spec.postamble,
-          };
-          sections.push(buildInlineSection(entry, injectFileLabel));
-          entries.push(entry);
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          entries.push({ path: spec.path, content: errMsg, error: true });
-        }
-      }
-      return { entries, sections };
-    };
-
-    if (minionInput.injectFiles?.length) {
-      const { entries, sections } = await readInjectBatch(minionInput.injectFiles);
-      injectedFileEntries = entries;
-      injectedFilesPrefix = sections.join('\n\n') + '\n\n';
-      // Custom-framed files delimit themselves; the meta end marker is only
-      // needed when at least one file carries the default `=== path ===` framing.
-      if (entries.some(f => !f.error && !hasCustomFraming(f))) {
-        injectedFilesEndMarker = '=== end of files ===\n\n';
-      }
-    }
-    if (minionInput.injectFilesAfter?.length) {
-      const { entries, sections } = await readInjectBatch(minionInput.injectFilesAfter);
-      injectedFileAfterEntries = entries;
-      // No end marker: nothing follows the trailing batch.
-      injectedFilesSuffix = '\n\n' + sections.join('\n\n');
-    }
-
-    // If any file failed to read, return error to the caller instead of launching minion
-    const failedFiles = [...injectedFileEntries, ...injectedFileAfterEntries].filter(f => f.error);
-    if (failedFiles.length > 0) {
-      const paths = failedFiles.map(f => `${f.path}: ${f.content}`).join('\n');
-      return {
-        content: truncateError(
-          `Error: Failed to read injected file(s):\n${paths}\nFix the paths and resend.`
-        ),
-        isError: true,
-      };
-    }
-  }
-
-  // ── Remote human minion branch ──
-  if (minionInput.remote === true) {
-    const remoteEndpoint =
-      typeof minionToolOptions.remoteEndpoint === 'string'
-        ? minionToolOptions.remoteEndpoint.replace(/\/+$/, '')
-        : '';
-    if (!remoteEndpoint) {
-      return {
-        content: truncateError(
-          'Error: remote=true but no remoteEndpoint configured in minion tool options.'
-        ),
-        isError: true,
-      };
-    }
-    return yield* executeRemoteMinion(
-      storage,
-      minionInput,
-      minionChat,
-      minionToolOptions,
-      remoteEndpoint,
-      [...injectedFileEntries, ...injectedFileAfterEntries],
-      injectedFilesPrefix,
-      injectedFilesSuffix
-    );
-  }
+  const injected = await readInjectedFiles(
+    minionInput,
+    minionChat,
+    minionToolOptions,
+    project.noLineNumbers,
+    context.createVfsAdapter
+  );
+  if ('failure' in injected) return injected.failure;
+  const injectedFiles = injected.files;
+  const {
+    label: injectFileLabel,
+    before: injectedFileEntries,
+    after: injectedFileAfterEntries,
+    prefix: injectedFilesPrefix,
+    endMarker: injectedFilesEndMarker,
+    suffix: injectedFilesSuffix,
+  } = injectedFiles;
 
   // Build info group for streaming display (include persona name for non-default personas)
-  const personaLabel =
-    minionChat.displayName ??
-    (minionToolOptions.namespacedMinion !== 'off' &&
-    minionChat.persona &&
-    minionChat.persona !== 'default'
-      ? minionChat.persona
-      : undefined);
+  const personaLabel = minionPersonaLabel(minionChat, minionToolOptions);
   const infoGroup = buildInfoGroup(
     messageText,
     minionChat.id,
@@ -1642,12 +2186,8 @@ async function* executeMinionInner(
     minionChat.displayName,
     effectiveModelRef.apiDefinitionId,
     effectiveModelRef.modelId,
-    injectedFileEntries.length > 0
-      ? injectedFileEntries.map(f => toInfoFileEntry(f, injectFileLabel))
-      : undefined,
-    injectedFileAfterEntries.length > 0
-      ? injectedFileAfterEntries.map(f => toInfoFileEntry(f, injectFileLabel))
-      : undefined
+    toInfoFileEntries(injectedFileEntries, injectFileLabel),
+    toInfoFileEntries(injectedFileAfterEntries, injectFileLabel)
   );
 
   // Persist resolved model and tools into minionChat for future continuation
@@ -1733,11 +2273,13 @@ async function* executeMinionInner(
       name: pendingReturnToolUse.name,
       content: continuationText,
     });
+    // The file bars around this group already show the files, so the block
+    // shows the message alone (like a user message's text group).
     toolResultRenderBlocks.push(
       createToolResultRenderBlock(
         pendingReturnToolUse.id,
         pendingReturnToolUse.name,
-        continuationText,
+        messageText,
         false,
         undefined,
         undefined,
@@ -1790,25 +2332,7 @@ async function* executeMinionInner(
         g => !isVerifyFeedbackNoteGroup(g)
       );
     } else {
-      renderingGroups = [];
-      if (injectedFileEntries.length > 0) {
-        renderingGroups.push({
-          category: 'backstage',
-          blocks: injectedFileEntries.map(f => toInjectedFileBlock(f, injectFileLabel)),
-        });
-      }
-      // The text group is the split point between leading and trailing file
-      // bars in the chat mirror, so an inject-only call still emits it — empty.
-      renderingGroups.push({
-        category: 'text',
-        blocks: messageText === '' ? [] : [{ type: 'text', text: messageText }],
-      });
-      if (injectedFileAfterEntries.length > 0) {
-        renderingGroups.push({
-          category: 'backstage',
-          blocks: injectedFileAfterEntries.map(f => toInjectedFileBlock(f, injectFileLabel)),
-        });
-      }
+      renderingGroups = buildUserMessageGroups(injectedFiles, messageText);
     }
 
     // Determine effective injection mode, restoring from stash on retry
@@ -2636,38 +3160,14 @@ async function* executeMinionInner(
     };
     await storage.saveMinionChat(updatedMinionChat);
 
-    // Build result content
-    const joinedText = accumulatedText.join('\n\n');
-    const minionTag = `<minionChatId>${minionChat.id}</minionChatId>`;
-    const hasCoT = !!lastFinalResult?.hasCoT;
-    let resultContent: string;
-
-    if (returnMode === 'both') {
-      // JSON format for 'both' mode (can have text + result)
-      const resultJson: Record<string, unknown> = {
-        stopReason,
-        hasCoT,
-        minionChatId: minionChat.id,
-        text: joinedText,
-      };
-      if (usedReturnTool && returnValue !== undefined) {
-        resultJson.result = returnValue;
-      }
-      resultContent = JSON.stringify(resultJson);
-    } else {
-      // Simplified tag format for all other modes
-      let body: string;
-      if (usedReturnTool && returnValue !== undefined) {
-        body = returnValue;
-      } else if (returnMode === 'enforced' || returnMode === 'auto-enforced') {
-        body = 'Warning: Return tool was not called';
-      } else {
-        // no-return mode, or return-only fallback when return wasn't called
-        body = joinedText;
-      }
-      const hasCoTTag = hasCoT ? '<hasCoT />\n' : '';
-      resultContent = minionTag + '\n' + hasCoTTag + body;
-    }
+    const resultContent = formatMinionResult({
+      returnMode,
+      minionChatId: minionChat.id,
+      stopReason,
+      hasCoT: !!lastFinalResult?.hasCoT,
+      text: accumulatedText.join('\n\n'),
+      returnValue: usedReturnTool ? returnValue : undefined,
+    });
 
     // Reaching here means the loop ended with `complete` (with or without
     // a return value) or `max_iterations` with a deferred return captured
@@ -2772,8 +3272,13 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push(`Display: ${minionInput.displayName}`);
   }
 
-  if (minionInput.remote !== undefined) {
-    lines.push(`Remote: ${minionInput.remote ? 'human' : 'local'}`);
+  const remoteFlag = readRemoteFlag(minionInput);
+  if (remoteFlag !== undefined) {
+    lines.push(`Remote: ${remoteFlag ? 'human' : 'local'}`);
+  }
+
+  if (readAsyncFlag(minionInput)) {
+    lines.push('Async: yes');
   }
 
   if (minionInput.verifyHook) {
@@ -2858,16 +3363,23 @@ function renderMinionInput(input: Record<string, unknown>): string {
   return lines.join('\n');
 }
 
-/** Extract minionChatId, hasCoT, and body from simplified tag format */
+/** Extract minionChatId, the marker lines, and body from the simplified tag format */
 export function parseSimplifiedOutput(
   output: string
-): { minionChatId: string; hasCoT: boolean; body: string } | undefined {
+): { minionChatId: string; hasCoT: boolean; remote: boolean; body: string } | undefined {
   const match = output.match(
-    /^<minionChatId>([^<]+)<\/minionChatId>\n?(?:<hasCoT \/>\n?)?([\s\S]*)$/
+    /^<minionChatId>([^<]+)<\/minionChatId>\n?(<hasCoT \/>\n?)?(<remote \/>\n?)?([\s\S]*)$/
   );
   if (!match) return undefined;
-  return { minionChatId: match[1], hasCoT: output.includes('<hasCoT />'), body: match[2] };
+  return {
+    minionChatId: match[1],
+    hasCoT: match[2] !== undefined,
+    remote: match[3] !== undefined,
+    body: match[4],
+  };
 }
+
+const HUMAN_ANSWER_LABEL = '[Answered by a human]';
 
 /**
  * Render minion tool output for display
@@ -2884,6 +3396,9 @@ function renderMinionOutput(output: string, isError?: boolean): string {
     if (simplified.hasCoT) {
       lines.push('[CoT: yes]');
     }
+    if (simplified.remote) {
+      lines.push(HUMAN_ANSWER_LABEL);
+    }
     if (simplified.body) {
       lines.push(simplified.body);
     }
@@ -2898,6 +3413,9 @@ function renderMinionOutput(output: string, isError?: boolean): string {
 
     if (parsed.hasCoT) {
       lines.push('[CoT: yes]');
+    }
+    if (parsed.remote) {
+      lines.push(HUMAN_ANSWER_LABEL);
     }
     if (parsed.warning) {
       lines.push(`⚠ ${parsed.warning}`);
@@ -2989,10 +3507,30 @@ async function getMinionSystemPromptInjection(
   }
 }
 
+/**
+ * The remote paragraph of the tool description. The calling LLM has to know
+ * the human sees nothing but this message, or it writes "fix the bug we
+ * discussed" to someone who wasn't there.
+ */
+function getRemoteMinionDescription(opts: ToolOptions): string {
+  return [
+    'Remote (human) minions: remote=true sends the message to a person instead of an LLM.',
+    'They see only your message and the injected files, not your conversation, VFS or tools, so make the message self-contained and set displayName to say who is asking.',
+    `Answers take minutes; the call blocks for up to ${formatWaitDuration(resolveRemoteTimeoutMs(opts))}.`,
+    'The minion chat stays remote: continue it with minionChatId alone (remote=false on it is an error).',
+    'LLM-only parameters (model, enabledTools, enableWeb, system prompts, reasoning and sampling overrides, fileInjectionMode) are ignored, and verifyHook is rejected.',
+    'If no answer arrives in time, the question is withdrawn; you can follow up with the same minionChatId.',
+    'async=true posts a message the human cannot reply to and returns "Message sent." at once: use it for progress updates and FYIs.',
+  ].join(' ');
+}
+
 /** Build minion tool description, conditionally including web search and retry bullets. */
 function getMinionDescription(opts: ToolOptions): string {
+  const remoteEnabled = isRemoteConfigured(opts);
   const lines = [
-    'Delegate a task to a minion sub-agent. The minion runs independently with its own agentic loop and can use a subset of available tools. Use this to parallelize work or delegate specific tasks.',
+    remoteEnabled
+      ? 'Delegate a task to a minion: an LLM sub-agent, or a human operator with remote=true. An LLM minion runs independently with its own agentic loop and can use a subset of available tools. Use this to parallelize work or delegate specific tasks.'
+      : 'Delegate a task to a minion sub-agent. The minion runs independently with its own agentic loop and can use a subset of available tools. Use this to parallelize work or delegate specific tasks.',
     '',
     'The minion will execute the task and return the result. You can optionally:',
     '- Continue a previous minion conversation by providing minionChatId',
@@ -3035,15 +3573,21 @@ function getMinionDescription(opts: ToolOptions): string {
     }
   }
 
-  if (typeof opts.remoteEndpoint === 'string' && opts.remoteEndpoint) {
-    lines.push('- Set remote=true to delegate to a human operator via the remote minion backend');
+  if (remoteEnabled) {
+    lines.push('- Set remote=true to ask a human operator instead (see below)');
   }
 
   if (resolveReturnMode(opts) !== 'no-return') {
     lines.push(
       '',
-      "The minion always has access to a 'return' tool to explicitly signal completion with a result."
+      remoteEnabled
+        ? "An LLM minion always has access to a 'return' tool to explicitly signal completion with a result."
+        : "The minion always has access to a 'return' tool to explicitly signal completion with a result."
     );
+  }
+
+  if (remoteEnabled) {
+    lines.push('', getRemoteMinionDescription(opts));
   }
 
   return lines.join('\n');
@@ -3172,10 +3716,15 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     };
   }
 
-  if (typeof opts.remoteEndpoint === 'string' && opts.remoteEndpoint) {
+  if (isRemoteConfigured(opts)) {
     properties.remote = {
       type: 'boolean',
-      description: 'Delegate to a remote human operator instead of an LLM sub-agent.',
+      description: `Ask a human operator instead of an LLM sub-agent. Set it when starting a new minion chat; a remote chat stays remote, so omit it on continuations. The human sees only message + injected files, and the call blocks for up to ${formatWaitDuration(resolveRemoteTimeoutMs(opts))}.`,
+    };
+    properties.async = {
+      type: 'boolean',
+      description:
+        'Remote (human) chats only: post the message without waiting for an answer. The human sees it but cannot reply to it, and the call returns "Message sent." right away. Good for progress updates.',
     };
   }
 
@@ -3270,6 +3819,11 @@ export const minionTool: ClientSideTool = {
       typeof input.minionChatId === 'string'
         ? await context.storage.getMinionChat(input.minionChatId)
         : undefined;
+    // Humans don't share an LLM provider's rate limit, so remote calls stay out
+    // of the apiDefinition groups (they still space out among themselves).
+    if (isRemoteCall(input) || (minionChat && isRemoteMinionChat(minionChat))) {
+      return 'minion:__remote__';
+    }
     const ref = resolveMinionModelRef(input, minionChat, toolOptions);
     return ref ? `minion:${ref.apiDefinitionId}` : 'minion:__default__';
   },
@@ -3491,6 +4045,7 @@ export const minionTool: ClientSideTool = {
       subtitle: 'API password for the remote backend',
       default: '',
       placeholder: 'shared-secret',
+      secret: true,
     },
     {
       type: 'number',

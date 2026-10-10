@@ -9,6 +9,7 @@ User=gremlinofa
 Group=gremlinofa
 WorkingDirectory=/opt/gremlinofa-vfs
 ExecStart=/usr/bin/node /opt/gremlinofa-vfs/index.js
+Environment=NODE_ENV=production
 Restart=on-failure
 RestartSec=5
 

@@ -8,7 +8,8 @@ Type=simple
 User=gremlinofa
 Group=gremlinofa
 WorkingDirectory=/opt/gremlinofa-cors-proxy
-ExecStart=/usr/bin/node /opt/gremlinofa-cors-proxy/dist/index.js
+ExecStart=/usr/bin/node /opt/gremlinofa-cors-proxy/index.js
+Environment=NODE_ENV=production
 Restart=on-failure
 RestartSec=5
 

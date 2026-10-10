@@ -2,15 +2,20 @@
  * Unit tests for Project Export/Import utilities
  */
 
-import { describe, it, expect } from 'vitest';
-import type { VfsNode } from '../../protocol/types';
+import { describe, it, expect, vi } from 'vitest';
+import type { ClientSideTool, Project, ToolOptionDefinition, VfsNode } from '../../protocol/types';
 import {
   collectLiveEntries,
   stripProjectForExport,
   validateBundle,
   buildTreeFromEntries,
+  runProjectExport,
+  runProjectImport,
 } from '../projectBundle';
 import type { BundleFileEntry } from '../../protocol/types/projectBundle';
+import type { BackendDeps } from '../backendDeps';
+import { ClientSideToolRegistry } from '../../services/tools/clientSideTools';
+import { minionTool } from '../../services/tools/minionTool';
 
 describe('projectExport', () => {
   describe('collectLiveEntries', () => {
@@ -209,15 +214,179 @@ describe('projectExport', () => {
         reasoningBudgetTokens: 10000,
       };
 
-      const stripped = stripProjectForExport(project as any);
+      const stripped = stripProjectForExport(project as any, new ClientSideToolRegistry());
       expect(stripped).not.toHaveProperty('id');
       expect(stripped).not.toHaveProperty('createdAt');
       expect(stripped).not.toHaveProperty('lastUsedAt');
       expect(stripped).toHaveProperty('name', 'Test Project');
       expect(stripped).toHaveProperty('systemPrompt', 'You are helpful.');
     });
+
+    it('drops secret tool options and the remote VFS password, keeps everything else', () => {
+      const project = makeProjectWithSecrets();
+
+      const stripped = stripProjectForExport(project, makeRegistryWithSecrets());
+
+      expect(stripped).not.toHaveProperty('remoteVfsPassword');
+      expect(stripped).toHaveProperty('remoteVfsUrl', 'https://vfs.example.test');
+      expect(stripped.toolOptions).toEqual({
+        relay: { endpoint: 'https://relay.example.test', retries: 3 },
+        memory: { useSystemPrompt: true },
+        // Not in the registry: no definition marks anything secret
+        retiredTool: { token: 'kept-as-is' },
+      });
+      // The live project is untouched
+      expect(project.toolOptions?.relay.password).toBe('hunter2');
+      expect(project.remoteVfsPassword).toBe('vfs-secret');
+    });
+
+    it('strips the shipped minion remotePassword through the real tool definition', () => {
+      const registry = new ClientSideToolRegistry();
+      registry.registerAll([minionTool]);
+      const project = {
+        ...makeProjectWithSecrets(),
+        toolOptions: {
+          minion: { remoteEndpoint: 'https://grass.example.test', remotePassword: 'hunter2' },
+        },
+      };
+
+      const stripped = stripProjectForExport(project, registry);
+
+      expect(stripped.toolOptions).toEqual({
+        minion: { remoteEndpoint: 'https://grass.example.test' },
+      });
+    });
+
+    it.each([[null], ['str'], [['x']]])(
+      'keeps a malformed %j entry of a tool with secrets verbatim',
+      malformed => {
+        // Import doesn't validate toolOptions, so a hand-written bundle can carry these
+        const project = {
+          ...makeProjectWithSecrets(),
+          toolOptions: { relay: malformed },
+        } as unknown as Project;
+
+        const stripped = stripProjectForExport(project, makeRegistryWithSecrets());
+
+        expect(stripped.toolOptions).toEqual({ relay: malformed });
+      }
+    );
+
+    it('leaves toolOptions absent when the project has none', () => {
+      const { toolOptions: _omit, ...project } = makeProjectWithSecrets();
+
+      const stripped = stripProjectForExport(project, makeRegistryWithSecrets());
+
+      expect(stripped).not.toHaveProperty('toolOptions');
+    });
+  });
+
+  describe('runProjectExport → runProjectImport', () => {
+    function makeDeps(project: Project) {
+      const savedProjects: Project[] = [];
+      const deps = {
+        storage: {
+          getProject: vi.fn(async () => project),
+          saveProject: vi.fn(async (saved: Project) => {
+            savedProjects.push(saved);
+          }),
+          getAdapter: () => ({ get: vi.fn(async () => null), save: vi.fn() }),
+        },
+        encryption: {},
+        toolRegistry: makeRegistryWithSecrets(),
+      } as unknown as BackendDeps;
+      return { deps, savedProjects };
+    }
+
+    it('round-trips a project without its secrets', async () => {
+      const { deps, savedProjects } = makeDeps(makeProjectWithSecrets());
+
+      let bundleJson = '';
+      for await (const event of runProjectExport(deps, 'proj_src')) {
+        if (event.type === 'done') bundleJson = event.bundleJson;
+      }
+      expect(bundleJson).not.toContain('hunter2');
+      expect(bundleJson).not.toContain('vfs-secret');
+      expect(() => validateBundle(JSON.parse(bundleJson))).not.toThrow();
+
+      await runProjectImport(deps, bundleJson);
+
+      expect(savedProjects).toHaveLength(1);
+      const imported = savedProjects[0];
+      expect(imported.remoteVfsUrl).toBe('https://vfs.example.test');
+      expect(imported.remoteVfsPassword).toBeUndefined();
+      expect(imported.toolOptions?.relay).toEqual({
+        endpoint: 'https://relay.example.test',
+        retries: 3,
+      });
+    });
+
+    it('still imports secrets from an older bundle that carries them', async () => {
+      const { deps, savedProjects } = makeDeps(makeProjectWithSecrets());
+      const legacyBundle = {
+        version: 1,
+        project: {
+          name: 'Legacy',
+          remoteVfsPassword: 'vfs-secret',
+          toolOptions: { relay: { password: 'hunter2' } },
+        },
+        files: [],
+      };
+
+      await runProjectImport(deps, JSON.stringify(legacyBundle));
+
+      expect(savedProjects[0].remoteVfsPassword).toBe('vfs-secret');
+      expect(savedProjects[0].toolOptions?.relay.password).toBe('hunter2');
+    });
   });
 });
+
+/** A tool with one secret text option, plus a non-secret tool to show it's left alone. */
+function makeRegistryWithSecrets(): ClientSideToolRegistry {
+  const registry = new ClientSideToolRegistry();
+  const stubTool = (name: string, optionDefinitions: ToolOptionDefinition[]): ClientSideTool => ({
+    name,
+    description: name,
+    inputSchema: { type: 'object', properties: {}, required: [] },
+    optionDefinitions,
+    execute: async () => ({ content: '' }),
+  });
+  registry.registerAll([
+    stubTool('relay', [
+      { type: 'text', id: 'endpoint', label: 'Endpoint', default: '' },
+      { type: 'text', id: 'password', label: 'Password', default: '', secret: true },
+      { type: 'number', id: 'retries', label: 'Retries', default: 1 },
+    ]),
+    stubTool('memory', [{ type: 'boolean', id: 'useSystemPrompt', label: 'SP', default: false }]),
+  ]);
+  return registry;
+}
+
+function makeProjectWithSecrets(): Project {
+  return {
+    id: 'proj_src',
+    name: 'Secretive',
+    createdAt: new Date('2026-01-01'),
+    lastUsedAt: new Date('2026-03-19'),
+    systemPrompt: '',
+    preFillResponse: '',
+    apiDefinitionId: null,
+    modelId: null,
+    webSearchEnabled: false,
+    temperature: null,
+    maxOutputTokens: 16384,
+    enableReasoning: false,
+    reasoningBudgetTokens: 10000,
+    remoteVfsUrl: 'https://vfs.example.test',
+    remoteVfsPassword: 'vfs-secret',
+    enabledTools: ['relay', 'memory'],
+    toolOptions: {
+      relay: { endpoint: 'https://relay.example.test', password: 'hunter2', retries: 3 },
+      memory: { useSystemPrompt: true },
+      retiredTool: { token: 'kept-as-is' },
+    },
+  };
+}
 
 describe('projectImport', () => {
   describe('validateBundle', () => {

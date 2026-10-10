@@ -286,6 +286,7 @@ describe('cloneMinionChatToChat', () => {
       minionChat({
         savepoint: 'msg-1',
         verifyHook: 'check',
+        remote: true,
         remoteSessionId: 'remote-1',
         pendingVerifyFeedback: 'try again',
         allowNesting: true,
@@ -298,6 +299,7 @@ describe('cloneMinionChatToChat', () => {
     for (const key of [
       'savepoint',
       'verifyHook',
+      'remote',
       'remoteSessionId',
       'pendingVerifyFeedback',
       'allowNesting',
@@ -305,6 +307,24 @@ describe('cloneMinionChatToChat', () => {
     ]) {
       expect(chat).not.toHaveProperty(key);
     }
+  });
+
+  it('warns that a remote minion was answered by a human', async () => {
+    await seed(minionChat({ remote: true, remoteSessionId: 'remote-1' }), [userMsg('hi')]);
+    const { notes } = await cloneMinionChatToChat(storage, 'minion-chat-1');
+    expect(notes.some(n => n.includes('written by a human operator'))).toBe(true);
+  });
+
+  it('treats a legacy remote chat (session id, no flag) as remote too', async () => {
+    await seed(minionChat({ remoteSessionId: 'remote-1' }), [userMsg('hi')]);
+    const { notes } = await cloneMinionChatToChat(storage, 'minion-chat-1');
+    expect(notes.some(n => n.includes('written by a human operator'))).toBe(true);
+  });
+
+  it('adds no remote note for an LLM minion', async () => {
+    await seed(minionChat(), [userMsg('hi')]);
+    const { notes } = await cloneMinionChatToChat(storage, 'minion-chat-1');
+    expect(notes.some(n => n.includes('human operator'))).toBe(false);
   });
 });
 

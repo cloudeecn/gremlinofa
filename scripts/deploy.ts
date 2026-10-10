@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
-export type TargetName = 'frontend' | 'server' | 'vfs-server';
+export type TargetName = 'frontend' | 'server' | 'vfs-server' | 'touch-grass';
 
 interface TargetSpec {
   buildScript: string;
@@ -55,6 +55,15 @@ export const TARGETS: Record<TargetName, TargetSpec> = {
     distDir: 'dist/vfs-server',
     sanityFile: 'index.js',
     protect: SERVER_RUNTIME_STATE,
+  },
+  // Standalone package: its build uses touch-grass-backend/node_modules, so run
+  // `npm ci` there first. The DB lives in data/; '/*.db*' keeps a database (and
+  // its -wal/-shm) at ./touch-grass.db, where the old .env.example's DB_PATH put it.
+  'touch-grass': {
+    buildScript: 'build:touch-grass',
+    distDir: 'touch-grass-backend/dist',
+    sanityFile: 'index.js',
+    protect: [...SERVER_RUNTIME_STATE, '- /*.db*'],
   },
 };
 
@@ -283,7 +292,8 @@ export function planDeploy(
 }
 
 const USAGE = `usage: node scripts/deploy.ts <target...> [--dry-run] [--no-build] [--config <path>]
-targets: ${TARGET_NAMES.join(', ')}`;
+targets: ${TARGET_NAMES.join(', ')}
+touch-grass builds inside touch-grass-backend/: run \`npm ci\` there once first`;
 
 export function main(argv: string[]): number {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

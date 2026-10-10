@@ -24,6 +24,7 @@ import type {
   Project,
   ToolUseBlock,
 } from '../protocol/types';
+import { isRemoteMinionChat } from '../protocol/types';
 import { generateUniqueId } from '../protocol/idGenerator';
 import type { UnifiedStorage } from '../services/storage/unifiedStorage';
 import { buildMinionTools, findPriorAssistantClaudeAgentUuid } from '../services/tools/minionTool';
@@ -155,6 +156,16 @@ export async function cloneMinionChatToChat(
   const messages = await storage.getMinionMessages(minionChatId);
   const notes: string[] = [];
   const agentConfig = deriveChatAgentConfigFromMinion(minionChat, project);
+
+  // `remote` and `remoteSessionId` stay behind with the other minion-only
+  // fields (the chat row below is built field by field), but the transcript
+  // still reads as if the replies were the agent's own.
+  if (isRemoteMinionChat(minionChat)) {
+    notes.push(
+      'This was a remote minion: its replies were written by a human operator. The clone ' +
+        'continues with an LLM, which will read those replies as its own.'
+    );
+  }
 
   // Lineage, not just the row: a minion whose session was dropped after a
   // failed turn still has stamped messages, and those stamps are what a later

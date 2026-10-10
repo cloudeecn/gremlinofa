@@ -299,3 +299,49 @@ describe('useMinionChat', () => {
     });
   });
 });
+
+describe('useMinionChat remote (human) minion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ['the sticky remote flag', { remote: true }],
+    ['only a session id (created before the flag)', { remoteSessionId: 'tg_1' }],
+  ])('treats a chat with %s as remote', async (_label, fields) => {
+    vi.mocked(gremlinClient.getMinionChat).mockResolvedValue({ ...mockMinionChat, ...fields });
+    vi.mocked(gremlinClient.getMinionMessages).mockResolvedValue(mockMessages);
+
+    const { result } = renderHook(() => useMinionChat('mc_1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.isRemote).toBe(true);
+  });
+
+  it('is not remote for an ordinary minion', async () => {
+    vi.mocked(gremlinClient.getMinionChat).mockResolvedValue(mockMinionChat);
+    vi.mocked(gremlinClient.getMinionMessages).mockResolvedValue(mockMessages);
+
+    const { result } = renderHook(() => useMinionChat('mc_1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.isRemote).toBe(false);
+  });
+
+  it('refuses delete and rollback so the transcript stays in step with the backend', async () => {
+    vi.mocked(gremlinClient.getMinionChat).mockResolvedValue({ ...mockMinionChat, remote: true });
+    vi.mocked(gremlinClient.getMinionMessages).mockResolvedValue(mockMessages);
+
+    const { result } = renderHook(() => useMinionChat('mc_1'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await result.current.deleteMessage('msg_1');
+      await result.current.rollbackToMessage('msg_1');
+    });
+
+    expect(result.current.messages).toEqual(mockMessages);
+    expect(gremlinClient.deleteSingleMessage).not.toHaveBeenCalled();
+    expect(gremlinClient.deleteMessageAndAfter).not.toHaveBeenCalled();
+  });
+});

@@ -1,306 +1,367 @@
-import { Router } from 'express';
+import express, { Router, type ErrorRequestHandler, type Request, type Response } from 'express';
 import crypto from 'crypto';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { config } from './config.js';
 import * as db from './db.js';
-import { createWebToken, WEB_COOKIE_NAME } from './middleware.js';
-import { notifyResponse } from './pollManager.js';
+import { classifyError, HttpError, type ClassifiedError } from './httpErrors.js';
+import type { PollRegistry } from './pollManager.js';
+import type { Session, SessionListEntry } from './types.js';
+import {
+  clearSessionCookie,
+  createLoginLimiter,
+  createPasswordCheck,
+  createRequireWebAuth,
+  deriveCookieKey,
+  issueSessionCookie,
+  loginClientKey,
+  parseReturnTo,
+  rejectCrossOriginWrites,
+  webSecurityHeaders,
+} from './webAuth.js';
+import {
+  chatPage,
+  chatState,
+  chatStatusHtml,
+  errorPage,
+  loginPage,
+  messagesFragment,
+  sessionListFragment,
+  sessionListPage,
+  undeliveredAnswerHtml,
+  webRootFor,
+  type Banner,
+} from './webViews.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/** Long pasted answers are fine; this only stops absurd bodies. */
+const ANSWER_BODY_LIMIT = '1mb';
+const LOGIN_BODY_LIMIT = '16kb';
 
-export const webRouter = Router();
-
-// GET /login - Login page
-webRouter.get('/login', (_req, res) => {
-  res.send(loginPageHtml());
-});
-
-// POST /login - Validate password
-webRouter.post('/login', (req, res) => {
-  const { password } = req.body || {};
-
-  if (!config.webPassword || password === config.webPassword) {
-    const token = createWebToken();
-    res.setHeader(
-      'Set-Cookie',
-      `${WEB_COOKIE_NAME}=${token}; Path=/web; HttpOnly; SameSite=Strict; Max-Age=86400`
-    );
-    res.redirect('/web/');
-    return;
-  }
-
-  res.send(loginPageHtml('Wrong password'));
-});
-
-// GET / - Session list page
-webRouter.get('/', (_req, res) => {
-  const sessions = db.listSessions();
-  const sessionsWithPending = sessions.map(s => ({
-    ...s,
-    hasPending: !!db.getPendingRequestForSession(s.id),
-  }));
-  res.send(sessionListHtml(sessionsWithPending));
-});
-
-// GET /sessions/:id - Chat view
-webRouter.get('/sessions/:id', (req, res) => {
-  const session = db.getSession(req.params.id);
-  if (!session) {
-    res.status(404).send('Session not found');
-    return;
-  }
-
-  const messages = db.getMessages(session.id);
-  const pendingRequest = db.getPendingRequestForSession(session.id);
-  res.send(sessionChatHtml(session, messages, pendingRequest));
-});
-
-// POST /sessions/:id/respond - Submit human response
-webRouter.post('/sessions/:id/respond', (req, res) => {
-  const session = db.getSession(req.params.id);
-  if (!session) {
-    res.status(404).json({ error: 'Session not found' });
-    return;
-  }
-
-  const pendingRequest = db.getPendingRequestForSession(session.id);
-  if (!pendingRequest) {
-    res.status(409).json({ error: 'No pending request' });
-    return;
-  }
-
-  const { content } = req.body || {};
-  if (!content || typeof content !== 'string') {
-    res.status(400).json({ error: 'content is required' });
-    return;
-  }
-
-  const messageId = crypto.randomBytes(16).toString('hex');
-  db.addMessage(messageId, session.id, 'human', content, null);
-  db.answerRequest(pendingRequest.id, messageId);
-
-  // Wake up any long-polling API caller
-  notifyResponse(pendingRequest.id, content);
-
-  res.redirect(`/web/sessions/${session.id}`);
-});
-
-// ── JSON APIs for client-side polling ──
-
-// GET /api/sessions - List sessions
-webRouter.get('/api/sessions', (_req, res) => {
-  const sessions = db.listSessions();
-  const withPending = sessions.map(s => ({
-    ...s,
-    hasPending: !!db.getPendingRequestForSession(s.id),
-  }));
-  res.json(withPending);
-});
-
-// GET /api/sessions/:id/messages - Get messages
-webRouter.get('/api/sessions/:id/messages', (req, res) => {
-  const session = db.getSession(req.params.id);
-  if (!session) {
-    res.status(404).json({ error: 'Session not found' });
-    return;
-  }
-  res.json(db.getMessages(session.id));
-});
-
-// GET /api/sessions/:id/pending - Check pending status
-webRouter.get('/api/sessions/:id/pending', (req, res) => {
-  const session = db.getSession(req.params.id);
-  if (!session) {
-    res.status(404).json({ error: 'Session not found' });
-    return;
-  }
-  const pending = db.getPendingRequestForSession(session.id);
-  res.json({ hasPending: !!pending, requestId: pending?.id ?? null });
-});
-
-// ── HTML Templates ──
-
-function loginPageHtml(errorMsg?: string): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Touch Grass - Login</title>
-  <link rel="stylesheet" href="/web/static/style.css">
-</head>
-<body>
-  <div class="login-container">
-    <h1>Touch Grass</h1>
-    <p class="subtitle">Remote Human Minion Interface</p>
-    ${errorMsg ? `<p class="error">${escapeHtml(errorMsg)}</p>` : ''}
-    <form method="POST" action="/web/login">
-      <input type="password" name="password" placeholder="Password" autofocus required>
-      <button type="submit">Enter</button>
-    </form>
-  </div>
-</body>
-</html>`;
+export interface WebRouterOptions {
+  webPassword: string;
+  /** Directory served at /web/static. */
+  staticDir: string;
+  /** Answers and deletes wake the API's long-polls through it. */
+  polls: PollRegistry;
 }
 
-interface SessionWithPending {
-  id: string;
-  displayName: string | null;
-  createdAt: string;
-  lastActivityAt: string;
-  hasPending: boolean;
+function genId(): string {
+  return crypto.randomBytes(16).toString('hex');
 }
 
-function sessionListHtml(sessions: SessionWithPending[]): string {
-  const sessionRows = sessions
-    .map(
-      s => `
-    <a href="/web/sessions/${escapeHtml(s.id)}" class="session-card ${s.hasPending ? 'pending' : ''}">
-      <div class="session-header">
-        <span class="session-name">${escapeHtml(s.displayName || s.id.slice(0, 12))}</span>
-        ${s.hasPending ? '<span class="badge">needs response</span>' : ''}
-      </div>
-      <div class="session-meta">
-        Last activity: ${new Date(s.lastActivityAt).toLocaleString()}
-      </div>
-    </a>`
-    )
-    .join('\n');
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Touch Grass - Sessions</title>
-  <link rel="stylesheet" href="/web/static/style.css">
-</head>
-<body>
-  <div class="container">
-    <h1>Touch Grass</h1>
-    <p class="subtitle">Active Sessions</p>
-    <div class="session-list" id="session-list">
-      ${sessions.length > 0 ? sessionRows : '<p class="empty">No sessions yet. Waiting for an AI to call...</p>'}
-    </div>
-  </div>
-  <script>
-    setInterval(async () => {
-      try {
-        const res = await fetch('/web/api/sessions');
-        if (res.ok) location.reload();
-      } catch {}
-    }, 5000);
-  </script>
-</body>
-</html>`;
+function formField(req: Request, name: string): string | undefined {
+  const value: unknown = (req.body as Record<string, unknown> | undefined)?.[name];
+  return typeof value === 'string' ? value : undefined;
 }
 
-import type { Session, SessionMessage, PendingRequest } from './types.js';
+function sendHtml(res: Response, status: number, html: string): void {
+  res.status(status).type('html').send(html);
+}
 
-function sessionChatHtml(
+function sessionGonePage(base: string): string {
+  return errorPage({
+    base,
+    title: 'Session not found',
+    message: 'This session no longer exists. It may have been deleted.',
+  });
+}
+
+/**
+ * Ids of the questions waiting for the human, leaving out one session's. app.js alerts when an
+ * id it hasn't seen shows up, which a count would miss when one question replaces another.
+ */
+function pendingRequestIds(sessions: SessionListEntry[], exceptSessionId?: string): string[] {
+  return sessions.flatMap(session =>
+    session.pending && session.id !== exceptSessionId ? [session.pending.requestId] : []
+  );
+}
+
+/** The session list; its fragment links are relative to the list page at the web root. */
+function sessionListView() {
+  const sessions = db.listSessionsWithPending();
+  const listHtml = sessionListFragment(sessions, './');
+  return {
+    listHtml,
+    pendingIds: pendingRequestIds(sessions),
+    signature: crypto.createHash('sha256').update(listHtml).digest('hex').slice(0, 16),
+  };
+}
+
+/** Questions waiting in every session except the one on screen. */
+function othersPending(sessionId: string): string[] {
+  return pendingRequestIds(db.listSessionsWithPending(), sessionId);
+}
+
+function renderChat(
+  res: Response,
+  status: number,
+  base: string,
   session: Session,
-  messages: SessionMessage[],
-  pendingRequest: PendingRequest | undefined
-): string {
-  const messageBlocks = messages
-    .map(m => {
-      let filesHtml = '';
-      if (m.files) {
-        try {
-          const files = JSON.parse(m.files) as Array<{ path: string; content: string }>;
-          filesHtml = files
-            .map(
-              f => `
-            <details class="file-block">
-              <summary>${escapeHtml(f.path)}</summary>
-              <pre><code>${escapeHtml(f.content)}</code></pre>
-            </details>`
-            )
-            .join('');
-        } catch {
-          // ignore malformed files JSON
-        }
-      }
-
-      return `
-      <div class="message ${m.role}">
-        <div class="message-role">${m.role === 'ai' ? 'AI' : 'Human'}</div>
-        <div class="message-content">${escapeHtml(m.content)}</div>
-        ${filesHtml}
-        <div class="message-time">${new Date(m.createdAt).toLocaleString()}</div>
-      </div>`;
+  extras: { banner?: Banner; draft?: string } = {}
+): void {
+  sendHtml(
+    res,
+    status,
+    chatPage({
+      base,
+      session,
+      messages: db.getMessages(session.id),
+      state: chatState(
+        db.getLatestRequestForSession(session.id),
+        db.getLatestMessageForSession(session.id)
+      ),
+      othersPending: othersPending(session.id),
+      ...extras,
     })
-    .join('\n');
+  );
+}
 
-  const inputDisabled = !pendingRequest;
+function parseAfter(raw: unknown): number {
+  if (raw === undefined) return 0;
+  if (typeof raw !== 'string' || !/^\d{1,9}$/.test(raw)) {
+    throw new HttpError(400, 'after must be a non-negative integer');
+  }
+  return Number(raw);
+}
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Touch Grass - ${escapeHtml(session.displayName || session.id.slice(0, 12))}</title>
-  <link rel="stylesheet" href="/web/static/style.css">
-</head>
-<body>
-  <div class="container chat-container">
-    <div class="chat-header">
-      <a href="/web/" class="back-link">&larr; Sessions</a>
-      <h2>${escapeHtml(session.displayName || 'Session ' + session.id.slice(0, 12))}</h2>
-    </div>
-    <div class="messages" id="messages">
-      ${messageBlocks}
-    </div>
-    <form method="POST" action="/web/sessions/${escapeHtml(session.id)}/respond" class="respond-form" id="respond-form">
-      <textarea name="content" placeholder="${inputDisabled ? 'Waiting for AI to send a message...' : 'Type your response...'}" ${inputDisabled ? 'disabled' : ''} id="response-input" rows="3"></textarea>
-      <button type="submit" ${inputDisabled ? 'disabled' : ''} id="send-btn">Send</button>
-    </form>
-  </div>
-  <script>
-    const sessionId = '${session.id}';
-    const messagesEl = document.getElementById('messages');
-    const input = document.getElementById('response-input');
-    const sendBtn = document.getElementById('send-btn');
-    let lastMessageCount = ${messages.length};
+/** classifyError, except body-parser's 413 gets a message that fits the web form limit. */
+function classifyWebError(err: unknown): ClassifiedError {
+  if ((err as { type?: unknown } | null)?.type === 'entity.too.large') {
+    return { status: 413, message: 'That form is too large. Answers are limited to 1 MB of text.' };
+  }
+  return classifyError(err);
+}
 
-    // Auto-scroll to bottom
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+/** HTML for pages, JSON under /api/. */
+const webErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  const { status, message } = classifyWebError(err);
+  if (status >= 500) {
+    console.error(`Web ${req.method} ${req.originalUrl} failed:`, err);
+  }
+  if (req.path.startsWith('/api/')) {
+    res.status(status).json({ error: message });
+    return;
+  }
+  sendHtml(
+    res,
+    status,
+    errorPage({
+      base: webRootFor(req.path),
+      title: status === 404 ? 'Not found' : 'Error',
+      message,
+    })
+  );
+};
 
-    // Poll for new messages and pending status
-    setInterval(async () => {
-      try {
-        const [msgsRes, pendingRes] = await Promise.all([
-          fetch('/web/api/sessions/' + sessionId + '/messages'),
-          fetch('/web/api/sessions/' + sessionId + '/pending')
-        ]);
-        if (!msgsRes.ok || !pendingRes.ok) return;
+/**
+ * The human operator UI, mounted at /web. Order matters: headers apply to everything,
+ * static assets and the login/logout routes are public, everything after requireAuth is not.
+ * Login parses its own small form before any cookie check; answer and delete form bodies are
+ * only parsed after requireAuth.
+ */
+export function createWebRouter({ webPassword, staticDir, polls }: WebRouterOptions): Router {
+  const router = Router();
+  const loginLimiter = createLoginLimiter();
+  const cookieKey = deriveCookieKey(webPassword);
+  const passwordMatches = createPasswordCheck(webPassword);
 
-        const msgs = await msgsRes.json();
-        const { hasPending } = await pendingRes.json();
+  router.use(webSecurityHeaders);
 
-        // Reload if message count changed
-        if (msgs.length !== lastMessageCount) {
-          location.reload();
+  // '/web' and '/web/' both land here; only the slash-less one needs bouncing, since every
+  // relative URL on the page assumes the browser is inside the web/ directory.
+  router.use((req, res, next) => {
+    const pathname = req.originalUrl.split('?')[0];
+    if (req.path === '/' && !pathname.endsWith('/')) {
+      res.redirect(302, 'web/');
+      return;
+    }
+    next();
+  });
+
+  router.use('/static', express.static(staticDir, { index: false, fallthrough: false }));
+
+  router.use((_req, res, next) => {
+    // Pages hold the conversation; keep them out of shared caches and the disk cache.
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+  router.use(rejectCrossOriginWrites);
+
+  // ── Public: login and logout ──
+
+  router.get('/login', (req, res) => {
+    sendHtml(
+      res,
+      200,
+      loginPage({ base: webRootFor(req.path), returnTo: parseReturnTo(req.query.next) })
+    );
+  });
+
+  router.post(
+    '/login',
+    express.urlencoded({ extended: false, limit: LOGIN_BODY_LIMIT }),
+    (req, res) => {
+      const base = webRootFor(req.path);
+      const returnTo = parseReturnTo(formField(req, 'next'));
+      const clientKey = loginClientKey(req.ip);
+
+      const sendLocked = (seconds: number) => {
+        res.setHeader('Retry-After', String(seconds));
+        sendHtml(
+          res,
+          429,
+          loginPage({
+            base,
+            returnTo,
+            banner: {
+              kind: 'error',
+              html: `Too many wrong passwords. Wait ${seconds} second${seconds === 1 ? '' : 's'} before trying again.`,
+            },
+          })
+        );
+      };
+
+      const lockedFor = loginLimiter.lockedFor(clientKey);
+      if (lockedFor > 0) {
+        sendLocked(lockedFor);
+        return;
+      }
+      if (!passwordMatches(formField(req, 'password'))) {
+        const lockSeconds = loginLimiter.recordFailure(clientKey);
+        if (lockSeconds > 0) {
+          sendLocked(lockSeconds);
           return;
         }
+        sendHtml(
+          res,
+          401,
+          loginPage({ base, returnTo, banner: { kind: 'error', html: 'Wrong password.' } })
+        );
+        return;
+      }
 
-        // Update input state based on pending status
-        input.disabled = !hasPending;
-        sendBtn.disabled = !hasPending;
-        input.placeholder = hasPending ? 'Type your response...' : 'Waiting for AI to send a message...';
-      } catch {}
-    }, 3000);
-  </script>
-</body>
-</html>`;
-}
+      loginLimiter.recordSuccess(clientKey);
+      issueSessionCookie(req, res, cookieKey);
+      res.redirect(303, `${base}${returnTo}`);
+    }
+  );
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+  router.post('/logout', (req, res) => {
+    clearSessionCookie(req, res);
+    res.redirect(303, `${webRootFor(req.path)}login`);
+  });
+
+  // ── Everything below needs the cookie ──
+
+  router.use(createRequireWebAuth(cookieKey));
+  router.use(express.urlencoded({ extended: false, limit: ANSWER_BODY_LIMIT }));
+
+  router.get('/', (req, res) => {
+    sendHtml(res, 200, sessionListPage({ base: webRootFor(req.path), ...sessionListView() }));
+  });
+
+  router.get('/sessions/:id', (req, res) => {
+    const base = webRootFor(req.path);
+    const session = db.getSession(req.params.id);
+    if (!session) {
+      sendHtml(res, 404, sessionGonePage(base));
+      return;
+    }
+    renderChat(res, 200, base, session);
+  });
+
+  router.post('/sessions/:id/respond', (req, res) => {
+    const base = webRootFor(req.path);
+    const session = db.getSession(req.params.id);
+    if (!session) {
+      sendHtml(res, 404, sessionGonePage(base));
+      return;
+    }
+
+    // Browsers submit textarea line breaks as CRLF; the AI should see plain \n.
+    const draft = (formField(req, 'content') ?? '').replace(/\r\n?/g, '\n');
+    const requestId = formField(req, 'requestId') ?? '';
+    if (draft.trim() === '') {
+      renderChat(res, 400, base, session, {
+        banner: { kind: 'error', html: 'Your answer is empty. Type something before sending.' },
+        draft,
+      });
+      return;
+    }
+
+    // The answer goes to the question the human was looking at, never to whatever happens to
+    // be pending now: answerRequest only takes it while that exact request is still pending.
+    const result = db.answerRequest({
+      requestId,
+      sessionId: session.id,
+      messageId: genId(),
+      content: draft,
+    });
+    if (!result.answered) {
+      renderChat(res, 409, base, session, {
+        banner: { kind: 'warn', html: undeliveredAnswerHtml(requestId, result.request) },
+        draft,
+      });
+      return;
+    }
+
+    polls.notifyAnswered(requestId, draft);
+    // `sent` tells app.js the answer landed, so it can drop the draft it kept for this send.
+    res.redirect(303, `${base}sessions/${session.id}?sent=${encodeURIComponent(requestId)}`);
+  });
+
+  router.post('/sessions/:id/delete', (req, res) => {
+    for (const requestId of db.deleteSession(req.params.id) ?? []) {
+      polls.notifyGone(requestId);
+    }
+    // Already gone (double click, another tab) lands on the list too.
+    res.redirect(303, webRootFor(req.path));
+  });
+
+  // ── JSON for app.js polling ──
+
+  router.get('/api/sessions', (_req, res) => {
+    const { listHtml, pendingIds, signature } = sessionListView();
+    res.json({ html: listHtml, pendingIds, signature });
+  });
+
+  router.get('/api/sessions/:id/updates', (req, res) => {
+    const session = db.getSession(req.params.id);
+    if (!session) {
+      throw new HttpError(404, 'Session not found');
+    }
+    const after = parseAfter(req.query.after);
+    const messages = db.getMessagesAfter(session.id, after);
+    const state = chatState(
+      db.getLatestRequestForSession(session.id),
+      db.getLatestMessageForSession(session.id)
+    );
+    res.json({
+      html: messagesFragment(messages),
+      count: after + messages.length,
+      pending: state.pending,
+      othersPending: othersPending(session.id),
+      statusHtml: chatStatusHtml(state),
+    });
+  });
+
+  router.use((req, res) => {
+    if (req.path.startsWith('/api/')) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    sendHtml(
+      res,
+      404,
+      errorPage({
+        base: webRootFor(req.path),
+        title: 'Not found',
+        message: 'Nothing lives at this address.',
+      })
+    );
+  });
+  router.use(webErrorHandler);
+
+  return router;
 }

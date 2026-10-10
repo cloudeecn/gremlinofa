@@ -26,6 +26,7 @@ import { useAlert } from '../../hooks/useAlert';
 import { clearDraft } from '../../hooks/useDraftPersistence';
 import Spinner from '../ui/Spinner';
 import NumberInput from '../ui/NumberInput';
+import SecretInput from '../ui/SecretInput';
 import ModelSelector from './ModelSelector';
 import SystemPromptModal from './SystemPromptModal';
 import LongtextOptionEditor from './LongtextOptionEditor';
@@ -44,6 +45,9 @@ interface ProjectSettingsViewProps {
   projectId: string;
   onMenuPress?: () => void;
 }
+
+const TOOL_TEXT_INPUT_CLASS =
+  'w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none';
 
 export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectSettingsViewProps) {
   const navigate = useNavigate();
@@ -1132,15 +1136,16 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                               );
                             }
 
-                            // Text option - inline text input
+                            // Text option - inline text input, masked when it holds a credential
                             if (isTextOption(opt)) {
                               const value = getToolOptionValue(tool.name, opt.id, opt.default);
                               const textValue = typeof value === 'string' ? value : '';
+                              const inputId = `tool-${tool.name}-${opt.id}`;
                               return (
                                 <div key={opt.id}>
                                   <div className="mb-1">
                                     <label
-                                      htmlFor={`tool-${tool.name}-${opt.id}`}
+                                      htmlFor={inputId}
                                       className="text-sm font-medium text-gray-900"
                                     >
                                       {opt.label}
@@ -1149,16 +1154,27 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                                       <p className="text-xs text-gray-500">{opt.subtitle}</p>
                                     )}
                                   </div>
-                                  <input
-                                    id={`tool-${tool.name}-${opt.id}`}
-                                    type="text"
-                                    value={textValue}
-                                    onChange={e =>
-                                      setToolOptionValue(tool.name, opt.id, e.target.value)
-                                    }
-                                    placeholder={opt.placeholder}
-                                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                                  />
+                                  {opt.secret ? (
+                                    <SecretInput
+                                      id={inputId}
+                                      label={opt.label}
+                                      value={textValue}
+                                      onChange={next => setToolOptionValue(tool.name, opt.id, next)}
+                                      placeholder={opt.placeholder}
+                                      className={TOOL_TEXT_INPUT_CLASS}
+                                    />
+                                  ) : (
+                                    <input
+                                      id={inputId}
+                                      type="text"
+                                      value={textValue}
+                                      onChange={e =>
+                                        setToolOptionValue(tool.name, opt.id, e.target.value)
+                                      }
+                                      placeholder={opt.placeholder}
+                                      className={TOOL_TEXT_INPUT_CLASS}
+                                    />
+                                  )}
                                 </div>
                               );
                             }
@@ -1478,11 +1494,17 @@ export default function ProjectSettingsView({ projectId, onMenuPress }: ProjectS
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-700">Password</label>
-                  <input
-                    type="password"
+                  <label
+                    htmlFor="remote-vfs-password"
+                    className="mb-1 block text-sm font-medium text-gray-700"
+                  >
+                    Password
+                  </label>
+                  <SecretInput
+                    id="remote-vfs-password"
+                    label="Remote VFS password"
                     value={form.remoteVfsPassword}
-                    onChange={e => patch({ remoteVfsPassword: e.target.value })}
+                    onChange={next => patch({ remoteVfsPassword: next })}
                     placeholder="Server password (empty = dev mode)"
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                   />

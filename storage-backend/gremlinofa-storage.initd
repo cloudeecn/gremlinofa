@@ -1,5 +1,10 @@
 #!/sbin/openrc-run
 # GremlinOFA Storage Backend - OpenRC init script for Alpine Linux
+#
+# The service loads its env file itself through dotenv, so it isn't sourced
+# here: sh and dotenv disagree on '#', '$' and quotes, and the same line could
+# come out as two different values. GREMLINOFA_ENVFILE still picks the file
+# (passed on as DOTENV_CONFIG_PATH); it must be readable by GREMLINOFA_USER.
 
 name="gremlinofa-storage"
 description="GremlinOFA Storage Backend - SQLite-based remote storage"
@@ -11,9 +16,11 @@ description="GremlinOFA Storage Backend - SQLite-based remote storage"
 : ${GREMLINOFA_ENVFILE:=${GREMLINOFA_DIR}/.env}
 
 command="/usr/bin/node"
-command_args="${GREMLINOFA_DIR}/dist/index.js"
+command_args="${GREMLINOFA_DIR}/index.js"
 command_user="${GREMLINOFA_USER}:${GREMLINOFA_GROUP}"
 command_background=true
+# relative paths in .env (DB_PATH=./data.db) resolve against this
+directory="${GREMLINOFA_DIR}"
 
 pidfile="/run/${RC_SVCNAME}.pid"
 output_log="/var/log/${RC_SVCNAME}.log"
@@ -25,11 +32,15 @@ depend() {
 }
 
 start_pre() {
-    # Load environment file if it exists
-    if [ -f "${GREMLINOFA_ENVFILE}" ]; then
-        set -a
-        . "${GREMLINOFA_ENVFILE}"
-        set +a
+    export NODE_ENV=production
+    export DOTENV_CONFIG_PATH="${GREMLINOFA_ENVFILE}"
+
+    # The service exits on an env file it can't read too, but only into its log;
+    # checking here puts the reason in front of whoever ran rc-service.
+    if [ -f "${GREMLINOFA_ENVFILE}" ] \
+        && ! su -s /bin/sh -c 'test -r "$0"' "${GREMLINOFA_USER}" "${GREMLINOFA_ENVFILE}"; then
+        eerror "${GREMLINOFA_ENVFILE} is not readable by ${GREMLINOFA_USER}"
+        return 1
     fi
 
     # Create log files if they don't exist

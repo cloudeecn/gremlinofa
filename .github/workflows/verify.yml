@@ -16,6 +16,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      # touch-grass-backend (better-sqlite3 12) and vitest 4 need Node 20+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Install dependencies
         run: npm ci
       - name: Install remote storage dependencies
@@ -24,6 +29,45 @@ jobs:
         run: cd storage-backend && npm run verify
       - name: Run tests storage-backend
         run: cd storage-backend && npm run test:silent
+      - name: Install cors-proxy dependencies
+        run: cd cors-proxy && npm ci
+      - name: Run verification cors-proxy
+        run: cd cors-proxy && npm run verify
+      - name: Run tests cors-proxy
+        run: cd cors-proxy && npm run test:silent
+      - name: Install touch-grass-backend dependencies
+        run: cd touch-grass-backend && npm ci
+      - name: Run verification touch-grass-backend
+        run: cd touch-grass-backend && npm run verify
+      - name: Run tests touch-grass-backend
+        run: cd touch-grass-backend && npm run test:silent
+      - name: Build touch-grass-backend
+        run: cd touch-grass-backend && npm run build
+      # Installs dist/ the way a deploy does (flat copy + its own package.json),
+      # so a missing runtime dep or an asset the build forgot fails here
+      - name: Smoke test touch-grass-backend build
+        env:
+          DB_PATH: ':memory:'
+          API_PASSWORD: ci-smoke-api-password-not-a-secret
+          WEB_PASSWORD: ci-smoke-web-password-not-a-secret
+          PORT: '3004'
+        run: |
+          install_dir="$RUNNER_TEMP/gremlinofa-touch-grass"
+          cp -r touch-grass-backend/dist/. "$install_dir"
+          cd "$install_dir"
+          npm install --omit=dev --no-audit --no-fund
+          node index.js > smoke.log 2>&1 &
+          server_pid=$!
+          for _ in $(seq 1 30); do
+            curl -fs -o /dev/null "http://127.0.0.1:$PORT/health" && break
+            sleep 1
+          done
+          smoke_status=0
+          curl -fsS -w '\n' "http://127.0.0.1:$PORT/health" || smoke_status=1
+          curl -fsS -o /dev/null "http://127.0.0.1:$PORT/web/static/style.css" || smoke_status=1
+          kill "$server_pid" 2>/dev/null || true
+          cat smoke.log
+          exit $smoke_status
       - name: Run verification
         run: npm run verify
       - name: Run tests

@@ -23,6 +23,7 @@ import type {
   ToolStreamEvent,
   ToolExecuteReturn,
   RenderingBlockGroup,
+  ToolResultRenderBlock,
 } from '../../../protocol/types';
 
 // Hoisted mock holders so the singleton-replacing mocks below don't have
@@ -1765,10 +1766,16 @@ describe('Minion Integration', () => {
       expect(resultBlock.content).toContain('=== /z.ts ===');
       expect(resultBlock.content).toContain('const z = 3;');
       expect(resultBlock.content.endsWith('=== end of files ===')).toBe(true);
-      const renderedFiles = (toolResultMsg.content.renderingContent as RenderingBlockGroup[])
+      const renderedBlocks = (toolResultMsg.content.renderingContent as RenderingBlockGroup[])
         .flatMap(g => g.blocks)
-        .filter(b => b.type === 'injected_file');
-      expect(renderedFiles).toHaveLength(1);
+        .map(b => b.type);
+      expect(renderedBlocks).toEqual(['injected_file', 'tool_result']);
+      // The bar shows the file; the result block doesn't repeat it
+      const renderedResult = (toolResultMsg.content.renderingContent as RenderingBlockGroup[])
+        .flatMap(g => g.blocks)
+        .find(b => b.type === 'tool_result') as ToolResultRenderBlock;
+      expect(renderedResult.content).toBe('');
+      expect(renderedResult.renderedContent).toBe('');
     });
   });
 

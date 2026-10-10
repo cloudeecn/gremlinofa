@@ -29,4 +29,13 @@ export default defineConfig([
       ],
     },
   },
+  {
+    files: ['src/static/**/*.js'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'script',
+      globals: globals.browser,
+    },
+  },
 ]);

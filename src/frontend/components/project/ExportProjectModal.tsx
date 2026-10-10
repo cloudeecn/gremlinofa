@@ -131,6 +131,7 @@ function ExportProjectModalContent({
                 Export &ldquo;{projectName}&rdquo; as a portable <code>.gremlin.json</code> file.
               </p>
               <p>Includes project settings and all VFS files. Chats are not exported.</p>
+              <p>Passwords are left out. Re-enter them in project settings after importing.</p>
             </div>
 
             {state === 'running' && (

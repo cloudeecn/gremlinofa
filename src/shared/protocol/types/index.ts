@@ -891,6 +891,8 @@ export interface TextToolOption extends BaseToolOption {
   type: 'text';
   default: string;
   placeholder?: string;
+  /** Credential: rendered as a masked input and dropped from project bundle exports. */
+  secret?: boolean;
 }
 
 /** Select option (single choice from predefined values) */
@@ -1300,6 +1302,11 @@ export interface MinionChat {
   thinkingKeepTurns?: number;
   /** Override: prune thinking blocks client-side before the API call. */
   pruneThinkingBeforeApiCall?: boolean;
+  /**
+   * Human-operated minion (Touch Grass). Set at creation and never flipped:
+   * routing follows the chat, so a continuation that omits `remote` stays remote.
+   */
+  remote?: boolean;
   /** Remote session ID for touch-grass backend (human delegation) */
   remoteSessionId?: string;
   /** Claude Agent SDK session ID (UUID v4). Set on first claude-agent turn. */
@@ -1318,6 +1325,14 @@ export interface MinionChat {
    * signal instead of a byte-identical resend. Cleared on consumption/success.
    */
   pendingVerifyFeedback?: string;
+}
+
+/**
+ * Whether a minion chat belongs to a human. `remoteSessionId` covers chats
+ * created before the `remote` flag existed.
+ */
+export function isRemoteMinionChat(chat: Pick<MinionChat, 'remote' | 'remoteSessionId'>): boolean {
+  return chat.remote === true || Boolean(chat.remoteSessionId);
 }
 
 // Virtual Filesystem (VFS) types

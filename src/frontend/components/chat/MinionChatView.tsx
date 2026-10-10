@@ -14,6 +14,9 @@ import type { MessageAction } from './types';
 const NO_STREAMING_GROUPS: RenderingBlockGroup[] = [];
 /** Edit and Fork have no minion-chat implementation; only rollback is offered. */
 const MINION_ACTIONS: ReadonlySet<MessageAction> = new Set(['rollback']);
+/** Why a human (Touch Grass) minion's overlay has no rollback or delete. */
+const REMOTE_READ_ONLY_REASON =
+  "A human answers this minion on the Touch Grass backend. Rollback and delete are off: they'd only change this copy, and the two transcripts would no longer match.";
 
 interface MinionChatViewProps {
   minionChatId: string;
@@ -39,6 +42,7 @@ export default function MinionChatView({
     messages,
     isLoading,
     tokenUsage,
+    isRemote,
     deleteMessage,
     rollbackToMessage,
     cloneToChat,
@@ -185,7 +189,15 @@ export default function MinionChatView({
       </div>
 
       {/* Info Bar */}
-      <div className="flex items-center justify-end border-b border-gray-200 bg-white px-4 py-1">
+      <div className="flex items-center justify-end gap-2 border-b border-gray-200 bg-white px-4 py-1">
+        {isRemote && (
+          <span
+            className="mr-auto truncate text-[10px] text-gray-600"
+            title={REMOTE_READ_ONLY_REASON}
+          >
+            👤 Human minion · read-only
+          </span>
+        )}
         <div className="text-[10px] text-gray-600">
           {formatTokenGroup('↑', tokenUsage.input, [
             { prefix: 'C↑', value: tokenUsage.cacheCreation },
@@ -206,9 +218,9 @@ export default function MinionChatView({
       {/* Message List */}
       <MessageList
         messages={messages}
-        onAction={handleAction}
+        onAction={isRemote ? undefined : handleAction}
         actions={MINION_ACTIONS}
-        onDeleteMessage={isClaudeAgent ? undefined : handleDeleteMessage}
+        onDeleteMessage={isClaudeAgent || isRemote ? undefined : handleDeleteMessage}
         isLoading={false}
         snapshotLoading={isLoading}
         streamingGroups={NO_STREAMING_GROUPS}

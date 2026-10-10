@@ -21,7 +21,13 @@ app.get('/health', (_req, res) => {
 // All other requests get proxied. No body parser — raw stream piped through.
 app.use(proxyHandler);
 
-const server = app.listen(config.port, () => {
+// Express 5 hands bind errors (EADDRINUSE, EACCES) to this callback instead of
+// throwing. Exit non-zero, or systemd's Restart=on-failure never fires.
+const server = app.listen(config.port, err => {
+  if (err) {
+    console.error(`CORS proxy failed to listen on port ${config.port}:`, err.message);
+    process.exit(1);
+  }
   const corsDisplay = config.corsOrigins
     ? config.corsOrigins === '*'
       ? 'all origins (*)'

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { gremlinClient } from '../client';
 import type { MinionChat, Message, TokenUsage } from '../../shared/protocol/types';
+import { isRemoteMinionChat } from '../../shared/protocol/types';
 
 /** How often an open minion chat refetches while the parent chat's loop runs. */
 export const LIVE_REFRESH_MS = 2000;
@@ -17,6 +18,13 @@ export interface UseMinionChatResult {
   messages: Message<unknown>[];
   isLoading: boolean;
   tokenUsage: TokenUsage;
+  /**
+   * Human-operated (Touch Grass) minion. Its transcript is read-only here:
+   * the human's copy on the backend can't be edited, so a local delete or
+   * rollback would split the two. `deleteMessage` / `rollbackToMessage`
+   * refuse while this is true.
+   */
+  isRemote: boolean;
   deleteMessage: (messageId: string) => Promise<void>;
   rollbackToMessage: (messageId: string) => Promise<void>;
   /** Promote this transcript into a regular chat; resolves to the new chat id. */
@@ -123,17 +131,28 @@ export function useMinionChat(
     };
   }, [minionChat]);
 
+  const isRemote = minionChat !== null && isRemoteMinionChat(minionChat);
+
   const deleteMessage = useCallback(
-    (messageId: string) =>
-      trackDelete(async () => {
+    async (messageId: string) => {
+      if (isRemote) {
+        console.debug('[useMinionChat] Refusing delete on remote minion chat:', minionChatId);
+        return;
+      }
+      await trackDelete(async () => {
         setMessages(prev => prev.filter(m => m.id !== messageId));
         await gremlinClient.deleteSingleMessage(messageId);
-      }),
-    [trackDelete]
+      });
+    },
+    [isRemote, minionChatId, trackDelete]
   );
 
   const rollbackToMessage = useCallback(
     async (messageId: string) => {
+      if (isRemote) {
+        console.debug('[useMinionChat] Refusing rollback on remote minion chat:', minionChatId);
+        return;
+      }
       const messageIndex = messages.findIndex(m => m.id === messageId);
       if (messageIndex === -1 || messageIndex === messages.length - 1) return;
       const nextMessageId = messages[messageIndex + 1].id;
@@ -142,7 +161,7 @@ export function useMinionChat(
         await gremlinClient.deleteMessageAndAfter(minionChatId, nextMessageId);
       });
     },
-    [messages, minionChatId, trackDelete]
+    [isRemote, messages, minionChatId, trackDelete]
   );
 
   const cloneToChat = useCallback(
@@ -162,6 +181,7 @@ export function useMinionChat(
     messages,
     isLoading,
     tokenUsage,
+    isRemote,
     deleteMessage,
     rollbackToMessage,
     cloneToChat,

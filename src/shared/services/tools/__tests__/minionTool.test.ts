@@ -5,7 +5,7 @@
  * Full integration tests would require mocking the entire agentic loop.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   minionTool,
   SAVEPOINT_START,
@@ -25,6 +25,10 @@ import {
   resolveRetryStash,
   stripVerifyFeedbackNote,
   hasInjectSpecs,
+  formatMinionResult,
+  isRemoteCall,
+  readRemoteFlag,
+  resolveRemoteTimeoutMs,
 } from '../minionTool';
 import { LoopRegistry } from '../../../engine/LoopRegistry';
 import type {
@@ -35,9 +39,24 @@ import type {
   ToolOptions,
   Message,
   MinionChat,
+  ToolContext,
+  ToolStreamEvent,
 } from '../../../protocol/types';
+import type {
+  RenderingBlockGroup,
+  ToolInfoRenderBlock,
+  ToolResultRenderBlock,
+} from '../../../protocol/types/content';
 import type { VfsAdapter } from '../../vfs/vfsAdapter';
-import type { UnifiedStorage } from '../../storage/unifiedStorage';
+import { UnifiedStorage } from '../../storage/unifiedStorage';
+import type { EncryptionCore } from '../../encryption/encryptionCore';
+import {
+  createMockAdapter,
+  createMockEncryptionService,
+  createTestProject,
+} from '../../storage/__tests__/testUtils';
+import { generateChecksummedId } from '../../../protocol/idGenerator';
+import { formatFileWithLineNumbers } from '../../../engine/lib/formatFileContent';
 import { stubBackendDeps } from './testStubs';
 import { AgentPromptError } from '../../agentic/agentSystemPrompt';
 
@@ -964,23 +983,48 @@ describe('minionTool', () => {
     it('parses output without hasCoT tag', () => {
       const output = '<minionChatId>minion_abc</minionChatId>\nSome result';
       const parsed = parseSimplifiedOutput(output);
-      expect(parsed).toEqual({ minionChatId: 'minion_abc', hasCoT: false, body: 'Some result' });
+      expect(parsed).toEqual({
+        minionChatId: 'minion_abc',
+        hasCoT: false,
+        remote: false,
+        body: 'Some result',
+      });
     });
 
     it('parses output with hasCoT tag', () => {
       const output = '<minionChatId>minion_abc</minionChatId>\n<hasCoT />\nSome result';
       const parsed = parseSimplifiedOutput(output);
-      expect(parsed).toEqual({ minionChatId: 'minion_abc', hasCoT: true, body: 'Some result' });
+      expect(parsed).toEqual({
+        minionChatId: 'minion_abc',
+        hasCoT: true,
+        remote: false,
+        body: 'Some result',
+      });
     });
 
     it('parses output with hasCoT but empty body', () => {
       const output = '<minionChatId>minion_abc</minionChatId>\n<hasCoT />\n';
       const parsed = parseSimplifiedOutput(output);
-      expect(parsed).toEqual({ minionChatId: 'minion_abc', hasCoT: true, body: '' });
+      expect(parsed).toEqual({ minionChatId: 'minion_abc', hasCoT: true, remote: false, body: '' });
     });
 
     it('returns undefined for non-matching output', () => {
       expect(parseSimplifiedOutput('plain text')).toBeUndefined();
+    });
+
+    it('parses the remote marker line', () => {
+      const output = '<minionChatId>minion_abc</minionChatId>\n<remote />\nShip it';
+      expect(parseSimplifiedOutput(output)).toEqual({
+        minionChatId: 'minion_abc',
+        hasCoT: false,
+        remote: true,
+        body: 'Ship it',
+      });
+    });
+
+    it('only reads markers from the header, not from the body', () => {
+      const output = '<minionChatId>minion_abc</minionChatId>\nThe tag <hasCoT /> is literal';
+      expect(parseSimplifiedOutput(output)?.hasCoT).toBe(false);
     });
   });
 
@@ -1842,5 +1886,974 @@ describe('minion chat busy guard', () => {
     expect(result.content).toContain('checksum mismatch');
     // Failed inside the guarded body → the finally released the hold.
     expect(registry.acquireMinionChat(garbledId)).toBe(true);
+  });
+});
+
+describe('remote (human) minions', () => {
+  const REMOTE_OPTIONS: ToolOptions = {
+    // Pasted with the /web/ suffix on purpose: the client trims it.
+    remoteEndpoint: 'http://tg.test:3004/web/',
+    remotePassword: 'pw',
+  };
+
+  function jsonResponse(status: number, body: unknown): Response {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      redirected: false,
+      url: '',
+      text: () => Promise.resolve(JSON.stringify(body)),
+    } as unknown as Response;
+  }
+
+  function holdFor(ms: number, signal: AbortSignal | null | undefined): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      });
+    });
+  }
+
+  /** In-memory Touch Grass backend speaking the v2.1 contract. */
+  class FakeTouchGrass {
+    readonly calls: Array<{ method: string; path: string; body: any; auth: string }> = [];
+    readonly sessions = new Set<string>();
+    /** AI messages per session, and the request each one opened. */
+    readonly messages = new Map<
+      string,
+      Array<{ role: 'ai'; content: string; files: unknown; awaitsReply: boolean }>
+    >();
+    readonly pending = new Map<string, { requestId: string; expiresAt: string | null }>();
+    /** Acts like a 2.0 backend: `awaitReply: false` still opens a request. */
+    ignoresAwaitReply = false;
+    /** What a poll returns; undefined = hold for waitMs, then report pending. */
+    answer: string | undefined = 'Ship it';
+    cancelState: unknown = { status: 'expired', reason: 'cancelled' };
+    createSessionStatus = 201;
+    /** Commit the next message, then drop the connection before the 201 arrives. */
+    dropNextMessageResponse = false;
+    /** Runs at that drop, e.g. to lose the session before the read-back. */
+    onDrop: ((sessionId: string) => void) | undefined;
+    /** When set, cancel answers only once this settles. */
+    cancelGate: Promise<void> | undefined;
+    /** Cancels that fail like a down backend before one gets through. */
+    cancelFailures = 0;
+    /** Polls answer 404, as after the human deleted the session. */
+    pollGone = false;
+    private seq = 0;
+
+    readonly fetch = vi.fn(async (url: string, init: RequestInit = {}) => {
+      const { pathname, searchParams } = new URL(url);
+      const method = init.method ?? 'GET';
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
+      const auth = (init.headers as Record<string, string>).Authorization;
+      this.calls.push({ method, path: pathname, body, auth });
+
+      if (method === 'POST' && pathname === '/api/sessions') {
+        if (this.createSessionStatus !== 201) {
+          return jsonResponse(this.createSessionStatus, { error: 'Unauthorized' });
+        }
+        const sessionId = `sess_${++this.seq}`;
+        this.sessions.add(sessionId);
+        return jsonResponse(201, { sessionId });
+      }
+      const messageMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/message$/);
+      if (messageMatch) {
+        const sessionId = messageMatch[1];
+        if (!this.sessions.has(sessionId)) {
+          return jsonResponse(404, { error: 'Session not found' });
+        }
+        const isNote = body.awaitReply === false && !this.ignoresAwaitReply;
+        const request = isNote
+          ? null
+          : {
+              requestId: `req_${++this.seq}`,
+              expiresAt:
+                body.timeoutMs === undefined
+                  ? null
+                  : new Date(Date.now() + body.timeoutMs).toISOString(),
+            };
+        const history = this.messages.get(sessionId) ?? [];
+        history.push({
+          role: 'ai',
+          content: body.content,
+          files: body.files ?? null,
+          awaitsReply: !isNote,
+        });
+        this.messages.set(sessionId, history);
+        if (request) this.pending.set(sessionId, request);
+        else this.pending.delete(sessionId);
+        if (this.dropNextMessageResponse) {
+          this.dropNextMessageResponse = false;
+          this.onDrop?.(sessionId);
+          throw new TypeError('fetch failed');
+        }
+        return jsonResponse(201, {
+          requestId: request?.requestId ?? null,
+          expiresAt: request?.expiresAt ?? null,
+          messageId: 'msg',
+        });
+      }
+      const sessionMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
+      if (method === 'GET' && sessionMatch && this.sessions.has(sessionMatch[1])) {
+        return jsonResponse(200, {
+          session: { id: sessionMatch[1] },
+          messages: this.messages.get(sessionMatch[1]) ?? [],
+          pendingRequest: this.pending.get(sessionMatch[1]) ?? null,
+        });
+      }
+      if (pathname.endsWith('/poll')) {
+        if (this.pollGone) return jsonResponse(404, { error: 'Request not found' });
+        if (this.answer !== undefined) {
+          return jsonResponse(200, { status: 'answered', response: { content: this.answer } });
+        }
+        await holdFor(Number(searchParams.get('waitMs')), init.signal);
+        return jsonResponse(200, { status: 'pending', expiresAt: null });
+      }
+      if (pathname.endsWith('/cancel')) {
+        if (this.cancelFailures > 0) {
+          this.cancelFailures--;
+          throw new TypeError('fetch failed');
+        }
+        await this.cancelGate;
+        return jsonResponse(200, this.cancelState);
+      }
+      return jsonResponse(404, { error: 'Not found' });
+    });
+
+    callsTo(suffix: string) {
+      return this.calls.filter(c => c.path.endsWith(suffix));
+    }
+  }
+
+  const VFS_FILES: Record<string, string> = { '/a.txt': 'alpha\nbeta', '/b.txt': 'omega' };
+
+  let storage: UnifiedStorage;
+  let backend: FakeTouchGrass;
+  let abortController: AbortController;
+
+  beforeEach(async () => {
+    storage = new UnifiedStorage(
+      createMockAdapter(),
+      createMockEncryptionService() as unknown as EncryptionCore
+    );
+    await storage.saveProject(createTestProject());
+    backend = new FakeTouchGrass();
+    vi.stubGlobal('fetch', backend.fetch);
+    abortController = new AbortController();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function makeContext(): ToolContext {
+    const adapter = {
+      readFile: vi.fn(async (path: string) => {
+        if (!(path in VFS_FILES)) throw new Error(`ENOENT: ${path}`);
+        return VFS_FILES[path];
+      }),
+    } as unknown as VfsAdapter;
+    return {
+      projectId: 'test-project-1',
+      chatId: 'parent-chat',
+      vfsAdapter: adapter,
+      createVfsAdapter: () => adapter,
+      signal: abortController.signal,
+      ...stubBackendDeps,
+      storage,
+      loopRegistry: new LoopRegistry(),
+    };
+  }
+
+  async function run(input: Record<string, unknown>, options: ToolOptions = REMOTE_OPTIONS) {
+    const gen = minionTool.execute(input, options, makeContext()) as AsyncGenerator<
+      ToolStreamEvent,
+      ToolResult,
+      void
+    >;
+    const events: ToolStreamEvent[] = [];
+    let step = await gen.next();
+    while (!step.done) {
+      events.push(step.value);
+      step = await gen.next();
+    }
+    return { events, result: step.value };
+  }
+
+  async function seedChat(overrides: Partial<MinionChat>, messages: Message<unknown>[] = []) {
+    const chat: MinionChat = {
+      id: generateChecksummedId('minion'),
+      parentChatId: 'parent-chat',
+      projectId: 'test-project-1',
+      createdAt: new Date(),
+      lastModifiedAt: new Date(),
+      ...overrides,
+    };
+    await storage.saveMinionChat(chat);
+    for (const m of messages) await storage.saveMinionMessage(chat.id, m);
+    return chat;
+  }
+
+  const llmTurn: Message<unknown> = {
+    id: 'msg_llm_1',
+    role: 'user',
+    content: { type: 'text', content: 'earlier LLM task' },
+    timestamp: new Date('2024-01-01T00:00:00Z'),
+  };
+
+  function minionChatIdOf(result: ToolResult): string {
+    return JSON.parse(result.content).minionChatId;
+  }
+
+  it('answers a new remote chat with no minion model configured', async () => {
+    const { events, result } = await run({
+      message: 'Approve the deploy?',
+      remote: true,
+      displayName: 'Deploy gate',
+      // LLM-only knobs are ignored rather than validated or persisted.
+      enableWeb: true,
+      temperature: 0.2,
+      enabledTools: ['not-a-project-tool'],
+    });
+
+    expect(result.isError).toBeFalsy();
+    const id = minionChatIdOf(result);
+    expect(JSON.parse(result.content)).toEqual({
+      stopReason: 'end_turn',
+      hasCoT: false,
+      minionChatId: id,
+      text: '',
+      result: 'Ship it',
+      remote: true,
+    });
+
+    const [create] = backend.callsTo('/api/sessions');
+    expect(create.body).toEqual({ displayName: 'Test Project · Deploy gate' });
+    const binary = atob(create.auth.replace(/^Basic /, ''));
+    expect(binary).toBe('gremlinofa:pw');
+    const [message] = backend.callsTo('/message');
+    expect(message.path).toBe('/api/sessions/sess_1/message');
+    expect(message.body.content).toBe('Approve the deploy?');
+    expect(message.body.files).toBeUndefined();
+    expect(message.body.timeoutMs).toBeGreaterThan(590_000);
+    expect(message.body.timeoutMs).toBeLessThanOrEqual(600_000);
+
+    // One init with the waiting block; nothing re-yielded while polling.
+    expect(events).toHaveLength(1);
+    const delta = (events[0] as Extract<ToolStreamEvent, { type: 'groups_delta' }>).delta;
+    if (delta.kind !== 'init') throw new Error('expected init');
+    const waiting = delta.streamingGroups[0].blocks[0] as ToolResultRenderBlock;
+    expect(waiting.icon).toBe('⏳');
+    expect(waiting.content).toContain('http://tg.test:3004/web/sessions/sess_1');
+    expect(waiting.content).toMatch(/Deadline: \d{4}-\d{2}-\d{2}T/);
+
+    const [info, answer] = result.renderingGroups as RenderingBlockGroup[];
+    expect((info.blocks[0] as ToolInfoRenderBlock).chatId).toBe(id);
+    expect(answer.category).toBe('text');
+    expect(answer.blocks).toEqual([{ type: 'text', text: 'Ship it' }]);
+
+    const chat = await storage.getMinionChat(id);
+    expect(chat).toMatchObject({ remote: true, remoteSessionId: 'sess_1' });
+    expect(chat?.temperature).toBeUndefined();
+    expect(chat?.enabledTools).toBeUndefined();
+    expect(chat?.apiDefinitionId).toBeUndefined();
+    const stored = await storage.getMinionMessages(id);
+    expect(stored.map(m => [m.role, m.content.content])).toEqual([
+      ['user', 'Approve the deploy?'],
+      ['assistant', 'Ship it'],
+    ]);
+    expect(chat?.savepoint).toBe(stored[1].id);
+  });
+
+  it.each(['return-only', 'enforced', 'auto-enforced', 'no-return'])(
+    "uses the answer as the return value in '%s' mode, with a remote marker",
+    async returnMode => {
+      const { result } = await run(
+        { message: 'Approve?', remote: true },
+        { ...REMOTE_OPTIONS, returnMode }
+      );
+      const parsed = parseSimplifiedOutput(result.content);
+      expect(parsed).toMatchObject({ hasCoT: false, remote: true, body: 'Ship it' });
+      expect(result.content).toBe(
+        `<minionChatId>${parsed?.minionChatId}</minionChatId>\n<remote />\nShip it`
+      );
+      const rendered = minionTool.renderOutput!(result.content, false);
+      expect(rendered).toContain('[Answered by a human]');
+      expect(rendered).toContain('Ship it');
+    }
+  );
+
+  it("renders 'both' mode output with the human marker and the answer", async () => {
+    const { result } = await run({ message: 'Approve?', remote: true });
+    const rendered = minionTool.renderOutput!(result.content, false);
+    expect(rendered).toBe(
+      `[Answered by a human]\n\nShip it\n\n[minionChatId: ${minionChatIdOf(result)}]`
+    );
+  });
+
+  it('keeps a remote chat remote on a continuation that omits remote', async () => {
+    const first = await run({ message: 'Approve?', remote: true });
+    const id = minionChatIdOf(first.result);
+    backend.answer = 'Yes, after 6pm';
+
+    const second = await run({ minionChatId: id, message: 'And the DB migration?' });
+    expect(second.result.isError).toBeFalsy();
+    expect(JSON.parse(second.result.content).result).toBe('Yes, after 6pm');
+    // Same session, no second one opened.
+    expect(backend.callsTo('/api/sessions')).toHaveLength(1);
+    expect(backend.callsTo('/message').map(c => c.path)).toEqual([
+      '/api/sessions/sess_1/message',
+      '/api/sessions/sess_1/message',
+    ]);
+    expect(await storage.getMinionMessages(id)).toHaveLength(4);
+  });
+
+  it('treats the string "true" like true, and the call block agrees', async () => {
+    const { result } = await run({ message: 'Approve?', remote: 'true' });
+    expect(JSON.parse(result.content).remote).toBe(true);
+
+    expect(isRemoteCall({ remote: 'true' })).toBe(true);
+    expect(readRemoteFlag({ remote: 'false' })).toBe(false);
+    expect(readRemoteFlag({ remote: 'yes' })).toBeUndefined();
+    expect(minionTool.renderInput!({ message: 'x', remote: 'true' })).toContain('Remote: human');
+    expect(minionTool.renderInput!({ message: 'x', remote: 'false' })).toContain('Remote: local');
+    // Not something the executor acts on, so the call block doesn't claim it either.
+    expect(minionTool.renderInput!({ message: 'x', remote: 'yes' })).not.toContain('Remote:');
+  });
+
+  it('rejects remote=false on a remote chat', async () => {
+    const chat = await seedChat({ remote: true, remoteSessionId: 'sess_live' });
+    const { result } = await run({ minionChatId: chat.id, message: 'hi', remote: false });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('remote=false is not allowed');
+    expect(backend.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['holding an LLM conversation', [llmTurn]],
+    // Empty, but with a stored verifyHook a human answer would silently skip.
+    ['with no messages yet', []],
+  ])('rejects remote=true on an LLM chat %s', async (_label, messages) => {
+    const chat = await seedChat({ apiDefinitionId: 'api', modelId: 'm', verifyHook: 'check' }, [
+      ...messages,
+    ]);
+    const { result } = await run({ minionChatId: chat.id, message: 'hi', remote: true });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain(`minion chat ${chat.id}: it is an LLM minion chat`);
+    expect(result.content).not.toContain('is a remote (human) chat');
+    expect(backend.fetch).not.toHaveBeenCalled();
+    const stored = await storage.getMinionChat(chat.id);
+    expect(stored?.remote).toBeUndefined();
+    expect(stored?.remoteSessionId).toBeUndefined();
+  });
+
+  it('rejects a remote chat once the endpoint has been cleared', async () => {
+    const chat = await seedChat({ remote: true, remoteSessionId: 'sess_live' });
+    const { result } = await run(
+      { minionChatId: chat.id, message: 'hi' },
+      { remotePassword: 'pw' }
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain(`Minion chat ${chat.id} is a remote (human) chat`);
+    expect(result.content).toContain('No Remote Minion Endpoint');
+  });
+
+  it('rejects verifyHook with remote before creating a chat', async () => {
+    const saveSpy = vi.spyOn(storage, 'saveMinionChat');
+    const { result } = await run({ message: 'hi', remote: true, verifyHook: 'check' });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('verifyHook cannot be used with a remote');
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(backend.fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects remote=true without a configured endpoint or password', async () => {
+    const noEndpoint = await run({ message: 'hi', remote: true }, {});
+    expect(noEndpoint.result.content).toContain('No Remote Minion Endpoint');
+    const noPassword = await run(
+      { message: 'hi', remote: true },
+      { remoteEndpoint: 'http://tg.test:3004' }
+    );
+    expect(noPassword.result.content).toContain('No Remote Minion Password');
+    expect(backend.fetch).not.toHaveBeenCalled();
+  });
+
+  it('sends files as structured data and keeps the inline text locally', async () => {
+    const { result } = await run({
+      message: 'Review these',
+      remote: true,
+      injectFiles: ['/a.txt'],
+      injectFilesAfter: ['/b.txt'],
+    });
+    expect(result.isError).toBeFalsy();
+
+    const [message] = backend.callsTo('/message');
+    expect(message.body.content).toBe('Review these');
+    expect(message.body.files).toEqual([
+      {
+        path: '/a.txt',
+        content: formatFileWithLineNumbers('alpha\nbeta'),
+        placement: 'before',
+        lineNumbers: true,
+      },
+      {
+        path: '/b.txt',
+        content: formatFileWithLineNumbers('omega'),
+        placement: 'after',
+        lineNumbers: true,
+      },
+    ]);
+
+    const id = minionChatIdOf(result);
+    const [userMessage] = await storage.getMinionMessages(id);
+    const inline = userMessage.content.content as string;
+    expect(inline.indexOf('=== /a.txt ===')).toBeLessThan(inline.indexOf('=== end of files ==='));
+    expect(inline.indexOf('=== end of files ===')).toBeLessThan(inline.indexOf('Review these'));
+    expect(inline.indexOf('Review these')).toBeLessThan(inline.indexOf('=== /b.txt ==='));
+    const groups = userMessage.content.renderingContent as RenderingBlockGroup[];
+    expect(groups.map(g => g.blocks.map(b => b.type))).toEqual([
+      ['injected_file'],
+      ['text'],
+      ['injected_file'],
+    ]);
+
+    const info = (result.renderingGroups as RenderingBlockGroup[])[0]
+      .blocks[0] as ToolInfoRenderBlock;
+    expect(info.injectedFiles?.map(f => f.path)).toEqual(['/a.txt']);
+    expect(info.injectedFilesAfter?.map(f => f.path)).toEqual(['/b.txt']);
+  });
+
+  it('flags no line numbers when the files carry none', async () => {
+    await run({ message: 'Review', remote: true, injectFiles: ['/a.txt'], fileLineNumbers: false });
+    const [message] = backend.callsTo('/message');
+    expect(message.body.files).toEqual([
+      { path: '/a.txt', content: 'alpha\nbeta', placement: 'before' },
+    ]);
+  });
+
+  /** Start a question, press Stop once its first poll is out; resolves to the call's result. */
+  async function abortWhileWaiting(
+    input: Record<string, unknown>,
+    options: ToolOptions = REMOTE_OPTIONS
+  ): Promise<ToolResult> {
+    backend.answer = undefined;
+    const gen = minionTool.execute(input, options, makeContext()) as AsyncGenerator<
+      ToolStreamEvent,
+      ToolResult,
+      void
+    >;
+    await gen.next();
+    const finished = gen.next();
+    await vi.waitFor(() => expect(backend.callsTo('/poll')).toHaveLength(1));
+    abortController.abort();
+    return (await finished).value as ToolResult;
+  }
+
+  function chatIdOfInfo(result: ToolResult): string {
+    const [info] = result.renderingGroups as RenderingBlockGroup[];
+    return (info.blocks[0] as ToolInfoRenderBlock).chatId!;
+  }
+
+  /** Post the question, press Stop while it waits for the human, return the chat id. */
+  async function runAndAbortWhileWaiting(input: Record<string, unknown>): Promise<string> {
+    const aborted = await abortWhileWaiting(input);
+    expect(aborted.content).toBe('Minion was aborted');
+    abortController = new AbortController();
+    backend.answer = 'Ship it';
+    return chatIdOfInfo(aborted);
+  }
+
+  it.each([
+    ['action: retry', { action: 'retry' }, {}],
+    ['an autoRollback continuation', {}, { autoRollback: true }],
+  ])(
+    'retries a remote question with %s as the message plus its files, not the inline text',
+    async (_label, retryInput, retryOptions) => {
+      const id = await runAndAbortWhileWaiting({
+        message: 'Review these',
+        remote: true,
+        injectFiles: ['/a.txt'],
+        injectFilesAfter: ['/b.txt'],
+      });
+      const [original] = await storage.getMinionMessages(id);
+
+      const { result } = await run(
+        { minionChatId: id, ...retryInput },
+        { ...REMOTE_OPTIONS, ...retryOptions }
+      );
+      expect(result.isError).toBeFalsy();
+
+      const [first, second] = backend.callsTo('/message');
+      expect(second.body.content).toBe('Review these');
+      expect(second.body.files).toEqual(first.body.files);
+
+      // The re-saved local message matches the original: inline text, file
+      // bars and stored entries.
+      const [user, answer] = await storage.getMinionMessages(id);
+      expect(user.content.content).toBe(original.content.content);
+      expect(user.content.renderingContent).toEqual(original.content.renderingContent);
+      expect(user.content.injectedFiles?.map(f => f.path)).toEqual(['/a.txt']);
+      expect(user.content.injectedFilesAfter?.map(f => f.path)).toEqual(['/b.txt']);
+      expect(user.content.injectionMode).toBeUndefined();
+      expect(answer.content.content).toBe('Ship it');
+
+      const info = (result.renderingGroups as RenderingBlockGroup[])[0]
+        .blocks[0] as ToolInfoRenderBlock;
+      expect(info.input).toBe('Review these');
+      expect(info.injectedFiles?.map(f => f.path)).toEqual(['/a.txt']);
+    }
+  );
+
+  it('keeps the original line-number framing on a retry', async () => {
+    // An existing session: nothing saves the chat before Stop, so the call's
+    // fileLineNumbers override is not persisted for the retry to read.
+    backend.sessions.add('sess_live');
+    const chat = await seedChat({
+      remote: true,
+      remoteSessionId: 'sess_live',
+      savepoint: SAVEPOINT_START,
+    });
+    const id = await runAndAbortWhileWaiting({
+      minionChatId: chat.id,
+      message: 'Review',
+      injectFiles: ['/a.txt'],
+      fileLineNumbers: false,
+    });
+    const [original] = await storage.getMinionMessages(id);
+    expect(original.content.content).toContain("Here's the content of /a.txt:\nalpha");
+
+    const { result } = await run({ minionChatId: id, action: 'retry' });
+    expect(result.isError).toBeFalsy();
+    const [user] = await storage.getMinionMessages(id);
+    expect(user.content.content).toBe(original.content.content);
+    expect(user.content.renderingContent).toEqual(original.content.renderingContent);
+  });
+
+  it('retries an inject-only remote question with empty text and the same files', async () => {
+    const id = await runAndAbortWhileWaiting({ remote: true, injectFiles: ['/a.txt'] });
+    const { result } = await run({ minionChatId: id, action: 'retry' });
+    expect(result.isError).toBeFalsy();
+    const [first, second] = backend.callsTo('/message');
+    expect(second.body).toMatchObject({ content: '', files: first.body.files });
+  });
+
+  it('adopts a question that landed although its response was lost', async () => {
+    backend.dropNextMessageResponse = true;
+    const { result } = await run({ message: 'Approve?', remote: true });
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.content).result).toBe('Ship it');
+    // One question for the human, read back instead of posted twice.
+    expect(backend.callsTo('/message')).toHaveLength(1);
+    expect(backend.calls.some(c => c.method === 'GET' && c.path === '/api/sessions/sess_1')).toBe(
+      true
+    );
+    expect(backend.callsTo('/poll')[0].path).toBe('/api/requests/req_2/poll');
+  });
+
+  describe('async notes', () => {
+    it('posts the note and returns at once, without waiting or a deadline', async () => {
+      const { events, result } = await run({
+        message: 'Deploy started',
+        remote: true,
+        async: true,
+        injectFiles: ['/a.txt'],
+      });
+      expect(result.isError).toBeFalsy();
+      const id = minionChatIdOf(result);
+      expect(JSON.parse(result.content)).toEqual({
+        stopReason: 'end_turn',
+        hasCoT: false,
+        minionChatId: id,
+        text: '',
+        result: 'Message sent.',
+      });
+      expect(minionTool.renderOutput!(result.content, false)).not.toContain('Answered by a human');
+
+      const [message] = backend.callsTo('/message');
+      expect(message.body).toEqual({
+        content: 'Deploy started',
+        files: [expect.objectContaining({ path: '/a.txt', lineNumbers: true })],
+        awaitReply: false,
+      });
+      expect(backend.callsTo('/poll')).toHaveLength(0);
+      expect(backend.callsTo('/cancel')).toHaveLength(0);
+      expect(events).toHaveLength(0);
+      expect(result.renderingGroups).toHaveLength(1);
+
+      // A finished exchange: the savepoint moves past the note.
+      const stored = await storage.getMinionMessages(id);
+      expect(stored.map(m => m.role)).toEqual(['user']);
+      expect(stored[0].content.injectedFiles?.map(f => f.path)).toEqual(['/a.txt']);
+      expect(await storage.getMinionChat(id)).toMatchObject({
+        remote: true,
+        remoteSessionId: 'sess_1',
+        savepoint: stored[0].id,
+      });
+    });
+
+    it("says only 'Message sent.' in the simplified modes", async () => {
+      const { result } = await run(
+        { message: 'FYI', remote: true, async: 'true' },
+        { ...REMOTE_OPTIONS, returnMode: 'return-only' }
+      );
+      const parsed = parseSimplifiedOutput(result.content);
+      expect(parsed).toMatchObject({ remote: false, body: 'Message sent.' });
+      expect(result.content).toBe(
+        `<minionChatId>${parsed?.minionChatId}</minionChatId>\nMessage sent.`
+      );
+      expect(minionTool.renderInput!({ message: 'x', async: 'true' })).toContain('Async: yes');
+      expect(minionTool.renderInput!({ message: 'x', async: false })).not.toContain('Async:');
+    });
+
+    it('survives autoRollback and leaves nothing to retry', async () => {
+      const first = await run({ message: 'Started', remote: true, async: true });
+      const id = minionChatIdOf(first.result);
+
+      const retry = await run({ minionChatId: id, action: 'retry' });
+      expect(retry.result.isError).toBe(true);
+      expect(retry.result.content).toContain('No messages after savepoint');
+
+      const question = await run(
+        { minionChatId: id, message: 'Done?' },
+        { ...REMOTE_OPTIONS, autoRollback: true }
+      );
+      expect(JSON.parse(question.result.content).result).toBe('Ship it');
+      const stored = await storage.getMinionMessages(id);
+      expect(stored.map(m => [m.role, m.content.content])).toEqual([
+        ['user', 'Started'],
+        ['user', 'Done?'],
+        ['assistant', 'Ship it'],
+      ]);
+      expect(backend.callsTo('/api/sessions')).toHaveLength(1);
+    });
+
+    it('rejects async without a remote chat, before anything is created', async () => {
+      const llmChat = await seedChat({ apiDefinitionId: 'api', modelId: 'm' }, [llmTurn]);
+      const saveSpy = vi.spyOn(storage, 'saveMinionChat');
+
+      const fresh = await run({ message: 'hi', async: true });
+      expect(fresh.result.isError).toBe(true);
+      expect(fresh.result.content).toContain('async=true only works with remote (human) minions');
+
+      const existing = await run({ minionChatId: llmChat.id, message: 'hi', async: 'true' });
+      expect(existing.result.isError).toBe(true);
+      expect(existing.result.content).toContain(
+        `minion chat ${llmChat.id}: it is an LLM minion chat, and async only works`
+      );
+      expect(saveSpy).not.toHaveBeenCalled();
+      expect(backend.fetch).not.toHaveBeenCalled();
+    });
+
+    it('withdraws the question a 2.0 backend opens for a note', async () => {
+      backend.ignoresAwaitReply = true;
+      const { result } = await run({ message: 'FYI', remote: true, async: true });
+      expect(result.isError).toBeFalsy();
+      expect(backend.callsTo('/message')[0].body.timeoutMs).toBeUndefined();
+      expect(backend.callsTo('/cancel').map(c => c.path)).toEqual(['/api/requests/req_2/cancel']);
+    });
+
+    it('adopts a note that landed although its response was lost', async () => {
+      backend.dropNextMessageResponse = true;
+      const { result } = await run({ message: 'FYI', remote: true, async: true });
+      expect(result.isError).toBeFalsy();
+      expect(backend.callsTo('/message')).toHaveLength(1);
+      expect(backend.calls.some(c => c.method === 'GET' && c.path === '/api/sessions/sess_1')).toBe(
+        true
+      );
+    });
+
+    it('opens a new session once when the cached one is gone, and tells the human', async () => {
+      const chat = await seedChat({ remote: true, remoteSessionId: 'sess_lost' });
+      const { result } = await run({ minionChatId: chat.id, message: 'FYI', async: true });
+      expect(result.isError).toBeFalsy();
+      const posts = backend.callsTo('/message');
+      expect(posts.map(c => c.path)).toEqual([
+        '/api/sessions/sess_lost/message',
+        '/api/sessions/sess_1/message',
+      ]);
+      expect(posts[1].body.content).toMatch(/^\[The earlier messages .*\]\n\nFYI$/);
+    });
+  });
+
+  it('times out, withdraws the question and says how to follow up', async () => {
+    vi.useFakeTimers();
+    backend.answer = undefined;
+    // Below the 10s floor: clamped up, not taken literally.
+    const pending = run(
+      { message: 'Approve?', remote: true },
+      { ...REMOTE_OPTIONS, remoteTimeoutMs: 1 }
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    const { result } = await pending;
+
+    expect(backend.callsTo('/message')[0].body.timeoutMs).toBeLessThanOrEqual(10_000);
+    expect(backend.callsTo('/cancel')).toHaveLength(1);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('no human answer within 10 seconds');
+    expect(result.content).toMatch(/minionChatId "minion_\w+"/);
+    expect((result.renderingGroups as RenderingBlockGroup[])[0].blocks[0].type).toBe('tool_info');
+  });
+
+  it('takes the answer when the human beat the cancel', async () => {
+    vi.useFakeTimers();
+    backend.answer = undefined;
+    backend.cancelState = { status: 'answered', response: { content: 'Just in time' } };
+    const pending = run(
+      { message: 'Approve?', remote: true },
+      { ...REMOTE_OPTIONS, remoteTimeoutMs: 10_000 }
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    const { result } = await pending;
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.content).result).toBe('Just in time');
+  });
+
+  it('stops promptly on abort and cancels the question', async () => {
+    backend.answer = undefined;
+    const gen = minionTool.execute(
+      { message: 'Approve?', remote: true },
+      REMOTE_OPTIONS,
+      makeContext()
+    ) as AsyncGenerator<ToolStreamEvent, ToolResult, void>;
+    const init = await gen.next();
+    expect(init.done).toBe(false);
+
+    const finished = gen.next();
+    // Let the poll go out before pressing Stop.
+    await vi.waitFor(() => expect(backend.callsTo('/poll')).toHaveLength(1));
+    abortController.abort();
+    const end = await finished;
+
+    expect(end.done).toBe(true);
+    expect(end.value).toMatchObject({ content: 'Minion was aborted', isError: true });
+    expect((end.value as ToolResult).renderingGroups).toHaveLength(1);
+    expect(backend.callsTo('/cancel')).toHaveLength(1);
+  });
+
+  it('keeps an answer that beat Stop and tells the LLM where it is', async () => {
+    backend.cancelState = { status: 'answered', response: { content: 'Already did it' } };
+    const result = await abortWhileWaiting({ message: 'Approve?', remote: true });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/^Minion was aborted, but the human had already answered\./);
+    const id = chatIdOfInfo(result);
+    expect(result.content).toContain(`minionChatId "${id}"`);
+    expect(result.content).toContain('Already did it');
+
+    const [user, answer] = await storage.getMinionMessages(id);
+    expect(user.role).toBe('user');
+    expect(answer).toMatchObject({
+      role: 'assistant',
+      content: { content: 'Already did it' },
+    });
+    expect((await storage.getMinionChat(id))?.savepoint).toBe(answer.id);
+  });
+
+  it('returns from Stop within a second when the cancel hangs, and writes nothing later', async () => {
+    let releaseCancel!: () => void;
+    backend.cancelGate = new Promise(resolve => (releaseCancel = resolve));
+    backend.cancelState = { status: 'answered', response: { content: 'Too late' } };
+    const chat = await seedChat({
+      remote: true,
+      remoteSessionId: 'sess_live',
+      savepoint: SAVEPOINT_START,
+    });
+    backend.sessions.add('sess_live');
+
+    const startedAt = Date.now();
+    const result = await abortWhileWaiting({ minionChatId: chat.id, message: 'Approve?' });
+    expect(result.content).toBe('Minion was aborted');
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    const before = await storage.getMinionMessages(chat.id);
+    const savepoint = (await storage.getMinionChat(chat.id))?.savepoint;
+
+    // The cancel was sent and is still out; let it land now.
+    expect(backend.callsTo('/cancel')).toHaveLength(1);
+    releaseCancel();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(await storage.getMinionMessages(chat.id)).toEqual(before);
+    expect((await storage.getMinionChat(chat.id))?.savepoint).toBe(savepoint);
+  });
+
+  it('keeps cancelling after a Stop during a backend outage, without touching storage', async () => {
+    vi.useFakeTimers();
+    backend.cancelFailures = 2;
+    backend.cancelState = { status: 'answered', response: { content: 'Too late' } };
+    const result = await abortWhileWaiting({ message: 'Approve?', remote: true });
+    expect(result.content).toBe('Minion was aborted');
+    expect(backend.callsTo('/cancel')).toHaveLength(1);
+
+    const saveMessage = vi.spyOn(storage, 'saveMinionMessage');
+    const saveChat = vi.spyOn(storage, 'saveMinionChat');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(backend.callsTo('/cancel')).toHaveLength(2);
+    // The backend is back: this one gets through, with an answer that came too late.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(backend.callsTo('/cancel')).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(backend.callsTo('/cancel')).toHaveLength(3);
+    expect(saveMessage).not.toHaveBeenCalled();
+    expect(saveChat).not.toHaveBeenCalled();
+  });
+
+  it('stops cancelling at the deadline when the backend stays down after a Stop', async () => {
+    vi.useFakeTimers();
+    backend.cancelFailures = Infinity;
+    const result = await abortWhileWaiting(
+      { message: 'Approve?', remote: true },
+      { ...REMOTE_OPTIONS, remoteTimeoutMs: 10_000 }
+    );
+    expect(result.content).toBe('Minion was aborted');
+    // Attempts at Stop, +1s, +3s and +8s; the next would land past the 10s deadline.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(backend.callsTo('/cancel')).toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(backend.callsTo('/cancel')).toHaveLength(4);
+  });
+
+  it('says the question is gone when its poll gets a 404, and a follow-up opens a new session', async () => {
+    backend.pollGone = true;
+    const { result } = await run({ message: 'Approve?', remote: true });
+    const id = chatIdOfInfo(result);
+    expect(result).toMatchObject({
+      isError: true,
+      content: `Remote minion: the question is gone from the backend — the human deleted this conversation, or the backend lost its data. A follow-up with minionChatId "${id}" starts a new session.`,
+    });
+    expect(result.renderingGroups).toHaveLength(1);
+    expect(backend.callsTo('/cancel')).toHaveLength(0);
+
+    // The human deleted the session, which took its request with it.
+    backend.sessions.delete('sess_1');
+    backend.pollGone = false;
+    const followUp = await run({ minionChatId: id, message: 'Still there?' });
+    expect(followUp.result.isError).toBeFalsy();
+    expect(backend.callsTo('/api/sessions')).toHaveLength(2);
+    expect((await storage.getMinionChat(id))?.remoteSessionId).not.toBe('sess_1');
+  });
+
+  it('opens a new session when the read-back after a lost response finds it gone', async () => {
+    vi.useFakeTimers();
+    backend.sessions.add('sess_live');
+    backend.dropNextMessageResponse = true;
+    backend.onDrop = sessionId => backend.sessions.delete(sessionId);
+    const chat = await seedChat({
+      remote: true,
+      remoteSessionId: 'sess_live',
+      savepoint: SAVEPOINT_START,
+    });
+
+    const pending = run({ minionChatId: chat.id, message: 'Still there?' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const { result } = await pending;
+
+    expect(result.isError).toBeFalsy();
+    expect(
+      backend.calls.filter(c => c.method === 'GET' && c.path === '/api/sessions/sess_live')
+    ).toHaveLength(1);
+    // The dropped post used up req_1, so the new session is sess_2.
+    const posts = backend.callsTo('/message');
+    expect(posts.map(c => c.path)).toEqual([
+      '/api/sessions/sess_live/message',
+      '/api/sessions/sess_2/message',
+    ]);
+    expect(posts[1].body.content).toMatch(/^\[The earlier messages .*\]\n\nStill there\?$/);
+    expect((await storage.getMinionChat(chat.id))?.remoteSessionId).toBe('sess_2');
+  });
+
+  it('opens a new session once when the cached one is gone, and tells the human', async () => {
+    // A chat from before the `remote` flag: the session id alone marks it remote.
+    const chat = await seedChat({ remoteSessionId: 'sess_gone', savepoint: 'msg_x' });
+    const { result } = await run({ minionChatId: chat.id, message: 'Still there?' });
+    expect(result.isError).toBeFalsy();
+
+    const posts = backend.callsTo('/message');
+    expect(posts.map(c => c.path)).toEqual([
+      '/api/sessions/sess_gone/message',
+      '/api/sessions/sess_1/message',
+    ]);
+    expect(posts[1].body.content).toMatch(/^\[The earlier messages .*\]\n\nStill there\?$/);
+    expect(await storage.getMinionChat(chat.id)).toMatchObject({
+      remote: true,
+      remoteSessionId: 'sess_1',
+    });
+  });
+
+  it('reports a setup failure with its hint and the chat id to retry with', async () => {
+    backend.createSessionStatus = 401;
+    const { result } = await run({ message: 'Approve?', remote: true });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('HTTP 401');
+    expect(result.content).toContain('Remote Minion Password');
+    expect(result.content).toMatch(/minionChatId "minion_\w+"/);
+  });
+
+  it('describes the remote contract only when an endpoint is set', () => {
+    const describeTool = minionTool.description as (o: ToolOptions) => string;
+    expect(describeTool({})).not.toContain('remote=true');
+    const desc = describeTool({ ...REMOTE_OPTIONS, remoteTimeoutMs: 300_000 });
+    expect(desc).toContain('An LLM minion runs independently');
+    expect(desc).toContain('self-contained');
+    expect(desc).toContain('up to 5 minutes');
+    expect(desc).toContain('remote=false on it is an error');
+    expect(desc).toContain('same minionChatId');
+
+    const schema = minionTool.inputSchema as (o: ToolOptions) => {
+      properties: Record<string, { description?: string }>;
+    };
+    expect(desc).toContain('async=true');
+    expect(schema({}).properties).not.toHaveProperty('remote');
+    expect(schema({}).properties).not.toHaveProperty('async');
+    expect(schema(REMOTE_OPTIONS).properties.remote.description).toContain('stays remote');
+    expect(schema(REMOTE_OPTIONS).properties.async.description).toContain('Message sent.');
+  });
+
+  it('clamps remoteTimeoutMs into the supported range', () => {
+    expect(resolveRemoteTimeoutMs({})).toBe(600_000);
+    expect(resolveRemoteTimeoutMs({ remoteTimeoutMs: 1 })).toBe(10_000);
+    expect(resolveRemoteTimeoutMs({ remoteTimeoutMs: 1e12 })).toBe(604_800_000);
+  });
+
+  it('throttles remote calls in their own group', async () => {
+    const group = await minionTool.getParallelThrottleGroup!(
+      { message: 'x', remote: true },
+      REMOTE_OPTIONS,
+      makeContext()
+    );
+    expect(group).toBe('minion:__remote__');
+  });
+});
+
+describe('formatMinionResult', () => {
+  const base = {
+    minionChatId: 'minion_abc',
+    stopReason: 'end_turn',
+    hasCoT: false,
+    text: 'prose',
+    returnValue: undefined,
+  };
+
+  it("emits JSON in 'both' mode, with result only when returned", () => {
+    expect(JSON.parse(formatMinionResult({ ...base, returnMode: 'both' }))).toEqual({
+      stopReason: 'end_turn',
+      hasCoT: false,
+      minionChatId: 'minion_abc',
+      text: 'prose',
+    });
+    expect(
+      JSON.parse(formatMinionResult({ ...base, returnMode: 'both', returnValue: 'R' })).result
+    ).toBe('R');
+  });
+
+  it('warns in enforced modes when nothing was returned, else falls back to the prose', () => {
+    expect(formatMinionResult({ ...base, returnMode: 'enforced' })).toBe(
+      '<minionChatId>minion_abc</minionChatId>\nWarning: Return tool was not called'
+    );
+    expect(formatMinionResult({ ...base, returnMode: 'return-only', hasCoT: true })).toBe(
+      '<minionChatId>minion_abc</minionChatId>\n<hasCoT />\nprose'
+    );
   });
 });

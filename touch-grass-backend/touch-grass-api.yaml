@@ -1,8 +1,23 @@
 openapi: 3.1.0
 info:
   title: Touch Grass Backend
-  description: Remote human minion backend for GremlinOFA
-  version: 1.0.0
+  description: |
+    Remote human minion backend for GremlinOFA.
+
+    Request lifecycle: the AI posts a message, which creates a pending request.
+    A pending request ends in exactly one of three ways: a human answers it
+    (`answered`), or it becomes `expired` with a reason — `timeout` (its
+    `expiresAt` passed), `cancelled` (the caller gave up via the cancel
+    endpoint) or `superseded` (a newer AI message on the same session replaced
+    it). Expired is final: the human UI stops accepting answers for it.
+
+    An AI message posted with `awaitReply: false` is an async note: it is
+    stored and shown to the human, and supersedes whatever was pending, but
+    opens no request, so there is nothing to answer or poll.
+
+    The `/web/*` routes (human operator UI and its JSON polling endpoints) are
+    internal to the bundled web UI and not part of this contract.
+  version: 2.1.0
 
 servers:
   - url: http://localhost:3004
@@ -20,6 +35,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [status]
                 properties:
                   status:
                     type: string
@@ -37,8 +53,9 @@ paths:
               type: object
               properties:
                 displayName:
-                  type: string
-                  description: Optional display name for the session
+                  type: [string, 'null']
+                  maxLength: 200
+                  description: Label shown to the human in the session list
       responses:
         '201':
           description: Session created
@@ -50,14 +67,16 @@ paths:
                 properties:
                   sessionId:
                     type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
 
   /api/sessions/{sessionId}:
     parameters:
-      - name: sessionId
-        in: path
-        required: true
-        schema:
-          type: string
+      - $ref: '#/components/parameters/SessionId'
     get:
       summary: Get session with message history
       security:
@@ -69,6 +88,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [session, messages, pendingRequest]
                 properties:
                   session:
                     $ref: '#/components/schemas/Session'
@@ -76,12 +96,21 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Message'
-                  hasPendingRequest:
-                    type: boolean
+                  pendingRequest:
+                    oneOf:
+                      - $ref: '#/components/schemas/PendingRequestRef'
+                      - type: 'null'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Session not found
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
     delete:
       summary: Delete session and all its data
+      description: Long-polls waiting on this session's requests return 404.
       security:
         - basicAuth: []
       responses:
@@ -91,25 +120,39 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [deleted]
                 properties:
                   deleted:
                     type: boolean
+                    const: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Session not found
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
 
   /api/sessions/{sessionId}/message:
     parameters:
-      - name: sessionId
-        in: path
-        required: true
-        schema:
-          type: string
+      - $ref: '#/components/parameters/SessionId'
     post:
       summary: Send AI message and create pending request
       description: |
         Sends a message from the AI side and creates a pending request
         awaiting a human response. Any existing pending request for the
-        session is auto-expired.
+        session becomes `expired` with reason `superseded`, and its
+        long-polls are woken.
+
+        With `awaitReply: false` the message is an async note: it supersedes
+        the pending request the same way, but opens no request of its own, so
+        the response carries `requestId: null`. Backends before 2.1 ignore the
+        field and open a request anyway; a caller that wants a note cancels
+        any `requestId` it gets back.
+
+        `content` may be empty when at least one file is attached; otherwise
+        it must contain non-whitespace text.
       security:
         - basicAuth: []
       requestBody:
@@ -122,18 +165,28 @@ paths:
               properties:
                 content:
                   type: string
-                  description: Message content
+                  description: Message text shown to the human
                 files:
                   type: array
-                  description: Injected file context
+                  maxItems: 200
+                  description: Injected file context, rendered as collapsible blocks
                   items:
-                    type: object
-                    required: [path, content]
-                    properties:
-                      path:
-                        type: string
-                      content:
-                        type: string
+                    $ref: '#/components/schemas/InjectedFile'
+                timeoutMs:
+                  type: integer
+                  minimum: 1000
+                  maximum: 604800000
+                  description: |
+                    How long the caller will wait for an answer. Sets the
+                    request's `expiresAt`; after that the request is `expired`
+                    (reason `timeout`) and the human can no longer answer it.
+                    Omitted = no deadline. Not allowed with `awaitReply: false`.
+                awaitReply:
+                  type: boolean
+                  default: true
+                  description: |
+                    `false` posts an async note that needs no answer: no
+                    request is opened.
       responses:
         '201':
           description: Message sent, request created
@@ -141,77 +194,238 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [requestId, messageId]
+                required: [requestId, messageId, expiresAt]
                 properties:
                   requestId:
-                    type: string
+                    type: [string, 'null']
+                    description: 'null for an async note (`awaitReply: false`)'
                   messageId:
                     type: string
+                  expiresAt:
+                    type: [string, 'null']
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Session not found
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
 
   /api/requests/{requestId}/poll:
     parameters:
-      - name: requestId
-        in: path
-        required: true
-        schema:
-          type: string
+      - $ref: '#/components/parameters/RequestId'
     get:
       summary: Long-poll for human response
       description: |
-        Holds the connection open for up to POLL_TIMEOUT_MS (default 30s).
-        Returns immediately if the request is already answered or expired.
+        Holds the connection open for up to `waitMs` (clamped to the server's
+        POLL_TIMEOUT_MS, default 30s). Returns immediately if the request is
+        already answered or expired. Returns 404 if the request — or its
+        session — is gone, including when the session is deleted mid-wait.
       security:
         - basicAuth: []
+      parameters:
+        - name: waitMs
+          in: query
+          required: false
+          description: Maximum hold time in ms. Clamped to [0, POLL_TIMEOUT_MS].
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: Poll result
           content:
             application/json:
               schema:
-                oneOf:
-                  - type: object
-                    properties:
-                      status:
-                        type: string
-                        const: pending
-                  - type: object
-                    properties:
-                      status:
-                        type: string
-                        const: answered
-                      response:
-                        type: object
-                        properties:
-                          content:
-                            type: string
-                  - type: object
-                    properties:
-                      status:
-                        type: string
-                        const: expired
+                $ref: '#/components/schemas/RequestState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Request not found
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+
+  /api/requests/{requestId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      summary: Stop waiting for a request
+      description: |
+        Marks a pending request `expired` with reason `cancelled` and wakes its
+        long-polls. Idempotent. Returns the request's final state, so a caller
+        racing a human answer still receives the answer (`status: answered`).
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Final request state
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AnsweredState'
+                  - $ref: '#/components/schemas/ExpiredState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
 
 components:
   securitySchemes:
     basicAuth:
       type: http
       scheme: basic
-      description: Username is callerId, password is API_PASSWORD
+      description: |
+        Username is a free-form caller label (non-empty, no colon) — it is
+        recorded on sessions but is not an identity: anyone holding
+        API_PASSWORD can reach every session. Password is API_PASSWORD.
+        Credentials are UTF-8 before base64.
+
+  parameters:
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: |
+        Malformed JSON or invalid field. Every /api route parses a JSON body,
+        so an operation that takes none still answers 400 to a malformed one.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or wrong Basic Auth credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Session or request not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PayloadTooLarge:
+      description: |
+        Request body exceeds 10 MB. Applies to every /api route, including
+        those that take no body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
 
   schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    InjectedFile:
+      type: object
+      required: [path, content]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        placement:
+          type: string
+          enum: [before, after]
+          default: before
+          description: Render the file above (`before`) or below (`after`) the message text
+        lineNumbers:
+          type: boolean
+          default: false
+          description: |
+            Every content line starts with a line-number prefix (`%6d\t`). The
+            human UI strips it in the rendered markdown view and shows it in
+            the raw view. Only `true` is stored and echoed back.
+
+    PendingRequestRef:
+      type: object
+      required: [requestId, expiresAt]
+      properties:
+        requestId:
+          type: string
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+
+    PendingState:
+      type: object
+      required: [status, expiresAt]
+      properties:
+        status:
+          type: string
+          const: pending
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+
+    AnsweredState:
+      type: object
+      required: [status, response]
+      properties:
+        status:
+          type: string
+          const: answered
+        response:
+          type: object
+          required: [content]
+          properties:
+            content:
+              type: string
+
+    ExpiredState:
+      type: object
+      required: [status, reason]
+      properties:
+        status:
+          type: string
+          const: expired
+        reason:
+          type: string
+          enum: [timeout, cancelled, superseded]
+
+    RequestState:
+      oneOf:
+        - $ref: '#/components/schemas/PendingState'
+        - $ref: '#/components/schemas/AnsweredState'
+        - $ref: '#/components/schemas/ExpiredState'
+      discriminator:
+        propertyName: status
+
     Session:
       type: object
+      required: [id, callerId, displayName, createdAt, lastActivityAt]
       properties:
         id:
           type: string
         callerId:
           type: string
         displayName:
-          type: string
-          nullable: true
+          type: [string, 'null']
         createdAt:
           type: string
           format: date-time
@@ -221,6 +435,7 @@ components:
 
     Message:
       type: object
+      required: [id, sessionId, role, content, files, createdAt, awaitsReply]
       properties:
         id:
           type: string
@@ -232,9 +447,16 @@ components:
         content:
           type: string
         files:
-          type: string
-          nullable: true
-          description: JSON-encoded array of {path, content} objects
+          oneOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/InjectedFile'
+            - type: 'null'
         createdAt:
           type: string
           format: date-time
+        awaitsReply:
+          type: boolean
+          description: |
+            True for an AI message that opened a request. False for async
+            notes and human messages.

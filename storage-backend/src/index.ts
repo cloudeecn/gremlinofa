@@ -33,8 +33,14 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Start server
-const server = app.listen(config.port, () => {
+// Express 5 hands bind errors (EADDRINUSE, EACCES) to this callback instead of
+// throwing. Exit non-zero, or systemd's Restart=on-failure never fires.
+const server = app.listen(config.port, err => {
+  if (err) {
+    console.error(`Storage backend failed to listen on port ${config.port}:`, err.message);
+    closeDatabase();
+    process.exit(1);
+  }
   console.log(`Storage backend listening on port ${config.port}`);
   console.log(`Database: ${config.dbPath}`);
   const corsDisplay = config.corsOrigins

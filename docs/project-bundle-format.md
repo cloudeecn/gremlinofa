@@ -1,6 +1,6 @@
 # Project Bundle Format (`.gremlin.json`)
 
-A `.gremlin.json` file is a portable, self-contained snapshot of a GremlinOFA project. It includes everything needed to recreate a project: settings, system prompt, tool config, and virtual filesystem contents. No encryption keys involved — it's plain JSON you can read, write, or generate with a script.
+A `.gremlin.json` file is a portable, self-contained snapshot of a GremlinOFA project. It includes everything needed to recreate a project: settings, system prompt, tool config, and virtual filesystem contents. Passwords are the exception (see [secrets](#secrets-stay-home)). No encryption keys involved — it's plain JSON you can read, write, or generate with a script.
 
 Vibe-coded, but it works.
 
@@ -63,6 +63,7 @@ When imported, a fresh `id`, `createdAt`, and `lastUsedAt` are generated automat
 | `disableStream`                | boolean                 | `false` | Disable streaming (use non-streaming API).                                                  |
 | `extendedContext`              | boolean                 | `false` | Enable extended context window (Anthropic 1M beta).                                         |
 | `noLineNumbers`                | boolean                 | `false` | Strip line numbers from filesystem/memory tool output.                                      |
+| `remoteVfsUrl`                 | string                  | (none)  | Remote VFS backend URL. Its password is never exported, see [secrets](#secrets-stay-home).  |
 
 ### Tool Options
 
@@ -87,6 +88,17 @@ Example:
   }
 }
 ```
+
+### Secrets Stay Home
+
+A bundle is plain JSON, and plain JSON gets pasted into chats, committed to repos and emailed to friends. So export leaves out every credential:
+
+- `remoteVfsPassword`, the Remote VFS server password.
+- Any tool option its tool definition marks as secret. Today that's `toolOptions.minion.remotePassword`, the Touch Grass API password.
+
+The fields next to them survive (`remoteVfsUrl`, `toolOptions.minion.remoteEndpoint`), so an imported project knows where to connect but not how to log in. Re-enter the passwords in project settings after importing.
+
+Import is not picky about it: a hand-written or older bundle that does carry these fields imports them as-is.
 
 ### Cross-Instance Portability
 

@@ -4,7 +4,6 @@
   "type": "module",
   "description": "SQLite-based remote storage backend for GremlinOFA - because your data deserves a proper home, not some flimsy IndexDB",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "license": "Apache-2.0",
   "scripts": {
     "build": "node esbuild.config.js",
@@ -38,6 +37,6 @@
     "vitest": "^4.1.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }

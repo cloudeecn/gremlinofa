@@ -246,3 +246,51 @@ describe('MinionChatView', () => {
     expect(capturedOnDeleteMessage).toBeUndefined();
   });
 });
+
+describe('MinionChatView remote (human) minion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedOnDeleteMessage = undefined;
+    mockUseMinionChat.mockReturnValue({
+      minionChat: { ...mockMinionChat, remote: true, remoteSessionId: 'tg_1' },
+      messages: mockMessages,
+      isLoading: false,
+      tokenUsage: mockTokenUsage,
+      isRemote: true,
+      deleteMessage: mockDeleteMessage,
+      rollbackToMessage: mockRollbackToMessage,
+      cloneToChat: mockCloneToChat,
+      isCloning: false,
+    });
+  });
+
+  it('hides rollback and delete so the local copy keeps matching the backend', () => {
+    renderView();
+    expect(screen.getByTestId('has-on-action').textContent).toBe('false');
+    expect(screen.getByTestId('has-on-delete').textContent).toBe('false');
+    expect(capturedOnDeleteMessage).toBeUndefined();
+  });
+
+  it('labels the transcript read-only and explains why on hover', () => {
+    renderView();
+    const badge = screen.getByText(/Human minion · read-only/);
+    expect(badge.getAttribute('title')).toMatch(/Touch Grass/);
+  });
+
+  it('shows no read-only label for an ordinary minion', () => {
+    mockUseMinionChat.mockReturnValue({
+      minionChat: mockMinionChat,
+      messages: mockMessages,
+      isLoading: false,
+      tokenUsage: mockTokenUsage,
+      isRemote: false,
+      deleteMessage: mockDeleteMessage,
+      rollbackToMessage: mockRollbackToMessage,
+      cloneToChat: mockCloneToChat,
+      isCloning: false,
+    });
+    renderView();
+    expect(screen.queryByText(/read-only/)).toBeNull();
+    expect(screen.getByTestId('has-on-action').textContent).toBe('true');
+  });
+});

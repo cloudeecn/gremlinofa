@@ -11,7 +11,12 @@ installLogTimestamps();
 
 const app = createVfsApp();
 
-const server = app.listen(config.port, () => {
+const server = app.listen(config.port, err => {
+  // Express 5 hands bind errors (EADDRINUSE, EACCES) to this callback instead of throwing.
+  if (err) {
+    console.error(`VFS backend failed to listen on port ${config.port}:`, err);
+    process.exit(1);
+  }
   console.log(`VFS backend listening on port ${config.port}`);
   console.log(`Data directory: ${config.dataDir}`);
   console.log(`Auth: ${config.authPassword ? 'password required' : 'dev mode (no password)'}`);

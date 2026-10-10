@@ -10,5 +10,9 @@
   "vfs-server": {
     "dest": "/opt/gremlinofa-vfs",
     "postDeploy": "npm install --omit=dev"
+  },
+  "touch-grass": {
+    "dest": "you@gremlin.example.com:/opt/gremlinofa-touch-grass",
+    "postDeploy": "npm install --omit=dev"
   }
 }

@@ -2,8 +2,25 @@
  * Configuration from environment variables for standalone VFS server.
  */
 
-import 'dotenv/config';
+import dotenv from 'dotenv';
+import path from 'node:path';
 import { loadVfsAccessConfig, type VfsAccessConfig } from '../vfsEngine/accessConfig.js';
+
+// Not `import 'dotenv/config'`: that skips an env file it can't read without a
+// word, and the server would start in no-password dev mode.
+// A missing file is fine (plain environment variables work too).
+const envFilePath = process.env.DOTENV_CONFIG_PATH || undefined;
+const envFileError: NodeJS.ErrnoException | undefined = dotenv.config({
+  path: envFilePath,
+  quiet: true,
+}).error;
+if (envFileError && envFileError.code !== 'ENOENT') {
+  console.error(
+    `Cannot read env file ${path.resolve(envFilePath ?? '.env')} (${envFileError.code ?? envFileError.message}). ` +
+      'It must be readable by the user the server runs as; refusing to start without it.'
+  );
+  process.exit(1);
+}
 
 function parseCorsOrigin(): string[] | '*' | null {
   const corsOrigin = process.env.CORS_ORIGIN || '';

@@ -4,7 +4,6 @@
   "type": "module",
   "description": "Remote human minion backend for GremlinOFA - because sometimes the best AI is a person who went outside",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "license": "Apache-2.0",
   "scripts": {
     "build": "node esbuild.config.js",
@@ -17,21 +16,24 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "format:silent": "prettier --write . --log-level silent",
-    "verify": "CI=true prettier --check . && tsc --noEmit && eslint ."
+    "verify": "CI=true prettier --check . && tsc --noEmit && tsc -p tsconfig.test.json && eslint ."
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
     "dotenv": "^17.2.3",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "marked": "^17.0.6"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@types/better-sqlite3": "^7.6.12",
     "@types/express": "^5.0.0",
+    "@types/jsdom": "^27.0.0",
     "@types/node": "^24.10.0",
     "esbuild": "^0.28.1",
     "eslint": "^9.39.1",
     "globals": "^16.5.0",
+    "jsdom": "^27.4.0",
     "prettier": "^3.6.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
@@ -39,6 +41,6 @@
     "vitest": "^4.1.8"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }

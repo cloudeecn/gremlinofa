@@ -10,14 +10,17 @@
 import { Tables } from '../services/storage/StorageAdapter';
 import { generateUniqueId } from '../protocol/idGenerator';
 import { normalizePath, getPathSegments } from './lib/vfsPaths';
+import { isTextOption } from '../protocol/types';
 import type {
   BundleFileEntry,
   Project,
   ProjectBundle,
+  ToolOptions,
   VfsFile,
   VfsNode,
   VfsTree,
 } from '../protocol/types';
+import type { ClientSideToolRegistry } from '../services/tools/clientSideTools';
 import type { BackendDeps } from './backendDeps';
 import type { ProjectExportEvent } from '../protocol/protocol';
 import { ProtocolError } from './GremlinServer';
@@ -90,16 +93,58 @@ export function collectLiveEntries(
 }
 
 /**
- * Strip transient fields from a project for export.
- * Removes id, createdAt, lastUsedAt — these are regenerated on import.
+ * Drop every tool option whose registry definition is marked `secret`. Options
+ * of tools the registry doesn't know are kept: with no definition there is
+ * nothing that says they are credentials. Import doesn't validate
+ * `toolOptions`, so an entry can be null, a string or an array from a
+ * hand-written bundle; those are kept verbatim since they hold no keyed option.
  */
-export function stripProjectForExport(project: Project): Record<string, unknown> {
+function stripSecretToolOptions(
+  toolOptions: Record<string, ToolOptions>,
+  toolRegistry: Pick<ClientSideToolRegistry, 'get'>
+): Record<string, ToolOptions> {
+  const kept: Record<string, ToolOptions> = {};
+  for (const [toolName, options] of Object.entries(toolOptions)) {
+    const secretIds = new Set(
+      (toolRegistry.get(toolName)?.optionDefinitions ?? [])
+        .filter(def => isTextOption(def) && def.secret)
+        .map(def => def.id)
+    );
+    const isKeyedObject = !!options && typeof options === 'object' && !Array.isArray(options);
+    kept[toolName] =
+      secretIds.size === 0 || !isKeyedObject
+        ? options
+        : Object.fromEntries(Object.entries(options).filter(([id]) => !secretIds.has(id)));
+  }
+  return kept;
+}
+
+/**
+ * Strip a project for export. Drops id, createdAt and lastUsedAt (regenerated
+ * on import) and every credential: `remoteVfsPassword` plus the tool options
+ * the registry marks `secret`. Bundles are plain JSON that get shared around,
+ * so the importer re-enters passwords in project settings. Import still
+ * accepts a bundle that carries them.
+ */
+export function stripProjectForExport(
+  project: Project,
+  toolRegistry: Pick<ClientSideToolRegistry, 'get'>
+): Record<string, unknown> {
   const serialized = {
     ...project,
     createdAt: project.createdAt.toISOString(),
     lastUsedAt: project.lastUsedAt.toISOString(),
+    ...(project.toolOptions && {
+      toolOptions: stripSecretToolOptions(project.toolOptions, toolRegistry),
+    }),
   };
-  const { id: _id, createdAt: _ca, lastUsedAt: _lu, ...rest } = serialized;
+  const {
+    id: _id,
+    createdAt: _ca,
+    lastUsedAt: _lu,
+    remoteVfsPassword: _remoteVfsPassword,
+    ...rest
+  } = serialized;
   return rest;
 }
 
@@ -231,13 +276,13 @@ export async function* runProjectExport(
   deps: BackendDeps,
   projectId: string
 ): AsyncGenerator<ProjectExportEvent, void, void> {
-  const { storage, encryption } = deps;
+  const { storage, encryption, toolRegistry } = deps;
 
   const project = await storage.getProject(projectId);
   if (!project) {
     throw new ProtocolError('INVALID_PARAMS', `Project not found: ${projectId}`);
   }
-  const strippedProject = stripProjectForExport(project);
+  const strippedProject = stripProjectForExport(project, toolRegistry);
 
   const adapter = storage.getAdapter();
   const metaRecord = await adapter.get(Tables.VFS_META, `vfs_meta_${projectId}`);

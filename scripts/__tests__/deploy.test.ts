@@ -1,12 +1,30 @@
 // @vitest-environment node
+import { spawnSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   main,
   parseDest,
   planDeploy,
   shellQuote,
+  TARGETS,
   validateConfig,
   type PlanOptions,
 } from '../deploy.ts';
+
+function readRepoJson(name: string): unknown {
+  return JSON.parse(readFileSync(new URL(`../../${name}`, import.meta.url), 'utf8'));
+}
 
 const opts: PlanOptions = {
   repoRoot: '/repo',
@@ -60,6 +78,14 @@ describe('validateConfig', () => {
     });
   });
 
+  it('accepts the committed example config with every target', () => {
+    const config = validateConfig(
+      readRepoJson('deploy.config.example.json'),
+      'deploy.config.example.json'
+    );
+    expect(Object.keys(config).sort()).toEqual(Object.keys(TARGETS).sort());
+  });
+
   it('rejects unknown targets and fields', () => {
     expect(() => validateConfig({ frontned: { dest: '/x' } }, 'cfg')).toThrow(/unknown target/);
     expect(() => validateConfig({ server: { dest: '/x', postdeploy: 'npm i' } }, 'cfg')).toThrow(
@@ -80,6 +106,15 @@ describe('validateConfig', () => {
     expect(() => validateConfig({ server: { dest: '/x', rsyncArgs: [1] } }, 'cfg')).toThrow(
       /rsyncArgs/
     );
+  });
+});
+
+describe('TARGETS', () => {
+  it('builds every target with a root npm script', () => {
+    const { scripts } = readRepoJson('package.json') as { scripts: Record<string, string> };
+    for (const spec of Object.values(TARGETS)) {
+      expect(scripts).toHaveProperty([spec.buildScript]);
+    }
   });
 });
 
@@ -148,6 +183,31 @@ describe('planDeploy', () => {
     });
   });
 
+  it('syncs touch-grass from its package dist and keeps its database', () => {
+    const { steps } = planDeploy(
+      { 'touch-grass': { dest: 'h:/opt/gremlinofa-touch-grass' } },
+      ['touch-grass'],
+      opts
+    );
+    expect(steps[0].argv).toEqual(['npm', 'run', 'build:touch-grass']);
+    expect(steps[1].argv).toEqual([
+      'rsync',
+      '-rc',
+      '--delete',
+      '--filter=+ .env.example',
+      '--filter=- .env',
+      '--filter=- .env.*',
+      '--filter=- *.env',
+      '--filter=- /data',
+      '--filter=- /node_modules',
+      '--filter=- /package-lock.json',
+      '--filter=- /*.db*',
+      '/repo/touch-grass-backend/dist/',
+      'h:/opt/gremlinofa-touch-grass',
+    ]);
+    expect(steps[1].requires).toBe('/repo/touch-grass-backend/dist/index.js');
+  });
+
   it('resolves a relative local dest against the config file', () => {
     const { steps } = planDeploy({ frontend: { dest: '../www' } }, ['frontend'], {
       ...opts,
@@ -206,6 +266,93 @@ describe('planDeploy', () => {
     expect(() => planDeploy({ server: { dest: 'h::mod' } }, ['server'], opts)).toThrow(
       /^server: rsync daemon/
     );
+  });
+});
+
+const hasRsync = spawnSync('rsync', ['--version']).status === 0;
+
+describe.skipIf(!hasRsync)('planned rsync against a real destination', () => {
+  let scratch: string;
+  beforeEach(() => {
+    scratch = mkdtempSync(path.join(tmpdir(), 'deploy-rsync-'));
+  });
+  afterEach(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it('keeps runtime state, including symlinked data and node_modules, and deletes stale files', () => {
+    const repoRoot = path.join(scratch, 'repo');
+    const distDir = path.join(repoRoot, 'touch-grass-backend/dist');
+    mkdirSync(path.join(distDir, 'static'), { recursive: true });
+    writeFileSync(path.join(distDir, 'index.js'), 'new');
+    writeFileSync(path.join(distDir, 'static/app.js'), 'new');
+    writeFileSync(path.join(distDir, '.env.example'), 'new');
+
+    const dest = path.join(scratch, 'dest');
+    const elsewhere = path.join(scratch, 'elsewhere');
+    mkdirSync(path.join(elsewhere, 'data'), { recursive: true });
+    mkdirSync(path.join(elsewhere, 'node_modules'), { recursive: true });
+    mkdirSync(path.join(dest, 'static'), { recursive: true });
+    symlinkSync(path.join(elsewhere, 'data'), path.join(dest, 'data'));
+    symlinkSync(path.join(elsewhere, 'node_modules'), path.join(dest, 'node_modules'));
+    const operatorFiles = [
+      '.env',
+      '.env.local',
+      '.env.production',
+      'prod.env',
+      'touch-grass.db',
+      'package-lock.json',
+    ];
+    for (const file of [...operatorFiles, '.env.example', 'index.js', 'stale.js']) {
+      writeFileSync(path.join(dest, file), 'old');
+    }
+    writeFileSync(path.join(dest, 'static/removed.css'), 'old');
+
+    const { steps } = planDeploy({ 'touch-grass': { dest } }, ['touch-grass'], {
+      repoRoot,
+      configPath: path.join(repoRoot, 'deploy.config.json'),
+      build: false,
+      dryRun: false,
+    });
+    const [sync] = steps;
+    const rsync = spawnSync(sync.argv[0], sync.argv.slice(1), { encoding: 'utf8' });
+    expect(rsync.stderr).toBe('');
+    expect(rsync.status).toBe(0);
+
+    expect(readlinkSync(path.join(dest, 'data'))).toBe(path.join(elsewhere, 'data'));
+    expect(readlinkSync(path.join(dest, 'node_modules'))).toBe(
+      path.join(elsewhere, 'node_modules')
+    );
+    for (const file of operatorFiles) {
+      expect(readFileSync(path.join(dest, file), 'utf8')).toBe('old');
+    }
+    expect(readFileSync(path.join(dest, '.env.example'), 'utf8')).toBe('new');
+    expect(readFileSync(path.join(dest, 'index.js'), 'utf8')).toBe('new');
+    expect(readFileSync(path.join(dest, 'static/app.js'), 'utf8')).toBe('new');
+    expect(existsSync(path.join(dest, 'stale.js'))).toBe(false);
+    expect(existsSync(path.join(dest, 'static/removed.css'))).toBe(false);
+  });
+
+  it('lets a user exclude keep .env.example out of the sync', () => {
+    const repoRoot = path.join(scratch, 'repo');
+    const distDir = path.join(repoRoot, 'dist/server');
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(path.join(distDir, 'server.js'), 'new');
+    writeFileSync(path.join(distDir, '.env.example'), 'new');
+    const dest = path.join(scratch, 'dest');
+    mkdirSync(dest);
+    writeFileSync(path.join(dest, '.env.example'), 'old');
+
+    const { steps } = planDeploy({ server: { dest, exclude: ['.env.example'] } }, ['server'], {
+      repoRoot,
+      configPath: path.join(repoRoot, 'deploy.config.json'),
+      build: false,
+      dryRun: false,
+    });
+    const rsync = spawnSync(steps[0].argv[0], steps[0].argv.slice(1), { encoding: 'utf8' });
+    expect(rsync.status).toBe(0);
+    expect(readFileSync(path.join(dest, '.env.example'), 'utf8')).toBe('old');
+    expect(readFileSync(path.join(dest, 'server.js'), 'utf8')).toBe('new');
   });
 });
 

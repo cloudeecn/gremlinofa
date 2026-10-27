@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { createVfsApp, config } from '../app.js';
+import { AUTH_FAILURE_LIMIT } from '../middleware.js';
 import type { Server } from 'http';
+import type { AddressInfo } from 'net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -99,6 +101,37 @@ describe('Auth', () => {
     expect(body.error).toBe('Invalid password');
   });
 
+  it.each([
+    ['a prefix of it', 'testpas'],
+    ['it plus a trailing NUL', 'testpass\0'],
+    ['the same length, last byte off', 'testpasx'],
+    ['an empty password', ''],
+    ['one longer than the comparison buffer', 'testpass'.repeat(200)],
+  ])('rejects a password that is %s', async (_label, password) => {
+    const res = await fetch(`${baseUrl}/api/ls?projectId=${PROJECT}&path=/`, {
+      headers: {
+        Authorization: 'Basic ' + Buffer.from(`testuser:${password}`).toString('base64'),
+      },
+    });
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toBe('Invalid password');
+  });
+
+  it('accepts a UTF-8 AUTH_PASSWORD', async () => {
+    const password = 'pässwörd-✓-草';
+    Object.assign(config, { authPassword: password });
+    try {
+      const res = await fetch(`${baseUrl}/api/ls?projectId=${PROJECT}&path=/`, {
+        headers: {
+          Authorization: 'Basic ' + Buffer.from(`testuser:${password}`, 'utf8').toString('base64'),
+        },
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      Object.assign(config, { authPassword: 'testpass' });
+    }
+  });
+
   it('rejects empty userId', async () => {
     const res = await fetch(`${baseUrl}/api/ls?projectId=${PROJECT}&path=/`, {
       headers: {
@@ -106,6 +139,47 @@ describe('Auth', () => {
       },
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe('Auth failure cap', () => {
+  // Its own app, so its counts don't leak into the shared server's tests.
+  let capServer: Server;
+  let capApi: string;
+
+  beforeEach(async () => {
+    const app = createVfsApp();
+    capServer = await new Promise<Server>(resolve => {
+      const s = app.listen(0, () => resolve(s));
+    });
+    capApi = `http://127.0.0.1:${(capServer.address() as AddressInfo).port}/api`;
+  });
+
+  afterEach(() => {
+    capServer.closeAllConnections();
+    capServer.close();
+  });
+
+  const wrongAuth = 'Basic ' + Buffer.from('testuser:wrongpass').toString('base64');
+  const ls = (auth: string) =>
+    fetch(`${capApi}/ls?projectId=${PROJECT}&path=/`, { headers: { Authorization: auth } });
+
+  it('refuses a client that sent too many wrong passwords, even with the right one', async () => {
+    for (let attempt = 0; attempt < AUTH_FAILURE_LIMIT; attempt++) {
+      expect((await ls(wrongAuth)).status).toBe(401);
+    }
+    const locked = await ls(AUTH);
+    expect(locked.status).toBe(429);
+    expect(Number(locked.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect(((await locked.json()) as { error: string }).error).toMatch(/Too many failed sign-ins/);
+  });
+
+  it('counts only 401s toward the cap', async () => {
+    const missingFile = `${capApi}/read?projectId=${PROJECT}&path=/nope.txt`;
+    for (let attempt = 0; attempt <= AUTH_FAILURE_LIMIT; attempt++) {
+      expect((await fetch(missingFile, { headers: { Authorization: AUTH } })).status).toBe(404);
+    }
+    expect((await ls(wrongAuth)).status).toBe(401);
   });
 });
 

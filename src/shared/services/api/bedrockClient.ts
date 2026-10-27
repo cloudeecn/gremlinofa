@@ -492,13 +492,22 @@ export class BedrockClient implements APIClient {
           }),
         ]);
 
-      console.debug(`[BedrockClient] Foundation models for ${apiDefinition.name}:`, modelsResponse);
       console.debug(
-        `[BedrockClient] Inference profiles for ${apiDefinition.name}:`,
+        '[BedrockClient] Foundation models for %s:',
+        apiDefinition.name,
+        modelsResponse
+      );
+      console.debug(
+        '[BedrockClient] Inference profiles for %s:',
+        apiDefinition.name,
         profilesResponse
       );
-      console.debug(`[BedrockClient] Imported models for ${apiDefinition.name}:`, importedResponse);
-      console.debug(`[BedrockClient] Custom models for ${apiDefinition.name}:`, customResponse);
+      console.debug(
+        '[BedrockClient] Imported models for %s:',
+        apiDefinition.name,
+        importedResponse
+      );
+      console.debug('[BedrockClient] Custom models for %s:', apiDefinition.name, customResponse);
 
       // Build modelArn → model map from primary region foundation models
       const arnToModel = new Map<string, FoundationModelSummary>();

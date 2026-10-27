@@ -291,7 +291,7 @@ export const apiErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
   }
   const { status, message } = classifyError(err);
   if (status >= 500) {
-    console.error(`API ${req.method} ${req.originalUrl} failed:`, err);
+    console.error('API %s %s failed:', req.method, req.originalUrl, err);
   }
   res.status(status).json({ error: message });
 };

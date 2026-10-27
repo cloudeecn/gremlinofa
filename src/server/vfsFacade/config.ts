@@ -3,6 +3,7 @@
  */
 
 import dotenv from 'dotenv';
+import express from 'express';
 import path from 'node:path';
 import { loadVfsAccessConfig, type VfsAccessConfig } from '../vfsEngine/accessConfig.js';
 
@@ -34,9 +35,29 @@ function parseCorsOrigin(): string[] | '*' | null {
     .filter(Boolean);
 }
 
+type TrustProxySetting = boolean | number | string;
+
+/** Same values as touch-grass: empty or false, true, a hop count, or Express's address list. */
+function parseTrustProxy(): TrustProxySetting {
+  const raw = process.env.TRUST_PROXY?.trim() ?? '';
+  if (raw === '' || /^false$/i.test(raw)) return false;
+  if (/^true$/i.test(raw)) return true;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  // Express compiles the list when createVfsApp applies it, so a typo would
+  // surface there as a stack trace. A throwaway app catches it at boot instead.
+  try {
+    express().set('trust proxy', raw);
+  } catch (err) {
+    console.error(`TRUST_PROXY '${raw}' is not valid: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  return raw;
+}
+
 export interface VfsFacadeConfig {
   port: number;
   corsOrigins: string[] | '*' | null;
+  trustProxy: TrustProxySetting;
   dataDir: string;
   authPassword: string;
   accessConfig: VfsAccessConfig;
@@ -48,6 +69,12 @@ export const config: VfsFacadeConfig = {
 
   /** CORS origins (null = same-domain only, '*' = allow all, array = specific origins) */
   corsOrigins: parseCorsOrigin(),
+
+  /**
+   * Express `trust proxy`. Behind a reverse proxy it lets the auth-failure
+   * limiter tell clients apart instead of counting all of them as the proxy.
+   */
+  trustProxy: parseTrustProxy(),
 
   /** Root directory for all user files */
   dataDir: process.env.DATA_DIR || './data',

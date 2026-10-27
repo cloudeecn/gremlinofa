@@ -1,4 +1,5 @@
-import type { RequestHandler } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
+import { rateLimit, type RateLimitInfo } from 'express-rate-limit';
 import type { CorsOrigins } from './config.js';
 import crypto from 'crypto';
 
@@ -47,6 +48,46 @@ export function createApiAuth(apiPassword: string): RequestHandler {
     req.callerId = callerId;
     next();
   };
+}
+
+export const AUTH_FAILURE_LIMIT = 100;
+const AUTH_FAILURE_WINDOW_MS = 15 * 60_000;
+
+/** Sends the 429; `retryAfterSeconds` is already in the Retry-After header. */
+export type AuthFailureResponder = (req: Request, res: Response, retryAfterSeconds: number) => void;
+
+/** express-rate-limit puts its counters on the request but doesn't type them there. */
+function retryAfterSeconds(req: Request): number {
+  const { resetTime } = (req as Request & { rateLimit: RateLimitInfo }).rateLimit;
+  const msLeft = resetTime ? resetTime.getTime() - Date.now() : AUTH_FAILURE_WINDOW_MS;
+  return Math.max(1, Math.ceil(msLeft / 1000));
+}
+
+/**
+ * Caps wrong-password guessing: a client address that collects
+ * AUTH_FAILURE_LIMIT 401s in a window is refused everything until the window
+ * ends, the right password included (letting that through would let a guesser
+ * keep going). Only 401s count, but express-rate-limit counts a request when it
+ * starts and refunds it when it finishes, so requests still in flight (held
+ * long-polls among them) count too: the limit has to stay well above a
+ * client's concurrency. Each app builds its own, so each gets its own counts.
+ */
+export function createAuthFailureLimiter(respond: AuthFailureResponder): RequestHandler {
+  return rateLimit({
+    windowMs: AUTH_FAILURE_WINDOW_MS,
+    limit: AUTH_FAILURE_LIMIT,
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (_req, res) => res.statusCode !== 401,
+    standardHeaders: false,
+    legacyHeaders: false,
+    // config.ts already warns about TRUST_PROXY=true at boot.
+    validate: { trustProxy: false },
+    handler: (req, res) => {
+      const seconds = retryAfterSeconds(req);
+      res.setHeader('Retry-After', String(seconds));
+      respond(req, res, seconds);
+    },
+  });
 }
 
 const CORS_PREFLIGHT_MAX_AGE_SECONDS = 600;

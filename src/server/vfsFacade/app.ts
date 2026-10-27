@@ -7,12 +7,13 @@
  */
 
 import express from 'express';
-import { basicAuth, cors } from './middleware.js';
+import { basicAuth, cors, createAuthFailureLimiter } from './middleware.js';
 import { createRouter } from './routes.js';
 import { config } from './config.js';
 
 export function createVfsApp() {
   const app = express();
+  app.set('trust proxy', config.trustProxy);
 
   // CORS before auth
   app.use(cors);
@@ -22,8 +23,8 @@ export function createVfsApp() {
     res.json({ status: 'ok' });
   });
 
-  // Auth for all API routes
-  app.use('/api', basicAuth);
+  // Auth for all API routes, behind the wrong-password cap
+  app.use('/api', createAuthFailureLimiter(), basicAuth);
 
   // Mount API routes
   app.use('/api', createRouter(config.dataDir, config.accessConfig));

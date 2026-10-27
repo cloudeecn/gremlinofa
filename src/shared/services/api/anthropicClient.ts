@@ -430,11 +430,13 @@ export class AnthropicClient implements APIClient {
         ]);
 
         console.debug(
-          `[AnthropicClient] Bedrock foundation models for ${apiDefinition.name}:`,
+          '[AnthropicClient] Bedrock foundation models for %s:',
+          apiDefinition.name,
           modelsResponse
         );
         console.debug(
-          `[AnthropicClient] Bedrock inference profiles for ${apiDefinition.name}:`,
+          '[AnthropicClient] Bedrock inference profiles for %s:',
+          apiDefinition.name,
           profilesResponse
         );
 
@@ -497,14 +499,14 @@ export class AnthropicClient implements APIClient {
 
     // Use Anthropic's models API to get the latest available models
     const modelsResponse = await client.models.list();
-    console.debug(`Models for ${apiDefinition.name}:`, modelsResponse);
+    console.debug('Models for %s:', apiDefinition.name, modelsResponse);
 
     // Convert Anthropic models to our Model format
     const models: Model[] = modelsResponse.data.map(anthropicModel => ({
       ...getModelMetadataFor(apiDefinition, anthropicModel.id),
       name: anthropicModel.display_name || anthropicModel.id,
     }));
-    console.debug(`Argumented models for ${apiDefinition.name}:`, models);
+    console.debug('Argumented models for %s:', apiDefinition.name, models);
     return models;
   }
 

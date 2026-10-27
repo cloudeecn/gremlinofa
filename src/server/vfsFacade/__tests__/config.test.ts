@@ -75,3 +75,40 @@ describe('VFS server env file loading', () => {
     }
   );
 });
+
+describe('VFS server TRUST_PROXY', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  async function trustProxyFor(raw: string | undefined) {
+    vi.stubEnv('DOTENV_CONFIG_PATH', path.join(os.tmpdir(), 'vfs-facade-no-such.env'));
+    vi.stubEnv('TRUST_PROXY', raw);
+    return (await loadConfig()).trustProxy;
+  }
+
+  it.each([
+    [undefined, false],
+    ['', false],
+    ['FALSE', false],
+    ['true', true],
+    ['1', 1],
+    [' loopback ', 'loopback'],
+    ['10.0.0.1, 10.0.0.2', '10.0.0.1, 10.0.0.2'],
+  ])('reads %j as %j', async (raw, expected) => {
+    expect(await trustProxyFor(raw)).toEqual(expected);
+  });
+
+  it('exits 1 on a value Express rejects', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(code => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(trustProxyFor('lopback')).rejects.toThrow('process.exit(1)');
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("TRUST_PROXY 'lopback'"));
+  });
+});

@@ -110,10 +110,12 @@ function settle() {
 }
 
 function openPage(html: string, options: OpenOptions) {
-  const { window } = new JSDOM(html.replace(/<script [^>]*><\/script>/, ''), {
+  const { window } = new JSDOM(html, {
     url: ORIGIN + options.url,
     runScripts: 'outside-only',
   });
+  // app.js arrives through window.eval below, so the page's own tag goes.
+  window.document.querySelectorAll('script').forEach(script => script.remove());
   for (const [key, value] of Object.entries(options.sessionStorage ?? {})) {
     window.sessionStorage.setItem(key, value);
   }

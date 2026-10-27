@@ -299,7 +299,7 @@ export class ResponsesClient implements APIClient {
       populateFromOpenRouterModel(model, rawModel as unknown as OpenRouterModel);
       return model;
     });
-    console.debug(`Argumented models for ${apiDefinition.name}:`, models);
+    console.debug('Argumented models for %s:', apiDefinition.name, models);
     return models;
   }
 

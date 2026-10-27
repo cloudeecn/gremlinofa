@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../src/config.js';
 import * as db from '../src/db.js';
+import { AUTH_FAILURE_LIMIT } from '../src/middleware.js';
 import { deriveCookieKey, signWebCookie, WEB_COOKIE_NAME } from '../src/webAuth.js';
 import { makeCaller, startTestServer, type TestServer } from './helpers.js';
 
@@ -228,6 +229,32 @@ describe('login', () => {
     expect(res.status).toBe(303);
     expect(proxiedLocation(res, '/web/logout')).toBe('/grass/web/login');
     expect(res.headers.getSetCookie()).toEqual(['tg_auth=; Max-Age=0; HttpOnly; SameSite=Strict']);
+  });
+
+  it('caps 401s per client: past the limit every page is a 429, the login page included', async () => {
+    for (let attempt = 0; attempt < AUTH_FAILURE_LIMIT; attempt++) {
+      expect((await web('/web/api/sessions')).status).toBe(401);
+    }
+    const page = await web('/web/login');
+    expect(page.status).toBe(429);
+    expect(Number(page.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect(page.headers.get('content-type')).toMatch(/text\/html/);
+    expect(await page.text()).toContain('Too many failed sign-ins from your address');
+
+    const poll = await web('/web/api/sessions');
+    expect(poll.status).toBe(429);
+    expect(poll.headers.get('content-type')).toMatch(/application\/json/);
+  });
+
+  it("doesn't count the login backoff's own 429s toward the cap", async () => {
+    // From the fifth miss on the backoff answers 429 itself, so only four 401s reach the cap.
+    let lockouts = 0;
+    for (let attempt = 0; attempt < AUTH_FAILURE_LIMIT + 5; attempt++) {
+      const res = await web('/web/login', { form: { password: 'nope' } });
+      if (res.status === 429) lockouts++;
+    }
+    expect(lockouts).toBe(AUTH_FAILURE_LIMIT + 1);
+    expect((await web('/web/login')).status).toBe(200);
   });
 });
 

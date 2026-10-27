@@ -992,7 +992,7 @@ export class UnifiedStorage {
             onProgress(compressedCount + skippedCount + errorCount, totalMessages, chat.name);
           }
         } catch (error) {
-          console.error(`[Storage] Error processing message ${message.id}:`, error);
+          console.error('[Storage] Error processing message %s:', message.id, error);
           errorCount++;
 
           if (onProgress) {

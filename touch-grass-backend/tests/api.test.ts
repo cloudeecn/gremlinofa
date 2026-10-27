@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../src/config.js';
 import * as db from '../src/db.js';
+import { AUTH_FAILURE_LIMIT } from '../src/middleware.js';
 import {
   answerAsHuman,
   basicAuth,
@@ -128,6 +129,36 @@ describe('auth', () => {
   it('checks credentials before reading the body', async () => {
     const res = await call('/api/sessions', { method: 'POST', body: '{not json', auth: null });
     expect(res.status).toBe(401);
+  });
+
+  it('refuses a client that sent too many wrong passwords, even with the right one', async () => {
+    const wrong = basicAuth('caller', 'nope');
+    for (let attempt = 0; attempt < AUTH_FAILURE_LIMIT; attempt++) {
+      expect((await call('/api/sessions', { method: 'POST', body: {}, auth: wrong })).status).toBe(
+        401
+      );
+    }
+    const locked = await call('/api/sessions', {
+      method: 'POST',
+      body: {},
+      headers: { Origin: ALLOWED_ORIGIN },
+    });
+    expect(locked.status).toBe(429);
+    expect(Number(locked.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect(locked.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
+    expect(((await locked.json()) as { error: string }).error).toMatch(/wrong API passwords/);
+  });
+
+  it('counts only 401s toward the cap', async () => {
+    for (let attempt = 0; attempt <= AUTH_FAILURE_LIMIT; attempt++) {
+      expect((await call('/api/sessions/00ff')).status).toBe(404);
+    }
+    const wrong = await call('/api/sessions', {
+      method: 'POST',
+      body: {},
+      auth: basicAuth('caller', 'nope'),
+    });
+    expect(wrong.status).toBe(401);
   });
 });
 

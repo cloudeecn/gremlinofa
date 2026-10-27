@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import type { Config } from './config.js';
 import { apiErrorHandler, apiNotFound, createApiRouter } from './apiRoutes.js';
 import { classifyError } from './httpErrors.js';
-import { createApiAuth, createCors } from './middleware.js';
+import { createApiAuth, createAuthFailureLimiter, createCors } from './middleware.js';
 import type { PollRegistry } from './pollManager.js';
 import { createWebRouter } from './webRoutes.js';
 
@@ -19,7 +19,7 @@ const fallbackErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
   }
   const { status, message } = classifyError(err);
   if (status >= 500) {
-    console.error(`${req.method} ${req.originalUrl} failed:`, err);
+    console.error('%s %s failed:', req.method, req.originalUrl, err);
   }
   res.status(status).type('text/plain').send(message);
 };
@@ -41,9 +41,15 @@ export function createApp(appConfig: Config, polls: PollRegistry): Express {
   });
 
   // Auth runs before the body parser so unauthenticated callers can't make us parse 10 MB.
+  // The limiter sits after cors so its 429 still carries the CORS headers.
   app.use(
     '/api',
     cors,
+    createAuthFailureLimiter((_req, res, seconds) => {
+      res.status(429).json({
+        error: `Too many wrong API passwords from this address. Try again in ${seconds} seconds.`,
+      });
+    }),
     createApiAuth(appConfig.apiPassword),
     express.json({ limit: '10mb' }),
     createApiRouter({ pollTimeoutMs: appConfig.pollTimeoutMs, polls })

@@ -19,7 +19,14 @@ components:
     basicAuth:
       type: http
       scheme: basic
-      description: Username = userId, password = AUTH_PASSWORD
+      description: |
+        Username = userId, password = AUTH_PASSWORD.
+
+        A client address that collects 100 401 responses within 15 minutes gets
+        429 `{ error }` with a Retry-After header (seconds) on every /api request
+        until the window ends, the right password included. Successful requests
+        don't count. The address is the socket peer, or the X-Forwarded-For hop
+        that TRUST_PROXY trusts.
 
   parameters:
     projectId:

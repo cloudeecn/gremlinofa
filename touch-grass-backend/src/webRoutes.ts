@@ -2,6 +2,7 @@ import express, { Router, type ErrorRequestHandler, type Request, type Response 
 import crypto from 'crypto';
 import * as db from './db.js';
 import { classifyError, HttpError, type ClassifiedError } from './httpErrors.js';
+import { createAuthFailureLimiter } from './middleware.js';
 import type { PollRegistry } from './pollManager.js';
 import type { Session, SessionListEntry } from './types.js';
 import {
@@ -137,7 +138,7 @@ const webErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
   }
   const { status, message } = classifyWebError(err);
   if (status >= 500) {
-    console.error(`Web ${req.method} ${req.originalUrl} failed:`, err);
+    console.error('Web %s %s failed:', req.method, req.originalUrl, err);
   }
   if (req.path.startsWith('/api/')) {
     res.status(status).json({ error: message });
@@ -187,6 +188,23 @@ export function createWebRouter({ webPassword, staticDir, polls }: WebRouterOpti
     next();
   });
   router.use(rejectCrossOriginWrites);
+  // A cap on wrong passwords and cookieless /api polls, on top of the login backoff below,
+  // whose own 429s don't count toward it.
+  router.use(
+    createAuthFailureLimiter((req, res, seconds) => {
+      const minutes = Math.ceil(seconds / 60);
+      const message = `Too many failed sign-ins from your address. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+      if (req.path.startsWith('/api/')) {
+        res.status(429).json({ error: message });
+        return;
+      }
+      sendHtml(
+        res,
+        429,
+        errorPage({ base: webRootFor(req.path), title: 'Too many attempts', message })
+      );
+    })
+  );
 
   // ── Public: login and logout ──
 

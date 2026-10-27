@@ -230,7 +230,7 @@ export class OpenAIClient implements APIClient {
 
     // Get all models from the API
     const modelsResponse = await client.models.list();
-    console.debug(`Models for ${apiDefinition.name}:`, modelsResponse);
+    console.debug('Models for %s:', apiDefinition.name, modelsResponse);
 
     // Only filter for OpenAI (no custom baseUrl); custom providers keep all models
     const chatModels = apiDefinition.baseUrl
@@ -287,7 +287,7 @@ export class OpenAIClient implements APIClient {
       populateFromOpenRouterModel(model, rawModel as unknown as OpenRouterModel);
       return model;
     });
-    console.debug(`Argumented models for ${apiDefinition.name}:`, models);
+    console.debug('Argumented models for %s:', apiDefinition.name, models);
     return models;
   }
 

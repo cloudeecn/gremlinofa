@@ -1,8 +1,10 @@
 /**
- * Express middleware for authentication and CORS
+ * Express middleware for authentication, auth-failure limiting and CORS
  */
 
-import type { Request, Response, NextFunction } from 'express';
+import crypto from 'node:crypto';
+import type { Request, RequestHandler, Response, NextFunction } from 'express';
+import { rateLimit, type RateLimitInfo } from 'express-rate-limit';
 import { config } from './config.js';
 
 // Extend Express Request to include userId
@@ -10,6 +12,30 @@ declare module 'express-serve-static-core' {
   interface Request {
     userId?: string;
   }
+}
+
+/** Both sides of the password check are copied into buffers at least this big. */
+const PASSWORD_SLOT_BYTES = 1024;
+
+/**
+ * Constant-time check against AUTH_PASSWORD. Both sides are copied into
+ * equal-size zeroed buffers so timingSafeEqual always covers the same bytes,
+ * and the length check comes after it, so the timing depends only on the
+ * candidate's own length. No hash on purpose: CodeQL's
+ * js/insufficient-password-hash flags a sha256 here even though nothing is
+ * stored.
+ */
+function passwordMatches(candidate: string, expected: string): boolean {
+  const given = Buffer.from(candidate, 'utf8');
+  const wanted = Buffer.from(expected, 'utf8');
+  const slotBytes = Math.max(PASSWORD_SLOT_BYTES, wanted.length);
+  if (given.length > slotBytes) return false;
+  const givenSlot = Buffer.alloc(slotBytes);
+  const wantedSlot = Buffer.alloc(slotBytes);
+  given.copy(givenSlot);
+  wanted.copy(wantedSlot);
+  const bytesMatch = crypto.timingSafeEqual(givenSlot, wantedSlot);
+  return bytesMatch && given.length === wanted.length;
 }
 
 /**
@@ -44,7 +70,7 @@ export function basicAuth(req: Request, res: Response, next: NextFunction): void
     }
 
     // Validate password if AUTH_PASSWORD is configured
-    if (config.authPassword && password !== config.authPassword) {
+    if (config.authPassword && !passwordMatches(password, config.authPassword)) {
       res.status(401).json({ error: 'Invalid password' });
       return;
     }
@@ -54,6 +80,43 @@ export function basicAuth(req: Request, res: Response, next: NextFunction): void
   } catch {
     res.status(401).json({ error: 'Invalid authorization header' });
   }
+}
+
+export const AUTH_FAILURE_LIMIT = 100;
+const AUTH_FAILURE_WINDOW_MS = 15 * 60_000;
+
+/** express-rate-limit puts its counters on the request but doesn't type them there. */
+function retryAfterSeconds(req: Request): number {
+  const { resetTime } = (req as Request & { rateLimit: RateLimitInfo }).rateLimit;
+  const msLeft = resetTime ? resetTime.getTime() - Date.now() : AUTH_FAILURE_WINDOW_MS;
+  return Math.max(1, Math.ceil(msLeft / 1000));
+}
+
+/**
+ * Caps wrong-password guessing: a client address that collects
+ * AUTH_FAILURE_LIMIT 401s in a window gets 429 on everything until the window
+ * ends, the right password included (letting that through would let a
+ * guesser keep going). Only 401s count, but express-rate-limit counts a
+ * request when it starts and refunds it when it finishes, so requests still
+ * in flight count too: the limit has to stay well above a client's
+ * concurrency. Mount it ahead of basicAuth.
+ */
+export function createAuthFailureLimiter(): RequestHandler {
+  return rateLimit({
+    windowMs: AUTH_FAILURE_WINDOW_MS,
+    limit: AUTH_FAILURE_LIMIT,
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (_req, res) => res.statusCode !== 401,
+    standardHeaders: false,
+    legacyHeaders: false,
+    handler: (req, res) => {
+      const seconds = retryAfterSeconds(req);
+      res.setHeader('Retry-After', String(seconds));
+      res.status(429).json({
+        error: `Too many failed sign-ins from this address. Try again in ${seconds} seconds.`,
+      });
+    },
+  });
 }
 
 /**

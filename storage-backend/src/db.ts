@@ -151,8 +151,7 @@ export function saveRecord(
  */
 export function getRecord(userId: string, tableName: string, id: string): RecordResponse | null {
   const row = getGetStmt().get(userId, tableName, id) as
-    | Pick<StoredRecord, 'encryptedData' | 'timestamp' | 'unencryptedData'>
-    | undefined;
+    Pick<StoredRecord, 'encryptedData' | 'timestamp' | 'unencryptedData'> | undefined;
 
   if (!row) return null;
 

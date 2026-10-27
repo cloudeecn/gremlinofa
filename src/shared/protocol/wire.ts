@@ -89,10 +89,7 @@ export interface ErrorEnvelope {
 
 /** Union of every server → client envelope. */
 export type ServerEnvelope =
-  | ResponseEnvelope
-  | StreamEventEnvelope
-  | StreamEndEnvelope
-  | ErrorEnvelope;
+  ResponseEnvelope | StreamEventEnvelope | StreamEndEnvelope | ErrorEnvelope;
 
 /** Union of every client → server envelope. */
 export type ClientEnvelope = RequestEnvelope;

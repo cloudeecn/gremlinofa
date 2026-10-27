@@ -111,12 +111,7 @@ function parseBedrockEndpoint(baseUrl: string | undefined): {
  * Different model families require different reasoning config formats.
  */
 type BedrockModelReasoningType =
-  | 'claude-3'
-  | 'claude-4'
-  | 'nova2'
-  | 'deepseek'
-  | 'generic-reasoning'
-  | 'none';
+  'claude-3' | 'claude-4' | 'nova2' | 'deepseek' | 'generic-reasoning' | 'none';
 
 /**
  * Detect the reasoning type of a Bedrock model from its modelId.

@@ -147,8 +147,7 @@ export interface DeviceAuthStart {
 }
 
 export type DeviceAuthPoll =
-  | { status: 'pending' }
-  | { status: 'ready'; authorizationCode: string; codeVerifier: string };
+  { status: 'pending' } | { status: 'ready'; authorizationCode: string; codeVerifier: string };
 
 async function readBodyText(response: Response): Promise<string> {
   try {

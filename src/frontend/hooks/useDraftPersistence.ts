@@ -12,11 +12,7 @@ interface DraftData {
 
 interface UseDraftPersistenceOptions {
   place:
-    | 'chatview'
-    | 'project-chat'
-    | 'system-prompt-modal'
-    | 'vfs-editor'
-    | 'tool-option-longtext';
+    'chatview' | 'project-chat' | 'system-prompt-modal' | 'vfs-editor' | 'tool-option-longtext';
   contextId: string; // chatId, projectId, or composite key like "projectId|toolName|optionId"
   value: string;
   onChange: (value: string) => void;

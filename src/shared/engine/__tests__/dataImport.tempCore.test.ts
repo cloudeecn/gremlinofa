@@ -47,12 +47,14 @@ describe('importDataFromFile — temp source core (Phase 1.5)', () => {
       exportPaginated: vi.fn(),
       batchGet: vi.fn(),
       getStorageQuota: vi.fn().mockResolvedValue(null),
-      batchSave: vi.fn().mockImplementation(
-        async (_table: string, rows: BatchSaveRow[]): Promise<BatchSaveResult> => ({
-          saved: rows.length,
-          skipped: 0,
-        })
-      ),
+      batchSave: vi
+        .fn()
+        .mockImplementation(
+          async (_table: string, rows: BatchSaveRow[]): Promise<BatchSaveResult> => ({
+            saved: rows.length,
+            skipped: 0,
+          })
+        ),
     };
   });
 

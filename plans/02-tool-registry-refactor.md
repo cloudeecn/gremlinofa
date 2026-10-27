@@ -77,8 +77,7 @@ interface ClientSideTool {
   // Function receives both context (with apiType) AND toolOptions
   // For memory tool: non-Anthropic APIs always get system prompt injection
   systemPrompt?:
-    | string
-    | ((context: SystemPromptContext, toolOptions: ToolOptions) => Promise<string> | string);
+    string | ((context: SystemPromptContext, toolOptions: ToolOptions) => Promise<string> | string);
 
   // Render helpers (unchanged)
   renderInput?: (input: Record<string, unknown>) => string;
@@ -195,9 +194,7 @@ const jsTool: ClientSideTool = {
     },
   ],
   description: 'Execute JavaScript in a QuickJS sandbox (ES2023)...',
-  inputSchema: {
-    /* static */
-  },
+  inputSchema: {/* static */},
   execute: async (input, toolOptions, context) => {
     const vm = await JsVMContext.create(context.projectId, toolOptions.loadLib ?? true);
     // Always show lib output (no first-call tracking)
@@ -260,9 +257,7 @@ const fsTool: ClientSideTool = {
   displayName: 'Filesystem Access',
   // No options - just enable/disable
   description: "Access the project's virtual filesystem...",
-  inputSchema: {
-    /* static */
-  },
+  inputSchema: {/* static */},
   execute: async (input, toolOptions, context) => {
     // Stateless - uses VFS APIs directly
     return executeFsCommand(context.projectId, input);

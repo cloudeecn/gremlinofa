@@ -268,5 +268,4 @@ export type ProjectExportEvent =
  * terminal `done` event carries the final `CompactResult`.
  */
 export type VfsCompactEvent =
-  | { type: 'progress'; progress: CompactProgress }
-  | { type: 'done'; result: CompactResult };
+  { type: 'progress'; progress: CompactProgress } | { type: 'done'; result: CompactResult };

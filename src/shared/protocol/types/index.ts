@@ -114,14 +114,7 @@ export type ModelReasoningMode =
   | 'none'; // Most models, gpt-5-chat, grok-4-non-reasoning
 
 export type ReasoningEffort =
-  | 'none'
-  | 'minimal'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max'
-  | undefined;
+  'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined;
 export type ReasoningSummary = 'auto' | 'concise' | 'detailed' | undefined;
 
 /**
@@ -149,10 +142,7 @@ export type ReasoningDialect = 'openai' | 'thinking-object' | 'enable-thinking' 
  * - `reasoning_context`: OpenAI Responses, `reasoning.context: "all_turns"`
  */
 export type ReasoningHistoryParam =
-  | 'clear_thinking'
-  | 'thinking_keep'
-  | 'preserve_thinking'
-  | 'reasoning_context';
+  'clear_thinking' | 'thinking_keep' | 'preserve_thinking' | 'reasoning_context';
 
 /**
  * OpenAI response-length control. Responses API nests it under `text.verbosity`,
@@ -828,8 +818,7 @@ export type ToolStreamEvent = { type: 'groups_delta'; delta: ToolGroupsDelta };
  * Phase 3 will convert all tools to generators; during transition both are supported.
  */
 export type ToolExecuteReturn =
-  | Promise<ToolResult>
-  | AsyncGenerator<ToolStreamEvent, ToolResult, void>;
+  Promise<ToolResult> | AsyncGenerator<ToolStreamEvent, ToolResult, void>;
 
 // === Tool Option Types ===
 
@@ -1229,8 +1218,7 @@ export interface ClientSideTool {
    * Skipped if getApiOverride() returns non-undefined for the current API type.
    */
   systemPrompt?:
-    | string
-    | ((context: SystemPromptContext, toolOptions: ToolOptions) => Promise<string> | string);
+    string | ((context: SystemPromptContext, toolOptions: ToolOptions) => Promise<string> | string);
   /** Transform tool input for display in tool_use blocks. Default: JSON.stringify */
   renderInput?: (input: Record<string, unknown>) => string;
   /** Transform tool output for display in tool_result blocks. Default: show raw content */

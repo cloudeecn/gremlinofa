@@ -12,9 +12,7 @@ import { WebSocketTransport } from '../websocket';
 import type { RequestEnvelope } from '../../../../shared/protocol/protocol';
 
 type ClientMessage =
-  | RequestEnvelope
-  | { kind: 'stream_cancel'; requestId: string }
-  | { kind: 'ping' };
+  RequestEnvelope | { kind: 'stream_cancel'; requestId: string } | { kind: 'ping' };
 
 let wss: WebSocketServer;
 let port: number;

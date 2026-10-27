@@ -416,8 +416,7 @@ describe('WebSocketTransportServer', () => {
 
       expect(await closePromise).toBe(4001);
       const racingError = received.find(m => m.kind === 'error' && m.requestId === 'req_racing') as
-        | ErrorEnvelope
-        | undefined;
+        ErrorEnvelope | undefined;
       expect(racingError?.code).toBe('NOT_INITIALIZED');
 
       resolveInit({ ok: true });

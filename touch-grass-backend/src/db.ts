@@ -309,8 +309,7 @@ function toMessage(row: MessageRow): SessionMessage {
 
 export function getMessage(id: string): SessionMessage | undefined {
   const row = conn().prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages m WHERE m.id = ?`).get(id) as
-    | MessageRow
-    | undefined;
+    MessageRow | undefined;
   return row ? toMessage(row) : undefined;
 }
 
@@ -462,8 +461,7 @@ export function getRequest(id: string): RequestRecord | undefined {
   const database = conn();
   expireOverdueRequests(database, new Date().toISOString());
   return database.prepare('SELECT * FROM requests WHERE id = ?').get(id) as
-    | RequestRecord
-    | undefined;
+    RequestRecord | undefined;
 }
 
 export function getPendingRequestForSession(sessionId: string): RequestRecord | undefined {
@@ -566,8 +564,7 @@ export function cancelRequest(requestId: string): CancelRequestResult | null {
       )
       .run(now, requestId);
     const request = database.prepare('SELECT * FROM requests WHERE id = ?').get(requestId) as
-      | RequestRecord
-      | undefined;
+      RequestRecord | undefined;
     return request ? { request, cancelled: changes > 0 } : null;
   })();
 }

@@ -39,9 +39,7 @@ export function personaNamespace(persona: string): string {
 }
 
 export type AgentPromptErrorKind =
-  | 'pre_persona_read_failed'
-  | 'persona_not_found'
-  | 'prompt_file_read_failed';
+  'pre_persona_read_failed' | 'persona_not_found' | 'prompt_file_read_failed';
 
 /**
  * Typed failure so each caller owns its error surface: the minion tool maps

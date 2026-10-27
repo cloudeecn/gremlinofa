@@ -186,9 +186,7 @@ async function* runAgenticLoop(
   // Copy to avoid mutating caller's array (React state safety)
   const messages = [...context];
 
-  const totals: TokenTotals = {
-    /* zeros */
-  };
+  const totals: TokenTotals = {/* zeros */};
   let iteration = 0;
   const MAX_ITERATIONS = 50;
 
@@ -205,9 +203,7 @@ async function* runAgenticLoop(
     // Load attachments for user messages before sending to API
     const messagesWithAttachments = await loadAttachmentsForMessages(messages);
 
-    const assembler = new StreamingContentAssembler({
-      /* ... */
-    });
+    const assembler = new StreamingContentAssembler({/* ... */});
     const stream = apiService.sendMessageStream(messagesWithAttachments, model.id, apiDef, options);
 
     let hasFirstChunk = false;

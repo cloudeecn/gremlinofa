@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type Anthropic from '@anthropic-ai/sdk';
+import Anthropic from '@anthropic-ai/sdk';
+import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import type { APIDefinition } from '../../../protocol/types';
 import {
   applyCacheBreakpoints,
   buildAnthropicBetas,
+  buildAnthropicClientOptions,
   buildBedrockClientOptions,
   findLastAssistantMessageIdx,
   findPreviousUserMessageIdx,
@@ -525,7 +527,8 @@ describe('buildBedrockClientOptions', () => {
     expect(opts.awsRegion).toBe('us-west-2');
     // Regression guard: skipAuth deletes the Authorization header → 403 "Authorization header is missing".
     expect('skipAuth' in opts).toBe(false);
-    expect('defaultHeaders' in opts).toBe(false);
+    // A defaultHeaders Authorization gets stripped the same way; only the version goes there.
+    expect(opts.defaultHeaders).toEqual({ 'anthropic-version': 'bedrock-2023-05-31' });
   });
 
   it('omits apiKey when no key is set so the SDK can fall back to SigV4', () => {
@@ -537,5 +540,107 @@ describe('buildBedrockClientOptions', () => {
     const url = 'https://bedrock-runtime.eu-central-1.amazonaws.com';
     const opts = buildBedrockClientOptions(def('k'), parseBedrockEndpoint(url));
     expect(opts.baseURL).toBe(url);
+  });
+});
+
+type CapturedRequest = { url: string; headers: Headers; body: string | undefined };
+
+function captureFetch(captured: CapturedRequest[]): typeof fetch {
+  return async (input, init) => {
+    captured.push({
+      url: String(input),
+      headers: new Headers(init?.headers),
+      body: typeof init?.body === 'string' ? init.body : undefined,
+    });
+    return new Response(JSON.stringify({ data: [], has_more: false }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+}
+
+describe('buildAnthropicClientOptions', () => {
+  const def = (overrides: Partial<APIDefinition> = {}): APIDefinition => ({
+    id: 'd',
+    apiType: 'anthropic',
+    name: 'Anthropic',
+    baseUrl: 'https://api.anthropic.com',
+    apiKey: 'sk-test',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  });
+
+  // SDK 1.x defaults to 2026-10-21 + `Authorization: Bearer`; these pin the 0.x wire.
+  it('sends the 2023-06-01 version and the key in X-Api-Key only', async () => {
+    const captured: CapturedRequest[] = [];
+    const client = new Anthropic({
+      ...buildAnthropicClientOptions(def(), 'https://api.anthropic.com'),
+      fetch: captureFetch(captured),
+    });
+    await client.models.list();
+
+    expect(captured).toHaveLength(1);
+    const { headers } = captured[0];
+    expect(headers.get('anthropic-version')).toBe('2023-06-01');
+    expect(headers.get('x-api-key')).toBe('sk-test');
+    expect(headers.get('authorization')).toBeNull();
+  });
+
+  it('keeps the CORS proxy target and auth headers next to the pinned ones', async () => {
+    const captured: CapturedRequest[] = [];
+    const client = new Anthropic({
+      ...buildAnthropicClientOptions(
+        def({ proxyUrl: 'https://proxy.example', proxyAuthToken: 'proxy-secret' }),
+        undefined
+      ),
+      fetch: captureFetch(captured),
+    });
+    await client.models.list();
+
+    const { url, headers } = captured[0];
+    expect(url.startsWith('https://proxy.example/')).toBe(true);
+    expect(headers.get('x-proxy-target')).toBe('https://api.anthropic.com');
+    expect(headers.get('x-proxy-auth')).toBe('proxy-secret');
+    expect(headers.get('anthropic-version')).toBe('2023-06-01');
+    expect(headers.get('x-api-key')).toBe('sk-test');
+  });
+
+  it('leaves auth headers to the SDK when the definition has no key', () => {
+    const opts = buildAnthropicClientOptions(def({ apiKey: '' }), undefined);
+    expect(opts.defaultHeaders).toEqual({ 'anthropic-version': '2023-06-01' });
+  });
+});
+
+describe('AnthropicBedrock wire shape', () => {
+  it('puts bedrock-2023-05-31 in the body and sends the key as a bearer token', async () => {
+    const captured: CapturedRequest[] = [];
+    const def: APIDefinition = {
+      id: 'd',
+      apiType: 'anthropic',
+      name: 'Bedrock Claude',
+      baseUrl: 'bedrock:us-west-2',
+      apiKey: 'bedrock-key',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const client = new AnthropicBedrock({
+      ...buildBedrockClientOptions(def, parseBedrockEndpoint(def.baseUrl)),
+      fetch: captureFetch(captured),
+      maxRetries: 0,
+    });
+    await client.messages
+      .create({
+        model: 'anthropic.claude-haiku-4-5',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      .catch(() => undefined); // the stub's body isn't a Message; only the request matters
+
+    expect(captured).toHaveLength(1);
+    const { headers, body } = captured[0];
+    expect(headers.get('authorization')).toBe('Bearer bedrock-key');
+    expect(headers.get('anthropic-version')).toBeNull();
+    expect(JSON.parse(body ?? '{}').anthropic_version).toBe('bedrock-2023-05-31');
   });
 });

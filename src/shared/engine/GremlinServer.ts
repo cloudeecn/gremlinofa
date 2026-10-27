@@ -204,8 +204,7 @@ export class GremlinServer {
    * stays out of the worker bundle.
    */
   private bootstrapClaudeAgentClientFactory:
-    | ((deps: import('../services/api/apiService').APIServiceDeps) => APIClient)
-    | null = null;
+    ((deps: import('../services/api/apiService').APIServiceDeps) => APIClient) | null = null;
   setBootstrapClaudeAgentClientFactory(
     factory: (deps: import('../services/api/apiService').APIServiceDeps) => APIClient
   ): void {

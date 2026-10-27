@@ -95,8 +95,7 @@ export interface PostedMessage {
 export interface SessionTail {
   pendingRequest: PendingRequestRef | null;
   lastMessage:
-    | { role: unknown; content: unknown; fileCount: number; awaitsReply: unknown }
-    | undefined;
+    { role: unknown; content: unknown; fileCount: number; awaitsReply: unknown } | undefined;
 }
 
 export type TouchGrassErrorKind =
@@ -422,8 +421,7 @@ export class TouchGrassClient {
       throw this.protocolError(operation, 'a pendingRequest without requestId');
     }
     const last = body.messages.at(-1) as
-      | { role?: unknown; content?: unknown; files?: unknown; awaitsReply?: unknown }
-      | undefined;
+      { role?: unknown; content?: unknown; files?: unknown; awaitsReply?: unknown } | undefined;
     return {
       pendingRequest: pending && {
         requestId: pending.requestId as string,

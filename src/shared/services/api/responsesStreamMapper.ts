@@ -555,6 +555,8 @@ export function convertOutputToStreamChunks(
       case 'local_shell_call_output':
       case 'mcp_approval_response':
       case 'custom_tool_call_output':
+      case 'program':
+      case 'program_output':
         break;
     }
   }

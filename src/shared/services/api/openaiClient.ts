@@ -353,8 +353,7 @@ export class OpenAIClient implements APIClient {
       // Mandated replay: a tool-call turn with no reasoning to send still needs
       // the field. DeepSeek accepts an empty string.
       const replayPlaceholder = (mandatesReplay ? { reasoning_content: '' } : undefined) as
-        | Partial<OpenAI.ChatCompletionAssistantMessageParam>
-        | undefined;
+        Partial<OpenAI.ChatCompletionAssistantMessageParam> | undefined;
 
       // Convert our message format to OpenAI's format
       const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [];

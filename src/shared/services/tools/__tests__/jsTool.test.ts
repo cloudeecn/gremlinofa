@@ -48,8 +48,7 @@ async function runJs(
 describe('jsTool memoriesWritable option', () => {
   it('is defined and off by default', () => {
     const opt = jsTool.optionDefinitions?.find(o => o.id === 'memoriesWritable') as
-      | BooleanToolOption
-      | undefined;
+      BooleanToolOption | undefined;
     expect(opt?.type).toBe('boolean');
     expect(opt?.default).toBe(false);
   });

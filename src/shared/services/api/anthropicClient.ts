@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { type ClientOptions as AnthropicClientOptions } from '@anthropic-ai/sdk';
 import { getProxyConfig } from './proxyConfig';
 import {
   AnthropicBedrock,
@@ -145,7 +145,7 @@ export function validateAnthropicResponse(
     cache_creation_input_tokens?: number | null;
     cache_read_input_tokens?: number | null;
   },
-  content: Array<{ type: string; signature?: string }>
+  content: Array<{ type: string; signature?: string | null }>
 ): void {
   const cacheWrite = usage.cache_creation_input_tokens ?? 0;
   const cacheRead = usage.cache_read_input_tokens ?? 0;
@@ -210,13 +210,45 @@ export function parseBedrockEndpoint(baseUrl: string | undefined): BedrockEndpoi
   return { isBedrock: false, region: 'us-east-1', url: baseUrl };
 }
 
+// SDK 1.x defaults to API version 2026-10-21, which 400s on `temperature` /
+// `top_p` / `top_k` (even at their defaults) and isn't served for Claude ≤4.6
+// on Bedrock. Pinned to what SDK 0.x sent so Anthropic, Bedrock and the
+// Anthropic-compatible vendors see the same requests as before the upgrade.
+export const ANTHROPIC_API_VERSION = '2023-06-01';
+// Bedrock reads the version from the body; the Bedrock SDK copies the
+// `anthropic-version` header there, and 0.x sent this value.
+export const BEDROCK_ANTHROPIC_VERSION = 'bedrock-2023-05-31';
+
+/**
+ * Build the Anthropic constructor options. SDK 1.x sends `apiKey` as
+ * `Authorization: Bearer`; the key goes back into `X-Api-Key` (the header 0.x
+ * used) because Anthropic-compatible vendors and gateways may only read that
+ * one. `Authorization: null` keeps the SDK from sending the key twice.
+ */
+export function buildAnthropicClientOptions(
+  apiDefinition: APIDefinition,
+  baseURL: string | undefined
+): AnthropicClientOptions {
+  const proxy = getProxyConfig(apiDefinition);
+  return {
+    dangerouslyAllowBrowser: true,
+    apiKey: apiDefinition.apiKey,
+    baseURL: proxy?.baseURL ?? baseURL,
+    defaultHeaders: {
+      ...proxy?.headers,
+      'anthropic-version': ANTHROPIC_API_VERSION,
+      ...(apiDefinition.apiKey && { 'X-Api-Key': apiDefinition.apiKey, Authorization: null }),
+    },
+  };
+}
+
 /**
  * Build the AnthropicBedrock constructor options. The Bedrock API key is passed
- * via the SDK's native `apiKey` option, which forwards to `authToken` and makes
- * the SDK emit `Authorization: Bearer <key>`. Passing `skipAuth: true` would
- * delete that header in `prepareRequest`, and a `defaultHeaders` Authorization
- * gets stripped the same way — so neither is used here. With no key, the SDK
- * falls back to SigV4 via the AWS credential chain.
+ * via the SDK's native `apiKey` option, which the SDK emits as
+ * `Authorization: Bearer <key>`. Passing `skipAuth: true` would delete that
+ * header in `prepareRequest`, and a `defaultHeaders` Authorization gets
+ * stripped the same way — so neither is used here. With no key, the SDK falls
+ * back to SigV4 via the AWS credential chain.
  */
 export function buildBedrockClientOptions(
   apiDefinition: APIDefinition,
@@ -225,6 +257,7 @@ export function buildBedrockClientOptions(
   return {
     dangerouslyAllowBrowser: true,
     awsRegion: bedrockInfo.region,
+    defaultHeaders: { 'anthropic-version': BEDROCK_ANTHROPIC_VERSION },
     ...(bedrockInfo.url && { baseURL: bedrockInfo.url }),
     ...(apiDefinition.apiKey && { apiKey: apiDefinition.apiKey }),
   };
@@ -460,13 +493,7 @@ export class AnthropicClient implements APIClient {
       }
     }
 
-    const proxy = getProxyConfig(apiDefinition);
-    const client = new Anthropic({
-      dangerouslyAllowBrowser: true,
-      apiKey: apiDefinition.apiKey,
-      baseURL: proxy?.baseURL ?? bedrockInfo.url,
-      ...(proxy && { defaultHeaders: proxy.headers }),
-    });
+    const client = new Anthropic(buildAnthropicClientOptions(apiDefinition, bedrockInfo.url));
 
     // Use Anthropic's models API to get the latest available models
     const modelsResponse = await client.models.list();
@@ -525,15 +552,9 @@ export class AnthropicClient implements APIClient {
       const bedrockInfo = parseBedrockEndpoint(apiDefinition.baseUrl);
 
       // Create appropriate client based on endpoint type
-      const proxy = bedrockInfo.isBedrock ? null : getProxyConfig(apiDefinition);
       const client: Anthropic | AnthropicBedrock = bedrockInfo.isBedrock
         ? new AnthropicBedrock(buildBedrockClientOptions(apiDefinition, bedrockInfo))
-        : new Anthropic({
-            dangerouslyAllowBrowser: true,
-            apiKey: apiDefinition.apiKey,
-            baseURL: proxy?.baseURL ?? bedrockInfo.url,
-            ...(proxy && { defaultHeaders: proxy.headers }),
-          });
+        : new Anthropic(buildAnthropicClientOptions(apiDefinition, bedrockInfo.url));
 
       // Tidy messages: checkpoint filtering, thinking pruning, empty text removal
       const tidiedMessages = tidyMessages(
@@ -848,9 +869,7 @@ export class AnthropicClient implements APIClient {
       // Nothing to clear with thinking switched off.
       if (options.thinkingKeepTurns !== undefined && thinkingConfig?.type !== 'disabled') {
         const keepValue:
-          | Anthropic.Beta.BetaThinkingTurns
-          | Anthropic.Beta.BetaAllThinkingTurns
-          | 'all' =
+          Anthropic.Beta.BetaThinkingTurns | Anthropic.Beta.BetaAllThinkingTurns | 'all' =
           options.thinkingKeepTurns === -1
             ? 'all'
             : { type: 'thinking_turns' as const, value: options.thinkingKeepTurns };

@@ -70,7 +70,7 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 
 ### Prerequisites
 
-- Node.js 18+ (I personally use 22, but whatever version doesn't complain should work)
+- Node.js 22+ (the OpenAI SDK requires it now; older versions get an `npm install` engine warning and no promises)
 - An API key from your provider of choice
 - **HTTPS for production** — Web Crypto API and PWA features require a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts). `localhost` for development MAY work.
 

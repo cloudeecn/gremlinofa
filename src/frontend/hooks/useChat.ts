@@ -187,8 +187,7 @@ function getUnresolvedToolCalls(messages: Message<unknown>[]): ToolUseBlock[] | 
 type MessagesUpdater = (prev: Message<unknown>[]) => Message<unknown>[];
 
 export type DummyHookStatus =
-  | { state: 'hooked'; hookName: string }
-  | { state: 'intercepting'; hookName: string };
+  { state: 'hooked'; hookName: string } | { state: 'intercepting'; hookName: string };
 
 export interface UseChatCallbacks {
   onMessagesLoaded: (chatId: string, messages: Message<unknown>[]) => void;

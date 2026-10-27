@@ -11,12 +11,7 @@ const RECONNECTED_FLASH_MS = 1_500;
 const BAD_STATES = new Set<ConnectionState>(['stale', 'disconnected', 'reconnecting']);
 
 type BannerMode =
-  | 'hidden'
-  | 'stale'
-  | 'disconnected'
-  | 'reconnecting'
-  | 'reconnected'
-  | 'auth_failed';
+  'hidden' | 'stale' | 'disconnected' | 'reconnecting' | 'reconnected' | 'auth_failed';
 
 const BANNERS: Record<
   Exclude<BannerMode, 'hidden'>,

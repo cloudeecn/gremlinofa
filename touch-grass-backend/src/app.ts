@@ -60,7 +60,12 @@ export function createApp(appConfig: Config, polls: PollRegistry): Express {
   // The web router brings its own headers, auth, body parsing, 404 and error pages.
   app.use(
     '/web',
-    createWebRouter({ webPassword: appConfig.webPassword, staticDir: STATIC_DIR, polls })
+    createWebRouter({
+      webPassword: appConfig.webPassword,
+      webAdminUsername: appConfig.webAdminUsername,
+      staticDir: STATIC_DIR,
+      polls,
+    })
   );
 
   app.use(fallbackErrorHandler);

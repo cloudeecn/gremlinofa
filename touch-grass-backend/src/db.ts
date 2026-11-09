@@ -8,6 +8,10 @@ import type {
   Session,
   SessionListEntry,
   SessionMessage,
+  SessionScope,
+  User,
+  UserStats,
+  UserStatsReport,
 } from './types.js';
 
 let db: Database.Database | null = null;
@@ -46,11 +50,18 @@ export function closeDatabase(): void {
   db = null;
 }
 
+type ColumnList = ReadonlyArray<readonly [name: string, declaration: string]>;
+
 /** Columns added to `requests` after v1 shipped, in the order they were introduced. */
-const REQUEST_COLUMNS_SINCE_V2: ReadonlyArray<readonly [name: string, declaration: string]> = [
+const REQUEST_COLUMNS_SINCE_V2: ColumnList = [
   ['expiresAt', 'TEXT'],
   ['expireReason', `TEXT CHECK(expireReason IN ('timeout', 'cancelled', 'superseded'))`],
   ['expiredAt', 'TEXT'],
+];
+
+/** SET NULL hands a deleted user's sessions to the admin instead of deleting them. */
+const SESSION_COLUMNS_SINCE_V2_2: ColumnList = [
+  ['userToken', 'TEXT REFERENCES users(token) ON DELETE SET NULL'],
 ];
 
 export function applySchema(database: Database.Database): void {
@@ -91,62 +102,84 @@ export function applySchema(database: Database.Database): void {
       FOREIGN KEY (sessionId) REFERENCES sessions(id) ON DELETE CASCADE,
       FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      passwordHash TEXT NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      createdAt TEXT NOT NULL
+    );
   `);
 
-  // Fresh databases get the v2 columns the same way old ones do, so each has one definition.
-  const addedColumns = migrateRequestColumns(database);
-  if (upgrading && addedColumns.length > 0) {
-    console.debug('Upgraded requests table, added columns', addedColumns);
+  // Fresh databases get the later columns the same way old ones do, so each has one definition.
+  const addedRequestColumns = database.transaction(() => {
+    const added = addMissingColumns(database, 'requests', REQUEST_COLUMNS_SINCE_V2);
+    backfillV1Requests(database, new Set(added));
+    return added;
+  })();
+  if (upgrading && addedRequestColumns.length > 0) {
+    console.debug('Upgraded requests table, added columns', addedRequestColumns);
+  }
+  const addedSessionColumns = database.transaction(() =>
+    addMissingColumns(database, 'sessions', SESSION_COLUMNS_SINCE_V2_2)
+  )();
+  if (upgrading && addedSessionColumns.length > 0) {
+    console.debug('Upgraded sessions table, added columns', addedSessionColumns);
   }
 
   // idx_requests_message serves the messages -> requests cascade. Without it, deleting a session
   // scans all of requests once per deleted message, which makes the retention sweep quadratic.
+  // idx_sessions_user serves a user's session list and the SET NULL a user delete runs.
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_requests_pending ON requests(status, sessionId);
     CREATE INDEX IF NOT EXISTS idx_requests_session ON requests(sessionId, createdAt);
     CREATE INDEX IF NOT EXISTS idx_requests_message ON requests(messageId);
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(userToken, lastActivityAt);
   `);
 }
 
-/** Adds the v2 columns a table lacks and backfills its v1 rows. Returns the added column names. */
-function migrateRequestColumns(database: Database.Database): string[] {
+/** Adds the columns a table lacks, in list order. Returns the added column names. */
+function addMissingColumns(
+  database: Database.Database,
+  table: 'requests' | 'sessions',
+  columns: ColumnList
+): string[] {
   const existing = new Set(
-    (database.prepare('PRAGMA table_info(requests)').all() as Array<{ name: string }>).map(
+    (database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
       column => column.name
     )
   );
-  const missing = REQUEST_COLUMNS_SINCE_V2.filter(([name]) => !existing.has(name));
-  if (missing.length === 0) {
-    return [];
+  const missing = columns.filter(([name]) => !existing.has(name));
+  for (const [name, declaration] of missing) {
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${declaration}`);
   }
-
-  database.transaction(() => {
-    for (const [name, declaration] of missing) {
-      database.exec(`ALTER TABLE requests ADD COLUMN ${name} ${declaration}`);
-    }
-    if (!existing.has('expiresAt')) {
-      // v1 requests had no deadline and the v1 client never cancelled, so a pending v1 row is
-      // almost always an orphan that would stay answerable and pin its session past retention.
-      // An hour from creation outlasts v1's default 10-minute client wait; lazy expiry then
-      // closes the rest as expired(timeout). The format matches toISOString for comparisons.
-      database
-        .prepare(
-          `UPDATE requests SET expiresAt = strftime('%Y-%m-%dT%H:%M:%fZ', createdAt, '+1 hour')
-           WHERE status = 'pending'`
-        )
-        .run();
-    }
-    if (!existing.has('expireReason')) {
-      // v1 expired requests only by superseding them, and stamped that moment into answeredAt.
-      database
-        .prepare(
-          `UPDATE requests SET expireReason = 'superseded', expiredAt = answeredAt, answeredAt = NULL
-           WHERE status = 'expired'`
-        )
-        .run();
-    }
-  })();
   return missing.map(([name]) => name);
+}
+
+/** Fills the v2 request columns that `added` says were just created on a v1 table. */
+function backfillV1Requests(database: Database.Database, added: ReadonlySet<string>): void {
+  if (added.has('expiresAt')) {
+    // v1 requests had no deadline and the v1 client never cancelled, so a pending v1 row is
+    // almost always an orphan that would stay answerable and pin its session past retention.
+    // An hour from creation outlasts v1's default 10-minute client wait; lazy expiry then
+    // closes the rest as expired(timeout). The format matches toISOString for comparisons.
+    database
+      .prepare(
+        `UPDATE requests SET expiresAt = strftime('%Y-%m-%dT%H:%M:%fZ', createdAt, '+1 hour')
+         WHERE status = 'pending'`
+      )
+      .run();
+  }
+  if (added.has('expireReason')) {
+    // v1 expired requests only by superseding them, and stamped that moment into answeredAt.
+    database
+      .prepare(
+        `UPDATE requests SET expireReason = 'superseded', expiredAt = answeredAt, answeredAt = NULL
+         WHERE status = 'expired'`
+      )
+      .run();
+  }
 }
 
 /**
@@ -164,18 +197,35 @@ function expireOverdueRequests(database: Database.Database, nowIso: string): voi
 
 // ── Sessions ──
 
-export function createSession(id: string, callerId: string, displayName: string | null): Session {
+/**
+ * A `userToken` that matches no user throws a foreign key error, so callers check it first with
+ * `userTokenExists`.
+ */
+export function createSession(
+  id: string,
+  callerId: string,
+  displayName: string | null,
+  userToken: string | null = null
+): Session {
   const now = new Date().toISOString();
-  const session: Session = { id, callerId, displayName, createdAt: now, lastActivityAt: now };
+  const session: Session = {
+    id,
+    callerId,
+    displayName,
+    userToken,
+    createdAt: now,
+    lastActivityAt: now,
+  };
   conn()
     .prepare(
-      `INSERT INTO sessions (id, callerId, displayName, createdAt, lastActivityAt)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO sessions (id, callerId, displayName, userToken, createdAt, lastActivityAt)
+       VALUES (?, ?, ?, ?, ?, ?)`
     )
     .run(
       session.id,
       session.callerId,
       session.displayName,
+      session.userToken,
       session.createdAt,
       session.lastActivityAt
     );
@@ -187,24 +237,34 @@ export function getSession(id: string): Session | undefined {
 }
 
 interface SessionListRow extends Session {
+  ownerUsername: string | null;
   pendingRequestId: string | null;
   pendingExpiresAt: string | null;
   pendingSince: string | null;
 }
 
-/** Every session, most recently active first, with its pending request (if any) in one query. */
-export function listSessionsWithPending(): SessionListEntry[] {
+const SESSION_LIST_SELECT = `
+  SELECT s.*, u.username AS ownerUsername, r.id AS pendingRequestId,
+         r.expiresAt AS pendingExpiresAt, r.createdAt AS pendingSince
+  FROM sessions s
+  LEFT JOIN users u ON u.token = s.userToken
+  LEFT JOIN requests r ON r.sessionId = s.id AND r.status = 'pending'`;
+const SESSION_LIST_ORDER = 'ORDER BY s.lastActivityAt DESC, s.rowid DESC';
+
+/**
+ * The sessions `scope` may see, most recently active first, each with its owner's name and its
+ * pending request (if any). A user's scope is its own statement so idx_sessions_user applies.
+ */
+export function listSessionsWithPending(scope: SessionScope): SessionListEntry[] {
   const database = conn();
   expireOverdueRequests(database, new Date().toISOString());
-  const rows = database
-    .prepare(
-      `SELECT s.*, r.id AS pendingRequestId, r.expiresAt AS pendingExpiresAt,
-              r.createdAt AS pendingSince
-       FROM sessions s
-       LEFT JOIN requests r ON r.sessionId = s.id AND r.status = 'pending'
-       ORDER BY s.lastActivityAt DESC, s.rowid DESC`
-    )
-    .all() as SessionListRow[];
+  const rows = (
+    scope.kind === 'all'
+      ? database.prepare(`${SESSION_LIST_SELECT} ${SESSION_LIST_ORDER}`).all()
+      : database
+          .prepare(`${SESSION_LIST_SELECT} WHERE s.userToken = ? ${SESSION_LIST_ORDER}`)
+          .all(scope.token)
+  ) as SessionListRow[];
 
   return rows.map(({ pendingRequestId, pendingExpiresAt, pendingSince, ...session }) => ({
     ...session,
@@ -252,6 +312,154 @@ export function sweepOldSessions(days: number): number {
       )
       .run(cutoff).changes;
   })();
+}
+
+// ── Users ──
+
+export interface CreateUserInput {
+  id: string;
+  username: string;
+  passwordHash: string;
+  token: string;
+}
+
+/** Returns null when the username is taken in any letter case. */
+export function createUser(input: CreateUserInput): User | null {
+  const database = conn();
+  return database.transaction((): User | null => {
+    if (getUserByUsername(input.username)) {
+      return null;
+    }
+    const user: User = {
+      id: input.id,
+      username: input.username,
+      passwordHash: input.passwordHash,
+      token: input.token,
+      createdAt: new Date().toISOString(),
+    };
+    database
+      .prepare(
+        `INSERT INTO users (id, username, passwordHash, token, createdAt)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(user.id, user.username, user.passwordHash, user.token, user.createdAt);
+    return user;
+  })();
+}
+
+export function getUserById(id: string): User | undefined {
+  return conn().prepare('SELECT * FROM users WHERE id = ?').get(id) as User | undefined;
+}
+
+/** Case-insensitive, through the column's NOCASE collation. */
+export function getUserByUsername(username: string): User | undefined {
+  return conn().prepare('SELECT * FROM users WHERE username = ?').get(username) as User | undefined;
+}
+
+export function getUserByToken(token: string): User | undefined {
+  return conn().prepare('SELECT * FROM users WHERE token = ?').get(token) as User | undefined;
+}
+
+export function userTokenExists(token: string): boolean {
+  return conn().prepare('SELECT 1 FROM users WHERE token = ?').get(token) !== undefined;
+}
+
+/** Every user, ordered by username regardless of case. */
+export function listUsers(): User[] {
+  return conn().prepare('SELECT * FROM users ORDER BY username COLLATE NOCASE').all() as User[];
+}
+
+/** 'taken' when another user has the name in any letter case; a user may change its own case. */
+export function renameUser(id: string, username: string): 'ok' | 'taken' | 'missing' {
+  const database = conn();
+  return database.transaction((): 'ok' | 'taken' | 'missing' => {
+    if (!getUserById(id)) {
+      return 'missing';
+    }
+    const holder = getUserByUsername(username);
+    if (holder && holder.id !== id) {
+      return 'taken';
+    }
+    database.prepare('UPDATE users SET username = ? WHERE id = ?').run(username, id);
+    return 'ok';
+  })();
+}
+
+/** Returns false when the user does not exist. */
+export function setUserPassword(id: string, passwordHash: string): boolean {
+  const { changes } = conn()
+    .prepare('UPDATE users SET passwordHash = ? WHERE id = ?')
+    .run(passwordHash, id);
+  return changes > 0;
+}
+
+/**
+ * Sets the password only while the stored hash is still `expectedHash`. Returns false when the
+ * user is gone or its password changed since the caller read it.
+ */
+export function setUserPasswordIfUnchanged(
+  id: string,
+  expectedHash: string,
+  passwordHash: string
+): boolean {
+  const { changes } = conn()
+    .prepare('UPDATE users SET passwordHash = ? WHERE id = ? AND passwordHash = ?')
+    .run(passwordHash, id, expectedHash);
+  return changes > 0;
+}
+
+/**
+ * Deletes a user. Their sessions stay: the foreign key's SET NULL makes them admin-only, and any
+ * long-poll on them keeps waiting, since the requests are untouched.
+ */
+export function deleteUser(id: string): boolean {
+  const { changes } = conn().prepare('DELETE FROM users WHERE id = ?').run(id);
+  return changes > 0;
+}
+
+interface UserStatsRow extends UserStats {
+  token: string | null;
+}
+
+const NO_STATS: UserStats = {
+  sessions: 0,
+  aiMessages: 0,
+  humanReplies: 0,
+  pending: 0,
+  lastActivityAt: null,
+};
+
+/** Per-user counts over retained sessions, plus the sessions without a token. */
+export function listUserStats(): UserStatsReport {
+  const database = conn();
+  expireOverdueRequests(database, new Date().toISOString());
+  // The messages and requests are aggregated per session before the join, so a session with
+  // several of each still counts once.
+  const rows = database
+    .prepare(
+      `SELECT s.userToken AS token, COUNT(*) AS sessions,
+              MAX(s.lastActivityAt) AS lastActivityAt,
+              COALESCE(SUM(m.ai), 0) AS aiMessages, COALESCE(SUM(m.human), 0) AS humanReplies,
+              COALESCE(SUM(p.open), 0) AS pending
+       FROM sessions s
+       LEFT JOIN (SELECT sessionId, SUM(role = 'ai') AS ai, SUM(role = 'human') AS human
+                  FROM messages GROUP BY sessionId) m ON m.sessionId = s.id
+       LEFT JOIN (SELECT sessionId, COUNT(*) AS open FROM requests WHERE status = 'pending'
+                  GROUP BY sessionId) p ON p.sessionId = s.id
+       GROUP BY s.userToken`
+    )
+    .all() as UserStatsRow[];
+
+  const statsByToken = new Map<string | null, UserStats>(
+    rows.map(({ token, ...stats }) => [token, stats])
+  );
+  return {
+    users: listUsers().map(user => ({
+      user,
+      stats: statsByToken.get(user.token) ?? { ...NO_STATS },
+    })),
+    noToken: statsByToken.get(null) ?? { ...NO_STATS },
+  };
 }
 
 // ── Messages ──

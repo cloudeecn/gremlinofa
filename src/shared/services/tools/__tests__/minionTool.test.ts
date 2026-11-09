@@ -26,10 +26,20 @@ import {
   stripVerifyFeedbackNote,
   hasInjectSpecs,
   formatMinionResult,
+  formatMinionError,
+  planRollback,
+  applyRollback,
+  parseMinionChatRef,
+  continueTokenFor,
+  resolveContinueToken,
   isRemoteCall,
   readRemoteFlag,
+  readRemoteToken,
+  readOutputFormat,
+  resolveOutputFormat,
   resolveRemoteTimeoutMs,
 } from '../minionTool';
+import { ENDPOINT_HINT } from '../touchGrassClient';
 import { LoopRegistry } from '../../../engine/LoopRegistry';
 import type {
   ToolResult,
@@ -55,7 +65,7 @@ import {
   createMockEncryptionService,
   createTestProject,
 } from '../../storage/__tests__/testUtils';
-import { generateChecksummedId } from '../../../protocol/idGenerator';
+import { generateChecksummedId, generateUniqueId } from '../../../protocol/idGenerator';
 import { formatFileWithLineNumbers } from '../../../engine/lib/formatFileContent';
 import { stubBackendDeps } from './testStubs';
 import { AgentPromptError } from '../../agentic/agentSystemPrompt';
@@ -115,6 +125,24 @@ describe('minionTool', () => {
       const off = minionTool.inputSchema as (o: ToolOptions) => { properties: object };
       expect(off({}).properties).not.toHaveProperty('allowNesting');
       expect(off({ allowNesting: true }).properties).toHaveProperty('allowNesting');
+    });
+
+    it("offers outputFormat in every returnMode but 'both'", () => {
+      const schema = minionTool.inputSchema as (o: ToolOptions) => {
+        properties: Record<string, unknown>;
+      };
+      // No returnMode resolves to 'both'.
+      expect(schema({}).properties).not.toHaveProperty('outputFormat');
+      expect(schema({ returnMode: 'both' }).properties).not.toHaveProperty('outputFormat');
+      for (const returnMode of ['no-return', 'return-only', 'enforced', 'auto-enforced']) {
+        expect(schema({ returnMode }).properties.outputFormat).toMatchObject({
+          type: 'string',
+          enum: ['text', 'json'],
+        });
+      }
+      // Legacy booleans resolve to a simplified mode.
+      expect(schema({ noReturnTool: true }).properties).toHaveProperty('outputFormat');
+      expect(schema({ returnOnly: true }).properties).toHaveProperty('outputFormat');
     });
 
     it('exposes availablePersonas only when namespaced AND nesting are both on', () => {
@@ -406,9 +434,9 @@ describe('minionTool', () => {
       expect(noOpts).not.toContain('web search');
     });
 
-    it('has option definitions for model, models, system prompt, allowWebSearch, autoRollback, verifyFeedback, returnMode, disableReasoning, deferReturn, deferred/return messages, autoAckMessage, namespacedMinion, and fileInjectionMode', () => {
+    it('has option definitions for model, models, system prompt, allowWebSearch, autoRollback, verifyFeedback, continueTokens, returnMode, disableReasoning, deferReturn, deferred/return messages, autoAckMessage, namespacedMinion, and fileInjectionMode', () => {
       expect(minionTool.optionDefinitions).toBeDefined();
-      expect(minionTool.optionDefinitions).toHaveLength(23);
+      expect(minionTool.optionDefinitions).toHaveLength(24);
 
       const verifyFeedbackOpt = minionTool.optionDefinitions?.find(o => o.id === 'verifyFeedback');
       expect(verifyFeedbackOpt).toBeDefined();
@@ -416,6 +444,13 @@ describe('minionTool', () => {
       if (verifyFeedbackOpt?.type === 'boolean') {
         expect(verifyFeedbackOpt.default).toBe(false);
       }
+
+      const continueTokensOpt = minionTool.optionDefinitions?.find(o => o.id === 'continueTokens');
+      expect(continueTokensOpt).toMatchObject({
+        type: 'boolean',
+        label: 'Continue Tokens',
+        default: false,
+      });
 
       const systemPromptOpt = minionTool.optionDefinitions?.find(o => o.id === 'systemPrompt');
       expect(systemPromptOpt).toBeDefined();
@@ -536,6 +571,86 @@ describe('minionTool', () => {
           'mock-tool-call',
         ]);
       }
+    });
+
+    it('describes continue tokens only when the option is on', () => {
+      const describeTool = minionTool.description as (o: ToolOptions) => string;
+      const schema = minionTool.inputSchema as (o: ToolOptions) => {
+        properties: Record<string, { description?: string }>;
+      };
+      const off: ToolOptions = { returnMode: 'return-only' };
+      const on: ToolOptions = { ...off, continueTokens: true };
+
+      expect(describeTool(off)).not.toContain('continueToken');
+      expect(schema(off).properties.minionChatId.description).not.toContain('continueToken');
+      expect(schema(off).properties.outputFormat.description).not.toContain('continueToken');
+
+      const desc = describeTool(on);
+      expect(desc).toContain(
+        'Each result carries a continueToken for the chat state right after it, and so does an error from a run that started; an error without one changed nothing, so your last token still holds.'
+      );
+      expect(desc).toContain('"<continueToken>@<minionChatId>"');
+      expect(desc).toContain('settings you changed since stay changed');
+      expect(desc).not.toContain('LLM minion chats only');
+      const chatIdText = schema(on).properties.minionChatId.description;
+      expect(chatIdText).toContain('"<continueToken>@<minionChatId>"');
+      expect(chatIdText).toContain('no action "retry"');
+      expect(schema(on).properties.outputFormat.description).toContain('<continueToken> tag line');
+      expect(schema(on).properties.outputFormat.description).toContain(
+        'minionChatId, continueToken, stopReason'
+      );
+    });
+
+    it('says nothing about continue tokens in any setup with the option off', () => {
+      const describeTool = minionTool.description as (o: ToolOptions) => string;
+      const schema = minionTool.inputSchema as (o: ToolOptions) => {
+        properties: Record<string, { description?: string }>;
+      };
+      for (const off of [
+        {},
+        { continueTokens: false, returnMode: 'enforced' },
+        { autoRollback: true, returnMode: 'no-return' },
+        { remoteEndpoint: 'http://tg.test', remotePassword: 'p' },
+      ] as ToolOptions[]) {
+        expect(describeTool(off)).not.toMatch(/continue ?token/i);
+        expect(describeTool(off)).not.toContain('@<minionChatId>');
+        for (const prop of Object.values(schema(off).properties)) {
+          expect(prop.description ?? '').not.toMatch(/continue ?token/i);
+        }
+      }
+    });
+
+    it('tells the caller in the minionChatId text that settings changed since stay changed', () => {
+      const schema = minionTool.inputSchema as (o: ToolOptions) => {
+        properties: Record<string, { description?: string }>;
+      };
+      // The tool description says it; the param a caller reads when writing the
+      // token ref should too, since knobs are not part of the rolled-back state.
+      expect(schema({ continueTokens: true }).properties.minionChatId.description).toMatch(
+        /settings[^.]*stay changed/i
+      );
+    });
+
+    it('words the continue token text for autoRollback and remote endpoints', () => {
+      const describeTool = minionTool.description as (o: ToolOptions) => string;
+      const schema = minionTool.inputSchema as (o: ToolOptions) => {
+        properties: Record<string, { description?: string }>;
+      };
+      const auto: ToolOptions = { continueTokens: true, autoRollback: true };
+      // autoRollback drops a failed run on the next call, so errors carry no token.
+      expect(describeTool(auto)).toContain(
+        'Each successful result carries a continueToken for the chat state right after it. Pass'
+      );
+      expect(describeTool(auto)).not.toContain('error from a run');
+      // Without action in the schema, there is no retry to warn about.
+      expect(schema(auto).properties.minionChatId.description).not.toContain('retry');
+      expect(
+        describeTool({
+          continueTokens: true,
+          remoteEndpoint: 'http://tg.test',
+          remotePassword: 'p',
+        })
+      ).toContain('LLM minion chats only.');
     });
 
     it('description omits return tool paragraph when returnMode is no-return', () => {
@@ -720,6 +835,17 @@ describe('minionTool', () => {
       expect(result).toContain('Continue task');
     });
 
+    it('renders a continue token apart from the chat id it continues', () => {
+      expect(
+        minionTool.renderInput!({ message: 'Task 2', minionChatId: 'k3x9q2ab@minion_abc' })
+      ).toBe('Continue: minion_abc (from k3x9q2ab)\n\nTask 2');
+      // Malformed refs still show what was asked for; the executor rejects them.
+      expect(minionTool.renderInput!({ minionChatId: 'k3x9q2ab@' })).toBe(
+        'Continue: (no chat id) (from k3x9q2ab)'
+      );
+      expect(minionTool.renderInput!({ minionChatId: 7 })).toBe('');
+    });
+
     it('renders with enabled tools', () => {
       const input = { message: 'Task', enabledTools: ['js', 'fs'] };
       const result = minionTool.renderInput!(input);
@@ -874,10 +1000,23 @@ describe('minionTool', () => {
         'Verbosity:',
         'Temp:',
         'Reasoning:',
+        'Output:',
       ]) {
         expect(result).not.toContain(label);
       }
       expect(result).toContain('Just a task');
+    });
+
+    it('renders the requested output format, but not a value the executor ignores', () => {
+      expect(minionTool.renderInput!({ message: 'Task', outputFormat: 'json' })).toBe(
+        'Output: json\n\nTask'
+      );
+      expect(minionTool.renderInput!({ message: 'Task', outputFormat: 'text' })).toContain(
+        'Output: text'
+      );
+      expect(minionTool.renderInput!({ message: 'Task', outputFormat: 'yaml' })).not.toContain(
+        'Output:'
+      );
     });
 
     it('omits Files line when injectFiles is empty', () => {
@@ -912,10 +1051,43 @@ describe('minionTool', () => {
   });
 
   describe('renderOutput', () => {
-    it('returns error output as-is', () => {
+    it('returns a prose error as-is', () => {
       const output = 'Error: Something went wrong';
       const result = minionTool.renderOutput!(output, true);
       expect(result).toBe(output);
+    });
+
+    it('renders a run error with the chat id and token lines of a result, in either format', () => {
+      const fields = {
+        error: 'Verify hook rejected: too short\nsee the spec',
+        minionChatId: 'minion_abc',
+        continueToken: 'k3x9q2ab',
+      };
+      const expected =
+        'Verify hook rejected: too short\nsee the spec\n\n[minionChatId: minion_abc]\n\n[continueToken: k3x9q2ab]';
+      for (const outputFormat of ['text', 'json'] as const) {
+        const output = formatMinionError({ ...fields, outputFormat });
+        expect(minionTool.renderOutput!(output, true), outputFormat).toBe(expected);
+        const withoutToken = formatMinionError({
+          ...fields,
+          outputFormat,
+          continueToken: undefined,
+        });
+        expect(minionTool.renderOutput!(withoutToken, true), outputFormat).toBe(
+          'Verify hook rejected: too short\nsee the spec\n\n[minionChatId: minion_abc]'
+        );
+      }
+    });
+
+    it('leaves an error that only looks like JSON or carries a tag mid-text alone', () => {
+      for (const output of [
+        '{"error":"no chat id"}',
+        '["Minion error"]',
+        'null',
+        'Error: <minionChatId>minion_abc</minionChatId> is busy. Resend.',
+      ]) {
+        expect(minionTool.renderOutput!(output, true)).toBe(output);
+      }
     });
 
     it('returns non-JSON output as-is', () => {
@@ -924,7 +1096,7 @@ describe('minionTool', () => {
       expect(result).toBe(output);
     });
 
-    it('shows text captured, result, and chatId when all present', () => {
+    it('shows the result, not the prose, when both are present', () => {
       const output = JSON.stringify({
         text: 'Some intermediate output',
         result: 'Final answer',
@@ -932,20 +1104,20 @@ describe('minionTool', () => {
         minionChatId: 'minion_abc',
       });
       const rendered = minionTool.renderOutput!(output, false);
-      expect(rendered).toBe('Text output captured.\n\nFinal answer\n\n[minionChatId: minion_abc]');
+      expect(rendered).toBe('Final answer\n\n[minionChatId: minion_abc]');
     });
 
-    it('shows text captured and chatId when no result (no return tool)', () => {
+    it('shows the prose when there is no result (no return tool)', () => {
       const output = JSON.stringify({
         text: 'Task completed successfully',
         stopReason: 'end_turn',
         minionChatId: 'minion_abc',
       });
       const rendered = minionTool.renderOutput!(output, false);
-      expect(rendered).toBe('Text output captured.\n\n[minionChatId: minion_abc]');
+      expect(rendered).toBe('Task completed successfully\n\n[minionChatId: minion_abc]');
     });
 
-    it('omits text captured line when text is empty', () => {
+    it('shows the result alone when text is empty', () => {
       const output = JSON.stringify({
         text: '',
         result: 'Return value',
@@ -956,6 +1128,11 @@ describe('minionTool', () => {
       expect(rendered).toBe('Return value\n\n[minionChatId: minion_abc]');
     });
 
+    it('shows an empty result as no body rather than falling back to the prose', () => {
+      const output = JSON.stringify({ text: 'prose', result: '', minionChatId: 'minion_abc' });
+      expect(minionTool.renderOutput!(output, false)).toBe('[minionChatId: minion_abc]');
+    });
+
     it('does not truncate long text', () => {
       const output = JSON.stringify({
         text: 'A'.repeat(600),
@@ -963,7 +1140,7 @@ describe('minionTool', () => {
         minionChatId: 'minion_abc',
       });
       const rendered = minionTool.renderOutput!(output, false);
-      expect(rendered).toBe('Text output captured.\n\n[minionChatId: minion_abc]');
+      expect(rendered).toBe(`${'A'.repeat(600)}\n\n[minionChatId: minion_abc]`);
     });
 
     it('shows warning when present in output', () => {
@@ -974,8 +1151,69 @@ describe('minionTool', () => {
         warning: 'Return tool was not called',
       });
       const rendered = minionTool.renderOutput!(output, false);
-      expect(rendered).toContain('⚠ Return tool was not called');
-      expect(rendered).toContain('[minionChatId: minion_abc]');
+      expect(rendered).toBe('⚠ Return tool was not called\n\n[minionChatId: minion_abc]');
+    });
+
+    it("renders outputFormat 'json' results the way it renders the tag format", () => {
+      const cases: Array<Partial<Parameters<typeof formatMinionResult>[0]>> = [
+        { returnMode: 'no-return' },
+        { returnMode: 'no-return', text: '' },
+        { returnMode: 'return-only', hasCoT: true },
+        { returnMode: 'return-only', returnValue: 'R' },
+        { returnMode: 'enforced', returnValue: 'R', hasCoT: true },
+        { returnMode: 'auto-enforced', returnValue: 'Ship it', remote: true },
+      ];
+      for (const fields of cases) {
+        const shared = {
+          returnMode: 'return-only',
+          minionChatId: 'minion_abc',
+          stopReason: 'end_turn',
+          hasCoT: false,
+          text: 'prose',
+          returnValue: undefined,
+          ...fields,
+        };
+        const asText = formatMinionResult({ ...shared, outputFormat: 'text' });
+        const asJson = formatMinionResult({ ...shared, outputFormat: 'json' });
+        expect(minionTool.renderOutput!(asJson, false)).toBe(
+          minionTool.renderOutput!(asText, false)
+        );
+      }
+    });
+
+    it('shows the continue token after the chat id, in every result format', () => {
+      const fields = {
+        minionChatId: 'minion_abc',
+        stopReason: 'end_turn',
+        hasCoT: true,
+        text: 'prose',
+        returnValue: 'R',
+        continueToken: 'k3x9q2ab',
+      };
+      const expected = '[CoT: yes]\n\nR\n\n[minionChatId: minion_abc]\n\n[continueToken: k3x9q2ab]';
+      for (const [returnMode, outputFormat] of [
+        ['return-only', 'text'],
+        ['return-only', 'json'],
+        ['both', 'text'],
+      ] as const) {
+        const output = formatMinionResult({ ...fields, returnMode, outputFormat });
+        expect(minionTool.renderOutput!(output, false)).toBe(expected);
+      }
+    });
+
+    it("renders a missing return in outputFormat 'json' as the warning line", () => {
+      const output = formatMinionResult({
+        returnMode: 'enforced',
+        outputFormat: 'json',
+        minionChatId: 'minion_abc',
+        stopReason: 'end_turn',
+        hasCoT: true,
+        text: 'prose the caller never asked for',
+        returnValue: undefined,
+      });
+      expect(minionTool.renderOutput!(output, false)).toBe(
+        '[CoT: yes]\n\n⚠ Return tool was not called\n\n[minionChatId: minion_abc]'
+      );
     });
   });
 
@@ -1026,6 +1264,64 @@ describe('minionTool', () => {
       const output = '<minionChatId>minion_abc</minionChatId>\nThe tag <hasCoT /> is literal';
       expect(parseSimplifiedOutput(output)?.hasCoT).toBe(false);
     });
+
+    it('reads the continue token line between the chat id and the markers', () => {
+      const output =
+        '<minionChatId>minion_abc</minionChatId>\n<continueToken>k3x9q2ab</continueToken>\n<hasCoT />\n<remote />\nShip it';
+      expect(parseSimplifiedOutput(output)).toStrictEqual({
+        minionChatId: 'minion_abc',
+        continueToken: 'k3x9q2ab',
+        hasCoT: true,
+        remote: true,
+        body: 'Ship it',
+      });
+    });
+
+    it('leaves continueToken out when the line is missing or sits in the body', () => {
+      expect(parseSimplifiedOutput('<minionChatId>minion_abc</minionChatId>\nok')).toStrictEqual({
+        minionChatId: 'minion_abc',
+        hasCoT: false,
+        remote: false,
+        body: 'ok',
+      });
+      const inBody =
+        '<minionChatId>minion_abc</minionChatId>\n<hasCoT />\n<continueToken>k3x9q2ab</continueToken>';
+      expect(parseSimplifiedOutput(inBody)).toMatchObject({
+        hasCoT: true,
+        body: '<continueToken>k3x9q2ab</continueToken>',
+      });
+      expect(parseSimplifiedOutput(inBody)).not.toHaveProperty('continueToken');
+    });
+
+    it('reads back the token line formatMinionResult writes, with or without marker lines', () => {
+      for (const [returnMode, returnValue, hasCoT, body] of [
+        ['no-return', undefined, false, 'prose'],
+        ['return-only', 'R', true, 'R'],
+        ['enforced', undefined, false, 'Warning: Return tool was not called'],
+      ] as const) {
+        const output = formatMinionResult({
+          returnMode,
+          outputFormat: 'text',
+          minionChatId: 'minion_abc',
+          stopReason: 'end_turn',
+          hasCoT,
+          text: 'prose',
+          returnValue,
+          continueToken: 'k3x9q2ab',
+        });
+        expect(output.split('\n').slice(0, 2)).toEqual([
+          '<minionChatId>minion_abc</minionChatId>',
+          '<continueToken>k3x9q2ab</continueToken>',
+        ]);
+        expect(parseSimplifiedOutput(output)).toStrictEqual({
+          minionChatId: 'minion_abc',
+          continueToken: 'k3x9q2ab',
+          hasCoT,
+          remote: false,
+          body,
+        });
+      }
+    });
   });
 
   describe('renderOutput hasCoT', () => {
@@ -1037,9 +1333,7 @@ describe('minionTool', () => {
         minionChatId: 'minion_abc',
       });
       const rendered = minionTool.renderOutput!(output, false);
-      expect(rendered).toContain('[CoT: yes]');
-      expect(rendered).toContain('Text output captured.');
-      expect(rendered).toContain('[minionChatId: minion_abc]');
+      expect(rendered).toBe('[CoT: yes]\n\noutput\n\n[minionChatId: minion_abc]');
     });
 
     it('omits CoT indicator in JSON format when hasCoT is false', () => {
@@ -1764,6 +2058,177 @@ describe('claude-agent SDK rewind on failure', () => {
   });
 });
 
+describe('planRollback / applyRollback', () => {
+  let storage: UnifiedStorage;
+
+  beforeEach(async () => {
+    storage = new UnifiedStorage(
+      createMockAdapter(),
+      createMockEncryptionService() as unknown as EncryptionCore
+    );
+  });
+
+  const turn = (
+    id: string,
+    role: 'user' | 'assistant',
+    minute: number,
+    metadata?: Message<unknown>['metadata']
+  ): Message<unknown> => ({
+    id,
+    role,
+    content: { type: 'text', content: `${id} text` },
+    timestamp: new Date(Date.UTC(2024, 0, 1, 0, minute)),
+    ...(metadata && { metadata }),
+  });
+
+  // Two finished exchanges, then a failed one; the savepoint sits on a2.
+  const history = () => [
+    turn('u1', 'user', 0),
+    turn('a1', 'assistant', 1, { inputTokens: 10, outputTokens: 5, messageCost: 0.01 }),
+    turn('u2', 'user', 2),
+    turn('a2', 'assistant', 3, { inputTokens: 20, outputTokens: 8, messageCost: 0.02 }),
+    turn('u3', 'user', 4),
+    turn('a3', 'assistant', 5, { inputTokens: 30, outputTokens: 12, messageCost: 0.03 }),
+  ];
+
+  async function seed(over: Partial<MinionChat> = {}) {
+    const chat: MinionChat = {
+      id: 'minion_plan',
+      parentChatId: 'parent',
+      projectId: 'proj',
+      createdAt: new Date(),
+      lastModifiedAt: new Date(),
+      savepoint: 'a2',
+      totalInputTokens: 60,
+      totalOutputTokens: 25,
+      totalCost: 0.06,
+      ...over,
+    };
+    await storage.saveMinionChat(chat);
+    for (const m of history()) await storage.saveMinionMessage(chat.id, m);
+    return chat;
+  }
+
+  it('splits the messages around the point and recovers the first dropped message', () => {
+    const plan = planRollback(history(), 'a2', false)!;
+    expect(plan.pointId).toBe('a2');
+    expect(plan.kept.map(m => m.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+    expect(plan.dropped.map(m => m.id)).toEqual(['u3', 'a3']);
+    expect(plan.recoveredMessage).toBe('u3 text');
+  });
+
+  it('keeps nothing for SAVEPOINT_START', () => {
+    const plan = planRollback(history(), SAVEPOINT_START, false)!;
+    expect(plan.kept).toEqual([]);
+    expect(plan.dropped).toHaveLength(6);
+    expect(plan.recoveredMessage).toBe('u1 text');
+  });
+
+  it('plans nothing for an unknown point or one with nothing after it', () => {
+    expect(planRollback(history(), 'msg_gone', false)).toBeUndefined();
+    expect(planRollback(history(), 'a3', false)).toBeUndefined();
+    expect(planRollback([], SAVEPOINT_START, false)).toBeUndefined();
+  });
+
+  it('leaves the messages it is given alone: a refused call keeps using them', () => {
+    const messages = history();
+    const before = structuredClone(messages);
+    const plan = planRollback(messages, 'a2', false)!;
+    expect(messages).toEqual(before);
+    expect(plan.kept).not.toBe(messages);
+    expect(plan.dropped).not.toBe(messages);
+  });
+
+  it('applies: deletes the dropped messages, subtracts their totals and saves the chat', async () => {
+    const chat = await seed();
+    const plan = planRollback(await storage.getMinionMessages(chat.id), 'a2', false)!;
+    await applyRollback(storage, chat, plan);
+
+    expect((await storage.getMinionMessages(chat.id)).map(m => m.id)).toEqual([
+      'u1',
+      'a1',
+      'u2',
+      'a2',
+    ]);
+    const saved = (await storage.getMinionChat(chat.id))!;
+    expect(saved).toMatchObject({ savepoint: 'a2', totalInputTokens: 30, totalOutputTokens: 13 });
+    expect(saved.totalCost).toBeCloseTo(0.03);
+  });
+
+  it('applies to any message id, moving the savepoint there', async () => {
+    const chat = await seed();
+    const plan = planRollback(await storage.getMinionMessages(chat.id), 'a1', false)!;
+    await applyRollback(storage, chat, plan);
+
+    expect((await storage.getMinionMessages(chat.id)).map(m => m.id)).toEqual(['u1', 'a1']);
+    const saved = (await storage.getMinionChat(chat.id))!;
+    expect(saved).toMatchObject({ savepoint: 'a1', totalInputTokens: 10, totalOutputTokens: 5 });
+  });
+
+  it('applies SAVEPOINT_START by deleting every message', async () => {
+    const chat = await seed({ savepoint: SAVEPOINT_START });
+    const plan = planRollback(await storage.getMinionMessages(chat.id), SAVEPOINT_START, false)!;
+    await applyRollback(storage, chat, plan);
+
+    expect(await storage.getMinionMessages(chat.id)).toEqual([]);
+    expect((await storage.getMinionChat(chat.id))?.savepoint).toBe(SAVEPOINT_START);
+  });
+
+  describe('claude-agent session', () => {
+    const stamped = (msgs: Message<unknown>[]) =>
+      msgs.map(m =>
+        m.role === 'assistant'
+          ? {
+              ...m,
+              metadata: {
+                ...m.metadata,
+                claudeAgentMessageUuid: `uuid-${m.id}`,
+                claudeAgentSessionId: 'sess-1',
+              },
+            }
+          : m
+      );
+
+    it('rewinds the session to the kept tail', async () => {
+      const chat = await seed({ claudeAgentSessionId: 'sess-1' });
+      await applyRollback(storage, chat, planRollback(stamped(history()), 'a1', false)!);
+      expect(await storage.getMinionChat(chat.id)).toMatchObject({
+        claudeAgentSessionId: 'sess-1',
+        claudeAgentResumeAt: 'uuid-a1',
+      });
+    });
+
+    it('lands on the anchor the failed run already rewound to', async () => {
+      const chat = await seed({ claudeAgentSessionId: 'sess-1' });
+      const messages = stamped(history());
+      // The failed run (u3, a3) rewinds to the savepoint's anchor at once.
+      await applyClaudeAgentRewindOnFailure(
+        storage,
+        chat,
+        true,
+        messages.slice(0, 4),
+        messages.slice(4),
+        'turn error'
+      );
+      expect(chat.claudeAgentResumeAt).toBe('uuid-a2');
+
+      await applyRollback(storage, chat, planRollback(messages, chat.savepoint!, false)!);
+      expect(await storage.getMinionChat(chat.id)).toMatchObject({
+        claudeAgentSessionId: 'sess-1',
+        claudeAgentResumeAt: 'uuid-a2',
+      });
+    });
+
+    it('drops the session when nothing is kept', async () => {
+      const chat = await seed({ claudeAgentSessionId: 'sess-1', savepoint: SAVEPOINT_START });
+      await applyRollback(storage, chat, planRollback(stamped(history()), SAVEPOINT_START, false)!);
+      const saved = (await storage.getMinionChat(chat.id))!;
+      expect(saved.claudeAgentSessionId).toBeUndefined();
+      expect(saved.claudeAgentResumeAt).toBeUndefined();
+    });
+  });
+});
+
 describe('hasInjectSpecs', () => {
   it('is true when either batch has at least one entry', () => {
     expect(hasInjectSpecs({ injectFiles: ['/a.ts'] })).toBe(true);
@@ -1871,6 +2336,37 @@ describe('minion chat busy guard', () => {
     registry.releaseMinionChat('minion_held');
   });
 
+  it('guards the bare chat id of a continue token ref', async () => {
+    const registry = new LoopRegistry();
+    expect(registry.acquireMinionChat('minion_held')).toBe(true);
+
+    const result = await collectToolResult(
+      minionTool.execute(
+        { message: 'hi', minionChatId: 'k3x9q2ab@minion_held' },
+        { continueTokens: true },
+        makeContext(registry)
+      )
+    );
+    expect(result.content).toBe(
+      'Error: Minion chat minion_held is busy with another request. Wait for it to finish and resend.'
+    );
+    registry.releaseMinionChat('minion_held');
+
+    // A token call holds the bare id too, and lets go of it afterwards (here
+    // after a Phase 1 error: a token call needs a message).
+    const acquire = vi.spyOn(registry, 'acquireMinionChat');
+    const failed = await collectToolResult(
+      minionTool.execute(
+        { minionChatId: 'k3x9q2ab@minion_free' },
+        { continueTokens: true },
+        makeContext(registry)
+      )
+    );
+    expect(failed.content).toContain('required with a continue token');
+    expect(acquire).toHaveBeenCalledWith('minion_free');
+    expect(registry.acquireMinionChat('minion_free')).toBe(true);
+  });
+
   it('releases the hold when a call finishes, even on an error result', async () => {
     const registry = new LoopRegistry();
     const garbledId = 'minion_' + 'a'.repeat(34);
@@ -1895,6 +2391,8 @@ describe('remote (human) minions', () => {
     remoteEndpoint: 'http://tg.test:3004/web/',
     remotePassword: 'pw',
   };
+  /** The one Touch Grass user the fake backend knows. */
+  const ALICE_TOKEN = 'tg_alice0123456789';
 
   function jsonResponse(status: number, body: unknown): Response {
     return {
@@ -1903,6 +2401,17 @@ describe('remote (human) minions', () => {
       redirected: false,
       url: '',
       text: () => Promise.resolve(JSON.stringify(body)),
+    } as unknown as Response;
+  }
+
+  /** A proxy's or a default site's 404 page. */
+  function htmlNotFound(): Response {
+    return {
+      ok: false,
+      status: 404,
+      redirected: false,
+      url: '',
+      text: () => Promise.resolve('<html><head><title>404 Not Found</title></head></html>'),
     } as unknown as Response;
   }
 
@@ -1916,7 +2425,7 @@ describe('remote (human) minions', () => {
     });
   }
 
-  /** In-memory Touch Grass backend speaking the v2.1 contract. */
+  /** In-memory Touch Grass backend speaking the v2.2 contract. */
   class FakeTouchGrass {
     readonly calls: Array<{ method: string; path: string; body: any; auth: string }> = [];
     readonly sessions = new Set<string>();
@@ -1942,6 +2451,10 @@ describe('remote (human) minions', () => {
     cancelFailures = 0;
     /** Polls answer 404, as after the human deleted the session. */
     pollGone = false;
+    /** When set, answers every request, as a mistyped endpoint would. */
+    misrouted: (() => Response) | undefined;
+    /** User tokens a session may be created for; any other `userToken` gets the 400. */
+    readonly userTokens = new Set([ALICE_TOKEN]);
     private seq = 0;
 
     readonly fetch = vi.fn(async (url: string, init: RequestInit = {}) => {
@@ -1950,10 +2463,16 @@ describe('remote (human) minions', () => {
       const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
       const auth = (init.headers as Record<string, string>).Authorization;
       this.calls.push({ method, path: pathname, body, auth });
+      if (this.misrouted) return this.misrouted();
 
       if (method === 'POST' && pathname === '/api/sessions') {
         if (this.createSessionStatus !== 201) {
           return jsonResponse(this.createSessionStatus, { error: 'Unauthorized' });
+        }
+        if (body.userToken !== undefined && !this.userTokens.has(body.userToken)) {
+          return jsonResponse(400, {
+            error: 'Unknown userToken: no Touch Grass user has this token',
+          });
         }
         const sessionId = `sess_${++this.seq}`;
         this.sessions.add(sessionId);
@@ -1997,7 +2516,10 @@ describe('remote (human) minions', () => {
         });
       }
       const sessionMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
-      if (method === 'GET' && sessionMatch && this.sessions.has(sessionMatch[1])) {
+      if (method === 'GET' && sessionMatch) {
+        if (!this.sessions.has(sessionMatch[1])) {
+          return jsonResponse(404, { error: 'Session not found' });
+        }
         return jsonResponse(200, {
           session: { id: sessionMatch[1] },
           messages: this.messages.get(sessionMatch[1]) ?? [],
@@ -2105,6 +2627,22 @@ describe('remote (human) minions', () => {
     timestamp: new Date('2024-01-01T00:00:00Z'),
   };
 
+  /** An answered remote exchange; the savepoint sits on the answer. */
+  const remoteExchange: Message<unknown>[] = [
+    {
+      id: 'msg_user_r1',
+      role: 'user',
+      content: { type: 'text', content: 'Approve?' },
+      timestamp: new Date('2024-01-01T00:00:00Z'),
+    },
+    {
+      id: 'msg_asst_r1',
+      role: 'assistant',
+      content: { type: 'text', content: 'Yes' },
+      timestamp: new Date('2024-01-01T00:01:00Z'),
+    },
+  ];
+
   function minionChatIdOf(result: ToolResult): string {
     return JSON.parse(result.content).minionChatId;
   }
@@ -2193,6 +2731,172 @@ describe('remote (human) minions', () => {
     expect(rendered).toBe(
       `[Answered by a human]\n\nShip it\n\n[minionChatId: ${minionChatIdOf(result)}]`
     );
+  });
+
+  describe('outputFormat', () => {
+    const RETURN_ONLY = { ...REMOTE_OPTIONS, returnMode: 'return-only' };
+
+    it('answers in JSON on a new chat, and the row keeps the format', async () => {
+      const { result } = await run(
+        { message: 'Approve?', remote: true, outputFormat: 'json' },
+        RETURN_ONLY
+      );
+      const id = minionChatIdOf(result);
+      expect(result.content).toBe(
+        JSON.stringify({
+          minionChatId: id,
+          stopReason: 'end_turn',
+          hasCoT: false,
+          remote: true,
+          result: 'Ship it',
+        })
+      );
+      expect((await storage.getMinionChat(id))?.outputFormat).toBe('json');
+      expect(minionTool.renderOutput!(result.content, false)).toBe(
+        `[Answered by a human]\n\nShip it\n\n[minionChatId: ${id}]`
+      );
+    });
+
+    it('persists a format changed on a continuation, though remote chats skip LLM knobs', async () => {
+      const first = await run(
+        { message: 'Approve?', remote: true, outputFormat: 'json' },
+        RETURN_ONLY
+      );
+      const id = minionChatIdOf(first.result);
+
+      // Omitted: the stored format answers.
+      const second = await run({ minionChatId: id, message: 'And the DB?' }, RETURN_ONLY);
+      expect(JSON.parse(second.result.content)).toMatchObject({
+        minionChatId: id,
+        result: 'Ship it',
+      });
+
+      const third = await run(
+        { minionChatId: id, message: 'Tonight?', outputFormat: 'text', temperature: 0.3 },
+        RETURN_ONLY
+      );
+      expect(third.result.content).toBe(`<minionChatId>${id}</minionChatId>\n<remote />\nShip it`);
+      const chat = await storage.getMinionChat(id);
+      expect(chat?.outputFormat).toBe('text');
+      expect(chat?.temperature).toBeUndefined();
+
+      const fourth = await run({ minionChatId: id, message: 'Sure?' }, RETURN_ONLY);
+      expect(parseSimplifiedOutput(fourth.result.content)).toMatchObject({ minionChatId: id });
+    });
+
+    it("leaves 'both' output as it was", async () => {
+      const { result } = await run({ message: 'Approve?', remote: true, outputFormat: 'text' });
+      const id = minionChatIdOf(result);
+      expect(result.content).toBe(
+        JSON.stringify({
+          stopReason: 'end_turn',
+          hasCoT: false,
+          minionChatId: id,
+          text: '',
+          result: 'Ship it',
+          remote: true,
+        })
+      );
+    });
+
+    it('takes the format on a continuation of a chat stored without one', async () => {
+      backend.sessions.add('sess_live');
+      const chat = await seedChat(
+        { remote: true, remoteSessionId: 'sess_live', savepoint: remoteExchange[1].id },
+        remoteExchange
+      );
+      const { result } = await run(
+        { minionChatId: chat.id, message: 'And the DB?', outputFormat: 'json' },
+        RETURN_ONLY
+      );
+      expect(result.content).toBe(
+        JSON.stringify({
+          minionChatId: chat.id,
+          stopReason: 'end_turn',
+          hasCoT: false,
+          remote: true,
+          result: 'Ship it',
+        })
+      );
+      expect((await storage.getMinionChat(chat.id))?.outputFormat).toBe('json');
+      expect(backend.callsTo('/api/sessions')).toHaveLength(0);
+    });
+
+    const unanswered: Array<[string, (input: Record<string, unknown>) => Promise<ToolResult>]> = [
+      [
+        'the question is gone',
+        async input => {
+          backend.pollGone = true;
+          return (await run(input, RETURN_ONLY)).result;
+        },
+      ],
+      [
+        'the wait times out',
+        async input => {
+          vi.useFakeTimers();
+          backend.answer = undefined;
+          const pending = run(input, { ...RETURN_ONLY, remoteTimeoutMs: 10_000 });
+          await vi.advanceTimersByTimeAsync(10_000);
+          const { result } = await pending;
+          vi.useRealTimers();
+          return result;
+        },
+      ],
+      [
+        'Stop lands before an answer',
+        async input => {
+          const result = await abortWhileWaiting(input, RETURN_ONLY);
+          abortController = new AbortController();
+          return result;
+        },
+      ],
+    ];
+
+    it.each(unanswered)(
+      'keeps the settings of a question that got no answer when %s',
+      async (_label, ask) => {
+        backend.sessions.add('sess_live');
+        const chat = await seedChat(
+          { remote: true, remoteSessionId: 'sess_live', savepoint: remoteExchange[1].id },
+          remoteExchange
+        );
+        const failed = await ask({
+          minionChatId: chat.id,
+          message: 'And the DB?',
+          outputFormat: 'json',
+          displayName: 'DB gate',
+        });
+        expect(failed.isError).toBe(true);
+        expect(await storage.getMinionChat(chat.id)).toMatchObject({
+          outputFormat: 'json',
+          displayName: 'DB gate',
+        });
+
+        backend.pollGone = false;
+        backend.answer = 'Ship it';
+        const { result } = await run({ minionChatId: chat.id, message: 'Tonight?' }, RETURN_ONLY);
+        expect(result.content).toBe(
+          JSON.stringify({
+            minionChatId: chat.id,
+            stopReason: 'end_turn',
+            hasCoT: false,
+            remote: true,
+            result: 'Ship it',
+          })
+        );
+      }
+    );
+
+    it('keeps remote errors in prose', async () => {
+      backend.createSessionStatus = 401;
+      const { result } = await run(
+        { message: 'Approve?', remote: true, outputFormat: 'json' },
+        RETURN_ONLY
+      );
+      expect(result.isError).toBe(true);
+      expect(() => JSON.parse(result.content)).toThrow();
+      expect(result.content).toContain('To ask again, call minion with minionChatId');
+    });
   });
 
   it('keeps a remote chat remote on a continuation that omits remote', async () => {
@@ -2358,10 +3062,18 @@ describe('remote (human) minions', () => {
     return (info.blocks[0] as ToolInfoRenderBlock).chatId!;
   }
 
+  /** Stop's result names the chat: the question may already be saved in it. */
+  function expectAborted(result: ToolResult) {
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
+      `Minion was aborted. To ask again, call minion with minionChatId "${chatIdOfInfo(result)}".`
+    );
+  }
+
   /** Post the question, press Stop while it waits for the human, return the chat id. */
   async function runAndAbortWhileWaiting(input: Record<string, unknown>): Promise<string> {
     const aborted = await abortWhileWaiting(input);
-    expect(aborted.content).toBe('Minion was aborted');
+    expectAborted(aborted);
     abortController = new AbortController();
     backend.answer = 'Ship it';
     return chatIdOfInfo(aborted);
@@ -2409,8 +3121,7 @@ describe('remote (human) minions', () => {
   );
 
   it('keeps the original line-number framing on a retry', async () => {
-    // An existing session: nothing saves the chat before Stop, so the call's
-    // fileLineNumbers override is not persisted for the retry to read.
+    // The retry asks for line numbers, but the stash frames the files as the human got them.
     backend.sessions.add('sess_live');
     const chat = await seedChat({
       remote: true,
@@ -2426,7 +3137,7 @@ describe('remote (human) minions', () => {
     const [original] = await storage.getMinionMessages(id);
     expect(original.content.content).toContain("Here's the content of /a.txt:\nalpha");
 
-    const { result } = await run({ minionChatId: id, action: 'retry' });
+    const { result } = await run({ minionChatId: id, action: 'retry', fileLineNumbers: true });
     expect(result.isError).toBeFalsy();
     const [user] = await storage.getMinionMessages(id);
     expect(user.content.content).toBe(original.content.content);
@@ -2439,6 +3150,159 @@ describe('remote (human) minions', () => {
     expect(result.isError).toBeFalsy();
     const [first, second] = backend.callsTo('/message');
     expect(second.body).toMatchObject({ content: '', files: first.body.files });
+  });
+
+  it.each([
+    ['action: retry', { action: 'retry' }, {}],
+    ['an autoRollback continuation', { message: 'Review again' }, { autoRollback: true }],
+  ])(
+    'leaves the unanswered question in place when %s fails to read a file',
+    async (_label, retryInput, retryOptions) => {
+      const id = await runAndAbortWhileWaiting({ message: 'Review', remote: true });
+      const before = await storage.getMinionMessages(id);
+      const posts = backend.callsTo('/message').length;
+
+      const failed = await run(
+        { minionChatId: id, injectFiles: ['/missing.txt'], ...retryInput },
+        { ...REMOTE_OPTIONS, ...retryOptions }
+      );
+      expect(failed.result.isError).toBe(true);
+      expect(failed.result.content).toContain('Failed to read injected file');
+      expect(await storage.getMinionMessages(id)).toEqual(before);
+      expect(backend.callsTo('/message')).toHaveLength(posts);
+
+      // Still there to retry.
+      const { result } = await run({ minionChatId: id, action: 'retry' });
+      expect(result.isError).toBeFalsy();
+      expect(backend.callsTo('/message').at(-1)?.body.content).toBe('Review');
+      expect((await storage.getMinionMessages(id)).map(m => m.content.content)).toEqual([
+        'Review',
+        'Ship it',
+      ]);
+    }
+  );
+
+  it('counts history after the retry rollback when telling the human about a lost session', async () => {
+    const question = (id: string): Message<unknown> => ({
+      id,
+      role: 'user',
+      content: { type: 'text', content: 'Approve?' },
+      timestamp: new Date('2024-01-01T00:02:00Z'),
+    });
+    // Session-less chats: the backend lost the session after the question went out.
+    const onlyQuestion = await seedChat({ remote: true, savepoint: SAVEPOINT_START }, [
+      question('msg_user_q1'),
+    ]);
+    const afterAnswer = await seedChat({ remote: true, savepoint: 'msg_asst_r1' }, [
+      ...remoteExchange,
+      question('msg_user_q2'),
+    ]);
+
+    // The rollback takes the only message, so nothing earlier was lost.
+    const fresh = await run({ minionChatId: onlyQuestion.id, action: 'retry' });
+    expect(fresh.result.isError).toBeFalsy();
+    expect(backend.callsTo('/message').at(-1)?.body.content).toBe('Approve?');
+
+    const resumed = await run({ minionChatId: afterAnswer.id, action: 'retry' });
+    expect(resumed.result.isError).toBeFalsy();
+    expect(backend.callsTo('/message').at(-1)?.body.content).toMatch(
+      /^\[The earlier messages of this conversation were lost .*\]\n\nApprove\?$/
+    );
+  });
+
+  describe('a rolled-back question stays until the post goes through', () => {
+    const question: Message<unknown> = {
+      id: 'msg_user_q1',
+      role: 'user',
+      content: { type: 'text', content: 'Approve?' },
+      timestamp: new Date('2024-01-01T00:02:00Z'),
+    };
+    // The chat's session: none yet, alive on the backend, or lost by it.
+    type SessionState = 'none' | 'live' | 'gone';
+    const failures: Array<[string, SessionState, () => void]> = [
+      ['the session create is refused', 'none', () => (backend.createSessionStatus = 401)],
+      [
+        'the session is gone and its re-create is refused',
+        'gone',
+        () => (backend.createSessionStatus = 401),
+      ],
+      [
+        'the post is refused',
+        'live',
+        () => (backend.misrouted = () => jsonResponse(403, { error: 'Forbidden' })),
+      ],
+      [
+        'Stop lands during the post',
+        'live',
+        () =>
+          (backend.misrouted = () => {
+            abortController.abort();
+            throw new DOMException('The operation was aborted.', 'AbortError');
+          }),
+      ],
+    ];
+    const calls: Array<[string, Record<string, unknown>, ToolOptions]> = [
+      ['action: retry', { action: 'retry' }, REMOTE_OPTIONS],
+      ['an autoRollback continuation', {}, { ...REMOTE_OPTIONS, autoRollback: true }],
+    ];
+    const cases = failures.flatMap(([failure, session, fail]) =>
+      calls.map(([call, input, options]) => ({ failure, session, fail, call, input, options }))
+    );
+
+    it.each(cases)(
+      'keeps it for the next try when $failure on $call',
+      async ({ session, fail, input, options }) => {
+        if (session === 'live') backend.sessions.add('sess_live');
+        const chat = await seedChat(
+          {
+            remote: true,
+            savepoint: SAVEPOINT_START,
+            ...(session !== 'none' && { remoteSessionId: 'sess_live' }),
+          },
+          [question]
+        );
+        fail();
+
+        const failed = await run({ minionChatId: chat.id, ...input }, options);
+        expect(failed.result.isError).toBe(true);
+        expect(failed.result.content).toContain(`minionChatId "${chat.id}"`);
+        expect(await storage.getMinionMessages(chat.id)).toEqual([question]);
+        expect((await storage.getMinionChat(chat.id))?.savepoint).toBe(SAVEPOINT_START);
+
+        backend.createSessionStatus = 201;
+        backend.misrouted = undefined;
+        abortController = new AbortController();
+        const { result } = await run({ minionChatId: chat.id, ...input }, options);
+        expect(result.isError).toBeFalsy();
+        expect(backend.callsTo('/message').at(-1)?.body.content).toBe('Approve?');
+        expect((await storage.getMinionMessages(chat.id)).map(m => m.content.content)).toEqual([
+          'Approve?',
+          'Ship it',
+        ]);
+      }
+    );
+
+    it('keeps it when a note sent on an autoRollback continuation fails to post', async () => {
+      backend.sessions.add('sess_live');
+      const chat = await seedChat(
+        { remote: true, remoteSessionId: 'sess_live', savepoint: SAVEPOINT_START },
+        [question]
+      );
+      backend.misrouted = () => jsonResponse(403, { error: 'Forbidden' });
+      const autoRollback = { ...REMOTE_OPTIONS, autoRollback: true };
+
+      const failed = await run(
+        { minionChatId: chat.id, message: 'FYI', async: true },
+        autoRollback
+      );
+      expect(failed.result.isError).toBe(true);
+      expect(await storage.getMinionMessages(chat.id)).toEqual([question]);
+
+      backend.misrouted = undefined;
+      const { result } = await run({ minionChatId: chat.id }, autoRollback);
+      expect(result.isError).toBeFalsy();
+      expect(backend.callsTo('/message').at(-1)?.body.content).toBe('Approve?');
+    });
   });
 
   it('adopts a question that landed although its response was lost', async () => {
@@ -2493,6 +3357,23 @@ describe('remote (human) minions', () => {
         remoteSessionId: 'sess_1',
         savepoint: stored[0].id,
       });
+    });
+
+    it("reports a note as result, with no remote marker, in outputFormat 'json'", async () => {
+      const { result } = await run(
+        { message: 'FYI', remote: true, async: true, outputFormat: 'json' },
+        { ...REMOTE_OPTIONS, returnMode: 'enforced' }
+      );
+      const id = minionChatIdOf(result);
+      expect(result.content).toBe(
+        JSON.stringify({
+          minionChatId: id,
+          stopReason: 'end_turn',
+          hasCoT: false,
+          result: 'Message sent.',
+        })
+      );
+      expect((await storage.getMinionChat(id))?.outputFormat).toBe('json');
     });
 
     it("says only 'Message sent.' in the simplified modes", async () => {
@@ -2579,6 +3460,298 @@ describe('remote (human) minions', () => {
     });
   });
 
+  describe('remoteToken', () => {
+    it('stores the token on a new remote chat and sends it with the session only', async () => {
+      const { result } = await run({
+        message: 'Approve?',
+        remote: true,
+        remoteToken: `  ${ALICE_TOKEN}  `,
+      });
+      expect(result.isError).toBeFalsy();
+      const [create] = backend.callsTo('/api/sessions');
+      expect(create.body).toEqual({ displayName: 'Test Project · minion', userToken: ALICE_TOKEN });
+      expect(backend.callsTo('/message')[0].body).not.toHaveProperty('userToken');
+      expect(await storage.getMinionChat(minionChatIdOf(result))).toMatchObject({
+        remote: true,
+        remoteSessionId: 'sess_1',
+        remoteToken: ALICE_TOKEN,
+      });
+    });
+
+    it('continues on the same session without the param, and takes the same token again', async () => {
+      const first = await run({ message: 'Approve?', remote: true, remoteToken: ALICE_TOKEN });
+      const id = minionChatIdOf(first.result);
+
+      const omitted = await run({ minionChatId: id, message: 'And the DB migration?' });
+      expect(omitted.result.isError).toBeFalsy();
+      const repeated = await run({ minionChatId: id, message: 'Done?', remoteToken: ALICE_TOKEN });
+      expect(repeated.result.isError).toBeFalsy();
+
+      expect(backend.callsTo('/api/sessions')).toHaveLength(1);
+      expect(backend.callsTo('/message').map(c => c.path)).toEqual([
+        '/api/sessions/sess_1/message',
+        '/api/sessions/sess_1/message',
+        '/api/sessions/sess_1/message',
+      ]);
+      expect((await storage.getMinionChat(id))?.remoteToken).toBe(ALICE_TOKEN);
+    });
+
+    it('sends the token again when a lost session is re-created', async () => {
+      const chat = await seedChat({
+        remote: true,
+        remoteSessionId: 'sess_gone',
+        remoteToken: ALICE_TOKEN,
+        savepoint: SAVEPOINT_START,
+      });
+      const { result } = await run({ minionChatId: chat.id, message: 'Still there?' });
+      expect(result.isError).toBeFalsy();
+      expect(backend.callsTo('/api/sessions').map(c => c.body)).toEqual([
+        { displayName: 'Test Project · minion', userToken: ALICE_TOKEN },
+      ]);
+      expect((await storage.getMinionChat(chat.id))?.remoteSessionId).toBe('sess_1');
+    });
+
+    it('rejects a misplaced or changed token before anything is written or sent', async () => {
+      const llmChat = await seedChat({ apiDefinitionId: 'api', modelId: 'm' }, [llmTurn]);
+      const bobChat = await seedChat({
+        remote: true,
+        remoteSessionId: 'sess_bob',
+        remoteToken: 'tg_bob',
+      });
+      // A chat from before the `remote` flag, whose session belongs to the admin.
+      const legacyChat = await seedChat({ remoteSessionId: 'sess_admin' });
+      const saveChat = vi.spyOn(storage, 'saveMinionChat');
+      const saveMessage = vi.spyOn(storage, 'saveMinionMessage');
+
+      const cases: Array<[Record<string, unknown>, string]> = [
+        [{ message: 'hi', remoteToken: ALICE_TOKEN }, 'remoteToken only works with remote'],
+        [
+          { message: 'hi', remote: false, remoteToken: ALICE_TOKEN },
+          'remoteToken only works with remote',
+        ],
+        [
+          { minionChatId: llmChat.id, message: 'hi', remoteToken: ALICE_TOKEN },
+          `remoteToken cannot be used on minion chat ${llmChat.id}: it is an LLM minion chat`,
+        ],
+        [
+          { minionChatId: bobChat.id, message: 'hi', remoteToken: ALICE_TOKEN },
+          `Minion chat ${bobChat.id} already has a remote session in another inbox`,
+        ],
+        [
+          { minionChatId: legacyChat.id, message: 'hi', remoteToken: ALICE_TOKEN },
+          `Minion chat ${legacyChat.id} already has a remote session in another inbox`,
+        ],
+      ];
+      for (const [input, error] of cases) {
+        const { result } = await run(input);
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain(error);
+      }
+
+      expect(saveChat).not.toHaveBeenCalled();
+      expect(saveMessage).not.toHaveBeenCalled();
+      expect(backend.fetch).not.toHaveBeenCalled();
+      expect((await storage.getMinionChat(bobChat.id))?.remoteToken).toBe('tg_bob');
+      expect((await storage.getMinionChat(legacyChat.id))?.remoteToken).toBeUndefined();
+      expect((await storage.getMinionChat(llmChat.id))?.remoteToken).toBeUndefined();
+    });
+
+    it.each([
+      ['action: retry', { action: 'retry' }, {}],
+      ['an autoRollback continuation', { message: 'Approve now?' }, { autoRollback: true }],
+    ])(
+      'refuses a changed token on %s before rolling anything back',
+      async (_label, retryInput, retryOptions) => {
+        // Stop leaves the question unanswered after the savepoint, so both
+        // paths would roll it back if the token check came later.
+        const id = await runAndAbortWhileWaiting({
+          message: 'Approve?',
+          remote: true,
+          remoteToken: ALICE_TOKEN,
+        });
+        const messageIds = (await storage.getMinionMessages(id)).map(m => m.id);
+        expect(messageIds).toHaveLength(1);
+        const callsBefore = backend.calls.length;
+        const saveChat = vi.spyOn(storage, 'saveMinionChat');
+
+        const { result } = await run(
+          { minionChatId: id, remoteToken: 'tg_bob', ...retryInput },
+          { ...REMOTE_OPTIONS, ...retryOptions }
+        );
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain(
+          `Minion chat ${id} already has a remote session in another inbox`
+        );
+        expect((await storage.getMinionMessages(id)).map(m => m.id)).toEqual(messageIds);
+        expect(saveChat).not.toHaveBeenCalled();
+        expect(backend.calls).toHaveLength(callsBefore);
+      }
+    );
+
+    it('takes a corrected token on the chat whose first create was refused', async () => {
+      const first = await run({ message: 'Approve?', remote: true, remoteToken: 'tg_typo' });
+      expect(first.result.isError).toBe(true);
+      expect(first.result.content).toContain('HTTP 400 Unknown userToken');
+      expect(first.result.content).toContain(
+        'Resend with the corrected remoteToken and the same minionChatId'
+      );
+      const id = chatIdOfInfo(first.result);
+      expect(first.result.content).toContain(`minionChatId "${id}"`);
+      expect(await storage.getMinionMessages(id)).toEqual([]);
+
+      // Saved before the create, so a second refusal still keeps the newer token.
+      const second = await run({ minionChatId: id, message: 'Approve?', remoteToken: 'tg_typo2' });
+      expect(second.result.content).toContain('HTTP 400 Unknown userToken');
+      expect((await storage.getMinionChat(id))?.remoteToken).toBe('tg_typo2');
+
+      const third = await run({ minionChatId: id, message: 'Approve?', remoteToken: ALICE_TOKEN });
+      expect(third.result.isError).toBeFalsy();
+      expect(JSON.parse(third.result.content).result).toBe('Ship it');
+      expect(backend.callsTo('/api/sessions').map(c => c.body.userToken)).toEqual([
+        'tg_typo',
+        'tg_typo2',
+        ALICE_TOKEN,
+      ]);
+      expect(await storage.getMinionChat(id)).toMatchObject({
+        remoteToken: ALICE_TOKEN,
+        remoteSessionId: 'sess_1',
+      });
+      expect((await storage.getMinionMessages(id)).map(m => m.role)).toEqual(['user', 'assistant']);
+      // Nothing was ever posted, so the human gets no lost-context note.
+      expect(backend.callsTo('/message').map(c => c.body.content)).toEqual(['Approve?']);
+    });
+
+    it("takes a corrected token after a lost session's re-create is refused", async () => {
+      // Retention swept the session, then the admin deleted the token's user.
+      const chat = await seedChat(
+        {
+          remote: true,
+          remoteSessionId: 'sess_gone',
+          remoteToken: 'tg_deleted',
+          savepoint: 'msg_asst_r1',
+        },
+        remoteExchange
+      );
+
+      const refused = await run({ minionChatId: chat.id, message: 'Still there?' });
+      expect(refused.result.isError).toBe(true);
+      expect(refused.result.content).toContain('HTTP 400 Unknown userToken');
+      expect(refused.result.content).toContain(
+        'Resend with the corrected remoteToken and the same minionChatId'
+      );
+      const afterRefusal = await storage.getMinionChat(chat.id);
+      expect(afterRefusal?.remoteSessionId).toBeUndefined();
+      expect(afterRefusal).toMatchObject({ remote: true, remoteToken: 'tg_deleted' });
+
+      const corrected = await run({
+        minionChatId: chat.id,
+        message: 'Still there?',
+        remoteToken: ALICE_TOKEN,
+      });
+      expect(corrected.result.isError).toBeFalsy();
+      expect(JSON.parse(corrected.result.content).result).toBe('Ship it');
+      expect(backend.callsTo('/api/sessions').map(c => c.body.userToken)).toEqual([
+        'tg_deleted',
+        ALICE_TOKEN,
+      ]);
+      const posts = backend.callsTo('/message');
+      expect(posts.map(c => c.path)).toEqual([
+        '/api/sessions/sess_gone/message',
+        '/api/sessions/sess_1/message',
+      ]);
+      // This call found no session to lose, but the human still hears about it.
+      expect(posts[1].body.content).toMatch(/^\[The earlier messages .*\]\n\nStill there\?$/);
+      expect(await storage.getMinionChat(chat.id)).toMatchObject({
+        remoteSessionId: 'sess_1',
+        remoteToken: ALICE_TOKEN,
+      });
+    });
+
+    it.each([
+      ["a proxy's page", htmlNotFound, ENDPOINT_HINT],
+      [
+        "the backend's catch-all for a misrouted path",
+        () => jsonResponse(404, { error: 'Not found' }),
+        'HTTP 404 Not found',
+      ],
+    ])(
+      'keeps a live session and its token through a 404 from %s',
+      async (_label, notFound, shown) => {
+        backend.sessions.add('sess_live');
+        const chat = await seedChat(
+          {
+            remote: true,
+            remoteSessionId: 'sess_live',
+            remoteToken: ALICE_TOKEN,
+            savepoint: 'msg_asst_r1',
+          },
+          remoteExchange
+        );
+        backend.misrouted = notFound;
+
+        const failed = await run({ minionChatId: chat.id, message: 'Still there?' });
+        expect(failed.result.isError).toBe(true);
+        expect(failed.result.content).toContain(shown);
+        expect(backend.callsTo('/api/sessions')).toHaveLength(0);
+        expect((await storage.getMinionChat(chat.id))?.remoteSessionId).toBe('sess_live');
+
+        // The session is still in Alice's inbox, so another token can't move the chat.
+        const callsBefore = backend.calls.length;
+        const moved = await run({
+          minionChatId: chat.id,
+          message: 'Still there?',
+          remoteToken: 'tg_bob',
+        });
+        expect(moved.result.content).toContain('already has a remote session in another inbox');
+        expect(backend.calls).toHaveLength(callsBefore);
+
+        // Endpoint fixed: the same session carries on, with no lost-context note.
+        backend.misrouted = undefined;
+        const { result } = await run({ minionChatId: chat.id, message: 'Still there?' });
+        expect(result.isError).toBeFalsy();
+        expect(backend.callsTo('/api/sessions')).toHaveLength(0);
+        const posts = backend.callsTo('/message');
+        expect(posts.map(c => c.path)).toEqual([
+          '/api/sessions/sess_live/message',
+          '/api/sessions/sess_live/message',
+        ]);
+        expect(posts[1].body.content).toBe('Still there?');
+        expect(await storage.getMinionChat(chat.id)).toMatchObject({
+          remoteSessionId: 'sess_live',
+          remoteToken: ALICE_TOKEN,
+        });
+      }
+    );
+
+    it('offers remoteToken in the schema and description only when an endpoint is set', () => {
+      const describeTool = minionTool.description as (o: ToolOptions) => string;
+      const schema = minionTool.inputSchema as (o: ToolOptions) => {
+        properties: Record<string, { type?: string; description?: string }>;
+      };
+      expect(schema({}).properties).not.toHaveProperty('remoteToken');
+      expect(describeTool({})).not.toContain('remoteToken');
+      const property = schema(REMOTE_OPTIONS).properties.remoteToken;
+      expect(property.type).toBe('string');
+      expect(property.description).toContain('set with remote=true on a new chat');
+      expect(describeTool(REMOTE_OPTIONS)).toContain('remoteToken');
+    });
+
+    it('shows only a prefix of the token in the call block', () => {
+      const rendered = minionTool.renderInput!({
+        message: 'x',
+        remote: true,
+        remoteToken: ` ${ALICE_TOKEN} `,
+      });
+      expect(rendered).toContain('Token: tg_alic…');
+      expect(rendered).not.toContain(ALICE_TOKEN);
+      expect(minionTool.renderInput!({ message: 'x', remoteToken: '   ' })).not.toContain('Token:');
+
+      expect(readRemoteToken({ remoteToken: ' tg_x ' })).toBe('tg_x');
+      expect(readRemoteToken({ remoteToken: '   ' })).toBeUndefined();
+      expect(readRemoteToken({ remoteToken: 42 })).toBeUndefined();
+    });
+  });
+
   it('times out, withdraws the question and says how to follow up', async () => {
     vi.useFakeTimers();
     backend.answer = undefined;
@@ -2629,7 +3802,7 @@ describe('remote (human) minions', () => {
     const end = await finished;
 
     expect(end.done).toBe(true);
-    expect(end.value).toMatchObject({ content: 'Minion was aborted', isError: true });
+    expectAborted(end.value as ToolResult);
     expect((end.value as ToolResult).renderingGroups).toHaveLength(1);
     expect(backend.callsTo('/cancel')).toHaveLength(1);
   });
@@ -2666,7 +3839,7 @@ describe('remote (human) minions', () => {
 
     const startedAt = Date.now();
     const result = await abortWhileWaiting({ minionChatId: chat.id, message: 'Approve?' });
-    expect(result.content).toBe('Minion was aborted');
+    expectAborted(result);
     expect(Date.now() - startedAt).toBeLessThan(2_000);
     const before = await storage.getMinionMessages(chat.id);
     const savepoint = (await storage.getMinionChat(chat.id))?.savepoint;
@@ -2684,7 +3857,7 @@ describe('remote (human) minions', () => {
     backend.cancelFailures = 2;
     backend.cancelState = { status: 'answered', response: { content: 'Too late' } };
     const result = await abortWhileWaiting({ message: 'Approve?', remote: true });
-    expect(result.content).toBe('Minion was aborted');
+    expectAborted(result);
     expect(backend.callsTo('/cancel')).toHaveLength(1);
 
     const saveMessage = vi.spyOn(storage, 'saveMinionMessage');
@@ -2707,7 +3880,7 @@ describe('remote (human) minions', () => {
       { message: 'Approve?', remote: true },
       { ...REMOTE_OPTIONS, remoteTimeoutMs: 10_000 }
     );
-    expect(result.content).toBe('Minion was aborted');
+    expectAborted(result);
     // Attempts at Stop, +1s, +3s and +8s; the next would land past the 10s deadline.
     await vi.advanceTimersByTimeAsync(10_000);
     expect(backend.callsTo('/cancel')).toHaveLength(4);
@@ -2782,6 +3955,32 @@ describe('remote (human) minions', () => {
     });
   });
 
+  it('keeps the chat remote and the lost-context note when the re-create after a 404 fails', async () => {
+    // A chat from before the `remote` flag: losing its session id must not
+    // turn it into an LLM chat.
+    const chat = await seedChat(
+      { remoteSessionId: 'sess_gone', savepoint: 'msg_asst_r1' },
+      remoteExchange
+    );
+    backend.createSessionStatus = 401;
+    const failed = await run({ minionChatId: chat.id, message: 'Still there?' });
+    expect(failed.result.isError).toBe(true);
+    expect(failed.result.content).toContain('HTTP 401');
+    const afterFailure = await storage.getMinionChat(chat.id);
+    expect(afterFailure?.remote).toBe(true);
+    expect(afterFailure?.remoteSessionId).toBeUndefined();
+
+    backend.createSessionStatus = 201;
+    const { result } = await run({ minionChatId: chat.id, message: 'Still there?' });
+    expect(result.isError).toBeFalsy();
+    const posts = backend.callsTo('/message');
+    expect(posts.map(c => c.path)).toEqual([
+      '/api/sessions/sess_gone/message',
+      '/api/sessions/sess_1/message',
+    ]);
+    expect(posts[1].body.content).toMatch(/^\[The earlier messages .*\]\n\nStill there\?$/);
+  });
+
   it('reports a setup failure with its hint and the chat id to retry with', async () => {
     backend.createSessionStatus = 401;
     const { result } = await run({ message: 'Approve?', remote: true });
@@ -2825,10 +4024,196 @@ describe('remote (human) minions', () => {
     );
     expect(group).toBe('minion:__remote__');
   });
+
+  describe('continue tokens', () => {
+    const TOKENS: ToolOptions = { ...REMOTE_OPTIONS, continueTokens: true };
+
+    it('refuses a token on a remote chat before anything is sent or saved', async () => {
+      // No session yet, so a new remoteToken would otherwise be saved at once.
+      const chat = await seedChat(
+        { remote: true, savepoint: remoteExchange[1].id },
+        remoteExchange
+      );
+      const saveChat = vi.spyOn(storage, 'saveMinionChat');
+      const saveMessage = vi.spyOn(storage, 'saveMinionMessage');
+
+      const { result } = await run(
+        {
+          minionChatId: `${continueTokenFor(remoteExchange[1].id)}@${chat.id}`,
+          message: 'Approve again?',
+          remoteToken: ALICE_TOKEN,
+        },
+        TOKENS
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content).toBe(
+        `Error: Minion chat ${chat.id} is a remote (human) chat, and a human's conversation can't be rolled back. Pass the bare minionChatId. Resend to reattempt.`
+      );
+      expect(backend.calls).toEqual([]);
+      expect(saveChat).not.toHaveBeenCalled();
+      expect(saveMessage).not.toHaveBeenCalled();
+      expect((await storage.getMinionChat(chat.id))?.remoteToken).toBeUndefined();
+    });
+
+    /** Ids with distinct token parts, so a token picks one message of the exchange. */
+    const tokenedExchange: Message<unknown>[] = [
+      { ...remoteExchange[0], id: 'msg_user_q7w8e9r0aaaa' },
+      { ...remoteExchange[1], id: 'msg_asst_a1s2d3f4bbbb' },
+    ];
+
+    async function seedLiveTokenedChat() {
+      backend.sessions.add('sess_live');
+      return seedChat(
+        { remote: true, remoteSessionId: 'sess_live', savepoint: tokenedExchange[1].id },
+        tokenedExchange
+      );
+    }
+
+    it.each([
+      ['would drop the answer', 'q7w8e9r0'],
+      ['marks the tail', 'a1s2d3f4'],
+      ['is not in the chat', 'zzzzzzzz'],
+    ])('refuses a token that %s on a remote chat, and deletes nothing', async (_label, token) => {
+      const chat = await seedLiveTokenedChat();
+      const before = await storage.getMinionMessages(chat.id);
+      const writes = [
+        vi.spyOn(storage, 'deleteMessagesAfter'),
+        vi.spyOn(storage, 'deleteMessageAndAfter'),
+        vi.spyOn(storage, 'deleteMinionChat'),
+        vi.spyOn(storage, 'saveMinionChat'),
+        vi.spyOn(storage, 'saveMinionMessage'),
+      ];
+
+      const { result } = await run(
+        { minionChatId: `${token}@${chat.id}`, message: 'Approve again?' },
+        TOKENS
+      );
+      expect(result).toEqual({
+        content: `Error: Minion chat ${chat.id} is a remote (human) chat, and a human's conversation can't be rolled back. Pass the bare minionChatId. Resend to reattempt.`,
+        isError: true,
+      });
+      expect(backend.calls).toEqual([]);
+      for (const spy of writes) expect(spy).not.toHaveBeenCalled();
+      expect(await storage.getMinionMessages(chat.id)).toEqual(before);
+      expect((await storage.getMinionChat(chat.id))?.savepoint).toBe(tokenedExchange[1].id);
+    });
+
+    it("keeps tokens off human answers, notes and Stop in outputFormat 'json' too", async () => {
+      const json = { ...TOKENS, returnMode: 'return-only' };
+      const { result } = await run(
+        { message: 'Approve?', remote: true, outputFormat: 'json' },
+        json
+      );
+      const id = minionChatIdOf(result);
+      expect(result.content).toBe(
+        JSON.stringify({
+          minionChatId: id,
+          stopReason: 'end_turn',
+          hasCoT: false,
+          remote: true,
+          result: 'Ship it',
+        })
+      );
+
+      const note = await run({ minionChatId: id, message: 'Deploying now', async: true }, json);
+      expect(note.result.content).toBe(
+        JSON.stringify({
+          minionChatId: id,
+          stopReason: 'end_turn',
+          hasCoT: false,
+          result: 'Message sent.',
+        })
+      );
+
+      backend.answer = undefined;
+      const polls = backend.callsTo('/poll').length;
+      const stopped = collectToolResult(
+        minionTool.execute({ minionChatId: id, message: 'Tonight?' }, json, makeContext())
+      );
+      await vi.waitFor(() => expect(backend.callsTo('/poll')).toHaveLength(polls + 1));
+      abortController.abort();
+      expectAborted(await stopped);
+    });
+
+    it('turns a token call away while a plain call holds the same chat', async () => {
+      const chat = await seedLiveTokenedChat();
+      backend.answer = undefined;
+      const context = makeContext();
+      const held = minionTool.execute(
+        { minionChatId: chat.id, message: 'Still there?' },
+        TOKENS,
+        context
+      ) as AsyncGenerator<ToolStreamEvent, ToolResult, void>;
+      await held.next();
+      const finished = held.next();
+      await vi.waitFor(() => expect(backend.callsTo('/poll')).toHaveLength(1));
+
+      const tokenRef = { minionChatId: `q7w8e9r0@${chat.id}`, message: 'Approve again?' };
+      const busy = await collectToolResult(minionTool.execute(tokenRef, TOKENS, context));
+      expect(busy).toEqual({
+        content: `Error: Minion chat ${chat.id} is busy with another request. Wait for it to finish and resend.`,
+        isError: true,
+      });
+      expect(backend.callsTo('/message')).toHaveLength(1);
+
+      abortController.abort();
+      expectAborted((await finished).value as ToolResult);
+
+      // The hold is gone once the plain call ends: the same ref now gets past
+      // the guard to the remote-chat refusal.
+      abortController = new AbortController();
+      const after = await collectToolResult(
+        minionTool.execute(tokenRef, TOKENS, {
+          ...makeContext(),
+          loopRegistry: context.loopRegistry,
+        })
+      );
+      expect(after.content).toContain("a human's conversation can't be rolled back");
+    });
+
+    it('never puts a token on a human answer or an async note', async () => {
+      const returnOnly = { ...TOKENS, returnMode: 'return-only' };
+      const { result } = await run({ message: 'Approve?', remote: true }, returnOnly);
+      const id = parseSimplifiedOutput(result.content)!.minionChatId;
+      expect(result.content).toBe(`<minionChatId>${id}</minionChatId>\n<remote />\nShip it`);
+
+      const note = await run(
+        { minionChatId: id, message: 'Deploying now', async: true },
+        returnOnly
+      );
+      expect(note.result.content).toBe(`<minionChatId>${id}</minionChatId>\nMessage sent.`);
+
+      const both = await run({ message: 'Approve?', remote: true }, TOKENS);
+      expect(JSON.parse(both.result.content)).not.toHaveProperty('continueToken');
+    });
+
+    it('throttles a token ref by its bare chat id', async () => {
+      const groupOf = (minionChatId: string, options: ToolOptions) =>
+        minionTool.getParallelThrottleGroup!(
+          { message: 'x', minionChatId },
+          options,
+          makeContext()
+        );
+
+      const remoteChat = await seedChat({ remote: true });
+      expect(await groupOf(`k3x9q2ab@${remoteChat.id}`, TOKENS)).toBe('minion:__remote__');
+      expect(await groupOf(remoteChat.id, TOKENS)).toBe('minion:__remote__');
+
+      // The stored model decides, not the option default a missed lookup falls back to.
+      const llmOptions: ToolOptions = {
+        continueTokens: true,
+        model: { apiDefinitionId: 'api_default', modelId: 'm' },
+      };
+      const llmChat = await seedChat({ apiDefinitionId: 'api_stored', modelId: 'm' });
+      expect(await groupOf(`k3x9q2ab@${llmChat.id}`, llmOptions)).toBe('minion:api_stored');
+      expect(await groupOf(llmChat.id, llmOptions)).toBe('minion:api_stored');
+    });
+  });
 });
 
 describe('formatMinionResult', () => {
-  const base = {
+  const base: Omit<Parameters<typeof formatMinionResult>[0], 'returnMode'> = {
+    outputFormat: 'text',
     minionChatId: 'minion_abc',
     stopReason: 'end_turn',
     hasCoT: false,
@@ -2848,6 +4233,27 @@ describe('formatMinionResult', () => {
     ).toBe('R');
   });
 
+  it('puts the continue token right after the chat id in every shape', () => {
+    const fields = { ...base, continueToken: 'k3x9q2ab', hasCoT: true, remote: true };
+    expect(formatMinionResult({ ...fields, returnMode: 'no-return' })).toBe(
+      '<minionChatId>minion_abc</minionChatId>\n<continueToken>k3x9q2ab</continueToken>\n<hasCoT />\n<remote />\nprose'
+    );
+    expect(formatMinionResult({ ...fields, returnMode: 'return-only', outputFormat: 'json' })).toBe(
+      '{"minionChatId":"minion_abc","continueToken":"k3x9q2ab","stopReason":"end_turn","hasCoT":true,"remote":true,"text":"prose"}'
+    );
+    expect(formatMinionResult({ ...fields, returnMode: 'both', returnValue: 'R' })).toBe(
+      '{"stopReason":"end_turn","hasCoT":true,"minionChatId":"minion_abc","continueToken":"k3x9q2ab","text":"prose","result":"R","remote":true}'
+    );
+  });
+
+  it("keeps 'both' byte-identical whatever the outputFormat", () => {
+    const fields = { ...base, returnMode: 'both', hasCoT: true, returnValue: 'R', remote: true };
+    const expected =
+      '{"stopReason":"end_turn","hasCoT":true,"minionChatId":"minion_abc","text":"prose","result":"R","remote":true}';
+    expect(formatMinionResult(fields)).toBe(expected);
+    expect(formatMinionResult({ ...fields, outputFormat: 'json' })).toBe(expected);
+  });
+
   it('warns in enforced modes when nothing was returned, else falls back to the prose', () => {
     expect(formatMinionResult({ ...base, returnMode: 'enforced' })).toBe(
       '<minionChatId>minion_abc</minionChatId>\nWarning: Return tool was not called'
@@ -2855,5 +4261,231 @@ describe('formatMinionResult', () => {
     expect(formatMinionResult({ ...base, returnMode: 'return-only', hasCoT: true })).toBe(
       '<minionChatId>minion_abc</minionChatId>\n<hasCoT />\nprose'
     );
+  });
+
+  describe("outputFormat 'json'", () => {
+    const json = { ...base, outputFormat: 'json' as const };
+
+    it.each([
+      ['no-return', undefined, { text: 'prose' }],
+      ['return-only', undefined, { text: 'prose' }],
+      ['return-only', 'R', { result: 'R' }],
+      ['enforced', undefined, { warning: 'Return tool was not called' }],
+      ['enforced', 'R', { result: 'R' }],
+      ['auto-enforced', undefined, { warning: 'Return tool was not called' }],
+      ['auto-enforced', 'R', { result: 'R' }],
+    ])(
+      "'%s' with return value %s carries exactly one body key",
+      (returnMode, returnValue, body) => {
+        expect(formatMinionResult({ ...json, returnMode, returnValue })).toBe(
+          JSON.stringify({
+            minionChatId: 'minion_abc',
+            stopReason: 'end_turn',
+            hasCoT: false,
+            ...body,
+          })
+        );
+      }
+    );
+
+    it('keeps empty prose as text, where the tag format shows an empty body', () => {
+      expect(
+        JSON.parse(formatMinionResult({ ...json, returnMode: 'no-return', text: '' }))
+      ).toEqual({ minionChatId: 'minion_abc', stopReason: 'end_turn', hasCoT: false, text: '' });
+    });
+
+    it('carries an empty return value as result instead of the prose', () => {
+      expect(
+        JSON.parse(formatMinionResult({ ...json, returnMode: 'return-only', returnValue: '' }))
+      ).toEqual({ minionChatId: 'minion_abc', stopReason: 'end_turn', hasCoT: false, result: '' });
+    });
+
+    it('marks a human answer with remote, ahead of the body', () => {
+      expect(
+        formatMinionResult({
+          ...json,
+          returnMode: 'no-return',
+          hasCoT: true,
+          returnValue: 'Ship it',
+          remote: true,
+        })
+      ).toBe(
+        '{"minionChatId":"minion_abc","stopReason":"end_turn","hasCoT":true,"remote":true,"result":"Ship it"}'
+      );
+    });
+
+    it('passes the stop reason through', () => {
+      expect(
+        JSON.parse(
+          formatMinionResult({ ...json, returnMode: 'return-only', stopReason: 'tool_use' })
+        ).stopReason
+      ).toBe('tool_use');
+    });
+  });
+});
+
+describe('readOutputFormat / resolveOutputFormat', () => {
+  it("reads only 'text' and 'json'", () => {
+    expect(readOutputFormat({ outputFormat: 'json' })).toBe('json');
+    expect(readOutputFormat({ outputFormat: 'text' })).toBe('text');
+    for (const stray of ['JSON', 'yaml', '', true, null, undefined]) {
+      expect(readOutputFormat({ outputFormat: stray })).toBeUndefined();
+    }
+  });
+
+  it("prefers this call's format, then the chat's, then 'text'", () => {
+    expect(resolveOutputFormat({ outputFormat: 'text' }, { outputFormat: 'json' })).toBe('text');
+    expect(resolveOutputFormat({ outputFormat: 'json' }, {})).toBe('json');
+    expect(resolveOutputFormat({}, { outputFormat: 'json' })).toBe('json');
+    expect(resolveOutputFormat({}, {})).toBe('text');
+  });
+
+  it("lets a stray value fall through to the chat's format", () => {
+    expect(resolveOutputFormat({ outputFormat: 'yaml' }, { outputFormat: 'json' })).toBe('json');
+    expect(resolveOutputFormat({ outputFormat: 'yaml' }, {})).toBe('text');
+  });
+});
+
+describe('formatMinionError', () => {
+  it('puts the error first and the chat id tag after it', () => {
+    expect(
+      formatMinionError({
+        error: 'Minion was aborted',
+        minionChatId: 'minion_abc',
+        outputFormat: 'text',
+      })
+    ).toBe('Minion was aborted\n<minionChatId>minion_abc</minionChatId>');
+  });
+
+  it('adds the continue token tag after the chat id', () => {
+    expect(
+      formatMinionError({
+        error: 'Minion ended unexpectedly (max_tokens)',
+        minionChatId: 'minion_abc',
+        outputFormat: 'text',
+        continueToken: 'k3x9q2ab',
+      })
+    ).toBe(
+      'Minion ended unexpectedly (max_tokens)\n<minionChatId>minion_abc</minionChatId>\n<continueToken>k3x9q2ab</continueToken>'
+    );
+  });
+
+  it('cuts the error at 200 characters and leaves the tags whole past that limit', () => {
+    const fields = {
+      minionChatId: generateChecksummedId('minion'),
+      outputFormat: 'text' as const,
+      continueToken: 'k3x9q2ab',
+    };
+    const tags = `\n<minionChatId>${fields.minionChatId}</minionChatId>\n<continueToken>k3x9q2ab</continueToken>`;
+    const atLimit = 'e'.repeat(200);
+    expect(formatMinionError({ ...fields, error: atLimit })).toBe(atLimit + tags);
+    expect(formatMinionError({ ...fields, error: `${atLimit}f` })).toBe(`${atLimit}...${tags}`);
+    expect(
+      JSON.parse(formatMinionError({ ...fields, outputFormat: 'json', error: `${atLimit}f` }))
+    ).toStrictEqual({
+      error: `${atLimit}...`,
+      minionChatId: fields.minionChatId,
+      continueToken: 'k3x9q2ab',
+    });
+  });
+
+  it('emits JSON fields, with the token only when given', () => {
+    expect(
+      JSON.parse(
+        formatMinionError({
+          error: 'Minion was aborted',
+          minionChatId: 'minion_abc',
+          outputFormat: 'json',
+        })
+      )
+    ).toEqual({ error: 'Minion was aborted', minionChatId: 'minion_abc' });
+    expect(
+      JSON.parse(
+        formatMinionError({
+          error: 'Minion was aborted',
+          minionChatId: 'minion_abc',
+          outputFormat: 'json',
+          continueToken: 'k3x9q2ab',
+        })
+      )
+    ).toEqual({
+      error: 'Minion was aborted',
+      minionChatId: 'minion_abc',
+      continueToken: 'k3x9q2ab',
+    });
+  });
+});
+
+describe('parseMinionChatRef', () => {
+  it('reads a bare chat id', () => {
+    expect(parseMinionChatRef('minion_abc')).toStrictEqual({ chatId: 'minion_abc' });
+  });
+
+  it('splits a token ref on the first @', () => {
+    expect(parseMinionChatRef('k3x9q2ab@minion_abc')).toStrictEqual({
+      chatId: 'minion_abc',
+      continueToken: 'k3x9q2ab',
+    });
+    expect(parseMinionChatRef('k3x9q2ab@minion@abc')).toStrictEqual({
+      chatId: 'minion@abc',
+      continueToken: 'k3x9q2ab',
+    });
+  });
+
+  it('keeps an empty token, and drops an empty chat id', () => {
+    expect(parseMinionChatRef('@minion_abc')).toStrictEqual({
+      chatId: 'minion_abc',
+      continueToken: '',
+    });
+    expect(parseMinionChatRef('k3x9q2ab@')).toStrictEqual({ continueToken: 'k3x9q2ab' });
+    expect(parseMinionChatRef('@')).toStrictEqual({ continueToken: '' });
+  });
+
+  it('treats a missing, empty or non-string param as not passed', () => {
+    for (const raw of [undefined, null, '', 42, { chatId: 'minion_abc' }]) {
+      expect(parseMinionChatRef(raw)).toStrictEqual({});
+    }
+  });
+});
+
+describe('continueTokenFor / resolveContinueToken', () => {
+  const ids = (...list: string[]) => list.map(id => ({ id }));
+
+  it("takes the first 8 characters of the id's random part", () => {
+    expect(continueTokenFor('msg_user_k3x9q2abzzzzzzzzzzzzzzzzzzzzzzzz')).toBe('k3x9q2ab');
+    expect(continueTokenFor('msg_asst_abc')).toBe('abc');
+    expect(continueTokenFor('plainid0123')).toBe('plainid0');
+  });
+
+  it('marks generated message ids with 8 characters of their random part', () => {
+    const user = generateUniqueId('msg_user');
+    const assistant = generateUniqueId('msg_asst');
+    expect(continueTokenFor(user)).toBe(user.slice('msg_user_'.length, 'msg_user_'.length + 8));
+    expect(continueTokenFor(assistant)).toMatch(/^[a-z2-7]{8}$/);
+    expect(resolveContinueToken(continueTokenFor(assistant), ids(user, assistant))).toBe(assistant);
+  });
+
+  it('resolves a token to the one message it marks', () => {
+    const messages = ids('msg_user_k3x9q2ab1111', 'msg_asst_p7r2m4cd2222');
+    expect(resolveContinueToken('p7r2m4cd', messages)).toBe('msg_asst_p7r2m4cd2222');
+    expect(resolveContinueToken('k3x9q2ab', messages)).toBe('msg_user_k3x9q2ab1111');
+  });
+
+  it('matches the whole token, not a shorter or longer prefix', () => {
+    const messages = ids('msg_user_k3x9q2ab1111');
+    expect(resolveContinueToken('k3x9', messages)).toBeUndefined();
+    expect(resolveContinueToken('k3x9q2ab1', messages)).toBeUndefined();
+  });
+
+  it('rejects a token that is missing or marks more than one message', () => {
+    expect(resolveContinueToken('zzzzzzzz', ids('msg_user_k3x9q2ab1111'))).toBeUndefined();
+    expect(
+      resolveContinueToken('k3x9q2ab', ids('msg_user_k3x9q2ab1111', 'msg_asst_k3x9q2ab2222'))
+    ).toBeUndefined();
+    expect(resolveContinueToken('k3x9q2ab', [])).toBeUndefined();
+  });
+
+  it('never resolves an empty token', () => {
+    expect(resolveContinueToken('', ids('msg_user_'))).toBeUndefined();
   });
 });

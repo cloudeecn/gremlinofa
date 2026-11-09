@@ -1,7 +1,7 @@
 /**
  * HTTP client for the Touch Grass backend (remote human minions).
  *
- * The wire contract is `touch-grass-backend/touch-grass-api.yaml` (v2.1). This
+ * The wire contract is `touch-grass-backend/touch-grass-api.yaml` (v2.2). This
  * runs in both runtimes, the browser Web Worker (worker mode) and Node (server
  * mode), so it sticks to `fetch`, `AbortController`, `TextEncoder` and `btoa`,
  * and tailors its network-failure hints to whichever runtime it is in: a
@@ -122,11 +122,16 @@ export class TouchGrassError extends Error {
    * connection, a browser "Failed to fetch", a gateway's 502 or 504.
    */
   readonly unsent: boolean;
+  /**
+   * The backend's own `{ "error": ... }` text. Undefined when the body came
+   * from whatever sits in front of it (a proxy's page) or there was no response.
+   */
+  readonly backendError?: string;
 
   constructor(
     message: string,
     kind: TouchGrassErrorKind,
-    opts: { status?: number; retryable?: boolean; unsent?: boolean } = {}
+    opts: { status?: number; retryable?: boolean; unsent?: boolean; backendError?: string } = {}
   ) {
     super(message);
     this.name = 'TouchGrassError';
@@ -134,7 +139,20 @@ export class TouchGrassError extends Error {
     this.status = opts.status;
     this.retryable = opts.retryable ?? false;
     this.unsent = opts.unsent ?? false;
+    this.backendError = opts.backendError;
   }
+}
+
+/**
+ * The backend itself says the session is gone: the human deleted it,
+ * retention swept it, or its database was wiped. Any other 404 (a proxy's
+ * page, the backend's catch-all for a misrouted path) means the endpoint is
+ * wrong, and the session may well be alive behind it.
+ */
+export function isSessionGone(err: unknown): boolean {
+  return (
+    err instanceof TouchGrassError && err.status === 404 && err.backendError === 'Session not found'
+  );
 }
 
 export function isTouchGrassAbort(err: unknown): boolean {
@@ -331,10 +349,19 @@ const RETRYABLE_STATUSES = new Set([502, 503, 504]);
  */
 const UNSENT_STATUSES = new Set([503]);
 
+/** Hint for the backend's 400 on a `userToken` that matches no Touch Grass user. */
+const UNKNOWN_USER_TOKEN_HINT =
+  'The backend has no user with this remoteToken. Resend with the corrected remoteToken and the same minionChatId, or start a new remote chat without remoteToken to reach the admin.';
+
 export interface TouchGrassClientConfig {
   /** Backend root, already normalized. */
   endpoint: string;
   password: string;
+  /**
+   * Routes new sessions to this Touch Grass user's inbox (API 2.2). Without
+   * one, only the admin sees them; a pre-2.2 backend ignores it.
+   */
+  userToken?: string;
   /** Override runtime detection (tests). */
   runtime?: TouchGrassRuntime;
 }
@@ -342,11 +369,13 @@ export interface TouchGrassClientConfig {
 export class TouchGrassClient {
   readonly endpoint: string;
   private readonly password: string;
+  private readonly userToken: string | undefined;
   private readonly runtime: TouchGrassRuntime;
 
   constructor(config: TouchGrassClientConfig) {
     this.endpoint = config.endpoint;
     this.password = config.password;
+    this.userToken = config.userToken;
     this.runtime = config.runtime ?? detectRuntime();
   }
 
@@ -357,7 +386,7 @@ export class TouchGrassClient {
 
   async createSession(displayName: string | null, signal?: AbortSignal): Promise<string> {
     const body = await this.send('Creating the remote session', 'POST', '/api/sessions', {
-      json: JSON.stringify({ displayName }),
+      json: JSON.stringify({ displayName, ...(this.userToken && { userToken: this.userToken }) }),
       timeoutMs: CREATE_SESSION_TIMEOUT_MS,
       signal,
     });
@@ -578,6 +607,8 @@ export class TouchGrassClient {
       // The backend's own 413 says it caps bodies at 10 MB; a proxy's comes first.
       message +=
         ' The message is larger than a reverse proxy in front of the backend allows. Raise its body limit to 10 MB (nginx: client_max_body_size 10m; see touch-grass-backend/README.md).';
+    } else if (res.status === 400 && fromBackend && detail.includes('userToken')) {
+      message += ` ${UNKNOWN_USER_TOKEN_HINT}`;
     } else if (isHtml) {
       message += ` ${ENDPOINT_HINT}`;
     }
@@ -585,6 +616,7 @@ export class TouchGrassClient {
       status: res.status,
       retryable: RETRYABLE_STATUSES.has(res.status),
       unsent: UNSENT_STATUSES.has(res.status),
+      backendError: fromBackend ? detail : undefined,
     });
   }
 
@@ -667,7 +699,7 @@ export async function withRetry<T>(operation: () => Promise<T>, opts: RetryOptio
  * request, so for one an identical newest message that opened none is the
  * earlier post (an identical earlier note would match too, which at worst
  * drops a duplicate). A 404 on the read-back is thrown like the post's own
- * 404: the session is gone.
+ * 404; `isSessionGone` tells whether the backend lost the session.
  *
  * `timeoutMs` is recomputed per attempt so the question closes at `deadline`.
  * A note carries none: it has nothing to close.

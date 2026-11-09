@@ -8,6 +8,7 @@
  */
 
 import { Marked } from 'marked';
+import { PASSWORD_MIN_LENGTH, USERNAME_MAX_LENGTH } from './passwords.js';
 import type {
   ExpireReason,
   InjectedFile,
@@ -15,7 +16,11 @@ import type {
   Session,
   SessionListEntry,
   SessionMessage,
+  User,
+  UserStats,
+  UserStatsReport,
 } from './types.js';
+import type { WebPrincipal } from './webAuth.js';
 
 export function escapeHtml(text: string): string {
   return text
@@ -128,12 +133,16 @@ function titleWithCount(count: number, title: string): string {
 
 export interface LoginPageOptions {
   base: string;
-  /** Validated return target ('' or 'sessions/<id>'), carried through the form. */
+  /** Validated return target (see parseReturnTo), carried through the form. */
   returnTo: string;
+  /** What was typed into the username field, kept after a refused attempt. */
+  username?: string;
   banner?: Banner;
 }
 
-export function loginPage({ base, returnTo, banner }: LoginPageOptions): string {
+export function loginPage({ base, returnTo, username = '', banner }: LoginPageOptions): string {
+  // After a refused attempt the name is already there, so the cursor goes to the password.
+  const focusPassword = username !== '';
   return page({
     title: 'Touch Grass - Log in',
     base,
@@ -144,9 +153,12 @@ export function loginPage({ base, returnTo, banner }: LoginPageOptions): string 
     ${banner ? bannerBlock(banner) : ''}
     <form method="post" action="${base}login">
       <input type="hidden" name="next" value="${escapeHtml(returnTo)}">
+      <label for="username" class="visually-hidden">Username</label>
+      <input id="username" type="text" name="username" placeholder="Username" value="${escapeHtml(username)}"
+        autocomplete="username" autocapitalize="none" spellcheck="false"${focusPassword ? '' : ' autofocus'} required>
       <label for="password" class="visually-hidden">Password</label>
       <input id="password" type="password" name="password" placeholder="Password"
-        autocomplete="current-password" autofocus required>
+        autocomplete="current-password"${focusPassword ? ' autofocus' : ''} required>
       <button type="submit">Enter</button>
     </form>
   </main>`,
@@ -177,7 +189,12 @@ export function errorPage({ base, title, message }: ErrorPageOptions): string {
 
 // ── Session list ──
 
-function sessionCard(session: SessionListEntry, base: string): string {
+/** Whose inbox a session is in, for the admin: `user: bob`, or `no token` for admin-only ones. */
+function ownerText(ownerUsername: string | null): string {
+  return ownerUsername === null ? 'no token' : `user: ${escapeHtml(ownerUsername)}`;
+}
+
+function sessionCard(session: SessionListEntry, base: string, showOwner: boolean): string {
   const label = sessionLabel(session);
   const href = `${base}sessions/${escapeHtml(session.id)}`;
   const { pending } = session;
@@ -192,7 +209,7 @@ function sessionCard(session: SessionListEntry, base: string): string {
           <span class="session-name">${escapeHtml(label)}</span>
           ${pending ? '<span class="badge">needs answer</span>' : ''}
         </span>
-        <span class="session-caller">caller: ${escapeHtml(session.callerId)}</span>
+        <span class="session-caller">caller: ${escapeHtml(session.callerId)}${showOwner ? ` &middot; ${ownerText(session.ownerUsername)}` : ''}</span>
         <span class="session-meta">${meta}</span>
       </a>
       <form method="post" action="${href}/delete"
@@ -202,13 +219,22 @@ function sessionCard(session: SessionListEntry, base: string): string {
     </li>`;
 }
 
+export interface SessionListOptions {
+  /** Label each session with its owner. Only the admin sees whose inbox a session is in. */
+  showOwner?: boolean;
+}
+
 /** The list body. `base` is relative to the session list page (the web root). */
-export function sessionListFragment(sessions: SessionListEntry[], base: string): string {
+export function sessionListFragment(
+  sessions: SessionListEntry[],
+  base: string,
+  { showOwner = false }: SessionListOptions = {}
+): string {
   if (sessions.length === 0) {
     return '<p class="empty">No sessions yet. Waiting for an AI to need a human&hellip;</p>';
   }
   return `<ul class="session-list">
-    ${sessions.map(session => sessionCard(session, base)).join('\n    ')}
+    ${sessions.map(session => sessionCard(session, base, showOwner)).join('\n    ')}
   </ul>`;
 }
 
@@ -218,6 +244,7 @@ export interface SessionListPageOptions {
   /** Request ids of the questions waiting for an answer. */
   pendingIds: string[];
   signature: string;
+  viewer: WebPrincipal;
 }
 
 export function sessionListPage({
@@ -225,6 +252,7 @@ export function sessionListPage({
   listHtml,
   pendingIds,
   signature,
+  viewer,
 }: SessionListPageOptions): string {
   return page({
     title: titleWithCount(pendingIds.length, 'Touch Grass'),
@@ -238,6 +266,9 @@ export function sessionListPage({
       </div>
       <div class="toolbar">
         ${alertSwitches()}
+        <span class="signed-in">Signed in as <strong>${escapeHtml(viewer.username)}</strong></span>
+        <a href="${base}account" class="toolbar-link">Account</a>
+        ${viewer.role === 'admin' ? `<a href="${base}admin" class="toolbar-link">Users</a>` : ''}
         <form method="post" action="${base}logout" class="inline-form">
           <button type="submit" class="link-button">Log out</button>
         </form>
@@ -426,6 +457,11 @@ export interface ChatPageOptions {
   state: ChatState;
   /** Request ids of the questions waiting in other sessions. */
   othersPending: string[];
+  /**
+   * For the admin only: the owner's username, or null for a session without a token. Left out,
+   * the page says nothing about owners.
+   */
+  owner?: string | null;
   banner?: Banner;
   /** Text to put back in the answer box, e.g. an answer that could not be delivered. */
   draft?: string;
@@ -458,6 +494,7 @@ export function chatPage({
   messages,
   state,
   othersPending,
+  owner,
   banner,
   draft,
 }: ChatPageOptions): string {
@@ -483,7 +520,7 @@ export function chatPage({
     <a href="${base}" class="back-button" title="Back to sessions"><span aria-hidden="true">&larr;</span><span class="visually-hidden">Back to sessions</span><span class="badge" id="others-waiting"${othersCount > 0 ? '' : ' hidden'}>${othersWaitingText(othersCount)}</span></a>
     <div class="session-title">
       <h1>${escapeHtml(label)}</h1>
-      <span class="session-caller">caller: ${escapeHtml(session.callerId)}</span>
+      <span class="session-caller">caller: ${escapeHtml(session.callerId)}${owner === undefined ? '' : ` &middot; ${ownerText(owner)}`}</span>
     </div>
     <div class="toolbar">
       ${alertSwitches()}
@@ -535,4 +572,218 @@ export function undeliveredAnswerHtml(
     default:
       return `The AI sent a new message before you answered, so your answer was not delivered. Read the new message, then send again.${draftKept}`;
   }
+}
+
+// ── Account and user admin ──
+
+/** The account and admin pages' header: title, subtitle, and the way back to the sessions. */
+function subPageHeader(base: string, title: string, subtitleHtml: string, links: string): string {
+  return `<header class="page-header">
+      <div>
+        <h1>${escapeHtml(title)}</h1>
+        <p class="subtitle">${subtitleHtml}</p>
+      </div>
+      <nav class="toolbar">
+        ${links}
+        <a href="${base}" class="toolbar-link">&larr; Sessions</a>
+      </nav>
+    </header>`;
+}
+
+export interface AccountPageOptions {
+  base: string;
+  viewer: WebPrincipal;
+  banner?: Banner;
+}
+
+function userAccountSections(base: string, token: string): string {
+  return `<section class="panel">
+      <h2>Your token</h2>
+      <p><code class="token">${escapeHtml(token)}</code></p>
+      <p>Questions the AI sends with this token land in your inbox. Give it to the AI as the minion tool's <code>remoteToken</code>, for example in its system prompt. It only routes questions; nobody can sign in with it.</p>
+    </section>
+    <section class="panel">
+      <h2>Change password</h2>
+      <form method="post" action="${base}account" class="stacked-form">
+        <div class="field">
+          <label for="current-password">Current password</label>
+          <input id="current-password" type="password" name="current" autocomplete="current-password" required>
+        </div>
+        <div class="field">
+          <label for="new-password">New password</label>
+          <input id="new-password" type="password" name="password" autocomplete="new-password" minlength="${PASSWORD_MIN_LENGTH}" required>
+          <p class="hint">At least ${PASSWORD_MIN_LENGTH} characters.</p>
+        </div>
+        <div class="field">
+          <label for="confirm-password">New password again</label>
+          <input id="confirm-password" type="password" name="confirm" autocomplete="new-password" minlength="${PASSWORD_MIN_LENGTH}" required>
+        </div>
+        <p class="hint">This browser stays signed in. Every other browser signed in as you is signed out.</p>
+        <button type="submit">Change password</button>
+      </form>
+    </section>`;
+}
+
+const ADMIN_ACCOUNT_SECTION = `<section class="panel">
+      <h2>Password</h2>
+      <p>Yours is <code>WEB_PASSWORD</code> in the server's <code>.env</code>. Change it there and restart the server. That signs out every browser, users included.</p>
+    </section>`;
+
+export function accountPage({ base, viewer, banner }: AccountPageOptions): string {
+  const isAdmin = viewer.role === 'admin';
+  return page({
+    title: 'Account - Touch Grass',
+    base,
+    data: { page: 'account' },
+    content: `<main class="container">
+    ${subPageHeader(
+      base,
+      'Account',
+      `Signed in as <strong>${escapeHtml(viewer.username)}</strong>${isAdmin ? ' (admin)' : ''}`,
+      isAdmin ? `<a href="${base}admin" class="toolbar-link">Users</a>` : ''
+    )}
+    ${banner ? bannerBlock(banner) : ''}
+    ${viewer.role === 'admin' ? ADMIN_ACCOUNT_SECTION : userAccountSections(base, viewer.token)}
+  </main>`,
+  });
+}
+
+/** What a refused admin form had in it, so the re-rendered page keeps it. Never a password. */
+export interface AdminFormState {
+  /** The name typed into the add-user form. */
+  newUsername?: string;
+  /** The user whose settings were being changed; their panel opens. */
+  userId?: string;
+  /** The name typed into that user's rename field. */
+  rename?: string;
+}
+
+export interface AdminPageOptions {
+  base: string;
+  report: UserStatsReport;
+  banner?: Banner;
+  /** A user added a moment ago; a banner shows its token, ready to copy. */
+  created?: User;
+  form?: AdminFormState;
+}
+
+const USER_TABLE_COLUMNS = 6;
+
+function statCells(stats: UserStats): string {
+  const counts = [stats.sessions, stats.aiMessages, stats.humanReplies, stats.pending]
+    .map(count => `<td class="num">${count}</td>`)
+    .join('');
+  return `${counts}<td>${stats.lastActivityAt ? timeTag(stats.lastActivityAt) : '&mdash;'}</td>`;
+}
+
+/** A user's stats row, and under it their token and the rename, reset and delete forms. */
+function userRows(base: string, user: User, stats: UserStats, form: AdminFormState): string {
+  const id = escapeHtml(user.id);
+  const name = escapeHtml(user.username);
+  const action = `${base}admin/users/${id}`;
+  const editing = form.userId === user.id;
+  const renameValue = editing && form.rename !== undefined ? form.rename : user.username;
+  return `<tbody class="user-group">
+        <tr>
+          <th scope="row">${name}</th>
+          ${statCells(stats)}
+        </tr>
+        <tr class="manage-row">
+          <td colspan="${USER_TABLE_COLUMNS}">
+            <details class="user-manage"${editing ? ' open' : ''}>
+              <summary>Token and settings<span class="visually-hidden"> for ${name}</span></summary>
+              <div class="manage-panel">
+                <p>Token: <code class="token">${escapeHtml(user.token)}</code></p>
+                <form method="post" action="${action}/rename" class="inline-fields">
+                  <label for="rename-${id}">Rename to</label>
+                  <input id="rename-${id}" type="text" name="username" value="${escapeHtml(renameValue)}"
+                    autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="${USERNAME_MAX_LENGTH}" required>
+                  <button type="submit" class="secondary-button">Rename</button>
+                </form>
+                <form method="post" action="${action}/password" class="inline-fields">
+                  <label for="reset-${id}">New password</label>
+                  <input id="reset-${id}" type="password" name="password" autocomplete="new-password" minlength="${PASSWORD_MIN_LENGTH}" required>
+                  <button type="submit" class="secondary-button">Reset password</button>
+                </form>
+                <p class="hint">Renaming keeps ${name} signed in. A new password signs them out everywhere.</p>
+                <form method="post" action="${action}/delete"
+                  data-confirm="${escapeHtml(`Delete user "${user.username}"? Their sessions stay and become admin-only.`)}">
+                  <button type="submit" class="danger-button">Delete user</button>
+                </form>
+              </div>
+            </details>
+          </td>
+        </tr>
+      </tbody>`;
+}
+
+function createdBanner(user: User): string {
+  return bannerBlock({
+    kind: 'info',
+    html:
+      `Added <strong>${escapeHtml(user.username)}</strong>. Their token is ` +
+      `<code class="token">${escapeHtml(user.token)}</code>. ` +
+      'Questions the AI sends with it as <code>remoteToken</code> land in their inbox.',
+  });
+}
+
+export function adminPage({ base, report, banner, created, form = {} }: AdminPageOptions): string {
+  const userGroups =
+    report.users.length > 0
+      ? report.users.map(({ user, stats }) => userRows(base, user, stats, form)).join('\n      ')
+      : `<tbody><tr><td colspan="${USER_TABLE_COLUMNS}" class="empty-row">No users yet, so every session is yours.</td></tr></tbody>`;
+  return page({
+    title: 'Users - Touch Grass',
+    base,
+    data: { page: 'admin' },
+    content: `<main class="container">
+    ${subPageHeader(
+      base,
+      'Users',
+      'Who answers which AI, and how much',
+      `<a href="${base}account" class="toolbar-link">Account</a>`
+    )}
+    ${created ? createdBanner(created) : ''}
+    ${banner ? bannerBlock(banner) : ''}
+    <div class="table-scroll">
+      <table class="user-table">
+        <thead>
+          <tr>
+            <th scope="col">User</th>
+            <th scope="col" class="num">Sessions</th>
+            <th scope="col" class="num">AI messages</th>
+            <th scope="col" class="num">Human replies</th>
+            <th scope="col" class="num">Waiting</th>
+            <th scope="col">Last activity</th>
+          </tr>
+        </thead>
+      ${userGroups}
+        <tbody class="no-token-group">
+          <tr>
+            <th scope="row">No token (admin only)</th>
+            ${statCells(report.noToken)}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="footnote">Counts cover the sessions still on the server. When retention (<code>SESSION_RETENTION_DAYS</code>) deletes an idle session, its counts go with it.</p>
+    <section class="panel">
+      <h2>Add a user</h2>
+      <form method="post" action="${base}admin/users" class="stacked-form">
+        <div class="field">
+          <label for="new-username">Username</label>
+          <input id="new-username" type="text" name="username" value="${escapeHtml(form.newUsername ?? '')}"
+            autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="${USERNAME_MAX_LENGTH}" required>
+          <p class="hint">Letters, digits, dots, underscores and hyphens. Sign-in ignores letter case.</p>
+        </div>
+        <div class="field">
+          <label for="new-password">Password</label>
+          <input id="new-password" type="password" name="password" autocomplete="new-password" minlength="${PASSWORD_MIN_LENGTH}" required>
+          <p class="hint">At least ${PASSWORD_MIN_LENGTH} characters. They can change it on their Account page.</p>
+        </div>
+        <button type="submit">Add user</button>
+      </form>
+    </section>
+  </main>`,
+  });
 }

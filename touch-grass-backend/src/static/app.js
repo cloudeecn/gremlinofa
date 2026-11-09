@@ -148,7 +148,8 @@
     });
   });
 
-  // Delete buttons on the session list ask first. Delegated, since the list is re-rendered.
+  // Delete buttons (sessions on the list, users on the admin page) ask first. Delegated, since
+  // the list is re-rendered.
   document.addEventListener('submit', function (event) {
     const form = event.target;
     const question = form.getAttribute && form.getAttribute('data-confirm');
@@ -418,7 +419,8 @@
 
   /**
    * Resolves to the parsed JSON, null for a 404, or STOP after starting the trip to the login
-   * page on a 401 (expired cookie or a changed WEB_PASSWORD). Throws on anything else.
+   * page on a 401 (an expired or revoked cookie: a new password, a deleted user, a changed
+   * WEB_PASSWORD or WEB_ADMIN_USERNAME). Throws on anything else.
    */
   function fetchJson(url, returnTo) {
     return fetch(url, {

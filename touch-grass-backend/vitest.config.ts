@@ -12,6 +12,7 @@ export default defineConfig({
       DB_PATH: ':memory:',
       API_PASSWORD: 'test-secret',
       WEB_PASSWORD: 'test-web',
+      WEB_ADMIN_USERNAME: '',
       TRUST_PROXY: '',
       CORS_ORIGIN: '',
       HOST: '',

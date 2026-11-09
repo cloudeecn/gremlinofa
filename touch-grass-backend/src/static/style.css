@@ -388,6 +388,198 @@ button:disabled {
   padding: 3rem 0;
 }
 
+/* Session list toolbar */
+.signed-in {
+  font-size: 0.85rem;
+  color: #a3a3b8;
+}
+
+.signed-in strong {
+  color: #e0e0e0;
+  overflow-wrap: anywhere;
+}
+
+.toolbar-link {
+  padding: 0.4rem 0.2rem;
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.toolbar-link:hover {
+  text-decoration: underline;
+}
+
+/* Account and users pages */
+.panel {
+  margin-top: 1.25rem;
+  padding: 1rem;
+  background: #16213e;
+  border: 1px solid #333;
+  border-radius: 8px;
+}
+
+.panel h2 {
+  margin-bottom: 0.75rem;
+  font-size: 1.1rem;
+  color: #fff;
+}
+
+.panel p {
+  line-height: 1.5;
+}
+
+.panel p + p {
+  margin-top: 0.6rem;
+}
+
+.panel code,
+.footnote code,
+.banner code {
+  font-size: 0.85em;
+}
+
+/* A routing token: one click selects all of it for copying. */
+.token {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.2rem 0.45rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #0d1b30;
+  border: 1px solid #3a4a6b;
+  border-radius: 4px;
+  color: #b6e8bc;
+  overflow-wrap: anywhere;
+  -webkit-user-select: all;
+  user-select: all;
+}
+
+.stacked-form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.9rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  width: 100%;
+  max-width: 24rem;
+}
+
+.field label,
+.inline-fields label {
+  font-size: 0.85rem;
+  color: #a3a3b8;
+}
+
+.stacked-form input,
+.inline-fields input {
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #3a4a6b;
+  border-radius: 6px;
+  background: #0d1b30;
+  color: #e0e0e0;
+  font-family: inherit;
+  /* 16px or more keeps iOS Safari from zooming in on focus. */
+  font-size: 16px;
+}
+
+.inline-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inline-fields input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 20rem;
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: #a3a3b8;
+  line-height: 1.4;
+}
+
+.table-scroll {
+  margin-top: 1rem;
+  overflow-x: auto;
+}
+
+.user-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.user-table th,
+.user-table td {
+  padding: 0.55rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid #333;
+}
+
+.user-table thead th {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #a3a3b8;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.user-table tbody th {
+  color: #fff;
+  overflow-wrap: anywhere;
+}
+
+.user-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The stats row and its settings row read as one entry. */
+.user-group tr:first-child > * {
+  border-bottom: none;
+}
+
+.manage-row > td {
+  padding-top: 0;
+}
+
+.user-manage summary {
+  font-size: 0.8rem;
+  color: #7fb2e0;
+  cursor: pointer;
+}
+
+.manage-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 0 0.25rem;
+}
+
+.no-token-group th {
+  color: #a3a3b8;
+  font-weight: normal;
+}
+
+.empty-row {
+  color: #a3a3b8;
+}
+
+.footnote {
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  color: #a3a3b8;
+  line-height: 1.5;
+}
+
 /* Chat view */
 .chat-container {
   display: flex;

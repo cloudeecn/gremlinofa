@@ -9,7 +9,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import type { InjectedFile, RequestRecord, Session, SessionMessage } from '../src/types.js';
-import { chatPage, chatState, messagesFragment, sessionListPage } from '../src/webViews.js';
+import type { WebPrincipal } from '../src/webAuth.js';
+import {
+  accountPage,
+  adminPage,
+  chatPage,
+  chatState,
+  messagesFragment,
+  sessionListPage,
+} from '../src/webViews.js';
 
 const APP_JS = fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), '../src/static/app.js'),
@@ -17,10 +25,12 @@ const APP_JS = fs.readFileSync(
 );
 
 const ORIGIN = 'https://grass.example';
+const ADMIN: WebPrincipal = { role: 'admin', username: 'Admin' };
 const SESSION: Session = {
   id: 'abc123',
   callerId: 'test-caller',
   displayName: 'Deploy check',
+  userToken: null,
   createdAt: '2026-10-08T10:00:00.000Z',
   lastActivityAt: '2026-10-08T10:00:00.000Z',
 };
@@ -131,10 +141,12 @@ function openPage(html: string, options: OpenOptions) {
 
   const scheduled: Array<{ callback: () => void; delay: number }> = [];
   const replies: unknown[] = [];
+  const network = { fetches: 0 };
   Object.assign(window, {
     setTimeout: (callback: () => void, delay = 0) => scheduled.push({ callback, delay }),
     setInterval: () => 0,
     fetch: async () => {
+      network.fetches += 1;
       const reply = replies.shift();
       return { status: 200, ok: true, json: async () => reply };
     },
@@ -146,6 +158,9 @@ function openPage(html: string, options: OpenOptions) {
     window,
     document: window.document,
     audio,
+    network,
+    /** Every setTimeout app.js has made and nothing has run yet. */
+    scheduled,
     /** Runs the poll app.js scheduled, answering its fetch with `reply`. */
     async poll(reply: unknown) {
       replies.push(reply);
@@ -371,7 +386,7 @@ describe('drafts', () => {
 
 describe('session list alerts', () => {
   function listHtml(pendingIds: string[]) {
-    return sessionListPage({ base: './', listHtml: '', pendingIds, signature: 's' });
+    return sessionListPage({ base: './', listHtml: '', pendingIds, signature: 's', viewer: ADMIN });
   }
 
   function listUpdate(pendingIds: string[]) {
@@ -732,5 +747,62 @@ describe('recent messages', () => {
       count: 3,
     });
     expect(recentFlags(page)).toEqual([false, false, true]);
+  });
+});
+
+describe('account and users pages', () => {
+  const bob = {
+    id: 'b'.repeat(32),
+    username: 'bob',
+    passwordHash: 'unused',
+    token: 'tg_bob-token',
+    createdAt: '2026-10-08T09:00:00.000Z',
+  };
+  const stats = {
+    sessions: 1,
+    aiMessages: 1,
+    humanReplies: 0,
+    pending: 0,
+    lastActivityAt: '2026-10-08T10:00:00.000Z',
+  };
+  const usersHtml = () =>
+    adminPage({ base: './', report: { users: [{ user: bob, stats }], noToken: stats } });
+
+  it.each([
+    ['the users page', '/grass/web/admin', usersHtml],
+    [
+      'the account page',
+      '/grass/web/account',
+      () => accountPage({ base: './', viewer: { role: 'user', ...bob } }),
+    ],
+  ])('%s starts no polling', (_label, url, html) => {
+    const page = openPage(html(), { url });
+    expect(page.scheduled).toEqual([]);
+    expect(page.network.fetches).toBe(0);
+  });
+
+  it('shows the times in the viewer locale', () => {
+    const page = openPage(usersHtml(), { url: '/grass/web/admin' });
+    const time = page.document.querySelector('time')!;
+    expect(time.textContent).not.toContain('UTC');
+    expect(time.title).not.toBe('');
+  });
+
+  it('asks before deleting a user, and stops the form when the answer is no', () => {
+    const page = openPage(usersHtml(), { url: '/grass/web/admin' });
+    const questions: string[] = [];
+    let answer = false;
+    page.window.confirm = (question?: string) => {
+      questions.push(question ?? '');
+      return answer;
+    };
+    const form = page.document.querySelector<HTMLFormElement>(`form[action$="/delete"]`)!;
+    const submit = () =>
+      form.dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
+
+    expect(submit()).toBe(false);
+    expect(questions).toEqual(['Delete user "bob"? Their sessions stay and become admin-only.']);
+    answer = true;
+    expect(submit()).toBe(true);
   });
 });

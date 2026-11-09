@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { minionTool, SAVEPOINT_START } from '../minionTool';
+import { minionTool, SAVEPOINT_START, continueTokenFor } from '../minionTool';
 import type {
   APIDefinition,
   APIType,
@@ -117,14 +117,18 @@ mocks.storage.getAPIDefinition = vi.fn((id: string) =>
 mocks.storage.getModel = vi.fn((apiDefId: string, modelId: string) =>
   Promise.resolve(mockStorageData.models.get(`${apiDefId}:${modelId}`))
 ) as ReturnType<typeof vi.fn>;
-mocks.storage.getMinionChat = vi.fn((id: string) =>
-  Promise.resolve(mockStorageData.minionChats.get(id))
-) as ReturnType<typeof vi.fn>;
+// Copies, like real storage: what a call merges into its chat in memory stays
+// out of the stored row until it saves, and a caller's array must not grow as
+// messages are saved.
+mocks.storage.getMinionChat = vi.fn((id: string) => {
+  const row = mockStorageData.minionChats.get(id);
+  return Promise.resolve(row && { ...row });
+}) as ReturnType<typeof vi.fn>;
 mocks.storage.getMinionMessages = vi.fn((chatId: string) =>
-  Promise.resolve(mockStorageData.minionMessages.get(chatId) ?? [])
+  Promise.resolve([...(mockStorageData.minionMessages.get(chatId) ?? [])])
 ) as ReturnType<typeof vi.fn>;
 mocks.storage.saveMinionChat = vi.fn((chat: MinionChat) => {
-  mockStorageData.minionChats.set(chat.id, chat);
+  mockStorageData.minionChats.set(chat.id, { ...chat });
   return Promise.resolve();
 }) as ReturnType<typeof vi.fn>;
 mocks.storage.saveMinionMessage = vi.fn((chatId: string, msg: Message<unknown>) => {
@@ -167,6 +171,7 @@ vi.mock('../../../protocol/idGenerator', () => ({
 }));
 
 import { executeClientSideTool } from '../clientSideTools';
+import { generateChecksummedId, validateIdChecksum } from '../../../protocol/idGenerator';
 import type { VfsAdapter } from '../../vfs/vfsAdapter';
 import { sha256Hex } from '../../../protocol/sha256Hex';
 import { stubBackendDeps } from './testStubs';
@@ -174,6 +179,20 @@ import { stubBackendDeps } from './testStubs';
 // minionIntegration tests don't reach into vfs adapter methods.
 const minionAdapter = {} as VfsAdapter;
 const minionAdapterFactory = (_ns?: string) => minionAdapter;
+/** Every read fails, as it does for a path that doesn't exist. */
+const missingFilesFactory = () =>
+  ({
+    readFile: vi.fn((path: string) => Promise.reject(new Error(`Path not found: ${path}`))),
+  }) as unknown as VfsAdapter;
+
+/** A `models` option listing only the fixture model, and the refusal for any other one. */
+const listedModels: ToolOptions = {
+  models: [{ apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' }],
+};
+const unlistedModelError =
+  'Error: Model "api_test:claude-3-opus" is not in the configured models list. Available: api_test:claude-3-sonnet. Resend to reattempt.';
+const unknownToolError =
+  'Error: Tools not available in project: nope. Available tools: memory, javascript. Resend to reattempt.';
 
 // Surface the hoisted mocks under the same names the body of this test
 // file uses (`apiService.X`, `storage.X`, `toolRegistry.X`). Each of these
@@ -221,6 +240,19 @@ async function* createMockStream(
     yield chunk;
   }
   return finalResult;
+}
+
+/** Queue the minion's next reply: one text turn and its usage. */
+function reply(text: string, stopReason = 'end_turn', inputTokens = 10) {
+  vi.mocked(apiService.sendMessageStream).mockReturnValueOnce(
+    createMockStream([], {
+      textContent: text,
+      fullContent: [{ type: 'text', text }],
+      stopReason,
+      inputTokens,
+      outputTokens: 5,
+    }) as never
+  );
 }
 
 // Test fixtures
@@ -1240,6 +1272,9 @@ describe('Minion Integration', () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain('API connection failed');
+      // Saved past the user message, so the error names the new chat.
+      const [chatId] = [...mockStorageData.minionChats.keys()];
+      expect(result.content.endsWith(`\n<minionChatId>${chatId}</minionChatId>`)).toBe(true);
 
       // renderingGroups preserved even on error (contains ToolInfoRenderBlock)
       expect(result.renderingGroups).toBeDefined();
@@ -1298,7 +1333,9 @@ describe('Minion Integration', () => {
       );
 
       expect(result.isError).toBe(true);
-      expect(result.content).toContain('maximum iterations');
+      expect(result.content).toMatch(
+        /^Minion reached maximum iterations \(50\)\n<minionChatId>minion_\w+<\/minionChatId>$/
+      );
     });
 
     it('returns error when stop reason is max_tokens (truncated)', async () => {
@@ -1476,6 +1513,88 @@ describe('Minion Integration', () => {
       // Savepoint should stay at SAVEPOINT_START (not advanced past the failed run)
       const newChat = [...mockStorageData.minionChats.values()][0];
       expect(newChat?.savepoint).toBe(SAVEPOINT_START);
+    });
+
+    it('names the chat when the verify hook is missing after a finished run', async () => {
+      vi.mocked(apiService.sendMessageStream).mockReturnValue(
+        createMockStream([], {
+          textContent: 'Done',
+          fullContent: [{ type: 'text', text: 'Done' }],
+          stopReason: 'end_turn',
+          inputTokens: 10,
+          outputTokens: 5,
+        }) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: missingFilesFactory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+
+      const result = await collectToolResult(
+        minionTool.execute(
+          { message: 'Check it', verifyHook: 'check' },
+          { model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' } },
+          context
+        )
+      );
+      const [chatId] = [...mockStorageData.minionChats.keys()];
+      expect(result).toMatchObject({
+        isError: true,
+        content: `Verify hook file not found: /hooks/check.js\n<minionChatId>${chatId}</minionChatId>`,
+      });
+    });
+
+    it('a failed first run names its new chat, and retry with that id works', async () => {
+      const truncated = {
+        textContent: 'Trunc',
+        fullContent: [{ type: 'text', text: 'Trunc' }],
+        stopReason: 'max_tokens',
+        inputTokens: 10,
+        outputTokens: 5,
+      };
+      vi.mocked(apiService.sendMessageStream).mockReturnValueOnce(
+        createMockStream([], truncated) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+      const toolOptions: ToolOptions = {
+        model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      };
+      const context: ToolContext = {
+        projectId: 'proj_test',
+        chatId: 'chat_test',
+        vfsAdapter: minionAdapter,
+        createVfsAdapter: minionAdapterFactory,
+        signal: new AbortController().signal,
+        ...mockMinionDeps,
+      };
+
+      const failed = await collectToolResult(
+        minionTool.execute({ message: 'Summarize' }, toolOptions, context)
+      );
+      expect(failed.isError).toBe(true);
+      const [chatId] = [...mockStorageData.minionChats.keys()];
+      expect(failed.content).toBe(
+        `Minion ended unexpectedly (max_tokens)\n<minionChatId>${chatId}</minionChatId>`
+      );
+
+      vi.mocked(apiService.sendMessageStream).mockReturnValueOnce(
+        createMockStream([], { ...truncated, textContent: 'Done', stopReason: 'end_turn' }) as never
+      );
+      const retried = await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: chatId }, toolOptions, context)
+      );
+      expect(retried.isError).toBeUndefined();
+      expect(JSON.parse(retried.content)).toMatchObject({ minionChatId: chatId, text: 'Done' });
+      const stored = mockStorageData.minionMessages.get(chatId)!;
+      expect(stored.map(m => [m.role, m.content.content])).toEqual([
+        ['user', 'Summarize'],
+        ['assistant', 'Done'],
+      ]);
     });
 
     describe('mid-stream termination', () => {
@@ -2422,6 +2541,138 @@ describe('Minion Integration', () => {
       );
 
       expect(storage.deleteMessagesAfter).toHaveBeenCalledWith('minion_retry', 'msg_assistant_1');
+    });
+
+    it('a Phase 2 error after retry leaves every message in place, and the next retry still works', async () => {
+      const { messages } = setupChatWithSavepoint();
+      const model = mockStorageData.models.get('api_test:claude-3-sonnet')!;
+      mockStorageData.models.clear();
+
+      const failed = await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_retry' }, toolOptions, context)
+      );
+      expect(failed.isError).toBe(true);
+      expect(failed.content).toContain('Model not found');
+      expect(failed.content).toContain('Resend to reattempt.');
+      expect(mockStorageData.minionMessages.get('minion_retry')!.map(m => m.id)).toEqual(
+        messages.map(m => m.id)
+      );
+      expect(mockStorageData.minionChats.get('minion_retry')).toMatchObject({
+        savepoint: 'msg_assistant_1',
+        totalInputTokens: 200,
+        totalOutputTokens: 100,
+      });
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(storage.saveMinionChat).not.toHaveBeenCalled();
+
+      mockStorageData.models.set('api_test:claude-3-sonnet', model);
+      setupMockStream();
+      const retried = await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_retry' }, toolOptions, context)
+      );
+      expect(retried.isError).toBeUndefined();
+      const sent = vi.mocked(apiService.sendMessageStream).mock.calls[0][0] as Message<unknown>[];
+      expect(sent.filter(m => m.role === 'user').pop()?.content.content).toBe('Second message');
+      expect(mockStorageData.minionChats.get('minion_retry')?.totalInputTokens).toBe(200 - 80 + 90);
+    });
+
+    it('rewinds a claude-agent session to the savepoint only once the retry gets past validation', async () => {
+      const apiDef = mockStorageData.apiDefinitions.get('api_test')!;
+      mockStorageData.apiDefinitions.set('api_test', { ...apiDef, apiType: 'claude-agent' });
+      const { chat, messages } = setupChatWithSavepoint();
+      messages[1].metadata = { claudeAgentMessageUuid: 'uuid-1', claudeAgentSessionId: 'sess-1' };
+      messages[3].metadata = {
+        ...messages[3].metadata,
+        claudeAgentMessageUuid: 'uuid-2',
+        claudeAgentSessionId: 'sess-1',
+      };
+      // A run that threw skips the failure rewind, leaving the session on its turn.
+      chat.claudeAgentSessionId = 'sess-1';
+
+      const model = mockStorageData.models.get('api_test:claude-3-sonnet')!;
+      mockStorageData.models.clear();
+      const failed = await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_retry' }, toolOptions, context)
+      );
+      expect(failed.isError).toBe(true);
+      const afterRefusal = mockStorageData.minionChats.get('minion_retry')!;
+      expect(afterRefusal.claudeAgentSessionId).toBe('sess-1');
+      expect(afterRefusal.claudeAgentResumeAt).toBeUndefined();
+
+      mockStorageData.models.set('api_test:claude-3-sonnet', model);
+      setupMockStream();
+      const retried = await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_retry' }, toolOptions, context)
+      );
+      expect(retried.isError).toBeUndefined();
+      const sendOptions = vi.mocked(apiService.sendMessageStream).mock.calls[0][3];
+      expect(sendOptions).toMatchObject({
+        claudeAgentSessionId: 'sess-1',
+        claudeAgentResumeAt: 'uuid-1',
+      });
+    });
+
+    it('a retry refused by the model list, a missing file or the project tools keeps the failed run for the next retry', async () => {
+      const { messages } = setupChatWithSavepoint();
+      const ids = messages.map(m => m.id);
+      const listed: ToolOptions = { ...toolOptions, ...listedModels };
+      const refusals: Array<[Record<string, unknown>, ToolContext, string]> = [
+        [{ enabledTools: ['nope'] }, context, unknownToolError],
+        [{ model: 'api_test:claude-3-opus' }, context, unlistedModelError],
+        [
+          { injectFiles: ['/gone.md'] },
+          { ...context, createVfsAdapter: missingFilesFactory },
+          'Error: Failed to read injected file(s):\n/gone.md: Path not found: /gone.md\nFix the paths and resend.',
+        ],
+      ];
+      for (const [input, ctx, error] of refusals) {
+        const refused = await collectToolResult(
+          minionTool.execute(
+            { action: 'retry', minionChatId: 'minion_retry', ...input },
+            listed,
+            ctx
+          )
+        );
+        expect(refused).toEqual({ content: error, isError: true });
+        expect(mockStorageData.minionMessages.get('minion_retry')!.map(m => m.id)).toEqual(ids);
+        expect(mockStorageData.minionChats.get('minion_retry')).toMatchObject({
+          savepoint: 'msg_assistant_1',
+          totalInputTokens: 200,
+          totalOutputTokens: 100,
+          totalCost: 0.005,
+        });
+      }
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(storage.deleteMessageAndAfter).not.toHaveBeenCalled();
+      expect(storage.saveMinionChat).not.toHaveBeenCalled();
+      expect(storage.saveMinionMessage).not.toHaveBeenCalled();
+      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+
+      setupMockStream();
+      const retried = await collectToolResult(
+        minionTool.execute({ action: 'retry', minionChatId: 'minion_retry' }, listed, context)
+      );
+      expect(retried.isError).toBeUndefined();
+      const sent = vi.mocked(apiService.sendMessageStream).mock.calls[0][0] as Message<unknown>[];
+      expect(sent.map(m => m.content.content)).toEqual([
+        'First message',
+        'First response',
+        'Second message',
+      ]);
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledOnce();
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledWith('minion_retry', 'msg_assistant_1');
+      const stored = mockStorageData.minionMessages.get('minion_retry')!;
+      expect(stored.map(m => m.content.content)).toEqual([
+        'First message',
+        'First response',
+        'Second message',
+        'Retried response!',
+      ]);
+      expect(mockStorageData.minionChats.get('minion_retry')).toMatchObject({
+        savepoint: stored[3].id,
+        totalInputTokens: 200 - 80 + 90,
+        totalOutputTokens: 100 - 40 + 45,
+      });
     });
 
     it('retries first run when savepoint is SAVEPOINT_START', async () => {
@@ -3776,6 +4027,8 @@ describe('Minion Integration', () => {
       expect(result.isError).toBe(true);
       expect(result.content).toContain('/nope.md');
       expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+      // Resolved before the user message is saved.
+      expect(storage.saveMinionMessage).not.toHaveBeenCalled();
     });
 
     it('empty string disables the global prompt', async () => {
@@ -3916,6 +4169,165 @@ describe('Minion Integration', () => {
       expect(result.isError).toBeUndefined();
       // Messages after savepoint should have been deleted
       expect(storage.deleteMessagesAfter).toHaveBeenCalledWith('minion_ar', 'msg_assistant_1');
+    });
+
+    it('a Phase 2 error leaves the failed run in place for the next continuation', async () => {
+      const chat: MinionChat = {
+        id: 'minion_ar_phase2',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        savepoint: 'msg_assistant_1',
+      };
+      mockStorageData.minionChats.set(chat.id, chat);
+      mockStorageData.minionMessages.set(chat.id, [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          content: { type: 'text', content: 'First' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          content: { type: 'text', content: 'Response' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_user_2',
+          role: 'user',
+          content: { type: 'text', content: 'Failed message' },
+          timestamp: new Date(),
+        },
+      ]);
+
+      const failed = await collectToolResult(
+        minionTool.execute(
+          { message: 'New instruction', minionChatId: chat.id, enabledTools: ['nope'] },
+          toolOptions,
+          context
+        )
+      );
+      expect(failed.isError).toBe(true);
+      expect(failed.content).toContain('Tools not available in project: nope');
+      expect(mockStorageData.minionMessages.get(chat.id)).toHaveLength(3);
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+
+      // Omitting the message still recovers the rolled-back one.
+      setupMockStream();
+      const result = await collectToolResult(
+        minionTool.execute({ minionChatId: chat.id }, toolOptions, context)
+      );
+      expect(result.isError).toBeUndefined();
+      const sent = vi.mocked(apiService.sendMessageStream).mock.calls[0][0] as Message<unknown>[];
+      expect(sent.filter(m => m.role === 'user').pop()?.content.content).toBe('Failed message');
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledWith(chat.id, 'msg_assistant_1');
+    });
+
+    it('a continuation refused by the model list, a missing file or the project tools keeps the failed run, and the next one drops it', async () => {
+      const chat: MinionChat = {
+        id: 'minion_ar_refused',
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        totalInputTokens: 200,
+        totalOutputTokens: 100,
+        totalCost: 0.005,
+        savepoint: 'msg_assistant_1',
+      };
+      mockStorageData.minionChats.set(chat.id, chat);
+      mockStorageData.minionMessages.set(chat.id, [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          content: { type: 'text', content: 'First message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          content: { type: 'text', content: 'Good response' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_user_2',
+          role: 'user',
+          content: { type: 'text', content: 'Failed message' },
+          timestamp: new Date(),
+        },
+        {
+          id: 'msg_assistant_2',
+          role: 'assistant',
+          content: { type: 'text', content: 'Bad response' },
+          timestamp: new Date(),
+          metadata: { inputTokens: 80, outputTokens: 40, messageCost: 0.002 },
+        },
+      ]);
+      const listed: ToolOptions = { ...toolOptions, ...listedModels };
+      const refusals: Array<[Record<string, unknown>, ToolContext, string]> = [
+        [{ enabledTools: ['nope'] }, context, unknownToolError],
+        [{ model: 'api_test:claude-3-opus' }, context, unlistedModelError],
+        [
+          { injectFiles: ['/gone.md'] },
+          { ...context, createVfsAdapter: missingFilesFactory },
+          'Error: Failed to read injected file(s):\n/gone.md: Path not found: /gone.md\nFix the paths and resend.',
+        ],
+      ];
+      for (const [input, ctx, error] of refusals) {
+        const refused = await collectToolResult(
+          minionTool.execute(
+            { message: 'New instruction', minionChatId: chat.id, ...input },
+            listed,
+            ctx
+          )
+        );
+        expect(refused).toEqual({ content: error, isError: true });
+        expect(mockStorageData.minionMessages.get(chat.id)!.map(m => m.id)).toEqual([
+          'msg_user_1',
+          'msg_assistant_1',
+          'msg_user_2',
+          'msg_assistant_2',
+        ]);
+        expect(mockStorageData.minionChats.get(chat.id)).toMatchObject({
+          savepoint: 'msg_assistant_1',
+          totalInputTokens: 200,
+          totalOutputTokens: 100,
+          totalCost: 0.005,
+        });
+      }
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(storage.deleteMessageAndAfter).not.toHaveBeenCalled();
+      expect(storage.saveMinionChat).not.toHaveBeenCalled();
+      expect(storage.saveMinionMessage).not.toHaveBeenCalled();
+      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+
+      setupMockStream();
+      const result = await collectToolResult(
+        minionTool.execute({ message: 'New instruction', minionChatId: chat.id }, listed, context)
+      );
+      expect(result.isError).toBeUndefined();
+      const sent = vi.mocked(apiService.sendMessageStream).mock.calls[0][0] as Message<unknown>[];
+      expect(sent.map(m => m.content.content)).toEqual([
+        'First message',
+        'Good response',
+        'New instruction',
+      ]);
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledOnce();
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledWith(chat.id, 'msg_assistant_1');
+      const stored = mockStorageData.minionMessages.get(chat.id)!;
+      expect(stored.map(m => m.content.content)).toEqual([
+        'First message',
+        'Good response',
+        'New instruction',
+        'Recovered response!',
+      ]);
+      expect(mockStorageData.minionChats.get(chat.id)).toMatchObject({
+        savepoint: stored[3].id,
+        totalInputTokens: 200 - 80 + 90,
+        totalOutputTokens: 100 - 40 + 45,
+      });
     });
 
     it('auto-rollback recovers original message when no message provided', async () => {
@@ -4083,6 +4495,1423 @@ describe('Minion Integration', () => {
       // No rollback for legacy chats (savepoint undefined)
       expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
       expect(storage.deleteMessageAndAfter).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('outputFormat', () => {
+    const returnOnly: ToolOptions = {
+      model: { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' },
+      returnMode: 'return-only',
+    };
+    const context: ToolContext = {
+      projectId: 'proj_test',
+      chatId: 'chat_test',
+      vfsAdapter: minionAdapter,
+      createVfsAdapter: minionAdapterFactory,
+      signal: new AbortController().signal,
+      ...mockMinionDeps,
+    };
+    const run = (input: Record<string, unknown>, toolOptions: ToolOptions = returnOnly) =>
+      collectToolResult(minionTool.execute(input, toolOptions, context));
+    const proseJson = (minionChatId: string, text: string) =>
+      JSON.stringify({ minionChatId, stopReason: 'end_turn', hasCoT: false, text });
+
+    beforeEach(() => {
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+    });
+
+    it('persists json across continuations, ignores a stray value, and switches back on text', async () => {
+      reply('Plan ready');
+      const first = await run({ message: 'Plan', outputFormat: 'json' });
+      const id = JSON.parse(first.content).minionChatId;
+      expect(first.content).toBe(proseJson(id, 'Plan ready'));
+      expect(mockStorageData.minionChats.get(id)?.outputFormat).toBe('json');
+
+      reply('Step one');
+      const second = await run({ minionChatId: id, message: 'Go' });
+      expect(second.content).toBe(proseJson(id, 'Step one'));
+
+      // Not a format: it neither persists nor hides the stored one.
+      reply('Step two');
+      const third = await run({ minionChatId: id, message: 'Next', outputFormat: 'yaml' });
+      expect(third.content).toBe(proseJson(id, 'Step two'));
+      expect(mockStorageData.minionChats.get(id)?.outputFormat).toBe('json');
+
+      reply('Step three');
+      const fourth = await run({ minionChatId: id, message: 'Last', outputFormat: 'text' });
+      expect(fourth.content).toBe(`<minionChatId>${id}</minionChatId>\nStep three`);
+      expect(mockStorageData.minionChats.get(id)?.outputFormat).toBe('text');
+
+      reply('Done');
+      const fifth = await run({ minionChatId: id, message: 'Wrap up' });
+      expect(fifth.content).toBe(`<minionChatId>${id}</minionChatId>\nDone`);
+    });
+
+    it('puts a return value in result and a missing return in warning', async () => {
+      const enforced: ToolOptions = { ...returnOnly, returnMode: 'enforced' };
+      reply('I forgot to return');
+      const missed = await run({ message: 'Answer', outputFormat: 'json' }, enforced);
+      const id = JSON.parse(missed.content).minionChatId;
+      expect(missed.content).toBe(
+        JSON.stringify({
+          minionChatId: id,
+          stopReason: 'end_turn',
+          hasCoT: false,
+          warning: 'Return tool was not called',
+        })
+      );
+
+      const returnToolUse = [
+        { type: 'tool_use' as const, id: 'toolu_r', name: 'return', input: { result: '42' } },
+      ];
+      vi.mocked(apiService.sendMessageStream).mockReturnValueOnce(
+        createMockStream([], {
+          textContent: 'Some prose',
+          fullContent: returnToolUse,
+          stopReason: 'tool_use',
+          inputTokens: 10,
+          outputTokens: 5,
+        }) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValueOnce(returnToolUse);
+      vi.mocked(executeClientSideTool).mockImplementationOnce(() =>
+        mockToolGenerator({ content: '42', breakLoop: { returnValue: '42' } })
+      );
+      const returned = await run({ minionChatId: id, message: 'Again, return it' }, enforced);
+      expect(returned.content).toBe(
+        JSON.stringify({ minionChatId: id, stopReason: 'end_turn', hasCoT: false, result: '42' })
+      );
+    });
+
+    it('formats run errors in the resolved format, stored or passed', async () => {
+      reply('Trunc', 'max_tokens');
+      const failed = await run({ message: 'Summarize', outputFormat: 'json' });
+      expect(failed.isError).toBe(true);
+      const [id] = [...mockStorageData.minionChats.keys()];
+      // The new row was seeded before the run, so its id comes back in JSON.
+      expect(failed.content).toBe(
+        JSON.stringify({ error: 'Minion ended unexpectedly (max_tokens)', minionChatId: id })
+      );
+
+      // Omitted on the retry: the stored format still applies.
+      reply('Trunc again', 'max_tokens');
+      const failedAgain = await run({ action: 'retry', minionChatId: id });
+      expect(JSON.parse(failedAgain.content)).toEqual({
+        error: 'Minion ended unexpectedly (max_tokens)',
+        minionChatId: id,
+      });
+
+      // Passed on this call: it wins over the stored one, error included.
+      reply('Trunc once more', 'max_tokens');
+      const asText = await run({ action: 'retry', minionChatId: id, outputFormat: 'text' });
+      expect(asText.content).toBe(
+        `Minion ended unexpectedly (max_tokens)\n<minionChatId>${id}</minionChatId>`
+      );
+
+      reply('Summary');
+      const retried = await run({ action: 'retry', minionChatId: id, outputFormat: 'json' });
+      expect(retried.content).toBe(proseJson(id, 'Summary'));
+    });
+
+    it('keeps Phase 1 and Phase 2 errors in plain text', async () => {
+      const webError = await run({ message: 'Search', outputFormat: 'json', enableWeb: true });
+      expect(webError.isError).toBe(true);
+      expect(webError.content).toMatch(/^Error: Web search is not allowed/);
+
+      const missingChat = await run({
+        message: 'Continue',
+        minionChatId: 'minion_nonexistent',
+        outputFormat: 'json',
+      });
+      expect(missingChat.content).toMatch(/^Error: Minion chat not found/);
+    });
+
+    it("leaves 'both' results byte-identical, while errors still follow the format", async () => {
+      const both: ToolOptions = { ...returnOnly, returnMode: 'both' };
+      reply('Plain');
+      const plain = await run({ message: 'Task' }, both);
+      const plainId = JSON.parse(plain.content).minionChatId;
+
+      reply('Plain');
+      const asked = await run({ message: 'Task', outputFormat: 'json' }, both);
+      const askedId = JSON.parse(asked.content).minionChatId;
+      expect(asked.content).toBe(plain.content.replace(plainId, askedId));
+      expect(asked.content).toBe(
+        JSON.stringify({
+          stopReason: 'end_turn',
+          hasCoT: false,
+          minionChatId: askedId,
+          text: 'Plain',
+        })
+      );
+      // Stored anyway, for when the project leaves 'both'.
+      expect(mockStorageData.minionChats.get(askedId)?.outputFormat).toBe('json');
+
+      reply('Trunc', 'max_tokens');
+      const failed = await run({ minionChatId: askedId, message: 'More' }, both);
+      expect(JSON.parse(failed.content)).toEqual({
+        error: 'Minion ended unexpectedly (max_tokens)',
+        minionChatId: askedId,
+      });
+    });
+  });
+
+  describe('continue tokens', () => {
+    const model = { apiDefinitionId: 'api_test', modelId: 'claude-3-sonnet' };
+    const toolOptions: ToolOptions = { model, continueTokens: true };
+    const context: ToolContext = {
+      projectId: 'proj_test',
+      chatId: 'chat_test',
+      vfsAdapter: minionAdapter,
+      createVfsAdapter: minionAdapterFactory,
+      signal: new AbortController().signal,
+      ...mockMinionDeps,
+    };
+    const run = (
+      input: Record<string, unknown>,
+      options: ToolOptions = toolOptions,
+      ctx: ToolContext = context
+    ) => collectToolResult(minionTool.execute(input, options, ctx));
+    const transcript = (id: string) =>
+      (mockStorageData.minionMessages.get(id) ?? []).map(m => m.content.content);
+    const tailId = (id: string) => mockStorageData.minionMessages.get(id)!.at(-1)!.id;
+    /** Like `reply`, but records the stored chat and transcript the send finds. */
+    const replyObserving = (id: string, text: string, inputTokens = 10) => {
+      const atSend: { chat?: MinionChat; transcript?: unknown[] } = {};
+      vi.mocked(apiService.sendMessageStream).mockImplementationOnce(() => {
+        atSend.chat = { ...mockStorageData.minionChats.get(id)! };
+        atSend.transcript = transcript(id);
+        return createMockStream([], {
+          textContent: text,
+          fullContent: [{ type: 'text', text }],
+          stopReason: 'end_turn',
+          inputTokens,
+          outputTokens: 5,
+        }) as never;
+      });
+      return atSend;
+    };
+    const lastSent = () => {
+      const calls = vi.mocked(apiService.sendMessageStream).mock.calls;
+      return calls[calls.length - 1];
+    };
+    const lastSentUserText = () =>
+      (lastSent()[0] as Message<unknown>[]).filter(m => m.role === 'user').pop()?.content.content;
+
+    /** A new chat with one finished exchange, and the token right after it. */
+    async function setUp(options: ToolOptions = toolOptions) {
+      reply('Ready');
+      const result = await run({ message: 'Set up' }, options);
+      return JSON.parse(result.content) as { minionChatId: string; continueToken: string };
+    }
+
+    /** A stored chat. Ids are `msg_<role>_<token>` so each one's token is readable. */
+    function seedChat(
+      id: string,
+      turns: Array<[role: 'user' | 'assistant', idTail: string, text: string]>,
+      over: Partial<MinionChat> = {}
+    ) {
+      const messages: Message<unknown>[] = turns.map(([role, idTail, text]) => ({
+        id: `msg_${role === 'user' ? 'user' : 'asst'}_${idTail}`,
+        role,
+        content: { type: 'text', content: text },
+        timestamp: new Date(),
+      }));
+      const chat: MinionChat = {
+        id,
+        parentChatId: 'chat_test',
+        projectId: 'proj_test',
+        createdAt: new Date(),
+        lastModifiedAt: new Date(),
+        ...over,
+      };
+      mockStorageData.minionChats.set(id, chat);
+      mockStorageData.minionMessages.set(id, [...messages]);
+      return { chat, messages };
+    }
+
+    beforeEach(() => {
+      vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
+    });
+
+    it('hands out the new savepoint as the token, so the latest token continues plainly', async () => {
+      const { minionChatId: id, continueToken: a } = await setUp();
+      const savepoint = mockStorageData.minionChats.get(id)!.savepoint!;
+      expect(savepoint).toBe(tailId(id));
+      expect(a).toBe(continueTokenFor(savepoint));
+
+      const atSend = replyObserving(id, 'Step done');
+      const next = await run({ minionChatId: `${a}@${id}`, message: 'Step' });
+      expect(next.isError).toBeUndefined();
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(storage.deleteMessageAndAfter).not.toHaveBeenCalled();
+      expect(atSend.chat?.savepoint).toBe(savepoint);
+      expect(transcript(id)).toEqual(['Set up', 'Ready', 'Step', 'Step done']);
+      expect(mockStorageData.minionMessages.get(id)![1].id).toBe(savepoint);
+      const { continueToken: b } = JSON.parse(next.content);
+      expect(b).toBe(continueTokenFor(tailId(id)));
+      expect(b).not.toBe(a);
+    });
+
+    it('puts the token in text, JSON and both results, and leaves it out with the option off', async () => {
+      const returnOnly: ToolOptions = { model, returnMode: 'return-only' };
+      const tokenField = (token?: string) => (token ? { continueToken: token } : {});
+      const formats: Array<
+        [ToolOptions, Record<string, unknown>, (id: string, token?: string) => string]
+      > = [
+        [
+          { model },
+          {},
+          (id, token) =>
+            JSON.stringify({
+              stopReason: 'end_turn',
+              hasCoT: false,
+              minionChatId: id,
+              ...tokenField(token),
+              text: 'Ready',
+            }),
+        ],
+        [
+          returnOnly,
+          {},
+          (id, token) =>
+            `<minionChatId>${id}</minionChatId>\n${token ? `<continueToken>${token}</continueToken>\n` : ''}Ready`,
+        ],
+        [
+          returnOnly,
+          { outputFormat: 'json' },
+          (id, token) =>
+            JSON.stringify({
+              minionChatId: id,
+              ...tokenField(token),
+              stopReason: 'end_turn',
+              hasCoT: false,
+              text: 'Ready',
+            }),
+        ],
+      ];
+      for (const [options, input, expected] of formats) {
+        for (const continueTokens of [true, false]) {
+          reply('Ready');
+          const result = await run({ message: 'Set up', ...input }, { ...options, continueTokens });
+          const id = [...mockStorageData.minionChats.keys()].at(-1)!;
+          const { savepoint } = mockStorageData.minionChats.get(id)!;
+          expect(savepoint).toBe(tailId(id));
+          expect(result.content).toBe(
+            expected(id, continueTokens ? continueTokenFor(savepoint!) : undefined)
+          );
+        }
+      }
+    });
+
+    it('marks the last message of a run that used a tool, not the first one it stored', async () => {
+      const { minionChatId: id } = await setUp();
+      const memoryCall = [
+        {
+          type: 'tool_use' as const,
+          id: 'toolu_mem',
+          name: 'memory',
+          input: { command: 'view', path: '/' },
+        },
+      ];
+      vi.mocked(apiService.sendMessageStream).mockReturnValueOnce(
+        createMockStream([], {
+          textContent: '',
+          fullContent: memoryCall,
+          stopReason: 'tool_use',
+          inputTokens: 10,
+          outputTokens: 5,
+        }) as never
+      );
+      vi.mocked(apiService.extractToolUseBlocks).mockImplementation((_apiType, fullContent) =>
+        fullContent === memoryCall ? memoryCall : []
+      );
+      vi.mocked(executeClientSideTool).mockImplementationOnce(() =>
+        mockToolGenerator({ content: 'Files listed' })
+      );
+      reply('Listed');
+      const result = await run({ minionChatId: id, message: 'List', enabledTools: ['memory'] });
+
+      const stored = mockStorageData.minionMessages.get(id)!;
+      expect(stored.map(m => m.role)).toEqual([
+        'user',
+        'assistant',
+        'user',
+        'assistant',
+        'user',
+        'assistant',
+      ]);
+      expect(stored[5].content.content).toBe('Listed');
+      expect(mockStorageData.minionChats.get(id)?.savepoint).toBe(stored[5].id);
+      expect(JSON.parse(result.content).continueToken).toBe(continueTokenFor(stored[5].id));
+    });
+
+    it('checks the checksum of the chat id after the "@"', async () => {
+      const actual = await vi.importActual<typeof import('../../../protocol/idGenerator')>(
+        '../../../protocol/idGenerator'
+      );
+      vi.mocked(validateIdChecksum).mockImplementation(actual.validateIdChecksum);
+      const checksummedId = actual.generateChecksummedId('minion');
+      vi.mocked(generateChecksummedId).mockReturnValueOnce(checksummedId);
+      const { minionChatId: id, continueToken: a } = await setUp();
+      expect(id).toBe(checksummedId);
+      const miscopied = `${id.slice(0, -1)}${id.endsWith('a') ? 'b' : 'a'}`;
+      expect(actual.validateIdChecksum(miscopied)).toBe('invalid');
+      vi.mocked(storage.saveMinionChat).mockClear();
+
+      const refused = await run({ minionChatId: `${a}@${miscopied}`, message: 'Step' });
+      expect(refused).toEqual({
+        content:
+          'Error: Invalid minionChatId (checksum mismatch) — the ID may have been copied incorrectly. Check the minionChatId from the previous minion result and resend.',
+        isError: true,
+      });
+      expect(validateIdChecksum).toHaveBeenLastCalledWith(miscopied);
+      expect(storage.getMinionChat).not.toHaveBeenCalled();
+      expect(storage.saveMinionChat).not.toHaveBeenCalled();
+      expect(transcript(id)).toEqual(['Set up', 'Ready']);
+
+      reply('Step done');
+      const accepted = await run({ minionChatId: `${a}@${id}`, message: 'Step' });
+      expect(accepted.isError).toBeUndefined();
+      expect(validateIdChecksum).toHaveBeenLastCalledWith(id);
+      expect(transcript(id)).toEqual(['Set up', 'Ready', 'Step', 'Step done']);
+      vi.mocked(validateIdChecksum).mockImplementation(() => 'no_checksum');
+    });
+
+    it('branches each task off the setup, dropping the earlier task and its totals', async () => {
+      const { minionChatId: id, continueToken: a } = await setUp();
+      const setupTail = tailId(id);
+      const afterSetup = { ...mockStorageData.minionChats.get(id)! };
+
+      reply('Task 1 done', 'end_turn', 30);
+      const task1 = await run({ minionChatId: `${a}@${id}`, message: 'Task 1' });
+      const c = JSON.parse(task1.content).continueToken;
+      expect(mockStorageData.minionChats.get(id)?.totalInputTokens).toBe(
+        afterSetup.totalInputTokens! + 30
+      );
+      const atSend = replyObserving(id, 'Task 2 done', 50);
+      const task2 = await run({ minionChatId: `${a}@${id}`, message: 'Task 2' });
+      const d = JSON.parse(task2.content).continueToken;
+
+      // Task 2 runs with the setup as its only context.
+      expect((lastSent()[0] as Message<unknown>[]).map(m => m.content.content)).toEqual([
+        'Set up',
+        'Ready',
+        'Task 2',
+      ]);
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledOnce();
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledWith(id, setupTail);
+      // Before the run: back at A, with task 1 gone from the transcript and the totals.
+      expect(atSend.transcript).toEqual(['Set up', 'Ready', 'Task 2']);
+      expect(atSend.chat).toMatchObject({
+        savepoint: setupTail,
+        totalInputTokens: afterSetup.totalInputTokens,
+        totalOutputTokens: afterSetup.totalOutputTokens,
+      });
+      expect(atSend.chat?.totalCost).toBeCloseTo(afterSetup.totalCost!);
+      expect(transcript(id)).toEqual(['Set up', 'Ready', 'Task 2', 'Task 2 done']);
+      const chat = mockStorageData.minionChats.get(id)!;
+      expect(chat.savepoint).toBe(tailId(id));
+      expect(chat.totalInputTokens).toBe(afterSetup.totalInputTokens! + 50);
+      expect(chat.totalOutputTokens).toBe(afterSetup.totalOutputTokens! + 5);
+      expect(chat.totalCost).toBeCloseTo(afterSetup.totalCost! + 0.001);
+      expect(d).toBe(continueTokenFor(tailId(id)));
+      expect(new Set([a, c, d]).size).toBe(3);
+
+      // Task 1's token went with its branch.
+      const stale = await run({ minionChatId: `${c}@${id}`, message: 'Task 3' });
+      expect(stale).toEqual({
+        content: `Error: Continue token "${c}" is not in minion chat ${id}: rolled back past it, or copied wrong. Resend to reattempt.`,
+        isError: true,
+      });
+      expect(transcript(id)).toEqual(['Set up', 'Ready', 'Task 2', 'Task 2 done']);
+    });
+
+    it('gives a failed run an error token, which drops a plain continue made on top of it', async () => {
+      const { minionChatId: id } = await setUp();
+      reply('Trunc', 'max_tokens');
+      const failed = await run({ minionChatId: id, message: 'Task 2' });
+      const failedTail = tailId(id);
+      const e = continueTokenFor(failedTail);
+      expect(failed).toMatchObject({
+        isError: true,
+        content: `Minion ended unexpectedly (max_tokens)\n<minionChatId>${id}</minionChatId>\n<continueToken>${e}</continueToken>`,
+      });
+
+      reply('Task 3 done');
+      const plain = await run({ minionChatId: id, message: 'Task 3' });
+      expect(plain.isError).toBeUndefined();
+      expect(transcript(id)).toEqual([
+        'Set up',
+        'Ready',
+        'Task 2',
+        'Trunc',
+        'Task 3',
+        'Task 3 done',
+      ]);
+
+      reply('Task 4 done');
+      await run({ minionChatId: `${e}@${id}`, message: 'Task 4' });
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledOnce();
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledWith(id, failedTail);
+      expect(transcript(id)).toEqual([
+        'Set up',
+        'Ready',
+        'Task 2',
+        'Trunc',
+        'Task 4',
+        'Task 4 done',
+      ]);
+    });
+
+    it('adds a token for the stored tail to run errors only with the option on and autoRollback off', async () => {
+      const apiError = () =>
+        vi.mocked(apiService.sendMessageStream).mockReturnValueOnce(
+          createMockStream([], {
+            textContent: '',
+            fullContent: { role: 'assistant', content: null, refusal: null },
+            error: { message: 'API returned no message (empty choices)' },
+            inputTokens: 0,
+            outputTokens: 0,
+          }) as never
+        );
+      const failures: Array<[() => void, string]> = [
+        [apiError, 'Minion error: API returned no message (empty choices)'],
+        [() => reply('Trunc', 'max_tokens'), 'Minion ended unexpectedly (max_tokens)'],
+      ];
+      const modes: Array<[ToolOptions, boolean]> = [
+        [toolOptions, true],
+        [{ ...toolOptions, autoRollback: true }, false],
+        [{ model }, false],
+      ];
+      for (const [fail, error] of failures) {
+        for (const [options, carriesToken] of modes) {
+          const { minionChatId: id, continueToken: a } = await setUp(options);
+          fail();
+          const failed = await run({ minionChatId: id, message: 'Task 2' }, options);
+          expect(transcript(id).slice(0, 3)).toEqual(['Set up', 'Ready', 'Task 2']);
+          const tail = continueTokenFor(tailId(id));
+          expect(tail).not.toBe(a);
+          expect(failed).toMatchObject({
+            isError: true,
+            content: carriesToken
+              ? `${error}\n<minionChatId>${id}</minionChatId>\n<continueToken>${tail}</continueToken>`
+              : `${error}\n<minionChatId>${id}</minionChatId>`,
+          });
+        }
+      }
+    });
+
+    it('with autoRollback, errors carry no token and the last success token drops a later call', async () => {
+      const auto: ToolOptions = { ...toolOptions, autoRollback: true };
+      const { minionChatId: id, continueToken: a } = await setUp(auto);
+      reply('Trunc', 'max_tokens');
+      const failed = await run({ minionChatId: id, message: 'Task 2' }, auto);
+      expect(failed.content).toBe(
+        `Minion ended unexpectedly (max_tokens)\n<minionChatId>${id}</minionChatId>`
+      );
+
+      reply('Task 3 done');
+      await run({ minionChatId: id, message: 'Task 3' }, auto);
+      expect(transcript(id)).toEqual(['Set up', 'Ready', 'Task 3', 'Task 3 done']);
+
+      reply('Task 4 done');
+      await run({ minionChatId: `${a}@${id}`, message: 'Task 4' }, auto);
+      expect(transcript(id)).toEqual(['Set up', 'Ready', 'Task 4', 'Task 4 done']);
+    });
+
+    it('puts the token in JSON results and errors, and skips an error token it cannot read', async () => {
+      const returnOnly: ToolOptions = { ...toolOptions, returnMode: 'return-only' };
+      reply('Ready');
+      const setup = await run({ message: 'Set up', outputFormat: 'json' }, returnOnly);
+      const { minionChatId: id, continueToken: a } = JSON.parse(setup.content);
+      expect(setup.content).toBe(
+        JSON.stringify({
+          minionChatId: id,
+          continueToken: a,
+          stopReason: 'end_turn',
+          hasCoT: false,
+          text: 'Ready',
+        })
+      );
+
+      vi.mocked(apiService.sendMessageStream).mockImplementationOnce(() => {
+        throw new Error('socket hang up');
+      });
+      const thrown = await run({ minionChatId: id, message: 'Task 2' }, returnOnly);
+      expect(thrown.isError).toBe(true);
+      expect(JSON.parse(thrown.content)).toEqual({
+        error: expect.stringContaining('socket hang up'),
+        minionChatId: id,
+        continueToken: continueTokenFor(tailId(id)),
+      });
+
+      // Phase 1 reads the chat; the failure's read of the tail fails.
+      const read = vi.mocked(storage.getMinionMessages).getMockImplementation()!;
+      vi.mocked(storage.getMinionMessages)
+        .mockImplementationOnce(read)
+        .mockImplementationOnce(() => Promise.reject(new Error('disk gone')));
+      reply('Trunc', 'max_tokens');
+      const unread = await run({ minionChatId: id, message: 'Task 3' }, returnOnly);
+      expect(JSON.parse(unread.content)).toEqual({
+        error: 'Minion ended unexpectedly (max_tokens)',
+        minionChatId: id,
+      });
+    });
+
+    it('moves the savepoint to a token with nothing after it, so a retry returns there', async () => {
+      const { minionChatId: id } = await setUp();
+      reply('Trunc', 'max_tokens');
+      await run({ minionChatId: id, message: 'Task 2' });
+      const failedTail = tailId(id);
+
+      reply('Trunc again', 'max_tokens');
+      const failed = await run({
+        minionChatId: `${continueTokenFor(failedTail)}@${id}`,
+        message: 'Task 3',
+      });
+      expect(failed.isError).toBe(true);
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(mockStorageData.minionChats.get(id)?.savepoint).toBe(failedTail);
+
+      // The retry redoes Task 3 from there, not Task 2 from the setup.
+      reply('Task 3 done');
+      await run({ action: 'retry', minionChatId: id });
+      expect(lastSentUserText()).toBe('Task 3');
+      expect(transcript(id)).toEqual([
+        'Set up',
+        'Ready',
+        'Task 2',
+        'Trunc',
+        'Task 3',
+        'Task 3 done',
+      ]);
+    });
+
+    it('hands out an error token for a tool result the failed run stored last, and continuing from it works', async () => {
+      const { minionChatId: id } = await setUp();
+      const toolUse = [
+        { type: 'tool_use' as const, id: 'toolu_1', name: 'memory', input: { command: 'view' } },
+      ];
+      vi.mocked(apiService.extractToolUseBlocks).mockImplementation((_apiType, content) =>
+        content === toolUse ? toolUse : []
+      );
+      vi.mocked(executeClientSideTool).mockImplementation(() =>
+        mockToolGenerator({ content: 'Files listed', isError: false })
+      );
+      vi.mocked(apiService.sendMessageStream)
+        .mockReturnValueOnce(
+          createMockStream([], {
+            textContent: '',
+            fullContent: toolUse,
+            stopReason: 'tool_use',
+            inputTokens: 10,
+            outputTokens: 5,
+          }) as never
+        )
+        .mockImplementationOnce(() => {
+          throw new Error('socket hang up');
+        });
+
+      const failed = await run({ minionChatId: id, message: 'Task 2' });
+      const toolResult = mockStorageData.minionMessages.get(id)!.at(-1)!;
+      expect(toolResult.role).toBe('user');
+      expect(toolResult.content.toolResults?.[0]?.tool_use_id).toBe('toolu_1');
+      const e = continueTokenFor(toolResult.id);
+      expect(failed.isError).toBe(true);
+      expect(failed.content).toMatch(/^Minion error: .*socket hang up/);
+      expect(
+        failed.content.endsWith(
+          `\n<minionChatId>${id}</minionChatId>\n<continueToken>${e}</continueToken>`
+        )
+      ).toBe(true);
+
+      reply('Task 3 done');
+      await run({ minionChatId: id, message: 'Task 3' });
+      reply('Task 4 done');
+      const task4 = await run({ minionChatId: `${e}@${id}`, message: 'Task 4' });
+      expect(task4.isError).toBeUndefined();
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledWith(id, toolResult.id);
+      const stored = mockStorageData.minionMessages.get(id)!;
+      expect(stored.map(m => m.role)).toEqual([
+        'user',
+        'assistant',
+        'user',
+        'assistant',
+        'user',
+        'user',
+        'assistant',
+      ]);
+      expect(stored[4].id).toBe(toolResult.id);
+      expect(stored.slice(-2).map(m => m.content.content)).toEqual(['Task 4', 'Task 4 done']);
+    });
+
+    it('counts a failed run in the totals, so a token rolled back across it restores the totals at the token', async () => {
+      const { minionChatId: id, continueToken: a } = await setUp();
+      const afterSetup = { ...mockStorageData.minionChats.get(id)! };
+      reply('Trunc', 'max_tokens', 30);
+      const failed = await run({ minionChatId: id, message: 'Task 2' });
+      expect(failed.isError).toBe(true);
+      expect(mockStorageData.minionChats.get(id)).toMatchObject({
+        totalInputTokens: afterSetup.totalInputTokens! + 30,
+        totalOutputTokens: afterSetup.totalOutputTokens! + 5,
+      });
+      reply('Task 3 done', 'end_turn', 10);
+      await run({ minionChatId: id, message: 'Task 3' });
+
+      const atSend = replyObserving(id, 'Task 4 done', 7);
+      await run({ minionChatId: `${a}@${id}`, message: 'Task 4' });
+      expect(atSend.transcript).toEqual(['Set up', 'Ready', 'Task 4']);
+      expect(atSend.chat).toMatchObject({
+        totalInputTokens: afterSetup.totalInputTokens,
+        totalOutputTokens: afterSetup.totalOutputTokens,
+      });
+      expect(atSend.chat?.totalCost).toBeCloseTo(afterSetup.totalCost!);
+      expect(mockStorageData.minionChats.get(id)?.totalInputTokens).toBe(
+        afterSetup.totalInputTokens! + 7
+      );
+    });
+
+    it('returns the error, chat id and token even when the failed run totals cannot be saved', async () => {
+      const { minionChatId: id } = await setUp();
+      vi.mocked(apiService.sendMessageStream).mockImplementationOnce(() => {
+        // The apply point has saved the chat by now; the next save is the failure's.
+        vi.mocked(storage.saveMinionChat).mockRejectedValueOnce(new Error('disk gone'));
+        return createMockStream([], {
+          textContent: 'Trunc',
+          fullContent: [{ type: 'text', text: 'Trunc' }],
+          stopReason: 'max_tokens',
+          inputTokens: 30,
+          outputTokens: 5,
+        }) as never;
+      });
+      const failed = await run({ minionChatId: id, message: 'Task 2' });
+      expect(failed).toMatchObject({
+        isError: true,
+        content: `Minion ended unexpectedly (max_tokens)\n<minionChatId>${id}</minionChatId>\n<continueToken>${continueTokenFor(tailId(id))}</continueToken>`,
+      });
+    });
+
+    it.each([
+      ['retry', { model }, (id: string) => ({ action: 'retry', minionChatId: id })],
+      [
+        'an autoRollback continuation',
+        { model, autoRollback: true },
+        (id: string) => ({ minionChatId: id, message: 'Task 2' }),
+      ],
+    ])(
+      '%s drops a failed run and its spend, back to the totals before it',
+      async (_label, options: ToolOptions, again) => {
+        const { minionChatId: id } = await setUp(options);
+        const afterSetup = { ...mockStorageData.minionChats.get(id)! };
+        reply('Trunc', 'max_tokens', 30);
+        expect((await run({ minionChatId: id, message: 'Task 2' }, options)).isError).toBe(true);
+
+        const atSend = replyObserving(id, 'Task 2 done', 7);
+        expect((await run(again(id), options)).isError).toBeUndefined();
+        expect(atSend.transcript).toEqual(['Set up', 'Ready', 'Task 2']);
+        expect(atSend.chat).toMatchObject({
+          totalInputTokens: afterSetup.totalInputTokens,
+          totalOutputTokens: afterSetup.totalOutputTokens,
+        });
+        expect(atSend.chat?.totalCost).toBeCloseTo(afterSetup.totalCost!);
+      }
+    );
+
+    it('a Phase 2 error or an unreadable inject file after a token leaves the chat as it was', async () => {
+      const { minionChatId: id, continueToken: a } = await setUp();
+      reply('Task 1 done', 'end_turn', 30);
+      await run({ minionChatId: id, message: 'Task 1' });
+      const before = transcript(id);
+      const { savepoint, totalInputTokens } = mockStorageData.minionChats.get(id)!;
+      vi.mocked(storage.saveMinionChat).mockClear();
+      vi.mocked(storage.saveMinionMessage).mockClear();
+
+      const phase2 = await run({
+        minionChatId: `${a}@${id}`,
+        message: 'Task 2',
+        enabledTools: ['nope'],
+      });
+      expect(phase2.content).toContain('Tools not available in project: nope');
+      const unreadable = await run(
+        { minionChatId: `${a}@${id}`, message: 'Task 2', injectFiles: ['/gone.md'] },
+        toolOptions,
+        { ...context, createVfsAdapter: missingFilesFactory }
+      );
+      expect(unreadable.content).toContain('Failed to read injected file');
+
+      expect(transcript(id)).toEqual(before);
+      expect(mockStorageData.minionChats.get(id)).toMatchObject({ savepoint, totalInputTokens });
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(storage.saveMinionChat).not.toHaveBeenCalled();
+      expect(storage.saveMinionMessage).not.toHaveBeenCalled();
+
+      // The same token still works.
+      reply('Task 2 done');
+      await run({ minionChatId: `${a}@${id}`, message: 'Task 2' });
+      expect(transcript(id)).toEqual(['Set up', 'Ready', 'Task 2', 'Task 2 done']);
+    });
+
+    it('a model outside the list or a tool outside the project after a token changes nothing, and the token still works', async () => {
+      const listed: ToolOptions = { ...toolOptions, ...listedModels };
+      const { minionChatId: id, continueToken: a } = await setUp(listed);
+      const setupTail = tailId(id);
+      const afterSetup = { ...mockStorageData.minionChats.get(id)! };
+      reply('Task 1 done', 'end_turn', 30);
+      await run({ minionChatId: id, message: 'Task 1' }, listed);
+      const before = transcript(id);
+      const afterTask1 = { ...mockStorageData.minionChats.get(id)! };
+      vi.mocked(storage.saveMinionChat).mockClear();
+      vi.mocked(storage.saveMinionMessage).mockClear();
+      const sends = vi.mocked(apiService.sendMessageStream).mock.calls.length;
+
+      const refusals: Array<[Record<string, unknown>, string]> = [
+        [{ enabledTools: ['nope'] }, unknownToolError],
+        [{ model: 'api_test:claude-3-opus' }, unlistedModelError],
+      ];
+      for (const [input, error] of refusals) {
+        const refused = await run(
+          { minionChatId: `${a}@${id}`, message: 'Task 2', ...input },
+          listed
+        );
+        expect(refused).toEqual({ content: error, isError: true });
+        expect(transcript(id)).toEqual(before);
+        expect(mockStorageData.minionChats.get(id)).toMatchObject({
+          savepoint: afterTask1.savepoint,
+          totalInputTokens: afterTask1.totalInputTokens,
+          totalOutputTokens: afterTask1.totalOutputTokens,
+          totalCost: afterTask1.totalCost,
+        });
+      }
+      expect(afterTask1.totalInputTokens).toBe(afterSetup.totalInputTokens! + 30);
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(storage.deleteMessageAndAfter).not.toHaveBeenCalled();
+      expect(storage.saveMinionChat).not.toHaveBeenCalled();
+      expect(storage.saveMinionMessage).not.toHaveBeenCalled();
+      expect(apiService.sendMessageStream).toHaveBeenCalledTimes(sends);
+
+      reply('Task 2 done', 'end_turn', 50);
+      const task2 = await run({ minionChatId: `${a}@${id}`, message: 'Task 2' }, listed);
+      expect(task2.isError).toBeUndefined();
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledOnce();
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledWith(id, setupTail);
+      expect(transcript(id)).toEqual(['Set up', 'Ready', 'Task 2', 'Task 2 done']);
+      expect(mockStorageData.minionChats.get(id)).toMatchObject({
+        savepoint: tailId(id),
+        totalInputTokens: afterSetup.totalInputTokens! + 50,
+        totalOutputTokens: afterSetup.totalOutputTokens! + 5,
+      });
+    });
+
+    it('a delegation or system prompt error saves no message and drops nothing, whatever rollback the call carries', async () => {
+      const unreadable: ToolContext = { ...context, createVfsAdapter: missingFilesFactory };
+      const ceiling: ToolContext = { ...unreadable, minionAvailablePersonas: ['coder'] };
+      const refusals: Array<[ToolOptions, ToolContext, Record<string, unknown>, string]> = [
+        [
+          { namespacedMinion: 'persona' },
+          ceiling,
+          { persona: 'writer' },
+          'Error: persona "writer" is not in the set this minion may delegate to: [coder]. Resend.',
+        ],
+        [
+          { namespacedMinion: 'persona' },
+          ceiling,
+          { availablePersonas: ['writer'] },
+          'Error: cannot grant personas not available to this minion: [writer]. Available: [coder]. Resend.',
+        ],
+        [
+          { namespacedMinion: 'all' },
+          unreadable,
+          { prePersonaSystemPromptFile: '/nope.md' },
+          "Error: Failed to read prePersonaSystemPromptFile: /nope.md. Path not found: /nope.md Pass a corrected path, '' to disable, or '/minions/_global.md' to restore the default. Resend to reattempt.",
+        ],
+        [
+          { namespacedMinion: 'persona' },
+          unreadable,
+          { persona: 'ghost' },
+          'Error: Persona file /minions/ghost.md not found. Create the file or use a different persona. Resend to reattempt.',
+        ],
+        [
+          {},
+          unreadable,
+          { systemPromptFile: '/p/missing.md' },
+          'Error: Failed to read system prompt file: /p/missing.md. Path not found: /p/missing.md',
+        ],
+      ];
+      const calls: Array<[string, ToolOptions, (id: string) => Record<string, unknown>]> = [
+        ['a new chat', {}, () => ({ message: 'Third' })],
+        ['a plain continue', {}, id => ({ minionChatId: id, message: 'Third' })],
+        ['retry', {}, id => ({ action: 'retry', minionChatId: id })],
+        ['autoRollback', { autoRollback: true }, id => ({ minionChatId: id, message: 'Third' })],
+        ['a token', {}, id => ({ minionChatId: `rb1@${id}`, message: 'Third' })],
+      ];
+      const { chat, messages } = seedChat(
+        'minion_tok_refused',
+        [
+          ['user', 'rb0', 'First'],
+          ['assistant', 'rb1', 'Ok'],
+          ['user', 'rb2', 'Second'],
+          ['assistant', 'rb3', 'Trunc'],
+        ],
+        {
+          savepoint: 'msg_asst_rb1',
+          totalInputTokens: 200,
+          totalOutputTokens: 100,
+          totalCost: 0.005,
+        }
+      );
+      messages[3].metadata = { inputTokens: 80, outputTokens: 40, messageCost: 0.002 };
+      for (const [refusalOptions, ctx, refusalInput, error] of refusals) {
+        for (const [callName, callOptions, callInput] of calls) {
+          const label = `${callName}: ${error}`;
+
+          const result = await run(
+            { ...callInput(chat.id), ...refusalInput },
+            { ...toolOptions, ...callOptions, ...refusalOptions },
+            ctx
+          );
+          expect(result, label).toEqual({ content: error, isError: true });
+          expect(storage.saveMinionMessage, label).not.toHaveBeenCalled();
+          expect(storage.saveMinionChat, label).not.toHaveBeenCalledWith(
+            expect.objectContaining({ id: chat.id })
+          );
+          expect(mockStorageData.minionMessages.get(chat.id), label).toEqual(messages);
+          expect(mockStorageData.minionChats.get(chat.id), label).toMatchObject({
+            savepoint: 'msg_asst_rb1',
+            totalInputTokens: 200,
+            totalOutputTokens: 100,
+            totalCost: 0.005,
+          });
+        }
+      }
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(storage.deleteMessageAndAfter).not.toHaveBeenCalled();
+      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+    });
+
+    it('keeps errors that change nothing in plain prose, without the chat id or a token, in either format', async () => {
+      const listed: ToolOptions = { ...toolOptions, ...listedModels };
+      reply('Ready');
+      const setup = await run({ message: 'Set up', outputFormat: 'json' }, listed);
+      const { minionChatId: id, continueToken: a } = JSON.parse(setup.content);
+      expect(mockStorageData.minionChats.get(id)?.outputFormat).toBe('json');
+      vi.mocked(storage.saveMinionChat).mockClear();
+      vi.mocked(storage.saveMinionMessage).mockClear();
+
+      const refusals: Array<[Record<string, unknown>, ToolOptions, ToolContext, string]> = [
+        [
+          { minionChatId: id, message: 'Go', enabledTools: ['nope'] },
+          listed,
+          context,
+          unknownToolError,
+        ],
+        [
+          { minionChatId: 'minion_gone', message: 'Go' },
+          listed,
+          context,
+          'Error: Minion chat not found: minion_gone. Resend to reattempt.',
+        ],
+        [
+          { minionChatId: `${a}@minion_gone`, message: 'Go' },
+          listed,
+          context,
+          'Error: Minion chat not found: minion_gone. Resend to reattempt.',
+        ],
+        [
+          { action: 'retry', minionChatId: id },
+          listed,
+          context,
+          'Error: No messages after savepoint to retry. Resend to reattempt.',
+        ],
+        [
+          { minionChatId: id, message: 'Go', enableWeb: true },
+          listed,
+          context,
+          'Error: Web search is not allowed for minions. Enable "Allow Web Search" in minion tool options. Resend to reattempt.',
+        ],
+        [
+          { minionChatId: id, message: 'Go', model: 'api_test:claude-3-opus' },
+          listed,
+          context,
+          unlistedModelError,
+        ],
+        [
+          { minionChatId: id, message: 'Go', model: 'api_test:claude-3-opus' },
+          toolOptions,
+          context,
+          'Error: model parameter provided but no models list configured. Resend to reattempt.',
+        ],
+        [
+          { minionChatId: `${a}@${id}`, message: 'Go', injectFiles: ['/gone.md'] },
+          listed,
+          { ...context, createVfsAdapter: missingFilesFactory },
+          'Error: Failed to read injected file(s):\n/gone.md: Path not found: /gone.md\nFix the paths and resend.',
+        ],
+      ];
+      for (const [input, options, ctx, error] of refusals) {
+        for (const outputFormat of [undefined, 'text', 'json']) {
+          const result = await run({ ...input, outputFormat }, options, ctx);
+          expect(result, `${error} (${outputFormat})`).toEqual({ content: error, isError: true });
+        }
+      }
+      expect(transcript(id)).toEqual(['Set up', 'Ready']);
+      expect(storage.saveMinionChat).not.toHaveBeenCalled();
+      expect(storage.saveMinionMessage).not.toHaveBeenCalled();
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(apiService.sendMessageStream).toHaveBeenCalledOnce();
+    });
+
+    it('names a new chat whose first run fails, with or without tokens and in either format, and retry with that id works', async () => {
+      const error = 'Minion ended unexpectedly (max_tokens)';
+      const modes: Array<[ToolOptions, boolean]> = [
+        [{ model }, false],
+        [toolOptions, true],
+        [{ ...toolOptions, autoRollback: true }, false],
+      ];
+      for (const [options, errorCarriesToken] of modes) {
+        for (const outputFormat of ['text', 'json']) {
+          reply('Trunc', 'max_tokens');
+          const failed = await run({ message: 'Summarize', outputFormat }, options);
+          const id = [...mockStorageData.minionChats.keys()].at(-1)!;
+          expect(transcript(id)).toEqual(['Summarize', 'Trunc']);
+          const token = errorCarriesToken ? continueTokenFor(tailId(id)) : undefined;
+          expect(failed).toMatchObject({
+            isError: true,
+            content:
+              outputFormat === 'json'
+                ? JSON.stringify({
+                    error,
+                    minionChatId: id,
+                    ...(token ? { continueToken: token } : {}),
+                  })
+                : `${error}\n<minionChatId>${id}</minionChatId>${token ? `\n<continueToken>${token}</continueToken>` : ''}`,
+          });
+          const firstMessageId = mockStorageData.minionMessages.get(id)![0].id;
+
+          reply('Summary');
+          const retried = await run({ action: 'retry', minionChatId: id }, options);
+          expect(retried.isError).toBeUndefined();
+          expect(lastSentUserText()).toBe('Summarize');
+          expect(storage.deleteMessageAndAfter).toHaveBeenLastCalledWith(id, firstMessageId);
+          expect(transcript(id)).toEqual(['Summarize', 'Summary']);
+          expect(JSON.parse(retried.content)).toEqual({
+            stopReason: 'end_turn',
+            hasCoT: false,
+            minionChatId: id,
+            ...(options.continueTokens === true
+              ? { continueToken: continueTokenFor(tailId(id)) }
+              : {}),
+            text: 'Summary',
+          });
+        }
+      }
+    });
+
+    it('refuses a bad token call before touching the chat', async () => {
+      const { chat, messages } = seedChat(
+        'minion_tok',
+        [
+          ['user', 'tku1', 'First'],
+          ['assistant', 'tka1', 'Ok'],
+          ['user', 'dup1xxxxA', 'Second'],
+          ['assistant', 'dup1xxxxB', 'Ok again'],
+        ],
+        { savepoint: 'msg_asst_dup1xxxxB' }
+      );
+      const chatBefore = { ...chat };
+      const cases: Array<[Record<string, unknown>, ToolOptions, string]> = [
+        [
+          { minionChatId: `tka1@${chat.id}`, message: 'Again' },
+          { model },
+          'Error: Continue tokens are not enabled, so minionChatId takes a bare minion chat id',
+        ],
+        [
+          { minionChatId: 'tka1@', message: 'Again' },
+          toolOptions,
+          'Error: A continue token needs the minion chat id after the "@"',
+        ],
+        [
+          { action: 'retry', minionChatId: `tka1@${chat.id}` },
+          toolOptions,
+          'Error: action "retry" cannot be combined with a continue token',
+        ],
+        [
+          { minionChatId: `tka1@${chat.id}` },
+          toolOptions,
+          'Error: "message" (or injectFiles / injectFilesAfter) is required with a continue token',
+        ],
+        [
+          { minionChatId: `tka1@${chat.id}`, injectFiles: [] },
+          { ...toolOptions, autoRollback: true },
+          'Error: "message" (or injectFiles / injectFilesAfter) is required with a continue token',
+        ],
+        [
+          { minionChatId: `zzzz@${chat.id}`, message: 'Again' },
+          toolOptions,
+          'Error: Continue token "zzzz" is not in minion chat minion_tok',
+        ],
+        [
+          { minionChatId: `@${chat.id}`, message: 'Again' },
+          toolOptions,
+          'Error: Continue token "" is not in minion chat minion_tok',
+        ],
+        // Two messages share the token: ambiguous counts as not found.
+        [
+          { minionChatId: `dup1xxxx@${chat.id}`, message: 'Again' },
+          toolOptions,
+          'Error: Continue token "dup1xxxx" is not in minion chat minion_tok',
+        ],
+      ];
+      for (const [input, options, problem] of cases) {
+        const result = await run(input, options);
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain(problem);
+        expect(result.content).toMatch(/Resend to reattempt\.$/);
+      }
+      expect(storage.saveMinionChat).not.toHaveBeenCalled();
+      expect(storage.saveMinionMessage).not.toHaveBeenCalled();
+      expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+      expect(storage.deleteMessageAndAfter).not.toHaveBeenCalled();
+      expect(mockStorageData.minionMessages.get(chat.id)).toEqual(messages);
+      expect(mockStorageData.minionChats.get(chat.id)).toEqual(chatBefore);
+      expect(mockStorageData.minionChats.get(chat.id)?.savepoint).toBe('msg_asst_dup1xxxxB');
+      expect(apiService.sendMessageStream).not.toHaveBeenCalled();
+    });
+
+    it("answers a token whose message ended on a return call with that call's tool_result", async () => {
+      const returnCall = {
+        type: 'tool_use' as const,
+        id: 'toolu_ret',
+        name: 'return',
+        input: { result: 'draft' },
+      };
+      const { chat } = seedChat(
+        'minion_tok_return',
+        [
+          ['user', 'ret0', 'Draft it'],
+          ['assistant', 'ret1', ''],
+          ['user', 'ret2', ''],
+          ['assistant', 'ret3', 'Polished'],
+        ],
+        { savepoint: 'msg_asst_ret3' }
+      );
+      mockStorageData.minionMessages.get(chat.id)![1].content.fullContent = [returnCall];
+      vi.mocked(apiService.extractToolUseBlocks).mockImplementation((_apiType, fullContent) =>
+        Array.isArray(fullContent) && fullContent.includes(returnCall) ? [returnCall] : []
+      );
+
+      reply('Redone');
+      const result = await run({ minionChatId: `ret1@${chat.id}`, message: 'Shorter, please' });
+      expect(result.isError).toBeUndefined();
+      expect(storage.deleteMessagesAfter).toHaveBeenCalledWith(chat.id, 'msg_asst_ret1');
+      const saved = mockStorageData.minionMessages.get(chat.id)!;
+      expect(saved.map(m => m.id).slice(0, 2)).toEqual(['msg_user_ret0', 'msg_asst_ret1']);
+      expect(saved).toHaveLength(4);
+      expect(saved[2].role).toBe('user');
+      expect(saved[2].content.content).toBe('');
+      expect(saved[2].content.toolResults).toEqual([
+        expect.objectContaining({ tool_use_id: 'toolu_ret', content: 'Shorter, please' }),
+      ]);
+      expect(saved[3].content.content).toBe('Redone');
+      // The model gets the tool_result as the turn after its return call.
+      const sent = lastSent()[0] as Message<unknown>[];
+      expect(sent.map(m => m.id).slice(0, 2)).toEqual(['msg_user_ret0', 'msg_asst_ret1']);
+      expect(sent).toHaveLength(3);
+      expect(sent[2].content.toolResults).toEqual([
+        expect.objectContaining({ tool_use_id: 'toolu_ret', content: 'Shorter, please' }),
+      ]);
+    });
+
+    describe('claude-agent session', () => {
+      const stampedChat = (savepoint: string, over: Partial<MinionChat> = {}) => {
+        const apiDef = mockStorageData.apiDefinitions.get('api_test')!;
+        mockStorageData.apiDefinitions.set('api_test', { ...apiDef, apiType: 'claude-agent' });
+        const seeded = seedChat(
+          'minion_tok_ca',
+          [
+            ['user', 'ca0', 'First'],
+            ['assistant', 'ca1', 'One'],
+            ['user', 'ca2', 'Second'],
+            ['assistant', 'ca3', 'Two'],
+          ],
+          { savepoint, claudeAgentSessionId: 'sess-1', ...over }
+        );
+        const stored = mockStorageData.minionMessages.get(seeded.chat.id)!;
+        stored[1].metadata = { claudeAgentMessageUuid: 'uuid-1', claudeAgentSessionId: 'sess-1' };
+        stored[3].metadata = { claudeAgentMessageUuid: 'uuid-3', claudeAgentSessionId: 'sess-1' };
+        return seeded.chat;
+      };
+
+      it('rewinds the session to the token on a rollback', async () => {
+        const chat = stampedChat('msg_asst_ca3');
+        reply('One again');
+        const result = await run({ minionChatId: `ca1@${chat.id}`, message: 'Second, again' });
+        expect(result.isError).toBeUndefined();
+        expect(lastSent()[3]).toMatchObject({
+          claudeAgentSessionId: 'sess-1',
+          claudeAgentResumeAt: 'uuid-1',
+        });
+      });
+
+      it('leaves the session where it was when a token call fails validation', async () => {
+        const chat = stampedChat('msg_asst_ca3');
+        const listed: ToolOptions = { ...toolOptions, ...listedModels };
+        const refused = await run(
+          {
+            minionChatId: `ca1@${chat.id}`,
+            message: 'Second, again',
+            model: 'api_test:claude-3-opus',
+          },
+          listed
+        );
+        expect(refused).toEqual({ content: unlistedModelError, isError: true });
+        expect(mockStorageData.minionChats.get(chat.id)).toMatchObject({
+          savepoint: 'msg_asst_ca3',
+          claudeAgentSessionId: 'sess-1',
+        });
+        expect(mockStorageData.minionChats.get(chat.id)?.claudeAgentResumeAt).toBeUndefined();
+        expect(transcript(chat.id)).toEqual(['First', 'One', 'Second', 'Two']);
+        expect(storage.saveMinionChat).not.toHaveBeenCalled();
+        expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+
+        reply('One again');
+        await run({ minionChatId: `ca1@${chat.id}`, message: 'Second, again' }, listed);
+        expect(lastSent()[3]).toMatchObject({
+          claudeAgentSessionId: 'sess-1',
+          claudeAgentResumeAt: 'uuid-1',
+        });
+      });
+
+      it('rewinds to the last assistant turn at or before the token, before the send', async () => {
+        // A user-message token (an error token can name one) resumes at the turn
+        // before it; with no assistant turn before it, the session is dropped.
+        const cases: Array<[token: string, pointId: string, anchor: string | undefined]> = [
+          ['ca2', 'msg_user_ca2', 'uuid-1'],
+          ['ca0', 'msg_user_ca0', undefined],
+        ];
+        for (const [token, pointId, anchor] of cases) {
+          const chat = stampedChat('msg_asst_ca3');
+          const atSend = replyObserving(chat.id, 'Again');
+          const result = await run({ minionChatId: `${token}@${chat.id}`, message: 'Redo' });
+          expect(result.isError).toBeUndefined();
+          expect(storage.deleteMessagesAfter).toHaveBeenLastCalledWith(chat.id, pointId);
+          expect(atSend.chat?.savepoint).toBe(pointId);
+          expect(atSend.chat?.claudeAgentResumeAt).toBe(anchor);
+          expect(atSend.chat?.claudeAgentSessionId).toBe(anchor && 'sess-1');
+          expect(lastSent()[3].claudeAgentResumeAt).toBe(anchor);
+          expect(lastSent()[3].claudeAgentSessionId).toBe(anchor && 'sess-1');
+        }
+      });
+
+      it('resumes at the token again when a failed run rewound the session past it', async () => {
+        // The failed second turn rewound the session to the savepoint's turn.
+        const chat = stampedChat('msg_asst_ca1', { claudeAgentResumeAt: 'uuid-1' });
+        reply('Three');
+        const result = await run({ minionChatId: `ca3@${chat.id}`, message: 'Go on' });
+        expect(result.isError).toBeUndefined();
+        expect(storage.deleteMessagesAfter).not.toHaveBeenCalled();
+        expect(lastSent()[3]).toMatchObject({
+          claudeAgentSessionId: 'sess-1',
+          claudeAgentResumeAt: 'uuid-3',
+        });
+      });
+    });
+
+    describe('verifyFeedback', () => {
+      const options: ToolOptions = { ...toolOptions, verifyFeedback: true };
+      const note = '[Previous attempt was rejected by verification: too short]';
+
+      it('carries the rejection reason when the token is the savepoint and the message is resent', async () => {
+        const { chat } = seedChat(
+          'minion_tok_vf',
+          [
+            ['user', 'vf0', 'First'],
+            ['assistant', 'vf1', 'Ok'],
+            ['user', 'vf2', 'Check it'],
+            ['assistant', 'vf3', 'Rejected'],
+          ],
+          { savepoint: 'msg_asst_vf1', pendingVerifyFeedback: 'too short' }
+        );
+        reply('Better');
+        await run({ minionChatId: `vf1@${chat.id}`, message: 'Check it' }, options);
+        expect(lastSentUserText()).toBe(`Check it\n\n${note}`);
+      });
+
+      it('drops a rejection reason that judged another branch', async () => {
+        const { chat } = seedChat(
+          'minion_tok_vf_branch',
+          [
+            ['user', 'vf0', 'First'],
+            ['assistant', 'vf1', 'Ok'],
+            ['user', 'vf2', 'Second'],
+            ['assistant', 'vf3', 'Ok again'],
+            ['user', 'vf4', 'Check it'],
+            ['assistant', 'vf5', 'Rejected'],
+          ],
+          { savepoint: 'msg_asst_vf3', pendingVerifyFeedback: 'too short' }
+        );
+        // A resend of the first dropped message, but the reason was about vf4.
+        reply('Second answer', 'max_tokens');
+        await run({ minionChatId: `vf1@${chat.id}`, message: 'Second' }, options);
+        expect(lastSentUserText()).toBe('Second');
+        expect(mockStorageData.minionChats.get(chat.id)?.pendingVerifyFeedback).toBeUndefined();
+        expect(storage.saveMinionChat).toHaveBeenCalled();
+      });
+
+      it('after a real hook rejection, resends from the savepoint with the reason and from earlier without it', async () => {
+        const hookCode =
+          "return function (messages) { return messages.some(m => m.text === 'Too short') ? 'too short' : null; };";
+        const hookContext: ToolContext = {
+          ...context,
+          createVfsAdapter: () =>
+            ({
+              readFile: vi.fn((path: string) =>
+                path === '/hooks/check.js'
+                  ? Promise.resolve(hookCode)
+                  : Promise.reject(new Error('ENOENT'))
+              ),
+            }) as unknown as VfsAdapter,
+        };
+        reply('Ready');
+        const setup = await run({ message: 'Set up', verifyHook: 'check' }, options, hookContext);
+        const { minionChatId: id, continueToken: a } = JSON.parse(setup.content);
+        const setupTail = tailId(id);
+
+        reply('Too short');
+        const rejected = await run({ minionChatId: id, message: 'Write it' }, options, hookContext);
+        expect(rejected.content).toBe(
+          `Verify hook rejected: too short\n<minionChatId>${id}</minionChatId>\n<continueToken>${continueTokenFor(tailId(id))}</continueToken>`
+        );
+        expect(mockStorageData.minionChats.get(id)).toMatchObject({
+          savepoint: setupTail,
+          pendingVerifyFeedback: 'too short',
+        });
+
+        // The token is the savepoint: the exact rejected message is a true retry.
+        reply('A full answer');
+        const resent = await run(
+          { minionChatId: `${a}@${id}`, message: 'Write it' },
+          options,
+          hookContext
+        );
+        expect(resent.isError).toBeUndefined();
+        expect(lastSentUserText()).toBe(`Write it\n\n${note}`);
+        expect(transcript(id)).toEqual(['Set up', 'Ready', `Write it\n\n${note}`, 'A full answer']);
+        expect(mockStorageData.minionChats.get(id)?.pendingVerifyFeedback).toBeUndefined();
+
+        reply('Too short');
+        await run({ minionChatId: id, message: 'Polish it' }, options, hookContext);
+        expect(mockStorageData.minionChats.get(id)?.pendingVerifyFeedback).toBe('too short');
+
+        // Still a true retry of the first dropped message, but the reason
+        // judged "Polish it", on the branch this token drops.
+        reply('Fine');
+        await run({ minionChatId: `${a}@${id}`, message: 'Write it' }, options, hookContext);
+        expect(lastSentUserText()).toBe('Write it');
+        expect(transcript(id)).toEqual(['Set up', 'Ready', 'Write it', 'Fine']);
+        expect(mockStorageData.minionChats.get(id)?.pendingVerifyFeedback).toBeUndefined();
+      });
+    });
+
+    describe('stashed content', () => {
+      function seedInjectedChat() {
+        const { chat } = seedChat(
+          'minion_tok_stash',
+          [
+            ['user', 'st0', 'First'],
+            ['assistant', 'st1', 'ok'],
+            ['user', 'st2', 'analyze'],
+            ['assistant', 'st3', 'truncated answ'],
+          ],
+          { savepoint: 'msg_asst_st1', fileInjectionMode: 'separate-block' }
+        );
+        Object.assign(mockStorageData.minionMessages.get(chat.id)![2].content, {
+          renderingContent: [{ category: 'text', blocks: [{ type: 'text', text: 'analyze' }] }],
+          injectedFiles: [{ path: '/f.ts', content: 'const x = 1;' }],
+          injectionMode: 'separate-block',
+          modelFamily: 'anthropic',
+        });
+        return chat;
+      }
+      const lastSentUser = () =>
+        (lastSent()[0] as Message<unknown>[]).filter(m => m.role === 'user').pop()!.content as {
+          content: string;
+          injectedFiles?: unknown;
+        };
+
+      it('reuses the dropped message when the token resends it', async () => {
+        const chat = seedInjectedChat();
+        reply('Analysis');
+        await run({ minionChatId: `st1@${chat.id}`, message: 'analyze' });
+        expect(lastSentUser()).toMatchObject({
+          content: 'analyze',
+          injectedFiles: [{ path: '/f.ts', content: 'const x = 1;' }],
+        });
+      });
+
+      it('builds a different message fresh', async () => {
+        const chat = seedInjectedChat();
+        reply('Summary');
+        await run({ minionChatId: `st1@${chat.id}`, message: 'summarize instead' });
+        expect(lastSentUser().content).toBe('summarize instead');
+        expect(lastSentUser().injectedFiles).toBeUndefined();
+      });
+    });
+
+    it('keeps the settings a failed call changed, so a token resend runs with them', async () => {
+      const { minionChatId: id, continueToken: a } = await setUp();
+      vi.mocked(storage.saveMinionChat).mockClear();
+      reply('Trunc', 'max_tokens');
+      await run({ minionChatId: id, message: 'Task 2', temperature: 0.3 });
+      // Saved before the run, not only on success.
+      expect(storage.saveMinionChat).toHaveBeenCalledWith(
+        expect.objectContaining({ id, temperature: 0.3 })
+      );
+
+      reply('Task 2 done');
+      await run({ minionChatId: `${a}@${id}`, message: 'Task 2' });
+      expect(lastSent()[3]).toMatchObject({ temperature: 0.3 });
+    });
+
+    it('keeps the settings a dropped task set, since a token restores the transcript only', async () => {
+      const returnOnly: ToolOptions = { ...toolOptions, returnMode: 'return-only' };
+      reply('Ready');
+      const setup = await run({ message: 'Set up' }, returnOnly);
+      const id = [...mockStorageData.minionChats.keys()].at(-1)!;
+      const a = continueTokenFor(tailId(id));
+      expect(setup.content).toBe(
+        `<minionChatId>${id}</minionChatId>\n<continueToken>${a}</continueToken>\nReady`
+      );
+      expect(lastSent()[3].enabledTools).toEqual(['return']);
+
+      reply('Task 1 done');
+      await run(
+        {
+          minionChatId: `${a}@${id}`,
+          message: 'Task 1',
+          enabledTools: ['memory'],
+          outputFormat: 'json',
+        },
+        returnOnly
+      );
+
+      reply('Task 2 done');
+      const task2 = await run({ minionChatId: `${a}@${id}`, message: 'Task 2' }, returnOnly);
+      expect(transcript(id)).toEqual(['Set up', 'Ready', 'Task 2', 'Task 2 done']);
+      expect([...lastSent()[3].enabledTools!].sort()).toEqual(['memory', 'return']);
+      expect(task2.content).toBe(
+        JSON.stringify({
+          minionChatId: id,
+          continueToken: continueTokenFor(tailId(id)),
+          stopReason: 'end_turn',
+          hasCoT: false,
+          text: 'Task 2 done',
+        })
+      );
+      expect(mockStorageData.minionChats.get(id)).toMatchObject({
+        enabledTools: ['memory'],
+        outputFormat: 'json',
+      });
     });
   });
 

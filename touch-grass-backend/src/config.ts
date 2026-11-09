@@ -15,7 +15,10 @@ export interface Config {
   corsOrigins: CorsOrigins;
   dbPath: string;
   apiPassword: string;
+  /** The admin's password; users have their own, stored hashed in the database. */
   webPassword: string;
+  /** Sign-in name of the admin, the one web principal that sees every session. */
+  webAdminUsername: string;
   /** Upper bound on a single long-poll hold, in ms. */
   pollTimeoutMs: number;
   trustProxy: TrustProxySetting;
@@ -32,6 +35,8 @@ export class ConfigError extends Error {
 /** The value older `.env.example` files shipped; treated as unset. */
 const PLACEHOLDER_PASSWORD = 'change-me';
 const DEFAULT_DB_PATH = './data/touch-grass.db';
+const DEFAULT_ADMIN_USERNAME = 'Admin';
+const MAX_ADMIN_USERNAME_LENGTH = 64;
 const MIN_POLL_TIMEOUT_MS = 1000;
 /** setTimeout's ceiling (2^31 - 1); Node fires anything longer after 1 ms. */
 const MAX_POLL_TIMEOUT_MS = 2_147_483_647;
@@ -60,6 +65,22 @@ function readPassword(env: Env, name: string): string {
     throw new ConfigError(`${name} is still the '${PLACEHOLDER_PASSWORD}' placeholder. ${hint}`);
   }
   return value;
+}
+
+function readAdminUsername(env: Env): string {
+  const name = env.WEB_ADMIN_USERNAME?.trim() ?? '';
+  if (name === '') {
+    return DEFAULT_ADMIN_USERNAME;
+  }
+  if (Array.from(name).length > MAX_ADMIN_USERNAME_LENGTH) {
+    throw new ConfigError(
+      `WEB_ADMIN_USERNAME must be at most ${MAX_ADMIN_USERNAME_LENGTH} characters`
+    );
+  }
+  if (/\p{Cc}/u.test(name)) {
+    throw new ConfigError('WEB_ADMIN_USERNAME must not contain control characters');
+  }
+  return name;
 }
 
 function readInteger(
@@ -163,6 +184,7 @@ export function parseConfig(env: Env): Config {
     dbPath: env.DB_PATH || DEFAULT_DB_PATH,
     apiPassword: readPassword(env, 'API_PASSWORD'),
     webPassword: readPassword(env, 'WEB_PASSWORD'),
+    webAdminUsername: readAdminUsername(env),
     pollTimeoutMs: readInteger(env, 'POLL_TIMEOUT_MS', 30000, {
       min: MIN_POLL_TIMEOUT_MS,
       max: MAX_POLL_TIMEOUT_MS,

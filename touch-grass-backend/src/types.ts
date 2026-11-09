@@ -2,6 +2,11 @@ export interface Session {
   id: string;
   callerId: string;
   displayName: string | null;
+  /**
+   * Token of the user whose inbox shows this session; null = admin only (created without a token,
+   * or its user was deleted). Internal: the API never echoes it back.
+   */
+  userToken: string | null;
   createdAt: string;
   lastActivityAt: string;
 }
@@ -56,4 +61,39 @@ export interface PendingSummary {
 
 export interface SessionListEntry extends Session {
   pending: PendingSummary | null;
+  /** Username of the session's owner; null when the session has no token. */
+  ownerUsername: string | null;
+}
+
+/** Which sessions a web viewer may see: the admin sees all, a user only those with their token. */
+export type SessionScope = { kind: 'all' } | { kind: 'user'; token: string };
+
+export interface User {
+  /** 32 hex characters. */
+  id: string;
+  /** Unique regardless of letter case. */
+  username: string;
+  /** `scrypt$N$r$p$<salt>$<hash>`, see passwords.ts. */
+  passwordHash: string;
+  /** Routes sessions to this user (`userToken` on session creation); authenticates nothing. */
+  token: string;
+  createdAt: string;
+}
+
+/** Live counts over retained sessions, so they drop when retention deletes sessions. */
+export interface UserStats {
+  sessions: number;
+  aiMessages: number;
+  humanReplies: number;
+  /** Questions still waiting for an answer. */
+  pending: number;
+  /** Newest activity across the sessions; null without any. */
+  lastActivityAt: string | null;
+}
+
+export interface UserStatsReport {
+  /** Every user, ordered by username regardless of case; a user without sessions has zeros. */
+  users: Array<{ user: User; stats: UserStats }>;
+  /** Sessions without an owner, which only the admin sees. */
+  noToken: UserStats;
 }

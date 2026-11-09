@@ -1230,6 +1230,14 @@ export interface ClientSideTool {
 }
 
 // Minion Chat types
+
+/**
+ * How a minion tool result is shaped for the caller: 'text' is the
+ * `<minionChatId>` tag line plus the body, 'json' one object with the keys of
+ * returnMode 'both'.
+ */
+export type MinionOutputFormat = 'text' | 'json';
+
 export interface MinionChat {
   id: string;
   parentChatId: string; // The main chat that spawned this minion
@@ -1244,7 +1252,7 @@ export interface MinionChat {
   totalCost?: number;
   contextWindowUsage?: number;
   costUnreliable?: boolean;
-  /** Last message ID of the last successful run (for rollback on retry) */
+  /** Last message ID of the last successful run, or the message a continue token rolled back to (for rollback on retry) */
   savepoint?: string;
   /** Display name set by the LLM for UI labeling */
   displayName?: string;
@@ -1291,12 +1299,25 @@ export interface MinionChat {
   /** Override: prune thinking blocks client-side before the API call. */
   pruneThinkingBeforeApiCall?: boolean;
   /**
+   * Result shape the caller asked for (persisted for continuation). Remote
+   * chats keep it too, since it shapes what the caller reads, not what the
+   * minion sees. returnMode 'both' results ignore it.
+   */
+  outputFormat?: MinionOutputFormat;
+  /**
    * Human-operated minion (Touch Grass). Set at creation and never flipped:
    * routing follows the chat, so a continuation that omits `remote` stays remote.
    */
   remote?: boolean;
   /** Remote session ID for touch-grass backend (human delegation) */
   remoteSessionId?: string;
+  /**
+   * Touch Grass user token the remote session is created for (`userToken`, API
+   * 2.2), so it lands in that user's inbox. Set when the remote chat is created;
+   * changes only while `remoteSessionId` is unset, because an existing session
+   * already belongs to one inbox. Routes, doesn't authenticate.
+   */
+  remoteToken?: string;
   /** Claude Agent SDK session ID (UUID v4). Set on first claude-agent turn. */
   claudeAgentSessionId?: string;
   /** SDK assistant UUID to rewind to on next minion send. Cleared after consumption. */

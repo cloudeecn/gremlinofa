@@ -1,8 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import crypto from 'crypto';
+import { CookieJar } from 'jsdom';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../src/config.js';
 import * as db from '../src/db.js';
 import { AUTH_FAILURE_LIMIT } from '../src/middleware.js';
-import { deriveCookieKey, signWebCookie, WEB_COOKIE_NAME } from '../src/webAuth.js';
+import { generateUserToken, hashPassword } from '../src/passwords.js';
+import type { User } from '../src/types.js';
+import {
+  adminBinding,
+  deriveCookieKey,
+  signWebCookie,
+  userBinding,
+  WEB_COOKIE_NAME,
+} from '../src/webAuth.js';
 import { makeCaller, startTestServer, type TestServer } from './helpers.js';
 
 const EXPECTED_CSP =
@@ -11,6 +21,17 @@ const EXPECTED_CSP =
 
 /** Where a reverse proxy mounts the backend in the URL-resolution checks. */
 const PROXIED_BASE = 'https://proxy.example/grass';
+
+const ADMIN_FORM = { username: config.webAdminUsername, password: config.webPassword };
+const WRONG_ADMIN_FORM = { ...ADMIN_FORM, password: 'nope' };
+
+/** Every test user gets this password; hashing it once keeps the suite fast. */
+const USER_PASSWORD = 'grass-is-greener';
+let userPasswordHash: string;
+
+beforeAll(async () => {
+  userPasswordHash = await hashPassword(USER_PASSWORD);
+});
 
 let server: TestServer;
 let api: ReturnType<typeof makeCaller>;
@@ -56,10 +77,37 @@ function cookiePair(res: Response): string {
   return header!.split(';')[0];
 }
 
-async function login(): Promise<string> {
-  const res = await web('/web/login', { form: { password: config.webPassword } });
+async function login(form: Record<string, string> = ADMIN_FORM): Promise<string> {
+  const res = await web('/web/login', { form });
   expect(res.status).toBe(303);
   return cookiePair(res);
+}
+
+function addUser(username: string): User {
+  const user = db.createUser({
+    id: crypto.randomBytes(16).toString('hex'),
+    username,
+    passwordHash: userPasswordHash,
+    token: generateUserToken(),
+  });
+  if (!user) throw new Error(`username ${username} is taken`);
+  return user;
+}
+
+/** A cookie for `user` as it is now, signed directly: a real login costs a scrypt. */
+function cookieFor(user: User): string {
+  const token = signWebCookie(
+    deriveCookieKey(config.webPassword),
+    user.id,
+    userBinding(user.passwordHash),
+    Date.now() + 60_000
+  );
+  return `${WEB_COOKIE_NAME}=${token}`;
+}
+
+/** The status of the session list for `cookie`: 200 signed in, 303 sent to the login page. */
+async function listStatus(cookie: string): Promise<number> {
+  return (await web('/web/', { cookie })).status;
 }
 
 /**
@@ -74,8 +122,8 @@ function proxiedLocation(res: Response, requestPath: string): string {
   return resolved.pathname + resolved.search;
 }
 
-async function createSession(displayName = 'Deploy check'): Promise<string> {
-  const res = await api('/api/sessions', { method: 'POST', body: { displayName } });
+async function createSession(displayName = 'Deploy check', userToken?: string): Promise<string> {
+  const res = await api('/api/sessions', { method: 'POST', body: { displayName, userToken } });
   expect(res.status).toBe(201);
   return ((await res.json()) as { sessionId: string }).sessionId;
 }
@@ -126,16 +174,17 @@ describe('login', () => {
     expect(html).toContain('href="./static/style.css"');
     expect(html).toContain('src="./static/app.js"');
     expect(html).toContain('action="./login"');
+    expect(html).toMatch(/<label for="username" class="visually-hidden">/);
     expect(html).toMatch(/<label for="password" class="visually-hidden">/);
   });
 
   it('sets a signed cookie with no Path and no Secure over plain http', async () => {
-    const res = await web('/web/login', { form: { password: config.webPassword } });
+    const res = await web('/web/login', { form: ADMIN_FORM });
     expect(res.status).toBe(303);
     expect(proxiedLocation(res, '/web/login')).toBe('/grass/web/');
     const [setCookie] = res.headers.getSetCookie();
     expect(setCookie).toMatch(
-      /^tg_auth=v1\.\d+\.[A-Za-z0-9_-]{43}; Max-Age=604800; HttpOnly; SameSite=Strict$/
+      /^tg_auth=v2\.admin\.\d+\.[A-Za-z0-9_-]{43}; Max-Age=604800; HttpOnly; SameSite=Strict$/
     );
   });
 
@@ -146,10 +195,10 @@ describe('login', () => {
   });
 
   it('answers a wrong password with 401 and no cookie', async () => {
-    const res = await web('/web/login', { form: { password: 'nope' } });
+    const res = await web('/web/login', { form: WRONG_ADMIN_FORM });
     expect(res.status).toBe(401);
     expect(res.headers.getSetCookie()).toEqual([]);
-    expect(await res.text()).toContain('Wrong password.');
+    expect(await res.text()).toContain('Wrong username or password.');
   });
 
   it.each([
@@ -159,8 +208,11 @@ describe('login', () => {
     ['https://evil.example/', '/grass/web/'],
     ['sessions/../logout', '/grass/web/'],
     ['sessions/XYZ', '/grass/web/'],
-  ])('only follows next=%j when it is a session path', async (next, expected) => {
-    const res = await web('/web/login', { form: { password: config.webPassword, next } });
+    ['account', '/grass/web/account'],
+    ['admin', '/grass/web/admin'],
+    ['admin/users', '/grass/web/'],
+  ])('only follows next=%j when it is a page of this UI', async (next, expected) => {
+    const res = await web('/web/login', { form: { ...ADMIN_FORM, next } });
     expect(res.status).toBe(303);
     expect(proxiedLocation(res, '/web/login')).toBe(expected);
   });
@@ -174,29 +226,29 @@ describe('login', () => {
 
   it('locks a client out with a 429 page after five wrong passwords, and resets on success', async () => {
     for (let attempt = 1; attempt <= 4; attempt++) {
-      expect((await web('/web/login', { form: { password: 'nope' } })).status).toBe(401);
+      expect((await web('/web/login', { form: WRONG_ADMIN_FORM })).status).toBe(401);
     }
-    const locked = await web('/web/login', { form: { password: 'nope' } });
+    const locked = await web('/web/login', { form: WRONG_ADMIN_FORM });
     expect(locked.status).toBe(429);
     expect(locked.headers.get('retry-after')).toBe('1');
     expect(await locked.text()).toContain('Wait 1 second before trying again');
 
     // Even the right password waits out the lock.
-    const stillLocked = await web('/web/login', { form: { password: config.webPassword } });
+    const stillLocked = await web('/web/login', { form: ADMIN_FORM });
     expect(stillLocked.status).toBe(429);
     expect(stillLocked.headers.getSetCookie()).toEqual([]);
 
     await new Promise(resolve => setTimeout(resolve, 1100));
-    expect((await web('/web/login', { form: { password: config.webPassword } })).status).toBe(303);
+    expect((await web('/web/login', { form: ADMIN_FORM })).status).toBe(303);
     // The success cleared the record, so the next miss is an ordinary 401 again.
-    expect((await web('/web/login', { form: { password: 'nope' } })).status).toBe(401);
+    expect((await web('/web/login', { form: WRONG_ADMIN_FORM })).status).toBe(401);
   });
 
   it('counts a whole IPv6 /64 as one client, so rotating addresses does not dodge the lock', async () => {
     await start({ trustProxy: 'loopback' });
     const fromAddress = (suffix: number, prefix = '2001:db8:1:2') =>
       web('/web/login', {
-        form: { password: 'nope' },
+        form: WRONG_ADMIN_FORM,
         headers: { 'X-Forwarded-For': `${prefix}::${suffix.toString(16)}` },
       });
     for (let attempt = 1; attempt <= 4; attempt++) {
@@ -210,14 +262,14 @@ describe('login', () => {
   it('marks the cookie Secure only behind a trusted proxy reporting https', async () => {
     const viaProxy = { 'X-Forwarded-Proto': 'https' };
     const untrusted = await web('/web/login', {
-      form: { password: config.webPassword },
+      form: ADMIN_FORM,
       headers: viaProxy,
     });
     expect(untrusted.headers.getSetCookie()[0]).not.toContain('Secure');
 
     await start({ trustProxy: 'loopback' });
     const trusted = await web('/web/login', {
-      form: { password: config.webPassword },
+      form: ADMIN_FORM,
       headers: viaProxy,
     });
     expect(trusted.headers.getSetCookie()[0]).toMatch(/; Secure$/);
@@ -250,7 +302,7 @@ describe('login', () => {
     // From the fifth miss on the backoff answers 429 itself, so only four 401s reach the cap.
     let lockouts = 0;
     for (let attempt = 0; attempt < AUTH_FAILURE_LIMIT + 5; attempt++) {
-      const res = await web('/web/login', { form: { password: 'nope' } });
+      const res = await web('/web/login', { form: WRONG_ADMIN_FORM });
       if (res.status === 429) lockouts++;
     }
     expect(lockouts).toBe(AUTH_FAILURE_LIMIT + 1);
@@ -260,6 +312,8 @@ describe('login', () => {
 
 describe('cookie verification', () => {
   const key = () => deriveCookieKey(config.webPassword);
+  const adminCookie = (expiresAtMs: number, signingKey = key(), adminName = ADMIN_FORM.username) =>
+    signWebCookie(signingKey, 'admin', adminBinding(adminName), expiresAtMs);
 
   function tamperMac(token: string): string {
     const macStart = token.lastIndexOf('.') + 1;
@@ -268,16 +322,29 @@ describe('cookie verification', () => {
   }
 
   it('accepts a cookie signed with the WEB_PASSWORD key', async () => {
-    const token = signWebCookie(key(), Date.now() + 60_000);
+    const token = adminCookie(Date.now() + 60_000);
     expect((await web('/web/', { cookie: `${WEB_COOKIE_NAME}=${token}` })).status).toBe(200);
   });
 
   it.each([
-    ['tampered MAC', () => tamperMac(signWebCookie(key(), Date.now() + 60_000))],
-    ['expired', () => signWebCookie(key(), Date.now() - 1000)],
+    ['tampered MAC', () => tamperMac(adminCookie(Date.now() + 60_000))],
+    ['expired', () => adminCookie(Date.now() - 1000)],
     [
       'signed with another password',
-      () => signWebCookie(deriveCookieKey('other'), Date.now() + 60_000),
+      () => adminCookie(Date.now() + 60_000, deriveCookieKey('other')),
+    ],
+    ['bound to another admin name', () => adminCookie(Date.now() + 60_000, key(), 'Boss')],
+    [
+      'pre-2.2 (v1)',
+      () => {
+        const payload = `v1.${Date.now() + 60_000}`;
+        const mac = crypto.createHmac('sha256', key()).update(payload).digest('base64url');
+        return `${payload}.${mac}`;
+      },
+    ],
+    [
+      'unknown user',
+      () => signWebCookie(key(), 'f'.repeat(32), userBinding('scrypt$x'), Date.now() + 60_000),
     ],
     ['garbage', () => 'not-a-token'],
   ])('rejects a %s cookie', async (_label, makeToken) => {
@@ -292,10 +359,20 @@ describe('cookie verification', () => {
     expect(await poll.json()).toEqual({ error: 'Not signed in' });
   });
 
-  it('stops accepting cookies once WEB_PASSWORD changes', async () => {
+  it('stops accepting cookies once WEB_PASSWORD changes, users included', async () => {
     const cookie = await login();
+    const userCookie = cookieFor(addUser('bob'));
     await start({ webPassword: 'a-brand-new-password' });
-    expect((await web('/web/', { cookie })).status).toBe(303);
+    expect(await listStatus(cookie)).toBe(303);
+    expect(await listStatus(userCookie)).toBe(303);
+  });
+
+  it("stops accepting the admin's cookies once WEB_ADMIN_USERNAME changes, but not its case", async () => {
+    const cookie = await login();
+    await start({ webAdminUsername: 'ADMIN' });
+    expect(await listStatus(cookie)).toBe(200);
+    await start({ webAdminUsername: 'Boss' });
+    expect(await listStatus(cookie)).toBe(303);
   });
 });
 
@@ -313,6 +390,24 @@ describe('relative redirects', () => {
     expect(res.headers.get('location')).toBe('../login?next=sessions%2F00ff');
     expect(proxiedLocation(res, '/web/sessions/00ff')).toBe(
       '/grass/web/login?next=sessions%2F00ff'
+    );
+  });
+
+  it.each([
+    ['/web/account', './login?next=account'],
+    ['/web/admin', './login?next=admin'],
+    ['/web/admin/', '../login?next=admin'],
+  ])('sends a signed-out %s to login and back', async (path, location) => {
+    const res = await web(path);
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toBe(location);
+  });
+
+  it('sends a signed-out admin form post back to the admin page after login', async () => {
+    const res = await web(`/web/admin/users/${'a'.repeat(32)}/rename`, { form: { username: 'x' } });
+    expect(res.status).toBe(303);
+    expect(proxiedLocation(res, `/web/admin/users/${'a'.repeat(32)}/rename`)).toBe(
+      '/grass/web/login?next=admin'
     );
   });
 
@@ -351,11 +446,24 @@ describe('security headers', () => {
 
   it('keeps pages free of inline script, inline style and event handlers', async () => {
     const cookie = await login();
+    const bob = addUser('bob');
+    const bobCookie = cookieFor(bob);
     const sessionId = await createSession();
     await askHuman(sessionId, { files: [{ path: 'a.txt', content: 'x' }] });
     const pages = await Promise.all(
-      ['/web/login', '/web/', `/web/sessions/${sessionId}`].map(path =>
-        web(path, { cookie }).then(res => res.text())
+      [
+        ['/web/login', cookie],
+        ['/web/', cookie],
+        [`/web/sessions/${sessionId}`, cookie],
+        ['/web/account', cookie],
+        ['/web/account?changed=1', bobCookie],
+        ['/web/admin', cookie],
+        [`/web/admin?created=${bob.id}`, cookie],
+      ].map(([path, pageCookie]) =>
+        web(path, { cookie: pageCookie }).then(res => {
+          expect(res.status).toBe(200);
+          return res.text();
+        })
       )
     );
     for (const html of pages) {
@@ -396,7 +504,7 @@ describe('static assets', () => {
 describe('cross-origin POST check', () => {
   it('refuses a POST whose Origin is another site', async () => {
     const res = await web('/web/login', {
-      form: { password: config.webPassword },
+      form: ADMIN_FORM,
       headers: { Origin: 'https://evil.example' },
     });
     expect(res.status).toBe(403);
@@ -419,7 +527,7 @@ describe('cross-origin POST check', () => {
 
   it('explains a null Origin without blaming the proxy', async () => {
     const res = await web('/web/login', {
-      form: { password: config.webPassword },
+      form: ADMIN_FORM,
       headers: { Origin: 'null' },
     });
     expect(res.status).toBe(403);
@@ -430,7 +538,7 @@ describe('cross-origin POST check', () => {
 
   it('accepts the login form as a browser sends it from the login page', async () => {
     const res = await web('/web/login', {
-      form: { password: config.webPassword },
+      form: ADMIN_FORM,
       headers: { Origin: server.baseUrl, 'Sec-Fetch-Site': 'same-origin' },
     });
     expect(res.status).toBe(303);
@@ -439,7 +547,7 @@ describe('cross-origin POST check', () => {
 
   it('accepts a same-origin POST from a browser that sends no Sec-Fetch-Site', async () => {
     const res = await web('/web/login', {
-      form: { password: config.webPassword },
+      form: ADMIN_FORM,
       headers: { Origin: server.baseUrl },
     });
     expect(res.status).toBe(303);
@@ -447,7 +555,7 @@ describe('cross-origin POST check', () => {
 
   it('goes by Sec-Fetch-Site when the browser sends it, even if a proxy rewrote Host', async () => {
     const res = await web('/web/login', {
-      form: { password: config.webPassword },
+      form: ADMIN_FORM,
       headers: { Origin: 'https://grass.example', 'Sec-Fetch-Site': 'same-origin' },
     });
     expect(res.status).toBe(303);
@@ -455,7 +563,7 @@ describe('cross-origin POST check', () => {
 
   it.each(['same-site', 'cross-site'])('refuses Sec-Fetch-Site: %s', async fetchSite => {
     const res = await web('/web/login', {
-      form: { password: config.webPassword },
+      form: ADMIN_FORM,
       headers: { Origin: 'https://other.example', 'Sec-Fetch-Site': fetchSite },
     });
     expect(res.status).toBe(403);
@@ -464,7 +572,7 @@ describe('cross-origin POST check', () => {
 
   it('trusts X-Forwarded-Host only when TRUST_PROXY trusts the proxy', async () => {
     const proxied = {
-      form: { password: config.webPassword },
+      form: ADMIN_FORM,
       headers: { Origin: 'https://grass.example', 'X-Forwarded-Host': 'grass.example' },
     };
     expect((await web('/web/login', proxied)).status).toBe(403);
@@ -839,5 +947,717 @@ describe('deleting a session', () => {
   it('lands on the list when the session is already gone', async () => {
     const res = await web('/web/sessions/00ff/delete', { method: 'POST', cookie: await login() });
     expect(res.status).toBe(303);
+  });
+});
+
+describe('signing in by username', () => {
+  it.each(['admin', 'ADMIN', '  Admin  '])('signs the admin in as %j', async username => {
+    const res = await web('/web/login', { form: { ...ADMIN_FORM, username } });
+    expect(res.status).toBe(303);
+    expect(cookiePair(res)).toMatch(/^tg_auth=v2\.admin\./);
+  });
+
+  it('signs a user in by name in any letter case', async () => {
+    const bob = addUser('bob');
+    const cookie = await login({ username: 'BOB', password: USER_PASSWORD });
+    expect(cookie).toMatch(new RegExp(`^tg_auth=v2\\.${bob.id}\\.`));
+    const html = await (await web('/web/', { cookie })).text();
+    expect(html).toContain('Signed in as <strong>bob</strong>');
+    expect(html).not.toContain('href="./admin"');
+  });
+
+  it('answers a wrong password and an unknown name alike, keeping the typed name', async () => {
+    addUser('bob');
+    for (const form of [
+      { username: 'bob', password: 'not-it' },
+      { username: 'nobody', password: USER_PASSWORD },
+      { username: 'bob', password: config.webPassword },
+    ]) {
+      const res = await web('/web/login', { form });
+      expect(res.status).toBe(401);
+      const html = await res.text();
+      expect(html).toContain('Wrong username or password.');
+      expect(html).toContain(`name="username" placeholder="Username" value="${form.username}"`);
+    }
+    const escaped = await (
+      await web('/web/login', { form: { username: '"><b>x', password: 'p' } })
+    ).text();
+    expect(escaped).toContain('value="&quot;&gt;&lt;b&gt;x"');
+  });
+
+  it("never checks the admin's name against the users table", async () => {
+    // A user created before WEB_ADMIN_USERNAME was changed to its name.
+    db.createUser({
+      id: 'b'.repeat(32),
+      username: 'Boss',
+      passwordHash: userPasswordHash,
+      token: 'tg_boss',
+    });
+    await start({ webAdminUsername: 'boss' });
+    expect(
+      (await web('/web/login', { form: { username: 'Boss', password: USER_PASSWORD } })).status
+    ).toBe(401);
+    const asAdmin = await web('/web/login', {
+      form: { username: 'Boss', password: config.webPassword },
+    });
+    expect(asAdmin.status).toBe(303);
+    expect(cookiePair(asAdmin)).toMatch(/^tg_auth=v2\.admin\./);
+  });
+
+  it.each([
+    ['admin', '/grass/web/'],
+    ['account', '/grass/web/account'],
+    ['sessions/00ff', '/grass/web/sessions/00ff'],
+  ])('sends a user who asked for next=%j to %s', async (next, expected) => {
+    addUser('bob');
+    const res = await web('/web/login', {
+      form: { username: 'bob', password: USER_PASSWORD, next },
+    });
+    expect(res.status).toBe(303);
+    expect(proxiedLocation(res, '/web/login')).toBe(expected);
+  });
+
+  it.each(['account', 'admin'])('carries next=%s through the login form', async next => {
+    const html = await (await web(`/web/login?next=${next}`)).text();
+    expect(html).toContain(`name="next" value="${next}"`);
+  });
+
+  it('answers a stored hash whose parameters OpenSSL refuses with the ordinary 401', async () => {
+    const bob = addUser('bob');
+    db.setUserPassword(bob.id, 'scrypt$131072$1$1$c2FsdA$aGFzaA');
+    const res = await web('/web/login', { form: { username: 'bob', password: USER_PASSWORD } });
+    expect(res.status).toBe(401);
+    expect(await res.text()).toContain('Wrong username or password.');
+  });
+
+  it("doesn't let a user's own sign-in reset the backoff from guesses at the admin", async () => {
+    addUser('mallory');
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      expect((await web('/web/login', { form: WRONG_ADMIN_FORM })).status).toBe(401);
+    }
+    await login({ username: 'mallory', password: USER_PASSWORD });
+    const locked = await web('/web/login', { form: WRONG_ADMIN_FORM });
+    expect(locked.status).toBe(429);
+    expect(locked.headers.get('retry-after')).toBe('1');
+  });
+
+  it('clears the backoff when the name that missed signs in, whatever its letter case', async () => {
+    addUser('bob');
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      expect(
+        (await web('/web/login', { form: { username: 'bob', password: 'typo' } })).status
+      ).toBe(401);
+    }
+    await login({ username: 'BOB', password: USER_PASSWORD });
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      expect(
+        (await web('/web/login', { form: { username: 'bob', password: 'typo' } })).status
+      ).toBe(401);
+    }
+  });
+
+  it('checks one guess at a time per client, so parallel guesses all meet the lock', async () => {
+    const scrypt = vi.spyOn(crypto, 'scrypt');
+    try {
+      const statuses = await Promise.all(
+        Array.from({ length: 10 }, () =>
+          web('/web/login', { form: WRONG_ADMIN_FORM }).then(res => res.status)
+        )
+      );
+      expect(statuses.filter(status => status === 401)).toHaveLength(4);
+      expect(statuses.filter(status => status === 429)).toHaveLength(6);
+      // The fifth guess locked the client; the five queued behind it were never checked.
+      expect(scrypt).toHaveBeenCalledTimes(5);
+    } finally {
+      scrypt.mockRestore();
+    }
+  });
+});
+
+describe('who sees which session', () => {
+  let alice: User;
+  let bob: User;
+  let aliceCookie: string;
+  let adminCookie: string;
+  let aliceSession: string;
+  let bobSession: string;
+  let orphanSession: string;
+  let aliceRequest: string;
+  let bobRequest: string;
+  let orphanRequest: string;
+
+  beforeEach(async () => {
+    alice = addUser('alice');
+    bob = addUser('bob');
+    aliceCookie = cookieFor(alice);
+    adminCookie = await login();
+    aliceSession = await createSession('Alice job', alice.token);
+    bobSession = await createSession('Bob job', bob.token);
+    orphanSession = await createSession('Nobody job');
+    aliceRequest = await askHuman(aliceSession);
+    bobRequest = await askHuman(bobSession);
+    orphanRequest = await askHuman(orphanSession);
+  });
+
+  async function listJson(cookie: string) {
+    const res = await web('/web/api/sessions', { cookie });
+    expect(res.status).toBe(200);
+    return (await res.json()) as { html: string; pendingIds: string[]; signature: string };
+  }
+
+  it('lists only their own sessions to a user, with no owner labels', async () => {
+    const page = await (await web('/web/', { cookie: aliceCookie })).text();
+    const list = await listJson(aliceCookie);
+    for (const html of [page, list.html]) {
+      expect(html).toContain('Alice job');
+      expect(html).not.toContain('Bob job');
+      expect(html).not.toContain('Nobody job');
+      expect(html).not.toContain('user: ');
+      expect(html).not.toContain('no token');
+    }
+    expect(page).toContain('<title>(1) Touch Grass</title>');
+    expect(page).toContain(`data-pending-ids="${aliceRequest}"`);
+    expect(list.pendingIds).toEqual([aliceRequest]);
+  });
+
+  it('lists every session to the admin, labelled with its owner', async () => {
+    const list = await listJson(adminCookie);
+    expect(list.pendingIds.sort()).toEqual([aliceRequest, bobRequest, orphanRequest].sort());
+    expect(list.html).toContain('caller: test-caller &middot; user: alice');
+    expect(list.html).toContain('caller: test-caller &middot; user: bob');
+    expect(list.html).toContain('caller: test-caller &middot; no token');
+    expect(list.signature).not.toBe((await listJson(aliceCookie)).signature);
+  });
+
+  it("answers another inbox's chat page exactly like a missing session", async () => {
+    const missing = await web('/web/sessions/00ff', { cookie: aliceCookie });
+    expect(missing.status).toBe(404);
+    const missingHtml = await missing.text();
+    for (const sessionId of [bobSession, orphanSession]) {
+      const res = await web(`/web/sessions/${sessionId}`, { cookie: aliceCookie });
+      expect(res.status).toBe(404);
+      expect(await res.text()).toBe(missingHtml);
+    }
+  });
+
+  it('shows the admin any chat page with its owner', async () => {
+    const bobPage = await (
+      await web(`/web/sessions/${bobSession}`, { cookie: adminCookie })
+    ).text();
+    expect(bobPage).toContain('caller: test-caller &middot; user: bob</span>');
+    const orphanPage = await web(`/web/sessions/${orphanSession}`, { cookie: adminCookie });
+    expect(orphanPage.status).toBe(200);
+    expect(await orphanPage.text()).toContain('caller: test-caller &middot; no token</span>');
+  });
+
+  it('refuses an answer into another inbox like one into a missing session, leaving the question open', async () => {
+    const missing = await respond('00ff', aliceCookie, { requestId: 'none', content: 'x' });
+    expect(missing.status).toBe(404);
+    const missingHtml = await missing.text();
+
+    const held = api(`/api/requests/${bobRequest}/poll`);
+    await waitUntilHeld(bobRequest);
+    const res = await respond(bobSession, aliceCookie, {
+      requestId: bobRequest,
+      content: 'mine now',
+    });
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe(missingHtml);
+    expect(db.getRequest(bobRequest)?.status).toBe('pending');
+    expect(db.getMessages(bobSession).some(message => message.role === 'human')).toBe(false);
+    expect(server.polls.countWaiters(bobRequest)).toBe(1);
+    const orphan = await respond(orphanSession, aliceCookie, {
+      requestId: orphanRequest,
+      content: 'x',
+    });
+    expect(orphan.status).toBe(404);
+    expect(await orphan.text()).toBe(missingHtml);
+
+    // Bob can still answer, which ends the held poll.
+    expect(
+      (await respond(bobSession, cookieFor(bob), { requestId: bobRequest, content: 'yes' })).status
+    ).toBe(303);
+    expect(await (await held).json()).toEqual({ status: 'answered', response: { content: 'yes' } });
+  });
+
+  it('leaves a session in another inbox alone when asked to delete it', async () => {
+    for (const sessionId of [bobSession, orphanSession]) {
+      const res = await web(`/web/sessions/${sessionId}/delete`, {
+        method: 'POST',
+        cookie: aliceCookie,
+      });
+      expect(res.status).toBe(303);
+      expect(proxiedLocation(res, `/web/sessions/${sessionId}/delete`)).toBe('/grass/web/');
+      expect(db.getSession(sessionId)).toBeDefined();
+    }
+    expect(db.getRequest(bobRequest)?.status).toBe('pending');
+
+    const own = await web(`/web/sessions/${aliceSession}/delete`, {
+      method: 'POST',
+      cookie: aliceCookie,
+    });
+    expect(own.status).toBe(303);
+    expect(db.getSession(aliceSession)).toBeUndefined();
+  });
+
+  it("answers updates for another inbox's session with 404", async () => {
+    for (const sessionId of [bobSession, orphanSession]) {
+      const res = await web(`/web/api/sessions/${sessionId}/updates`, { cookie: aliceCookie });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Session not found' });
+    }
+  });
+
+  it("counts only the viewer's own sessions as others waiting", async () => {
+    const aliceOther = await askHuman(await createSession('Alice second', alice.token));
+
+    const page = await (await web(`/web/sessions/${aliceSession}`, { cookie: aliceCookie })).text();
+    expect(page).toContain(`data-others-pending="${aliceOther}"`);
+    expect(page).toContain('<title>(2) Alice job - Touch Grass</title>');
+    expect((await updates(aliceSession, aliceCookie)).othersPending).toEqual([aliceOther]);
+
+    // The 400 and 409 re-renders of the chat page use the same scope.
+    const empty = await respond(aliceSession, aliceCookie, {
+      requestId: aliceRequest,
+      content: ' ',
+    });
+    expect(empty.status).toBe(400);
+    expect(await empty.text()).toContain(`data-others-pending="${aliceOther}"`);
+    const stale = await respond(aliceSession, aliceCookie, { requestId: 'gone', content: 'hi' });
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).toContain(`data-others-pending="${aliceOther}"`);
+
+    const adminOthers = (await updates(aliceSession, adminCookie)).othersPending;
+    expect(adminOthers.sort()).toEqual([aliceOther, bobRequest, orphanRequest].sort());
+  });
+
+  it('keeps users out of the admin pages with the ordinary 404', async () => {
+    const notFound = await (await web('/web/nope', { cookie: aliceCookie })).text();
+    const userId = bob.id;
+    for (const [path, form] of [
+      ['/web/admin', undefined],
+      ['/web/admin/users', { username: 'mallory', password: 'long-enough-1' }],
+      [`/web/admin/users/${userId}/rename`, { username: 'mallory' }],
+      [`/web/admin/users/${userId}/password`, { password: 'long-enough-1' }],
+      [`/web/admin/users/${userId}/delete`, {}],
+    ] as const) {
+      const res = await web(path, { cookie: aliceCookie, form });
+      expect(res.status).toBe(404);
+      const html = await res.text();
+      expect(html).toContain('Nothing lives at this address.');
+      // Same page, give or take the depth of the relative URLs. The prefixes become a marker
+      // rather than '' so CodeQL doesn't read the comparison as a path sanitizer.
+      const anyDepth = (page: string) => page.replace(/(?:\.\.?\/)+/g, '{rel}');
+      expect(anyDepth(html)).toBe(anyDepth(notFound));
+    }
+    expect(db.getUserByUsername('mallory')).toBeUndefined();
+    expect(db.getUserById(bob.id)).toEqual(bob);
+  });
+});
+
+describe('managing users', () => {
+  let adminCookie: string;
+
+  beforeEach(async () => {
+    adminCookie = await login();
+  });
+
+  function adminPost(path: string, form: Record<string, string>) {
+    return web(`/web/admin${path}`, { cookie: adminCookie, form });
+  }
+
+  it('adds a user, shows its token, and the user can sign in', async () => {
+    const res = await adminPost('/users', { username: '  carol ', password: 'carols-password' });
+    expect(res.status).toBe(303);
+    const carol = db.getUserByUsername('carol')!;
+    expect(carol).toBeDefined();
+    expect(carol.token).toMatch(/^tg_[A-Za-z0-9_-]{32}$/);
+    expect(proxiedLocation(res, '/web/admin/users')).toBe(`/grass/web/admin?created=${carol.id}`);
+
+    const page = await (
+      await web(`/web/admin?created=${carol.id}`, { cookie: adminCookie })
+    ).text();
+    expect(page).toContain(
+      `Added <strong>carol</strong>. Their token is <code class="token">${carol.token}</code>.`
+    );
+
+    const cookie = await login({ username: 'Carol', password: 'carols-password' });
+    expect(await listStatus(cookie)).toBe(200);
+  });
+
+  it('shows live counts per user and for sessions without a token', async () => {
+    const bob = addUser('bob');
+    const sessionId = await createSession('Bob job', bob.token);
+    const requestId = await askHuman(sessionId);
+    await respond(sessionId, adminCookie, { requestId, content: 'done' });
+    await askHuman(sessionId, { content: 'One more?' });
+    await createSession('Nobody job');
+
+    const html = await (await web('/web/admin', { cookie: adminCookie })).text();
+    expect(html).toMatch(
+      /<th scope="row">bob<\/th>\s*<td class="num">1<\/td><td class="num">2<\/td><td class="num">1<\/td><td class="num">1<\/td><td><time /
+    );
+    expect(html).toMatch(
+      /<th scope="row">No token \(admin only\)<\/th>\s*<td class="num">1<\/td><td class="num">0<\/td><td class="num">0<\/td><td class="num">0<\/td>/
+    );
+  });
+
+  it('refuses a taken name in any letter case with 409, keeping what was typed', async () => {
+    addUser('bob');
+    const res = await adminPost('/users', { username: 'BOB', password: 'long-enough-1' });
+    expect(res.status).toBe(409);
+    const html = await res.text();
+    expect(html).toContain('The name BOB is taken.');
+    expect(html).toContain('id="new-username" type="text" name="username" value="BOB"');
+    expect(db.listUsers()).toHaveLength(1);
+  });
+
+  it.each([
+    ["the admin's name", 'ADMIN', 'long-enough-1', 'belongs to the admin'],
+    ['a short password', 'dave', 'short', 'at least 8'],
+    ['a name with a space', 'dave smith', 'long-enough-1', 'only letters'],
+    ['no name', '   ', 'long-enough-1', 'Enter a username'],
+  ])('refuses %s with 400', async (_label, username, password, message) => {
+    const res = await adminPost('/users', { username, password });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain(message);
+    expect(db.listUsers()).toEqual([]);
+  });
+
+  it('renames a user, who stays signed in', async () => {
+    const bob = addUser('bob');
+    const cookie = cookieFor(bob);
+    const res = await adminPost(`/users/${bob.id}/rename`, { username: 'robert' });
+    expect(res.status).toBe(303);
+    expect(proxiedLocation(res, `/web/admin/users/${bob.id}/rename`)).toBe(
+      '/grass/web/admin?done=renamed'
+    );
+    expect(db.getUserById(bob.id)?.username).toBe('robert');
+    const html = await (await web('/web/', { cookie })).text();
+    expect(html).toContain('Signed in as <strong>robert</strong>');
+    // A change of case alone is allowed.
+    expect((await adminPost(`/users/${bob.id}/rename`, { username: 'Robert' })).status).toBe(303);
+  });
+
+  it('refuses a rename to a taken name with 409 and opens that user', async () => {
+    const bob = addUser('bob');
+    addUser('carol');
+    const res = await adminPost(`/users/${bob.id}/rename`, { username: 'CAROL' });
+    expect(res.status).toBe(409);
+    const html = await res.text();
+    expect(html).toContain('The name CAROL is taken.');
+    expect(html).toContain('<details class="user-manage" open>');
+    expect(html).toContain('value="CAROL"');
+    expect(html).toContain('href="../../../static/style.css"');
+    expect(db.getUserById(bob.id)?.username).toBe('bob');
+    expect((await adminPost(`/users/${bob.id}/rename`, { username: 'Admin' })).status).toBe(400);
+  });
+
+  it('answers a malformed user id with the ordinary 404 and an unknown one with a banner', async () => {
+    for (const action of ['rename', 'password', 'delete']) {
+      const malformed = await adminPost(`/users/not-an-id/${action}`, {
+        username: 'x',
+        password: 'long-enough-1',
+      });
+      expect(malformed.status).toBe(404);
+      expect(await malformed.text()).toContain('Nothing lives at this address.');
+
+      const unknown = await adminPost(`/users/${'e'.repeat(32)}/${action}`, {
+        username: 'x',
+        password: 'long-enough-1',
+      });
+      expect(unknown.status).toBe(404);
+      expect(await unknown.text()).toContain('That user no longer exists.');
+    }
+  });
+
+  it('resets a password, which signs the user out everywhere', async () => {
+    const bob = addUser('bob');
+    const cookie = cookieFor(bob);
+    expect((await adminPost(`/users/${bob.id}/password`, { password: 'short' })).status).toBe(400);
+    expect(await listStatus(cookie)).toBe(200);
+
+    const res = await adminPost(`/users/${bob.id}/password`, { password: 'a-new-password' });
+    expect(res.status).toBe(303);
+    expect(proxiedLocation(res, `/web/admin/users/${bob.id}/password`)).toBe(
+      '/grass/web/admin?done=password-reset'
+    );
+    expect(await listStatus(cookie)).toBe(303);
+    expect((await web('/web/api/sessions', { cookie })).status).toBe(401);
+    expect(
+      (await web('/web/login', { form: { username: 'bob', password: USER_PASSWORD } })).status
+    ).toBe(401);
+    await login({ username: 'bob', password: 'a-new-password' });
+  });
+
+  it('deletes a user: sessions stay for the admin, held polls keep waiting, cookies stop working', async () => {
+    const bob = addUser('bob');
+    const cookie = cookieFor(bob);
+    const sessionId = await createSession('Bob job', bob.token);
+    const requestId = await askHuman(sessionId);
+    const held = api(`/api/requests/${requestId}/poll`);
+    await waitUntilHeld(requestId);
+
+    const res = await adminPost(`/users/${bob.id}/delete`, {});
+    expect(res.status).toBe(303);
+    expect(proxiedLocation(res, `/web/admin/users/${bob.id}/delete`)).toBe(
+      '/grass/web/admin?done=deleted'
+    );
+    expect(db.getUserById(bob.id)).toBeUndefined();
+    expect(db.getSession(sessionId)?.userToken).toBeNull();
+    expect(server.polls.countWaiters(requestId)).toBe(1);
+    expect(await listStatus(cookie)).toBe(303);
+
+    const list = await (await web('/web/api/sessions', { cookie: adminCookie })).json();
+    expect((list as { html: string }).html).toContain('Bob job');
+    expect((list as { html: string }).html).toContain('no token');
+    const recreate = await api('/api/sessions', { method: 'POST', body: { userToken: bob.token } });
+    expect(recreate.status).toBe(400);
+
+    // The admin can still answer the question bob never got to.
+    expect((await respond(sessionId, adminCookie, { requestId, content: 'on it' })).status).toBe(
+      303
+    );
+    expect((await held).status).toBe(200);
+  });
+
+  it('says what changed after a redirect, and ignores unknown notices', async () => {
+    const page = (query: string) =>
+      web(`/web/admin${query}`, { cookie: adminCookie }).then(res => res.text());
+    expect(await page('?done=deleted')).toContain('User deleted. Their sessions stay');
+    expect(await page('?done=constructor')).not.toContain('class="banner banner-info"');
+    expect(await page('?created=nope')).not.toContain('Added <strong>');
+  });
+});
+
+describe('account page', () => {
+  let bob: User;
+
+  beforeEach(() => {
+    bob = addUser('bob');
+  });
+
+  function changePassword(cookie: string, form: Record<string, string>) {
+    return web('/web/account', { cookie, form });
+  }
+
+  /** A path-aware cookie jar: cookies go where a browser would store and send them. */
+  function browser() {
+    const jar = new CookieJar();
+    return {
+      jar,
+      async go(path: string, form?: Record<string, string>) {
+        const url = `${server.baseUrl}${path}`;
+        const cookie = await jar.getCookieString(url);
+        const res = await web(path, { form, cookie: cookie || undefined });
+        for (const line of res.headers.getSetCookie()) await jar.setCookie(line, url);
+        return res;
+      },
+    };
+  }
+
+  it("shows a user's token and tells the admin where its password lives", async () => {
+    const userPage = await (await web('/web/account', { cookie: cookieFor(bob) })).text();
+    expect(userPage).toContain(`<code class="token">${bob.token}</code>`);
+    expect(userPage).toContain('<form method="post" action="./account" class="stacked-form">');
+
+    const adminPage = await (await web('/web/account', { cookie: await login() })).text();
+    expect(adminPage).toContain('<code>WEB_PASSWORD</code>');
+    expect(adminPage).not.toContain('class="token"');
+  });
+
+  it('gives the admin no password form to post to', async () => {
+    const res = await changePassword(await login(), {
+      current: config.webPassword,
+      password: 'long-enough-1',
+      confirm: 'long-enough-1',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses a wrong current password with 401, and the fifth miss locks like a login', async () => {
+    const cookie = cookieFor(bob);
+    const wrong = { current: 'not-it', password: 'long-enough-1', confirm: 'long-enough-1' };
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const res = await changePassword(cookie, wrong);
+      expect(res.status).toBe(401);
+      expect(await res.text()).toContain('Your current password is wrong.');
+    }
+    const locked = await changePassword(cookie, wrong);
+    expect(locked.status).toBe(429);
+    expect(locked.headers.get('retry-after')).toBe('1');
+    // The lock covers the login form too: both are password guesses from this address.
+    expect((await web('/web/login', { form: ADMIN_FORM })).status).toBe(429);
+    expect(db.getUserById(bob.id)?.passwordHash).toBe(userPasswordHash);
+  });
+
+  it.each([
+    ['too short', 'short', 'short', 'at least 8'],
+    ["that don't match", 'long-enough-1', 'long-enough-2', "don't match"],
+  ])('refuses new passwords %s with 400', async (_label, password, confirm, message) => {
+    const res = await changePassword(cookieFor(bob), { current: USER_PASSWORD, password, confirm });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain(message.replaceAll("'", '&#039;'));
+    expect(db.getUserById(bob.id)?.passwordHash).toBe(userPasswordHash);
+  });
+
+  it('changes the password, keeps this browser signed in and signs out the others', async () => {
+    const thisBrowser = await login({ username: 'bob', password: USER_PASSWORD });
+    const otherBrowser = cookieFor(bob);
+
+    const res = await changePassword(thisBrowser, {
+      current: USER_PASSWORD,
+      password: 'a-new-password',
+      confirm: 'a-new-password',
+    });
+    expect(res.status).toBe(303);
+    expect(proxiedLocation(res, '/web/account')).toBe('/grass/web/account?changed=1');
+    const renewed = cookiePair(res);
+    expect(renewed).toMatch(new RegExp(`^tg_auth=v2\\.${bob.id}\\.`));
+
+    const page = await web('/web/account?changed=1', { cookie: renewed });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('Password changed.');
+    expect(await listStatus(renewed)).toBe(200);
+    expect(await listStatus(thisBrowser)).toBe(303);
+    expect(await listStatus(otherBrowser)).toBe(303);
+    await login({ username: 'bob', password: 'a-new-password' });
+  });
+
+  it('renews the cookie on the path the login set, so it replaces the old one', async () => {
+    const { jar, go } = browser();
+    expect((await go('/web/login', { username: 'bob', password: USER_PASSWORD })).status).toBe(303);
+    const change = await go('/web/account', {
+      current: USER_PASSWORD,
+      password: 'a-new-password',
+      confirm: 'a-new-password',
+    });
+    expect(change.status).toBe(303);
+
+    const stored = await jar.getCookies(`${server.baseUrl}/web/account/deeper`);
+    expect(stored.map(cookie => [cookie.key, cookie.path])).toEqual([[WEB_COOKIE_NAME, '/web']]);
+    expect((await go('/web/')).status).toBe(200);
+    expect((await go('/web/account')).status).toBe(200);
+
+    // Logout clears that one cookie, so the next person at this browser isn't bob.
+    expect((await go('/web/logout', {})).status).toBe(303);
+    const account = await go('/web/account');
+    expect(account.status).toBe(303);
+    expect(account.headers.get('location')).toBe('./login?next=account');
+  });
+
+  it('checks one current password at a time per client, so parallel guesses all meet the lock', async () => {
+    const cookie = cookieFor(bob);
+    const wrong = { current: 'not-it', password: 'long-enough-1', confirm: 'long-enough-1' };
+    const scrypt = vi.spyOn(crypto, 'scrypt');
+    try {
+      const statuses = await Promise.all(
+        Array.from({ length: 10 }, () => changePassword(cookie, wrong).then(res => res.status))
+      );
+      expect(statuses.filter(status => status === 401)).toHaveLength(4);
+      expect(statuses.filter(status => status === 429)).toHaveLength(6);
+      // The status counts come out the same without the queue; only the scrypt count shows it.
+      expect(scrypt).toHaveBeenCalledTimes(5);
+    } finally {
+      scrypt.mockRestore();
+    }
+  });
+
+  it("doesn't clear guesses at the admin when a user proves their own current password", async () => {
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      expect((await web('/web/login', { form: WRONG_ADMIN_FORM })).status).toBe(401);
+    }
+    // A correct current password with a new one the policy refuses.
+    const res = await changePassword(cookieFor(bob), {
+      current: USER_PASSWORD,
+      password: 'x',
+      confirm: 'x',
+    });
+    expect(res.status).toBe(400);
+    expect((await web('/web/login', { form: WRONG_ADMIN_FORM })).status).toBe(429);
+  });
+
+  it("doesn't clear guesses at the admin when a user holding the admin's name proves their password", async () => {
+    // Created before WEB_ADMIN_USERNAME moved onto its name: it can't sign in any more, but a
+    // cookie it already had still works.
+    const holder = addUser(config.webAdminUsername.toLowerCase());
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      expect((await web('/web/login', { form: WRONG_ADMIN_FORM })).status).toBe(401);
+    }
+    const res = await changePassword(cookieFor(holder), {
+      current: USER_PASSWORD,
+      password: 'x',
+      confirm: 'x',
+    });
+    expect(res.status).toBe(400);
+    expect((await web('/web/login', { form: WRONG_ADMIN_FORM })).status).toBe(429);
+  });
+
+  it('clears its own wrong current password once the right one comes', async () => {
+    const cookie = cookieFor(bob);
+    const attempt = (current: string) =>
+      changePassword(cookie, { current, password: 'x', confirm: 'x' }).then(res => res.status);
+    for (let miss = 1; miss <= 4; miss++) expect(await attempt('not-it')).toBe(401);
+    expect(await attempt(USER_PASSWORD)).toBe(400);
+    for (let miss = 1; miss <= 4; miss++) expect(await attempt('not-it')).toBe(401);
+  });
+
+  it('answers the second request of a double submit with a 409 that counts no wrong password', async () => {
+    const cookie = cookieFor(bob);
+    const form = { current: USER_PASSWORD, password: 'a-new-password', confirm: 'a-new-password' };
+    const realScrypt = crypto.scrypt;
+    // Holds the first check back, so the second request is past the cookie check and waiting
+    // in the queue before the first one saves.
+    const scrypt = vi.spyOn(crypto, 'scrypt').mockImplementationOnce(((...args: unknown[]) => {
+      setTimeout(() => (realScrypt as (...params: unknown[]) => void)(...args), 100);
+    }) as typeof crypto.scrypt);
+    let responses: Response[];
+    try {
+      responses = await Promise.all([changePassword(cookie, form), changePassword(cookie, form)]);
+    } finally {
+      scrypt.mockRestore();
+    }
+    expect(responses.map(res => res.status).sort()).toEqual([303, 409]);
+    const refused = responses.find(res => res.status === 409)!;
+    expect(await refused.text()).toContain('If you clicked twice');
+    // The first response may have given the browser a valid cookie; clearing would drop it.
+    expect(refused.headers.getSetCookie()).toEqual([]);
+
+    // A miss from the 409 would make the fourth of these the fifth in a row, and locked.
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      expect(
+        (await web('/web/login', { form: { username: 'bob', password: 'typo' } })).status
+      ).toBe(401);
+    }
+    await login({ username: 'bob', password: 'a-new-password' });
+  });
+
+  it('refuses the change when an admin reset lands while it is being saved', async () => {
+    const resetHash = await hashPassword('admin-reset-pass');
+    const cookie = cookieFor(bob);
+    const realScrypt = crypto.scrypt;
+    let calls = 0;
+    const scrypt = vi.spyOn(crypto, 'scrypt').mockImplementation(((...args: unknown[]) => {
+      // The first scrypt checks the current password, the second hashes the new one: the
+      // admin's reset lands between them.
+      if (++calls === 2) db.setUserPassword(bob.id, resetHash);
+      return (realScrypt as (...params: unknown[]) => void)(...args);
+    }) as typeof crypto.scrypt);
+    let res: Response;
+    try {
+      res = await changePassword(cookie, {
+        current: USER_PASSWORD,
+        password: 'user-new-pass',
+        confirm: 'user-new-pass',
+      });
+    } finally {
+      scrypt.mockRestore();
+    }
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain('this request changed nothing');
+    expect(res.headers.getSetCookie()).toEqual(['tg_auth=; Max-Age=0; HttpOnly; SameSite=Strict']);
+    expect(db.getUserById(bob.id)?.passwordHash).toBe(resetHash);
+    expect(await listStatus(cookie)).toBe(303);
+    await login({ username: 'bob', password: 'admin-reset-pass' });
   });
 });

@@ -61,7 +61,6 @@ When imported, a fresh `id`, `createdAt`, and `lastUsedAt` are generated automat
 | `enabledTools`                 | string[]                | (none)  | Enabled tools: `"memory"`, `"javascript"`, `"filesystem"`, `"minion"`, etc.                 |
 | `toolOptions`                  | object                  | (none)  | Per-tool config. See [tool options](#tool-options).                                         |
 | `disableStream`                | boolean                 | `false` | Disable streaming (use non-streaming API).                                                  |
-| `extendedContext`              | boolean                 | `false` | Enable extended context window (Anthropic 1M beta).                                         |
 | `noLineNumbers`                | boolean                 | `false` | Strip line numbers from filesystem/memory tool output.                                      |
 | `remoteVfsUrl`                 | string                  | (none)  | Remote VFS backend URL. Its password is never exported, see [secrets](#secrets-stay-home).  |
 

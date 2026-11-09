@@ -46,7 +46,6 @@ export interface ProjectSettingsForm {
   enabledTools: string[];
   toolOptions: Record<string, ToolOptions>;
   disableStream: boolean;
-  extendedContext: boolean;
   useAnthropicOneHourCache: boolean;
   noLineNumbers: boolean;
   cacheRoutingScope: 'project' | 'chat';
@@ -88,7 +87,6 @@ export function projectToForm(project: Project): ProjectSettingsForm {
     enabledTools: project.enabledTools ?? [],
     toolOptions: project.toolOptions ?? {},
     disableStream: project.disableStream || false,
-    extendedContext: project.extendedContext || false,
     useAnthropicOneHourCache: project.useAnthropicOneHourCache || false,
     noLineNumbers: project.noLineNumbers || false,
     cacheRoutingScope: project.cacheRoutingScope ?? 'project',
@@ -142,7 +140,6 @@ export function formToProjectPatch(
     enabledTools: form.enabledTools.length > 0 ? form.enabledTools : undefined,
     toolOptions: Object.keys(form.toolOptions).length > 0 ? form.toolOptions : undefined,
     disableStream: form.disableStream || undefined,
-    extendedContext: form.extendedContext || undefined,
     useAnthropicOneHourCache: form.useAnthropicOneHourCache || undefined,
     noLineNumbers: form.noLineNumbers || undefined,
     cacheRoutingScope: form.cacheRoutingScope === 'chat' ? 'chat' : undefined,

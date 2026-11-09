@@ -68,7 +68,6 @@ vi.mock('../buildLoopOptions', async () => {
       enabledTools: [],
       toolOptions: {},
       disableStream: false,
-      extendedContext: false,
       enableReasoning: false,
       reasoningBudgetTokens: 0,
       signal,

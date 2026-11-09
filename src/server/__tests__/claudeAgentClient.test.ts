@@ -456,6 +456,8 @@ describe('ClaudeAgentClient', () => {
       });
       // Context fill: last call only — 5 + 20 + 0 + 1000, NOT the 2035 aggregate.
       expect((result as { contextWindowUsage?: number }).contextWindowUsage).toBe(1025);
+      // Pricing tier: the last call's prompt (5 input + 1000 cache read).
+      expect((result as { tierPromptTokens?: number }).tierPromptTokens).toBe(1005);
       debugSpy.mockRestore();
     });
 
@@ -978,7 +980,7 @@ describe('ClaudeAgentClient', () => {
     expect((optsSink.value as Record<string, unknown>).effort).toBeUndefined();
   });
 
-  it('appends the [1m] suffix to the SDK model id when claudeAgentExtendedContext is set', async () => {
+  async function sdkModelFor(modelId: string): Promise<unknown> {
     const optsSink: { value?: unknown } = {};
     const client = new ClaudeAgentClient(makeDeps(), {
       query: makeFakeQuery({ text: 'ok' }, optsSink) as never,
@@ -987,28 +989,24 @@ describe('ClaudeAgentClient', () => {
     });
 
     const ac = new AbortController();
-    const gen = client.sendMessageStream([userMessage('hi')], 'claude-opus-4-8', makeApiDef(), {
+    const gen = client.sendMessageStream([userMessage('hi')], modelId, makeApiDef(), {
       signal: ac.signal,
-      claudeAgentExtendedContext: true,
     } as Parameters<ClaudeAgentClient['sendMessageStream']>[3]);
     while (!(await gen.next()).done) {
       /* drain */
     }
+    return (optsSink.value as Record<string, unknown>).model;
+  }
 
-    expect((optsSink.value as Record<string, unknown>).model).toBe('claude-opus-4-8[1m]');
+  it('appends [1m] on its own for Opus 4.6, which Claude Code runs at 200K without it', async () => {
+    expect(await sdkModelFor('claude-opus-4-6')).toBe('claude-opus-4-6[1m]');
   });
 
-  it('sends the bare model id when claudeAgentExtendedContext is omitted', async () => {
-    const optsSink: { value?: unknown } = {};
-    const client = new ClaudeAgentClient(makeDeps(), {
-      query: makeFakeQuery({ text: 'ok' }, optsSink) as never,
-      sessionDir: () => '/tmp',
-      generateSessionId: () => 'u',
-    });
-
-    // consume() uses model id 'claude-haiku-4-5' and sets no extended-context flag.
-    await consume(client, [userMessage('hi')], makeApiDef());
-    expect((optsSink.value as Record<string, unknown>).model).toBe('claude-haiku-4-5');
+  it('sends the bare id for natively-1M, 200K-only and credit-gated models', async () => {
+    expect(await sdkModelFor('claude-opus-4-8')).toBe('claude-opus-4-8');
+    expect(await sdkModelFor('claude-haiku-4-5')).toBe('claude-haiku-4-5');
+    // Sonnet 4.6's 1M variant needs usage credits on every plan: unsupported
+    expect(await sdkModelFor('claude-sonnet-4-6')).toBe('claude-sonnet-4-6');
   });
 
   it('routes OAuth tokens via CLAUDE_CODE_OAUTH_TOKEN, API keys via ANTHROPIC_API_KEY', async () => {
@@ -1133,12 +1131,16 @@ describe('ClaudeAgentClient', () => {
     expect(models.map(m => m.id).sort()).toEqual([
       'claude-fable-5',
       'claude-fable-5-1',
+      'claude-fable-5-2',
       'claude-haiku-4-5',
+      'claude-haiku-5-5',
       'claude-opus-4-7',
       'claude-opus-4-8',
       'claude-opus-5',
       'claude-opus-5-5',
       'claude-sonnet-4-6',
+      'claude-sonnet-5',
+      'claude-sonnet-5-5',
     ]);
   });
 

@@ -194,6 +194,12 @@ export interface StreamResult<T> {
    */
   contextWindowUsage?: number;
   /**
+   * Prompt size used to pick the context pricing tier, for the same
+   * multi-call providers. When absent, cost uses input + cache read + cache
+   * write.
+   */
+  tierPromptTokens?: number;
+  /**
    * Provider-specific payload surfaced to ChatRunner for persistence on
    * the chat/message row. claude-agent populates this with
    * `{ claudeAgentSessionId, claudeAgentMessageUuid }`.

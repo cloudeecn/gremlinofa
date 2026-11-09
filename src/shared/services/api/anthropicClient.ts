@@ -270,7 +270,6 @@ export function buildAnthropicBetas(options: {
   webSearchEnabled?: boolean;
   enabledTools?: string[];
   thinkingKeepTurns?: number;
-  extendedContext?: boolean;
 }): string[] {
   const betas: string[] = ['interleaved-thinking-2025-05-14'];
   if (options.webSearchEnabled) {
@@ -281,9 +280,6 @@ export function buildAnthropicBetas(options: {
     enabledTools.includes('memory') || options.thinkingKeepTurns !== undefined;
   if (needsContextManagement) {
     betas.push('context-management-2025-06-27');
-  }
-  if (options.extendedContext) {
-    betas.push('context-1m-2025-08-07');
   }
   return betas;
 }
@@ -534,7 +530,6 @@ export class AnthropicClient implements APIClient {
       webSearchEnabled?: boolean;
       enabledTools?: string[];
       toolOptions?: Record<string, ToolOptions>;
-      extendedContext?: boolean;
       useAnthropicOneHourCache?: boolean;
       signal: AbortSignal;
       checkpointMessageId?: string;
@@ -863,7 +858,6 @@ export class AnthropicClient implements APIClient {
         webSearchEnabled: options.webSearchEnabled,
         enabledTools,
         thinkingKeepTurns: options.thinkingKeepTurns,
-        extendedContext: options.extendedContext,
       });
 
       // Build context_management config if thinkingKeepTurns is set

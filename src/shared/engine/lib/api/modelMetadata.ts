@@ -15,6 +15,7 @@ import { ALIBABA_MODELS } from './model_metadatas/alibaba';
 import { MOONSHOT_MODELS } from './model_metadatas/moonshot';
 import { ZHIPU_MODELS } from './model_metadatas/zhipu';
 import { OTHER_MODELS } from './model_metadatas/others';
+import { resolveModelPricing } from './modelPricing';
 
 // Combined model knowledge from all providers
 const ALL_MODEL_KNOWLEDGE: ModelKnowledge[] = [
@@ -363,6 +364,9 @@ export function isCostUnreliable(
  * @param tierMultiplier - Service-tier price multiplier (1.0 default, 0.5 for
  *   the flex/batch tier). Applied to every token-priced line; per-request
  *   fees (webSearchPrice, requestPrice) are not discounted.
+ * @param promptTokens - Prompt size of one request, used to pick the context
+ *   pricing tier. Defaults to input + cache write + cache read; pass it when
+ *   the token counts sum several requests.
  * @returns Total cost in USD
  */
 export function calculateCost(
@@ -374,33 +378,37 @@ export function calculateCost(
   cacheReadTokens?: number,
   webSearchCount?: number,
   cacheTtl?: '5m' | '1h',
-  tierMultiplier: number = 1.0
+  tierMultiplier: number = 1.0,
+  promptTokens?: number
 ): number {
   let cost = 0;
+  const prices = resolveModelPricing(model, {
+    promptTokens: promptTokens ?? inputTokens + (cacheCreationTokens ?? 0) + (cacheReadTokens ?? 0),
+  });
 
   // Token-based costs (per 1M tokens)
-  if (model.inputPrice) {
-    cost += (inputTokens / 1_000_000) * model.inputPrice * tierMultiplier;
+  if (prices.inputPrice) {
+    cost += (inputTokens / 1_000_000) * prices.inputPrice * tierMultiplier;
   }
-  if (model.outputPrice) {
-    cost += (outputTokens / 1_000_000) * model.outputPrice * tierMultiplier;
+  if (prices.outputPrice) {
+    cost += (outputTokens / 1_000_000) * prices.outputPrice * tierMultiplier;
   }
   if (reasoningTokens) {
-    const price = model.reasoningPrice ?? model.outputPrice;
+    const price = prices.reasoningPrice ?? prices.outputPrice;
     if (price) {
       cost += (reasoningTokens / 1_000_000) * price * tierMultiplier;
     }
   }
   // Cache tokens use their specific price, falling back to inputPrice
   if (cacheCreationTokens) {
-    const basePrice = model.cacheWritePrice ?? model.inputPrice;
+    const basePrice = prices.cacheWritePrice ?? prices.inputPrice;
     if (basePrice) {
       const price = cacheTtl === '1h' ? basePrice * 1.6 : basePrice;
       cost += (cacheCreationTokens / 1_000_000) * price * tierMultiplier;
     }
   }
   if (cacheReadTokens) {
-    const price = model.cacheReadPrice ?? model.inputPrice;
+    const price = prices.cacheReadPrice ?? prices.inputPrice;
     if (price) {
       cost += (cacheReadTokens / 1_000_000) * price * tierMultiplier;
     }
@@ -429,10 +437,11 @@ export function formatModelPricing(model: Model | null): string {
 
   const contextK = model.contextWindow ? Math.round(model.contextWindow / 1000) : 0;
   const contextStr = contextK > 0 ? `${contextK}k ctx` : '';
+  const prices = resolveModelPricing(model);
 
   // Check if model is free (all prices are 0 or undefined)
   const isFree =
-    !model.inputPrice && !model.outputPrice && !model.cacheReadPrice && !model.cacheWritePrice;
+    !prices.inputPrice && !prices.outputPrice && !prices.cacheReadPrice && !prices.cacheWritePrice;
 
   if (isFree) {
     return `Free${contextStr ? ` | ${contextStr}` : ''}`;
@@ -440,14 +449,14 @@ export function formatModelPricing(model: Model | null): string {
 
   // Build pricing string
   const parts: string[] = [];
-  if (model.inputPrice !== undefined) {
-    parts.push(`In: $${model.inputPrice}`);
+  if (prices.inputPrice !== undefined) {
+    parts.push(`In: $${prices.inputPrice}`);
   }
-  if (model.cacheReadPrice !== undefined) {
-    parts.push(`Cache: $${model.cacheReadPrice}`);
+  if (prices.cacheReadPrice !== undefined) {
+    parts.push(`Cache: $${prices.cacheReadPrice}`);
   }
-  if (model.outputPrice !== undefined) {
-    parts.push(`Out: $${model.outputPrice}`);
+  if (prices.outputPrice !== undefined) {
+    parts.push(`Out: $${prices.outputPrice}`);
   }
 
   const priceStr = parts.join('/');

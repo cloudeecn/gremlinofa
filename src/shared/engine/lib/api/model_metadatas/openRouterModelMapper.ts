@@ -97,6 +97,10 @@ export function populateFromOpenRouterModel(model: Model, rawModel: OpenRouterMo
   // Pricing
   if (rawModel.pricing) {
     const p = rawModel.pricing;
+    // Our tiers and dated changes are first-party list prices; layered on
+    // OpenRouter's live rate they would override it, so live data replaces them.
+    delete model.contextPricingTiers;
+    delete model.priceSchedule;
 
     const inputPrice = convertOpenRouterPrice(p.prompt);
     if (inputPrice !== undefined) model.inputPrice = inputPrice;

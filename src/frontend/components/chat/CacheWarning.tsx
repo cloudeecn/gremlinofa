@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useApiDefinitions, useModels } from '../../hooks/useApp';
 import type { Message } from '../../../shared/protocol/types';
+import { resolveModelPricing } from '../../../shared/engine/lib/api/modelPricing';
 
 /** Anthropic's default prompt-cache lifetime. */
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -53,9 +54,10 @@ export default function CacheWarning({
   if (contextWindowUsage <= 0) return null;
 
   const model = models.get(currentApiDefId)?.find(m => m.id === currentModelId);
-  // Cost = (tokens / 1M) * cacheWritePrice
+  // The whole context is re-written to cache, priced at the tier its size lands in.
+  const prices = resolveModelPricing(model ?? {}, { promptTokens: contextWindowUsage });
   const estimatedCost =
-    (contextWindowUsage / 1_000_000) * (model?.cacheWritePrice ?? model?.inputPrice ?? 0);
+    (contextWindowUsage / 1_000_000) * (prices.cacheWritePrice ?? prices.inputPrice ?? 0);
 
   return (
     <div className="mx-4 mb-4 text-xs text-gray-500">

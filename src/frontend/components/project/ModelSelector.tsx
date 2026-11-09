@@ -3,6 +3,7 @@ import Modal from '../ui/Modal';
 import { useApiDefinitions, useModels } from '../../hooks/useApp';
 import { getApiTypeDisplayName, getApiDefinitionIcon } from '../../lib/apiTypeUtils';
 import type { Model, APIDefinition } from '../../../shared/protocol/types';
+import { resolveModelPricing } from '../../../shared/engine/lib/api/modelPricing';
 import {
   apiKeyOptional,
   isChatgptSignedIn,
@@ -246,19 +247,20 @@ function ModelSelectorContent({
           ) : (
             <div className="space-y-2">
               {availableModels.map(model => {
-                // Get pricing info using apiService
+                // Today's base-tier price (dated schedule applied)
+                const prices = resolveModelPricing(model);
                 const priceDisplaySegments = [];
-                if (model.inputPrice) {
-                  priceDisplaySegments.push(`In: $${model.inputPrice}`);
+                if (prices.inputPrice) {
+                  priceDisplaySegments.push(`In: $${prices.inputPrice}`);
                 }
-                if (model.outputPrice) {
-                  priceDisplaySegments.push(`Out: $${model.outputPrice}`);
+                if (prices.outputPrice) {
+                  priceDisplaySegments.push(`Out: $${prices.outputPrice}`);
                 }
-                if (model.cacheReadPrice) {
-                  priceDisplaySegments.push(`CacheR: $${model.cacheReadPrice}`);
+                if (prices.cacheReadPrice) {
+                  priceDisplaySegments.push(`CacheR: $${prices.cacheReadPrice}`);
                 }
-                if (model.cacheWritePrice) {
-                  priceDisplaySegments.push(`CacheW: $${model.cacheWritePrice}`);
+                if (prices.cacheWritePrice) {
+                  priceDisplaySegments.push(`CacheW: $${prices.cacheWritePrice}`);
                 }
                 const priceDisplay = priceDisplaySegments.join('/');
 

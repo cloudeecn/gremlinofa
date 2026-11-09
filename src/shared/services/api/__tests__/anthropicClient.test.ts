@@ -278,18 +278,12 @@ describe('buildAnthropicBetas', () => {
     expect(betas).toContain('context-management-2025-06-27');
   });
 
-  it('includes context-1m beta when extendedContext is true', () => {
-    const betas = buildAnthropicBetas({ extendedContext: true });
-    expect(betas).toContain('context-1m-2025-08-07');
-  });
-
-  it('does not include context-1m beta when extendedContext is false', () => {
-    const betas = buildAnthropicBetas({ extendedContext: false });
-    expect(betas).not.toContain('context-1m-2025-08-07');
-  });
-
-  it('does not include context-1m beta when extendedContext is undefined', () => {
-    const betas = buildAnthropicBetas({});
+  it('never sends the retired context-1m beta (1M is the default window)', () => {
+    const betas = buildAnthropicBetas({
+      webSearchEnabled: true,
+      enabledTools: ['memory'],
+      thinkingKeepTurns: 3,
+    });
     expect(betas).not.toContain('context-1m-2025-08-07');
   });
 
@@ -298,13 +292,11 @@ describe('buildAnthropicBetas', () => {
       webSearchEnabled: true,
       enabledTools: ['memory'],
       thinkingKeepTurns: 3,
-      extendedContext: true,
     });
     expect(betas).toContain('interleaved-thinking-2025-05-14');
     expect(betas).toContain('web-fetch-2025-09-10');
     expect(betas).toContain('context-management-2025-06-27');
-    expect(betas).toContain('context-1m-2025-08-07');
-    expect(betas).toHaveLength(4);
+    expect(betas).toHaveLength(3);
   });
 });
 

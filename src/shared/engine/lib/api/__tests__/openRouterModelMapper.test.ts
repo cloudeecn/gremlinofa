@@ -50,3 +50,27 @@ describe('populateFromOpenRouterModel reasoning', () => {
     expect(target.reasoningMode).toBe('optional');
   });
 });
+
+describe('populateFromOpenRouterModel pricing', () => {
+  it('drops hardcoded tiers and dated changes when OpenRouter supplies a live price', () => {
+    const target = model({
+      id: 'openai/gpt-5.6-sol',
+      inputPrice: 4,
+      contextPricingTiers: [{ thresholdTokens: 272000, inputPrice: 8 }],
+      priceSchedule: [{ effectiveFrom: '2026-11-30', inputPrice: 5 }],
+    });
+    populateFromOpenRouterModel(target, {
+      id: 'openai/gpt-5.6-sol',
+      pricing: { prompt: '0.0000045', completion: '0.000025' },
+    });
+    expect(target.inputPrice).toBeCloseTo(4.5);
+    expect(target.contextPricingTiers).toBeUndefined();
+    expect(target.priceSchedule).toBeUndefined();
+  });
+
+  it('keeps them when the response carries no pricing', () => {
+    const target = model({ priceSchedule: [{ effectiveFrom: '2026-12-01', inputPrice: 4 }] });
+    populateFromOpenRouterModel(target, { id: 'z-ai/glm-5.3', context_length: 200000 });
+    expect(target.priceSchedule).toHaveLength(1);
+  });
+});

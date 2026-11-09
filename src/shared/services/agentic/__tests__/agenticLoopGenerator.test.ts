@@ -116,6 +116,7 @@ import {
   shouldPrependPrefill as mockShouldPrependPrefill,
 } from '../../../engine/lib/apiHelpers';
 import { executeClientSideTool } from '../../tools/clientSideTools';
+import { calculateCost } from '../../../engine/lib/api/modelMetadata';
 
 // `apiService` exposes the same surface the loop touches via `options.deps`.
 // `sendMessageStream` is the deps mock the loop calls; the rest are getter
@@ -230,7 +231,6 @@ const createMockOptions = (overrides?: Partial<AgenticLoopOptions>): AgenticLoop
   enabledTools: [],
   toolOptions: {},
   disableStream: false,
-  extendedContext: false,
   enableReasoning: false,
   reasoningBudgetTokens: 0,
   signal: new AbortController().signal,
@@ -617,18 +617,15 @@ describe('agenticLoopGenerator', () => {
       }
     });
 
-    describe('claude-agent 1M context ([1m] suffix gating)', () => {
-      async function runOnce(
-        modelId: string,
-        apiType: APIDefinition['apiType'],
-        extendedContext: boolean
-      ) {
+    describe('context window and pricing tier inputs', () => {
+      async function runOnce(streamFields: Record<string, unknown>, contextWindow: number) {
         const mockResult = {
           textContent: 'ok',
           fullContent: [{ type: 'text', text: 'ok' }],
           stopReason: 'end_turn',
           inputTokens: 10,
           outputTokens: 5,
+          ...streamFields,
         };
         vi.mocked(apiService.sendMessageStream).mockReturnValue(
           createMockStream([{ type: 'content', content: 'ok' }], mockResult) as never
@@ -636,40 +633,28 @@ describe('agenticLoopGenerator', () => {
         vi.mocked(apiService.extractToolUseBlocks).mockReturnValue([]);
 
         const options = createMockOptions({
-          apiDef: { ...createMockApiDef(), apiType },
-          model: { ...createMockModel(), id: modelId, apiType },
-          extendedContext,
+          model: { ...createMockModel(), contextWindow },
         });
-        const result = await collectAgenticLoop(
-          runAgenticLoop(options, [createMockUserMessage('hi')])
-        );
-        const streamOpts = vi.mocked(apiService.sendMessageStream).mock.calls[0][3] as {
-          claudeAgentExtendedContext?: boolean;
-        };
-        return { result, streamOpts };
+        return collectAgenticLoop(runAgenticLoop(options, [createMockUserMessage('hi')]));
       }
 
-      it('forwards claudeAgentExtendedContext=true for an eligible claude-agent model', async () => {
-        const { result, streamOpts } = await runOnce('claude-opus-4-8', 'claude-agent', true);
-        expect(streamOpts.claudeAgentExtendedContext).toBe(true);
-        // Opus 4.8 (like 4.5) reports a 1M window even though metadata carries no
-        // supportsExtendedContext flag, because the `[1m]` suffix is sent.
+      it('records the model metadata context window on the assistant message', async () => {
+        const result = await runOnce({}, 1_000_000);
         expect(result.messages[1]?.metadata?.contextWindow).toBe(1_000_000);
       });
 
-      it('forwards false for a claude-agent model outside the set (Sonnet 4.6 is 1M-native)', async () => {
-        const { streamOpts } = await runOnce('claude-sonnet-4-6', 'claude-agent', true);
-        expect(streamOpts.claudeAgentExtendedContext).toBe(false);
+      it("passes a multi-call result's tierPromptTokens to calculateCost", async () => {
+        vi.mocked(calculateCost).mockClear();
+        await runOnce({ inputTokens: 300_000, tierPromptTokens: 80_000 }, 200_000);
+        const call = vi.mocked(calculateCost).mock.calls[0];
+        expect(call[1]).toBe(300_000);
+        expect(call[9]).toBe(80_000);
       });
 
-      it('forwards false for non-claude-agent providers regardless of model', async () => {
-        const { streamOpts } = await runOnce('claude-opus-4-8', 'anthropic', true);
-        expect(streamOpts.claudeAgentExtendedContext).toBe(false);
-      });
-
-      it('forwards false when the project 1M toggle is off', async () => {
-        const { streamOpts } = await runOnce('claude-opus-4-8', 'claude-agent', false);
-        expect(streamOpts.claudeAgentExtendedContext).toBe(false);
+      it('leaves the tier prompt to calculateCost when the result has none', async () => {
+        vi.mocked(calculateCost).mockClear();
+        await runOnce({}, 200_000);
+        expect(vi.mocked(calculateCost).mock.calls[0][9]).toBeUndefined();
       });
     });
 

@@ -91,20 +91,31 @@ describe('modelMetadata', () => {
         expect(result.reasoningMode).toBe('always');
       });
 
-      it('matches gemini-4-argon at its introductory pricing', () => {
-        const apiDef = createApiDef({ apiType: 'google' });
-        const result = getModelMetadataFor(apiDef, 'gemini-4-argon');
+      it.each(['gemini-4-carbon', 'gemini-4-argon'])(
+        'matches %s at its introductory pricing',
+        modelId => {
+          const apiDef = createApiDef({ apiType: 'google' });
+          const result = getModelMetadataFor(apiDef, modelId);
 
-        expect(result.matchedMode).toBe('fuzz');
-        expect(result.inputPrice).toBe(2.0);
-        expect(result.outputPrice).toBe(10.0);
-        expect(result.cacheReadPrice).toBe(0.1);
-        expect(result.contextWindow).toBe(1048576);
-        expect(result.maxOutputTokens).toBe(65536);
-        expect(result.reasoningMode).toBe('always');
-        expect(result.supportedReasoningEfforts).toEqual(['low', 'medium', 'high']);
-        expect(result.supportsTemperature).toBe(false);
-      });
+          expect(result.matchedMode).toBe('fuzz');
+          expect(result.inputPrice).toBe(2.0);
+          expect(result.outputPrice).toBe(10.0);
+          expect(result.cacheReadPrice).toBe(0.1);
+          expect(result.contextWindow).toBe(1048576);
+          expect(result.maxOutputTokens).toBe(65536);
+          expect(result.reasoningMode).toBe('always');
+          expect(result.supportedReasoningEfforts).toEqual(['low', 'medium', 'high']);
+          expect(result.supportsTemperature).toBe(false);
+          expect(result.priceSchedule).toEqual([
+            {
+              effectiveFrom: '2026-12-01',
+              inputPrice: 4.0,
+              outputPrice: 20.0,
+              cacheReadPrice: 0.2,
+            },
+          ]);
+        }
+      );
 
       it('matches gemini-3.8-flash at its introductory pricing', () => {
         const apiDef = createApiDef({ apiType: 'google' });
@@ -139,9 +150,12 @@ describe('modelMetadata', () => {
         const result = getModelMetadataFor(apiDef, 'gemini-3.6-flash');
 
         expect(result.matchedMode).toBe('fuzz');
-        expect(result.inputPrice).toBe(1.5);
-        expect(result.outputPrice).toBe(7.5);
-        expect(result.cacheReadPrice).toBe(0.15);
+        expect(result.inputPrice).toBe(0.75);
+        expect(result.outputPrice).toBe(3.75);
+        expect(result.cacheReadPrice).toBe(0.075);
+        expect(result.priceSchedule).toEqual([
+          { effectiveFrom: '2027-01-01', inputPrice: 1.5, outputPrice: 7.5, cacheReadPrice: 0.15 },
+        ]);
         expect(result.contextWindow).toBe(1048576);
         expect(result.maxOutputTokens).toBe(65536);
       });
@@ -227,7 +241,6 @@ describe('modelMetadata', () => {
         expect(opus55.contextWindow).toBe(1000000);
         expect(opus55.maxOutputTokens).toBe(128000);
         expect(opus55.onlyAdaptiveReasoning).toBe(true);
-        expect(opus55.supportsExtendedContext).toBeUndefined();
 
         const opus5 = getModelMetadataFor(apiDef, 'claude-opus-5');
         expect(opus5.matchedMode).toBe('exact');
@@ -241,7 +254,7 @@ describe('modelMetadata', () => {
 
         const opus48 = getModelMetadataFor(apiDef, 'claude-opus-4-8');
         expect(opus48.inputPrice).toBe(5);
-        expect(opus48.supportsExtendedContext).toBe(true);
+        expect(opus48.contextWindow).toBe(1000000);
 
         // Dated Opus 5 snapshots stay on the legacy tier via the year-scoped fuzz
         expect(getModelMetadataFor(apiDef, 'claude-opus-5-20260724').inputPrice).toBe(5);
@@ -278,19 +291,22 @@ describe('modelMetadata', () => {
         const ALL = ['low', 'medium', 'high', 'xhigh', 'max'];
         const NO_XHIGH = ['low', 'medium', 'high', 'max'];
 
-        // xhigh is a curated list: Fable 5, Opus 5.5/5/4.8/4.7, Sonnet 5.
-        // max additionally covers Opus 4.6 and Sonnet 4.6.
+        // xhigh is a curated list: Fable 5.x, Opus 5.5/5/4.8/4.7, Sonnet 5.x,
+        // Haiku 5.5. max additionally covers Opus 4.6 and Sonnet 4.6.
         const cases: [string, string[] | undefined][] = [
+          ['claude-fable-5-2', ALL],
+          ['claude-mythos-5-2', ALL],
           ['claude-fable-5-1', ALL],
           ['claude-fable-5', ALL],
           ['claude-opus-5-5', ALL],
           ['claude-opus-4-8', ALL],
           ['claude-opus-5', ALL],
           ['claude-opus-4-7', ALL],
+          ['claude-sonnet-5-5', ALL],
           ['claude-sonnet-5', ALL],
+          ['claude-haiku-5-5', ALL],
           ['claude-opus-4-6', NO_XHIGH],
           ['claude-sonnet-4-6', NO_XHIGH],
-          ['claude-haiku-5', NO_XHIGH],
           // Opus 4.5 takes effort beside budget_tokens; the rest below 4.6 don't
           ['claude-opus-4-5', ['low', 'medium', 'high']],
           ['claude-sonnet-4-5', undefined],
@@ -320,16 +336,17 @@ describe('modelMetadata', () => {
         }
       });
 
-      it('resolves claude-fable-5 with its pricing + adaptive thinking on both api types', () => {
+      it('resolves claude-fable-5 / mythos-5 with their pricing + adaptive thinking on both api types', () => {
         for (const apiType of ['anthropic', 'claude-agent'] as const) {
           const apiDef = createApiDef({ apiType });
           for (const id of [
             'claude-fable-5',
             'claude-fable-5-20260601',
             'anthropic.claude-fable-5',
+            'claude-mythos-5',
           ]) {
             const result = getModelMetadataFor(apiDef, id);
-            expect(result.matchedMode).toBe('fuzz');
+            expect(['exact', 'fuzz'], id).toContain(result.matchedMode);
             expect(result.inputPrice).toBe(10);
             expect(result.outputPrice).toBe(50);
             // Standard 0.1x cache read — not shadowed by the fable-5-1 entry.
@@ -349,6 +366,7 @@ describe('modelMetadata', () => {
             'claude-fable-5-1',
             'claude-fable-5-1-20260901',
             'anthropic.claude-fable-5-1',
+            'claude-mythos-5-1',
           ]) {
             const result = getModelMetadataFor(apiDef, id);
             expect(result.matchedMode).toBe('fuzz');
@@ -374,9 +392,12 @@ describe('modelMetadata', () => {
             'anthropic.claude-sonnet-5',
           ]) {
             const result = getModelMetadataFor(apiDef, id);
-            expect(result.matchedMode).toBe('fuzz');
+            expect(['exact', 'fuzz'], id).toContain(result.matchedMode);
             expect(result.inputPrice).toBe(2);
             expect(result.outputPrice).toBe(10);
+            expect(result.cacheReadPrice).toBe(0.2);
+            expect(result.contextWindow).toBe(1000000);
+            expect(result.maxOutputTokens).toBe(128000);
             expect(result.supportsAdaptiveReasoning).toBe(true);
             expect(result.onlyAdaptiveReasoning).toBe(true);
             // Thinks by default; `disabled` is its off switch
@@ -385,22 +406,61 @@ describe('modelMetadata', () => {
         }
       });
 
-      it('resolves Haiku 5 to adaptive-only pricing matching Haiku 4.5', () => {
+      it('resolves Haiku 5.5 with its >100K prompt tier on both api types', () => {
+        for (const apiType of ['anthropic', 'claude-agent'] as const) {
+          const apiDef = createApiDef({ apiType });
+          for (const id of ['claude-haiku-5-5', 'anthropic.claude-haiku-5-5']) {
+            const result = getModelMetadataFor(apiDef, id);
+            expect(result.matchedMode).toBe('fuzz');
+            expect(result.inputPrice).toBe(0.1);
+            expect(result.outputPrice).toBe(0.5);
+            expect(result.cacheReadPrice).toBe(0.01);
+            expect(result.cacheWritePrice).toBe(0.125);
+            expect(result.contextPricingTiers).toEqual([
+              {
+                thresholdTokens: 100000,
+                inputPrice: 0.5,
+                outputPrice: 2.5,
+                cacheWritePrice: 0.625,
+                cacheReadPrice: 0.05,
+              },
+            ]);
+            expect(result.contextWindow).toBe(1000000);
+            expect(result.maxOutputTokens).toBe(128000);
+            expect(result.onlyAdaptiveReasoning).toBe(true);
+            // `disabled` is accepted at effort high or below
+            expect(result.thinkingOffType).toBe('disabled');
+          }
+        }
+      });
+
+      it('resolves Fable 5.2 and Mythos 5.2 to their own lower price', () => {
         for (const apiType of ['anthropic', 'claude-agent'] as const) {
           const apiDef = createApiDef({ apiType });
           for (const id of [
-            'claude-haiku-5',
-            'claude-haiku-5-20260601',
-            'anthropic.claude-haiku-5',
+            'claude-fable-5-2',
+            'claude-mythos-5-2',
+            'anthropic.claude-fable-5-2',
           ]) {
             const result = getModelMetadataFor(apiDef, id);
-            expect(result.matchedMode).toBe('fuzz');
-            expect(result.inputPrice).toBe(1);
-            expect(result.outputPrice).toBe(5);
-            expect(result.supportsAdaptiveReasoning).toBe(true);
-            expect(result.onlyAdaptiveReasoning).toBe(true);
+            expect(result.matchedMode, id).toBe('fuzz');
+            expect(result.inputPrice).toBe(8);
+            expect(result.outputPrice).toBe(40);
+            expect(result.cacheReadPrice).toBe(0.2);
+            expect(result.cacheWritePrice).toBe(10);
+            expect(result.reasoningMode).toBe('always');
           }
         }
+      });
+
+      it('lets a future Claude 5.x id reach its family catch-all instead of an older 5.0 entry', () => {
+        const apiDef = createApiDef({ apiType: 'anthropic' });
+        // Fable 5.2 profile, not Fable 5's $10 / $1-cache-read row
+        expect(getModelMetadataFor(apiDef, 'claude-fable-5-3').inputPrice).toBe(8);
+        expect(getModelMetadataFor(apiDef, 'claude-mythos-5-3').inputPrice).toBe(8);
+        // Sonnet 5.5 profile (0.05x cache read), not Sonnet 5's 0.1x
+        expect(getModelMetadataFor(apiDef, 'claude-sonnet-5-6').cacheReadPrice).toBe(0.1);
+        expect(getModelMetadataFor(apiDef, 'claude-haiku-5-6').inputPrice).toBe(0.1);
       });
 
       it('routes an unknown future sonnet/haiku to the newest adaptive-only entry via catch-all', () => {
@@ -413,7 +473,7 @@ describe('modelMetadata', () => {
 
         const haiku6 = getModelMetadataFor(apiDef, 'claude-haiku-6-20270101');
         expect(haiku6.matchedMode).toBe('fuzz');
-        expect(haiku6.inputPrice).toBe(1);
+        expect(haiku6.inputPrice).toBe(0.1); // the Haiku 5.5 profile
         expect(haiku6.onlyAdaptiveReasoning).toBe(true);
       });
 
@@ -444,14 +504,46 @@ describe('modelMetadata', () => {
         expect(result.matchedMode).toBe('exact'); // Has exact match
       });
 
-      it('matches xAI grok models', () => {
+      it('bills retired grok-4 slugs at the grok-4.3 rate they redirect to', () => {
         const apiDef = createApiDef({ apiType: 'chatgpt' });
-        const result = getModelMetadataFor(apiDef, 'grok-4');
+        for (const id of ['grok-4', 'grok-4-0709', 'grok-4-fast-reasoning', 'grok-3']) {
+          const result = getModelMetadataFor(apiDef, id);
+          expect(result.matchedMode, id).toBe('exact');
+          expect(result.inputPrice, id).toBe(1.25);
+          expect(result.outputPrice, id).toBe(2.5);
+          expect(result.contextWindow, id).toBe(1000000);
+        }
+      });
 
-        expect(result.matchedMode).toBe('exact');
-        expect(result.inputPrice).toBe(3.0);
-        expect(result.outputPrice).toBe(15.0);
-        expect(result.contextWindow).toBe(256000);
+      it('sends an unknown grok-4.x to the grok-4.7 catch-all', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'grok-4.8');
+        expect(result.matchedMode).toBe('fuzz');
+        expect(result.inputPrice).toBe(2.0);
+        expect(result.contextWindow).toBe(500000);
+      });
+
+      it('prices grok-4.20 aliases and grok-build at their current rates', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        for (const id of [
+          'grok-4.20-0309-reasoning',
+          'grok-4.20-0309-non-reasoning',
+          'grok-4.20',
+          'grok-4.20-multi-agent-0309',
+        ]) {
+          const result = getModelMetadataFor(apiDef, id);
+          expect(result.inputPrice, id).toBe(1.25);
+          expect(result.contextWindow, id).toBe(1000000);
+        }
+        // grok-code-fast-1 is an alias of grok-build-0.1 now
+        for (const id of ['grok-build-0.1', 'grok-code-fast-1']) {
+          const result = getModelMetadataFor(apiDef, id);
+          expect([result.inputPrice, result.outputPrice, result.cacheReadPrice], id).toEqual([
+            1, 2, 0.2,
+          ]);
+        }
+        // ...but grok-build-latest aliases grok-4.5
+        expect(getModelMetadataFor(apiDef, 'grok-build-latest').inputPrice).toBe(2.0);
       });
 
       it('matches grok-3-mini with reasoning efforts', () => {
@@ -463,7 +555,7 @@ describe('modelMetadata', () => {
         expect(result.supportedReasoningEfforts).toEqual(['low', 'high']);
       });
 
-      it('matches gpt-6-astra with its long-context tier recorded but not applied', () => {
+      it('matches gpt-6-astra with its >272K context tier', () => {
         const apiDef = createApiDef({ apiType: 'chatgpt' });
 
         const astra = getModelMetadataFor(apiDef, 'gpt-6-astra');
@@ -476,14 +568,16 @@ describe('modelMetadata', () => {
         expect(astra.maxOutputTokens).toBe(128000);
         // No 'none'/'minimal' on gpt-6, unlike the gpt-5.x ladders.
         expect(astra.supportedReasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
-        // >272K-input requests bill 2x input/cache, 1.5x output — recorded only.
-        expect(astra.unsupportedHighContextPricing).toEqual({
-          thresholdTokens: 272000,
-          inputPrice: 20.0,
-          cacheReadPrice: 2.0,
-          cacheWritePrice: 25.0,
-          outputPrice: 75.0,
-        });
+        // >272K-prompt requests bill 2x input/cache, 1.5x output.
+        expect(astra.contextPricingTiers).toEqual([
+          {
+            thresholdTokens: 272000,
+            inputPrice: 20.0,
+            cacheReadPrice: 2.0,
+            cacheWritePrice: 25.0,
+            outputPrice: 75.0,
+          },
+        ]);
 
         const dated = getModelMetadataFor(apiDef, 'gpt-6-astra-2026-09-04');
         expect(dated.matchedMode).toBe('fuzz');
@@ -508,13 +602,15 @@ describe('modelMetadata', () => {
         expect(sol.contextWindow).toBe(1050000);
         // Sol and Luna accept 'none'; Astra does not.
         expect(sol.supportedReasoningEfforts).toContain('none');
-        expect(sol.unsupportedHighContextPricing).toEqual({
-          thresholdTokens: 272000,
-          inputPrice: 4.0,
-          cacheReadPrice: 0.4,
-          cacheWritePrice: 5.0,
-          outputPrice: 15.0,
-        });
+        expect(sol.contextPricingTiers).toEqual([
+          {
+            thresholdTokens: 272000,
+            inputPrice: 4.0,
+            cacheReadPrice: 0.4,
+            cacheWritePrice: 5.0,
+            outputPrice: 15.0,
+          },
+        ]);
 
         const luna = getModelMetadataFor(apiDef, 'gpt-6-luna-2026-09-22');
         expect(luna.matchedMode).toBe('fuzz');
@@ -524,6 +620,27 @@ describe('modelMetadata', () => {
 
         // Astra keeps the family catch-all, so it is unaffected
         expect(getModelMetadataFor(apiDef, 'gpt-6-astra').inputPrice).toBe(10.0);
+      });
+
+      it('gives gpt-6.1-terra its own entry instead of the 10x Astra catch-all', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const terra = getModelMetadataFor(apiDef, 'gpt-6.1-terra');
+        expect(terra.matchedMode).toBe('exact');
+        expect([terra.inputPrice, terra.outputPrice, terra.cacheReadPrice]).toEqual([1, 5, 0.05]);
+        expect(terra.supportedReasoningEfforts).toContain('none');
+        expect(getModelMetadataFor(apiDef, 'gpt-6.1-terra-2026-10-26').inputPrice).toBe(1);
+      });
+
+      it('schedules gpt-5.6-sol back to its pre-promo rate on 2026-11-30', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const sol = getModelMetadataFor(apiDef, 'gpt-5.6-sol');
+        expect(sol.inputPrice).toBe(4.0);
+        expect(sol.priceSchedule?.[0]).toMatchObject({
+          effectiveFrom: '2026-11-30',
+          inputPrice: 5.0,
+          outputPrice: 30.0,
+        });
+        expect(sol.contextPricingTiers?.[0].thresholdTokens).toBe(272000);
       });
 
       it('sends reasoning.context only to models that accept it (gpt-5.4 and later)', () => {
@@ -537,7 +654,7 @@ describe('modelMetadata', () => {
         }
       });
 
-      it('matches grok-4.7 with its 200K high-context tier recorded but not applied', () => {
+      it('matches grok-4.7 with its 200K-or-more prompt tier', () => {
         const apiDef = createApiDef({ apiType: 'chatgpt' });
 
         const exact = getModelMetadataFor(apiDef, 'grok-4.7');
@@ -546,14 +663,12 @@ describe('modelMetadata', () => {
         expect(exact.outputPrice).toBe(6.0);
         expect(exact.cacheReadPrice).toBe(0.5);
         expect(exact.contextWindow).toBe(500000);
-        expect(exact.unsupportedHighContextPricing).toEqual({
-          thresholdTokens: 200000,
-          inputPrice: 4.0,
-          outputPrice: 12.0,
-          cacheReadPrice: 1.0,
-        });
+        // "200K or more" → strictly above 199999
+        expect(exact.contextPricingTiers).toEqual([
+          { thresholdTokens: 199999, inputPrice: 4.0, outputPrice: 12.0, cacheReadPrice: 1.0 },
+        ]);
 
-        // Longer prefix wins over the bare `grok-4` entry ($3/$15, 256K)
+        // Dated snapshots resolve through the grok-4.7 prefix
         const dated = getModelMetadataFor(apiDef, 'grok-4.7-1120');
         expect(dated.matchedMode).toBe('fuzz');
         expect(dated.inputPrice).toBe(2.0);
@@ -748,11 +863,33 @@ describe('modelMetadata', () => {
         const apiDef = createApiDef({ apiType: 'chatgpt' });
         const result = getModelMetadataFor(apiDef, 'doubao-seed-2-1-pro-20260615');
 
+        // ¥6 / ¥1.2 / ¥30 at 7.3 CNY per USD
         expect(result.matchedMode).toBe('fuzz');
-        expect(result.inputPrice).toBe(0.93);
-        expect(result.cacheReadPrice).toBe(0.186);
-        expect(result.outputPrice).toBe(4.65);
+        expect(result.inputPrice).toBeCloseTo(6 / 7.3);
+        expect(result.cacheReadPrice).toBeCloseTo(1.2 / 7.3);
+        expect(result.outputPrice).toBeCloseTo(30 / 7.3);
+        expect(result.contextWindow).toBe(1024000);
+        expect(result.maxOutputTokens).toBe(256000);
         expect(result.reasoningDialect).toBe('thinking-object');
+      });
+
+      it('prices Seed 2.0 by prompt length and the new Seed 2.1 models flat', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const pro20 = getModelMetadataFor(apiDef, 'doubao-seed-2-0-pro-260215');
+        expect(pro20.inputPrice).toBeCloseTo(3.2 / 7.3);
+        expect(pro20.contextPricingTiers?.map(tier => tier.thresholdTokens)).toEqual([
+          32000, 128000,
+        ]);
+        expect(pro20.contextPricingTiers?.[1].outputPrice).toBeCloseTo(48 / 7.3);
+
+        expect(getModelMetadataFor(apiDef, 'doubao-seed-2-1-lite-260915').inputPrice).toBeCloseTo(
+          0.8 / 7.3
+        );
+        expect(getModelMetadataFor(apiDef, 'doubao-seed-2-1-turbo-260628').inputPrice).toBeCloseTo(
+          3 / 7.3
+        );
+        expect(getModelMetadataFor(apiDef, 'doubao-seed-evolving').inputPrice).toBeCloseTo(6 / 7.3);
+        expect(getModelMetadataFor(apiDef, 'ernie-5.1').inputPrice).toBeCloseTo(4 / 7.3);
       });
     });
 
@@ -774,9 +911,7 @@ describe('modelMetadata', () => {
         const result = getModelMetadataFor(apiDef, 'qwen3.8-flash');
 
         expect([result.inputPrice, result.cacheReadPrice, result.outputPrice]).toEqual([
-          0.15,
-          undefined,
-          0.47,
+          0.15, 0.016, 0.47,
         ]);
         expect(result.reasoningDialect).toBe('enable-thinking');
         expect(result.supportedReasoningEfforts).toEqual(['low', 'medium', 'xhigh']);
@@ -795,35 +930,41 @@ describe('modelMetadata', () => {
         expect(result.reasoningDialect).toBe('enable-thinking');
       });
 
-      it('matches Qwen 3.6 Plus with no cache price (falls back to input)', () => {
+      it('prices Qwen 3.6 Plus caching at the explicit-cache rates', () => {
         const apiDef = createApiDef({ apiType: 'chatgpt' });
         const result = getModelMetadataFor(apiDef, 'qwen3.6-plus');
 
         expect(result.inputPrice).toBe(0.5);
         expect(result.outputPrice).toBe(3.0);
-        expect(result.cacheReadPrice).toBeUndefined();
+        expect(result.cacheReadPrice).toBe(0.05);
+        expect(result.cacheWritePrice).toBe(0.625);
+        expect(result.maxOutputTokens).toBe(65536);
       });
 
-      it('bills Qwen 3.7 Plus at the base (<256K) tier, records the >=256K tier as unsupported', () => {
+      it('gives Qwen 3.7 Flash three prompt-length tiers', () => {
+        const apiDef = createApiDef({ apiType: 'chatgpt' });
+        const result = getModelMetadataFor(apiDef, 'qwen3.7-flash-2026-07-15');
+
+        expect(result.inputPrice).toBe(0.03);
+        // 100K prompt lands in the middle tier, 500K in the top one
+        expect(calculateCost(result, 100_000, 0)).toBeCloseTo(0.01);
+        expect(calculateCost(result, 500_000, 0)).toBeCloseTo(0.1);
+      });
+
+      it('bills Qwen 3.7 Plus at the base tier up to 256K and the high tier above it', () => {
         const apiDef = createApiDef({ apiType: 'chatgpt' });
         const result = getModelMetadataFor(apiDef, 'qwen3.7-plus');
 
-        // Base tier applied by calculateCost
         expect(result.inputPrice).toBe(0.4);
         expect(result.cacheReadPrice).toBe(0.08);
         expect(result.outputPrice).toBe(1.6);
+        expect(result.contextPricingTiers).toEqual([
+          { thresholdTokens: 262144, inputPrice: 1.2, cacheReadPrice: 0.24, outputPrice: 4.8 },
+        ]);
 
-        // High tier recorded but not applied
-        expect(result.unsupportedHighContextPricing).toEqual({
-          thresholdTokens: 262144,
-          inputPrice: 1.2,
-          cacheReadPrice: 0.24,
-          outputPrice: 4.8,
-        });
-
-        // calculateCost uses the base price, not the high tier
-        const cost = calculateCost(result, 1_000_000, 0);
-        expect(cost).toBeCloseTo(0.4);
+        expect(calculateCost(result, 100_000, 0)).toBeCloseTo(0.04);
+        // Over 256K every token bills at the high tier
+        expect(calculateCost(result, 1_000_000, 0)).toBeCloseTo(1.2);
       });
 
       it('disambiguates kimi-k2.7-code from kimi-k2.7-code-highspeed by specificity', () => {
@@ -1144,68 +1285,46 @@ describe('modelMetadata', () => {
       });
     });
 
-    describe('supportsExtendedContext', () => {
-      it('returns supportsExtendedContext for Opus 4.6', () => {
+    describe('Claude context windows', () => {
+      it('serves 1M natively from the 4.6 generation on', () => {
         const apiDef = createApiDef({ apiType: 'anthropic' });
-        const result = getModelMetadataFor(apiDef, 'claude-opus-4-6-20260101');
-
-        expect(result.supportsExtendedContext).toBe(true);
+        for (const id of [
+          'claude-opus-4-6-20260101',
+          'claude-opus-4-7',
+          'claude-opus-4-8',
+          'claude-sonnet-4-6',
+          'claude-sonnet-5',
+          'anthropic.claude-opus-4-6-20250514-v1:0',
+          'anthropic.claude-sonnet-4-6-20250514-v1:0',
+        ]) {
+          expect(getModelMetadataFor(apiDef, id).contextWindow, id).toBe(1000000);
+        }
+        expect(getModelMetadataFor(apiDef, 'claude-sonnet-4-6').maxOutputTokens).toBe(128000);
       });
 
-      it('returns supportsExtendedContext for Sonnet 4.5', () => {
-        const apiDef = createApiDef({ apiType: 'anthropic' });
-        const result = getModelMetadataFor(apiDef, 'claude-sonnet-4-5-20250514');
-
-        expect(result.supportsExtendedContext).toBe(true);
+      it('keeps Sonnet 4.6 at 200K on claude-agent, where 1M needs usage credits', () => {
+        const apiDef = createApiDef({ apiType: 'claude-agent' });
+        const sonnet46 = getModelMetadataFor(apiDef, 'claude-sonnet-4-6');
+        expect(sonnet46.contextWindow).toBe(200000);
+        expect(sonnet46.inputPrice).toBe(3);
+        expect(sonnet46.maxOutputTokens).toBe(128000);
+        // Opus 4.6 gets `[1m]` there, so it keeps the 1M window
+        expect(getModelMetadataFor(apiDef, 'claude-opus-4-6').contextWindow).toBe(1000000);
       });
 
-      it('returns supportsExtendedContext for Sonnet 4', () => {
+      it('keeps Sonnet 4.5 and older at 200K', () => {
         const apiDef = createApiDef({ apiType: 'anthropic' });
-        const result = getModelMetadataFor(apiDef, 'claude-sonnet-4-20250514');
-
-        expect(result.supportsExtendedContext).toBe(true);
-      });
-
-      it('does not return supportsExtendedContext for Haiku 4.5', () => {
-        const apiDef = createApiDef({ apiType: 'anthropic' });
-        const result = getModelMetadataFor(apiDef, 'claude-haiku-4-5-20250101');
-
-        expect(result.supportsExtendedContext).toBeFalsy();
-      });
-
-      it('does not return supportsExtendedContext for 3.5 Sonnet', () => {
-        const apiDef = createApiDef({ apiType: 'anthropic' });
-        const result = getModelMetadataFor(apiDef, 'claude-3-5-sonnet-20241022');
-
-        expect(result.supportsExtendedContext).toBeFalsy();
-      });
-
-      it('does not return supportsExtendedContext for OpenAI models', () => {
-        const apiDef = createApiDef({ apiType: 'chatgpt' });
-        const result = getModelMetadataFor(apiDef, 'gpt-4o');
-
-        expect(result.supportsExtendedContext).toBeFalsy();
-      });
-
-      it('returns supportsExtendedContext for Bedrock Opus 4.6 foundation model', () => {
-        const apiDef = createApiDef({ apiType: 'anthropic' });
-        const result = getModelMetadataFor(apiDef, 'anthropic.claude-opus-4-6-20250514-v1:0');
-
-        expect(result.supportsExtendedContext).toBe(true);
-      });
-
-      it('returns supportsExtendedContext for Bedrock Sonnet 4.6 foundation model', () => {
-        const apiDef = createApiDef({ apiType: 'anthropic' });
-        const result = getModelMetadataFor(apiDef, 'anthropic.claude-sonnet-4-6-20250514-v1:0');
-
-        expect(result.supportsExtendedContext).toBe(true);
-      });
-
-      it('returns supportsExtendedContext for Bedrock Sonnet 4.5 foundation model', () => {
-        const apiDef = createApiDef({ apiType: 'anthropic' });
-        const result = getModelMetadataFor(apiDef, 'anthropic.claude-sonnet-4-5-20250514-v1:0');
-
-        expect(result.supportsExtendedContext).toBe(true);
+        for (const id of [
+          'claude-sonnet-4-5-20250514',
+          'claude-sonnet-4-20250514',
+          'claude-3-5-sonnet-20241022',
+          'anthropic.claude-sonnet-4-5-20250514-v1:0',
+        ]) {
+          expect(getModelMetadataFor(apiDef, id).contextWindow, id).toBe(200000);
+        }
+        const haiku45 = getModelMetadataFor(apiDef, 'claude-haiku-4-5-20250101');
+        expect(haiku45.contextWindow).toBe(200000);
+        expect(haiku45.maxOutputTokens).toBe(64000);
       });
     });
 
@@ -1257,7 +1376,7 @@ describe('modelMetadata', () => {
 
         expect(result.id).toBe('xai/grok-4');
         expect(result.matchedMode).toBe('exact');
-        expect(result.inputPrice).toBe(3.0);
+        expect(result.inputPrice).toBe(1.25);
       });
 
       it('prefers direct match over prefix-stripped match', () => {
@@ -1374,6 +1493,41 @@ describe('modelMetadata', () => {
         0.5
       );
       expect(half).toBeCloseTo(full * 0.5);
+    });
+
+    it('bills every token at the context tier once the prompt is above its threshold', () => {
+      const model = createModel({
+        inputPrice: 1,
+        outputPrice: 2,
+        cacheReadPrice: 0.1,
+        contextPricingTiers: [{ thresholdTokens: 100_000, inputPrice: 5, outputPrice: 10 }],
+      });
+      // 60K input + 40K cache read = 100K prompt: not above the threshold
+      expect(calculateCost(model, 60_000, 1_000_000, 0, 0, 40_000)).toBeCloseTo(0.06 + 2 + 0.004);
+      // One more token tips it over; the tier leaves cacheReadPrice unset
+      expect(calculateCost(model, 60_001, 1_000_000, 0, 0, 40_000)).toBeCloseTo(
+        (60_001 / 1_000_000) * 5 + 10 + 0.004
+      );
+    });
+
+    it('prices reasoning tokens at the tier output price when reasoningPrice is unset', () => {
+      const model = createModel({
+        inputPrice: 1,
+        outputPrice: 2,
+        contextPricingTiers: [{ thresholdTokens: 1000, outputPrice: 3 }],
+      });
+      expect(calculateCost(model, 2000, 0, 1_000_000)).toBeCloseTo(0.002 + 3);
+    });
+
+    it('picks the tier from promptTokens when given (multi-call results)', () => {
+      const model = createModel({
+        inputPrice: 1,
+        outputPrice: 2,
+        contextPricingTiers: [{ thresholdTokens: 100_000, inputPrice: 5 }],
+      });
+      // 300K summed over several calls, but the largest single prompt was 80K
+      const cost = calculateCost(model, 300_000, 0, 0, 0, 0, undefined, undefined, 1.0, 80_000);
+      expect(cost).toBeCloseTo(0.3);
     });
 
     it('does not discount per-request fees with tierMultiplier', () => {

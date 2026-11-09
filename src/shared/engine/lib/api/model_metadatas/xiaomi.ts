@@ -5,10 +5,10 @@ import type { ModelKnowledge } from '../../../../protocol/types';
 // other level just switches it on. Overseas pay-as-you-go prices, USD per 1M.
 export const XIAOMI_MODELS: ModelKnowledge[] = [
   {
-    // UltraSpeed is a flat 10x the price of plain -pro for ~10x output
-    // throughput; the cache-read rate is scaled by the same factor rather than
-    // quoted separately. Its longer prefix outranks the `mimo-v2.6-pro` entry
-    // below, which would otherwise match the UltraSpeed id and price it 10x low.
+    // UltraSpeed is a flat 10x the price of plain -pro, cache reads included,
+    // for output Xiaomi quotes as up to 20x faster. Its longer prefix outranks
+    // the `mimo-v2.6-pro` entry below, which would otherwise match the
+    // UltraSpeed id and price it 10x low.
     matches: [
       {
         apiType: ['anthropic', 'chatgpt', 'responses_api'],
@@ -57,6 +57,8 @@ export const XIAOMI_MODELS: ModelKnowledge[] = [
     inputPrice: 0.14,
     cacheReadPrice: 0.0028,
     outputPrice: 0.28,
+    contextWindow: 1048576,
+    maxOutputTokens: 131072,
     reasoningMode: 'optional',
     supportedReasoningEfforts: [],
     reasoningDialect: 'thinking-object',
@@ -68,6 +70,7 @@ export const XIAOMI_MODELS: ModelKnowledge[] = [
         modelIdFuzz: [{ modelIdPrefix: 'mimo-v2-pro' }],
       },
     ],
+    // Retired 2026-06-30; last known price.
     inputPrice: 1.0,
     cacheReadPrice: 0.2,
     outputPrice: 3.0,
@@ -97,6 +100,7 @@ export const XIAOMI_MODELS: ModelKnowledge[] = [
         modelIdFuzz: [{ modelIdPrefix: 'mimo-v2-omni' }],
       },
     ],
+    // Retired 2026-06-30; last known price.
     inputPrice: 0.4,
     cacheReadPrice: 0.08,
     outputPrice: 2.0,

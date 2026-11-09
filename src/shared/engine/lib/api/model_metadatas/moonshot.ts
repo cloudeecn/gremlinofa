@@ -24,6 +24,7 @@ export const MOONSHOT_MODELS: ModelKnowledge[] = [
     cacheReadPrice: 0.2,
     outputPrice: 20.0,
     contextWindow: 1048576,
+    maxOutputTokens: 131072, // default; can be raised to the full window
     reasoningMode: 'always',
     supportedReasoningEfforts: ['low', 'high', 'max'],
     supportsTools: true,
@@ -41,11 +42,14 @@ export const MOONSHOT_MODELS: ModelKnowledge[] = [
     cacheReadPrice: 0.2,
     outputPrice: 10.0,
     contextWindow: 1048576,
+    maxOutputTokens: 131072, // default; can be raised to the full window
     reasoningMode: 'always',
     supportedReasoningEfforts: ['low', 'high', 'max'],
     supportsTools: true,
   },
-  // Kimi K3 256k — same model and pricing as K3, capped at 256k context.
+  // Kimi K3 256k — same model and pricing as K3, capped at 256k context. Not
+  // on any official Kimi page as of 2026-11-09; kept for hosts that still
+  // serve the id.
   {
     matches: [
       {
@@ -76,10 +80,13 @@ export const MOONSHOT_MODELS: ModelKnowledge[] = [
     cacheReadPrice: 0.3,
     outputPrice: 15.0,
     contextWindow: 1048576,
+    maxOutputTokens: 131072, // default; can be raised to the full window
     reasoningMode: 'always',
     supportedReasoningEfforts: ['low', 'high', 'max'],
     supportsTools: true,
   },
+  // K2 line (K2.7 Code, K2.6): closed to new users 2026-10-31, retiring by
+  // the end of December 2026.
   // Kimi K2.7 Code (high-speed tier)
   {
     matches: [

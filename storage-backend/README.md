@@ -23,6 +23,8 @@ npm run build
 npm start
 ```
 
+This folder is an npm workspace of the GremlinOFA repo: `npm install` here (or at the repo root) installs into the root's `node_modules` and `package-lock.json`, and the root's `npm audit` covers this package too.
+
 ## Configuration
 
 Create a `.env` file (or just use environment variables like a civilized person). The server reads `.env` from its working directory, or whichever file `DOTENV_CONFIG_PATH` names:
@@ -180,6 +182,10 @@ NODE_ENV=production npm start
 ```
 
 Updating is the same `cp -r dist/. /opt/gremlinofa-storage` plus a restart. The build has no `.env` or `data.db`, so yours stay put.
+
+### With the repo's deploy script
+
+The root `scripts/deploy.ts` has a `storage` target. Add it to `deploy.config.json` (see `deploy.config.example.json`), then run `npm run deploy:storage` from the repo root (after the root `npm ci`). It builds, rsyncs `dist/`, and keeps `.env`, `data/`, `node_modules/` and any top-level `*.db*` file on the destination out of reach of `--delete`. That last rule covers `data.db` and its `-wal`/`-shm`, which sit right in the install dir by default.
 
 ### systemd (Debian, Ubuntu, RHEL, etc.)
 

@@ -1,11 +1,14 @@
 import * as esbuild from 'esbuild';
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 const distDir = 'dist';
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const runtimeDependencies = pkg.dependencies ?? {};
 
+// Start from an empty dist: the deploy script rsyncs it with --delete, so a
+// leftover from an older build would land on the server and stay there.
+rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
 
 await esbuild.build({

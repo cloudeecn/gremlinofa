@@ -208,6 +208,34 @@ describe('planDeploy', () => {
     expect(steps[1].requires).toBe('/repo/touch-grass-backend/dist/index.js');
   });
 
+  it.each([
+    { target: 'storage', distDir: 'storage-backend/dist', keepsDatabases: true },
+    { target: 'cors-proxy', distDir: 'cors-proxy/dist', keepsDatabases: false },
+  ] as const)('syncs $target from its package dist', ({ target, distDir, keepsDatabases }) => {
+    const { steps } = planDeploy(
+      { [target]: { dest: `h:/opt/gremlinofa-${target}` } },
+      [target],
+      opts
+    );
+    expect(steps[0].argv).toEqual(['npm', 'run', `build:${target}`]);
+    expect(steps[1].argv).toEqual([
+      'rsync',
+      '-rc',
+      '--delete',
+      '--filter=+ .env.example',
+      '--filter=- .env',
+      '--filter=- .env.*',
+      '--filter=- *.env',
+      '--filter=- /data',
+      '--filter=- /node_modules',
+      '--filter=- /package-lock.json',
+      ...(keepsDatabases ? ['--filter=- /*.db*'] : []),
+      `/repo/${distDir}/`,
+      `h:/opt/gremlinofa-${target}`,
+    ]);
+    expect(steps[1].requires).toBe(`/repo/${distDir}/index.js`);
+  });
+
   it('resolves a relative local dest against the config file', () => {
     const { steps } = planDeploy({ frontend: { dest: '../www' } }, ['frontend'], {
       ...opts,
@@ -331,6 +359,34 @@ describe.skipIf(!hasRsync)('planned rsync against a real destination', () => {
     expect(readFileSync(path.join(dest, 'static/app.js'), 'utf8')).toBe('new');
     expect(existsSync(path.join(dest, 'stale.js'))).toBe(false);
     expect(existsSync(path.join(dest, 'static/removed.css'))).toBe(false);
+  });
+
+  it('keeps the storage database and its WAL files at the top of the install dir', () => {
+    const repoRoot = path.join(scratch, 'repo');
+    const distDir = path.join(repoRoot, 'storage-backend/dist');
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(path.join(distDir, 'index.js'), 'new');
+    const dest = path.join(scratch, 'dest');
+    mkdirSync(dest);
+    const databaseFiles = ['data.db', 'data.db-wal', 'data.db-shm'];
+    for (const file of [...databaseFiles, 'index.js', 'stale.js']) {
+      writeFileSync(path.join(dest, file), 'old');
+    }
+
+    const { steps } = planDeploy({ storage: { dest } }, ['storage'], {
+      repoRoot,
+      configPath: path.join(repoRoot, 'deploy.config.json'),
+      build: false,
+      dryRun: false,
+    });
+    const rsync = spawnSync(steps[0].argv[0], steps[0].argv.slice(1), { encoding: 'utf8' });
+    expect(rsync.stderr).toBe('');
+    expect(rsync.status).toBe(0);
+    for (const file of databaseFiles) {
+      expect(readFileSync(path.join(dest, file), 'utf8')).toBe('old');
+    }
+    expect(readFileSync(path.join(dest, 'index.js'), 'utf8')).toBe('new');
+    expect(existsSync(path.join(dest, 'stale.js'))).toBe(false);
   });
 
   it('lets a user exclude keep .env.example out of the sync', () => {

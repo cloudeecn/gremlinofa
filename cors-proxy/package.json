@@ -1,5 +1,6 @@
 {
   "name": "@gremlinofa/cors-proxy",
+  "private": true,
   "version": "1.0.0",
   "type": "module",
   "description": "CORS proxy for GremlinOFA - because browser security and AI APIs don't always agree",

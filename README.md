@@ -81,7 +81,7 @@ GremlinOFA is a browser-based chat client for multiple AI providers. You bring y
 git clone https://github.com/cloudeecn/gremlinofa.git
 cd gremlinofa
 
-# Install dependencies
+# Install dependencies (the app plus every backend package, see below)
 npm install
 
 # Run it
@@ -177,6 +177,14 @@ Tired of typing rsync incantations? Copy `deploy.config.example.json` to `deploy
     "postDeploy": "npm install --omit=dev"
   },
   "vfs-server": { "dest": "/opt/gremlinofa-vfs", "postDeploy": "npm install --omit=dev" },
+  "storage": {
+    "dest": "you@gremlin.example.com:/opt/gremlinofa-storage",
+    "postDeploy": "npm install --omit=dev"
+  },
+  "cors-proxy": {
+    "dest": "you@gremlin.example.com:/opt/gremlinofa-cors-proxy",
+    "postDeploy": "npm install --omit=dev"
+  },
   "touch-grass": {
     "dest": "you@gremlin.example.com:/opt/gremlinofa-touch-grass",
     "postDeploy": "npm install --omit=dev"
@@ -184,12 +192,12 @@ Tired of typing rsync incantations? Copy `deploy.config.example.json` to `deploy
 }
 ```
 
-Then `npm run deploy` (frontend + server, same pair as `npm run build`), or one at a time with `deploy:frontend`, `deploy:server`, `deploy:vfs-server`, `deploy:touch-grass`. Each one builds first, then syncs. Targets missing from the config get skipped. `touch-grass` builds inside its own package, so run `npm ci` in `touch-grass-backend/` once before the first deploy.
+Then `npm run deploy` (frontend + server, same pair as `npm run build`), or one at a time with `deploy:frontend`, `deploy:server`, `deploy:vfs-server`, `deploy:storage`, `deploy:cors-proxy`, `deploy:touch-grass`. The last three ship the workspace packages (`storage-backend/`, `cors-proxy/`, `touch-grass-backend/`) from their own `dist/`. Each one builds first, then syncs. Targets missing from the config get skipped.
 
 - **`dest`** uses rsync syntax: `[user@]host:/path` goes over SSH, anything else is a path on this machine (relative paths resolve against the config file). Custom port or key? Give the host an alias in `~/.ssh/config`.
 - **`postDeploy`** runs inside `dest` after the sync. Remote runs go through your login shell, so nvm and friends are on PATH. Chain a `systemctl restart` on the end if you like living fast.
 - **`exclude`** / **`rsyncArgs`** add rsync patterns and flags (`.well-known/`, `--chown=…`).
-- The sync is `rsync --delete`, but the server targets always protect `.env`, `.env.*` (except `.env.example`, which ships fresh each deploy), `*.env`, `data` (a directory or a symlink to one), `node_modules` and `package-lock.json` on the destination. `touch-grass` also keeps any `*.db*` file at the top level, where its old default put the database. No footguns here, as long as your data lives in `data/`.
+- The sync is `rsync --delete`, but the server targets always protect `.env`, `.env.*` (except `.env.example`, which ships fresh each deploy), `*.env`, `data` (a directory or a symlink to one), `node_modules` and `package-lock.json` on the destination. `storage` and `touch-grass` also keep any `*.db*` file at the top level: that's where storage-backend's `data.db` lives by default, and where touch-grass's old default put its database. No footguns here, as long as your data lives in `data/`.
 - `npm run deploy -- --dry-run` itemizes what would change and only prints `postDeploy`. `--no-build` ships whatever's already in `dist/`, and `--config <file>` picks another config (`deploy.config.*.json` is gitignored too, for staging setups).
 
 Needs Node 22.18+ (the script is TypeScript, run directly by Node), plus `rsync` and `ssh` on your PATH.
@@ -353,6 +361,8 @@ npm run test
 npm run test:silent
 ```
 
+`storage-backend/`, `cors-proxy/` and `touch-grass-backend/` are npm workspaces of the root package. That means one `package-lock.json` and one `node_modules`, and a single `npm audit` (or `npm outdated`, `npm audit fix`) at the root covers all four packages instead of making you `cd` around and repeat it. Their own checks still run from inside each folder: `cd touch-grass-backend && npm run verify && npm run test:silent`.
+
 ## Bragging zone / Optional features
 
 ### Message Metadata 📊
@@ -463,7 +473,7 @@ Want to sync across devices without relying on someone else's cloud? There's a s
 - **SQLite-based** — More reliable than browser storage, still lightweight
 - **Per-user namespaces** — Data is keyed by userId (derived from your encryption key). It's separation, not a hardened multi-tenant fortress — Basic Auth ignores the password today, so **deploy this for yourself** (your own devices) or behind a trusted auth layer, not as an open multi-user service.
 - **Encrypted at rest** — The backend only ever sees blobs; decryption happens client-side. So even on shared hardware, your conversations stay yours.
-- **Easy to deploy** — Single bundled file, systemd/OpenRC service files included
+- **Easy to deploy** — Single bundled file, systemd/OpenRC service files included, and `npm run deploy:storage` ships it without touching your database
 
 On first launch, the OOBE wizard lets you choose between local (IndexedDB) or remote storage. You can also connect to an existing remote instance with your backup key.
 

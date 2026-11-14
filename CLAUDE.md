@@ -34,9 +34,11 @@ There are some standalone packages in this project's root.
 - cors-proxy
 - touch-grass-backend
 
+They are npm workspaces of the root package: one root `package-lock.json` and `node_modules`. Install, `npm audit` and `npm outdated` at the root; don't create a `package-lock.json` inside a package.
+
 In order to test compile and unit test these packages, you need to `cd <standalone-package-path>`, than run `npm run verify` and `npm run test:silent` accordingly.
 
-They have their own package.json and config files.
+They have their own package.json and config files (eslint, prettier, tsconfig, vitest).
 
 ### storage-backend
 

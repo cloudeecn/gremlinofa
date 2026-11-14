@@ -157,9 +157,9 @@ export async function cloneMinionChatToChat(
   const notes: string[] = [];
   const agentConfig = deriveChatAgentConfigFromMinion(minionChat, project);
 
-  // `remote` and `remoteSessionId` stay behind with the other minion-only
-  // fields (the chat row below is built field by field), but the transcript
-  // still reads as if the replies were the agent's own.
+  // `remote`, `remoteSessionId` and `remoteToken` stay behind with the other
+  // minion-only fields (the chat row below is built field by field), but the
+  // transcript still reads as if the replies were the agent's own.
   if (isRemoteMinionChat(minionChat)) {
     notes.push(
       'This was a remote minion: its replies were written by a human operator. The clone ' +

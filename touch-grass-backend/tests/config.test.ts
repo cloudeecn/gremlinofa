@@ -16,6 +16,7 @@ describe('parseConfig', () => {
       dbPath: './data/touch-grass.db',
       apiPassword: 'api-secret',
       webPassword: 'web-secret',
+      webAdminUsername: 'Admin',
       pollTimeoutMs: 30000,
       trustProxy: false,
       sessionRetentionDays: 30,
@@ -120,6 +121,30 @@ describe('parseConfig', () => {
     expect(parsed.host).toBe('127.0.0.1');
     expect(parsed.dbPath).toBe(':memory:');
     expect(parsed.sessionRetentionDays).toBe(0);
+  });
+
+  it.each([
+    ['', 'Admin'],
+    ['   ', 'Admin'],
+    ['  Root  ', 'Root'],
+    ['Grass Keeper', 'Grass Keeper'],
+    ['a'.repeat(64), 'a'.repeat(64)],
+    ['草'.repeat(64), '草'.repeat(64)],
+  ])('reads WEB_ADMIN_USERNAME=%j as %j', (raw, expected) => {
+    expect(parseConfig({ ...BASE_ENV, WEB_ADMIN_USERNAME: raw }).webAdminUsername).toBe(expected);
+  });
+
+  const TOO_LONG = 'WEB_ADMIN_USERNAME must be at most 64 characters';
+  const CONTROL = 'WEB_ADMIN_USERNAME must not contain control characters';
+  it.each([
+    ['65 characters', 'a'.repeat(65), TOO_LONG],
+    ['a newline', 'ad\nmin', CONTROL],
+    ['a tab', 'ad\tmin', CONTROL],
+    ['a DEL', 'admin\x7f', CONTROL],
+  ])('refuses WEB_ADMIN_USERNAME with %s', (_label, raw, message) => {
+    const parse = () => parseConfig({ ...BASE_ENV, WEB_ADMIN_USERNAME: raw });
+    expect(parse).toThrow(ConfigError);
+    expect(parse).toThrow(message);
   });
 
   it.each(['-1', '36501', '100000000'])('rejects SESSION_RETENTION_DAYS=%s', raw => {

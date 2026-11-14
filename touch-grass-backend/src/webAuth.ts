@@ -1,6 +1,7 @@
 /**
- * Web UI auth and hardening: the signed session cookie, login backoff, security headers and
- * the cross-origin POST check. Routes live in webRoutes.ts.
+ * Web UI auth and hardening: the signed session cookie and the principal (admin or user) it
+ * signs in, login backoff, security headers and the cross-origin POST check. Routes, and the
+ * database lookups behind a principal, live in webRoutes.ts.
  */
 
 import crypto from 'crypto';
@@ -11,37 +12,102 @@ import { errorPage, webRootFor } from './webViews.js';
 export const WEB_COOKIE_NAME = 'tg_auth';
 const WEB_SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
 
-const COOKIE_VERSION = 'v1';
+/** The principal id in the admin's cookies; a user's cookies carry the user's 32-hex id. */
+export const ADMIN_PRINCIPAL_ID = 'admin';
+
+const COOKIE_VERSION = 'v2';
 const COOKIE_KEY_LABEL = 'touch-grass-web-cookie-v1';
-const COOKIE_PATTERN = /^v1\.(\d{1,16})\.([A-Za-z0-9_-]{43})$/;
+const COOKIE_PATTERN = /^v2\.(admin|[0-9a-f]{32})\.(\d{1,16})\.([A-Za-z0-9_-]{43})$/;
+
+/** Who a signed-in browser is. The admin sees every session, a user only those with its token. */
+export type WebPrincipal =
+  | { role: 'admin'; username: string }
+  | { role: 'user'; id: string; username: string; token: string };
+
+declare module 'express-serve-static-core' {
+  interface Request {
+    /** Set by requireWebAuth for every route registered after it. */
+    webUser?: WebPrincipal;
+    /**
+     * The binding webUser's cookie verified against. A route that waits before acting can
+     * compare it with the current one, since by then the password may have changed.
+     */
+    webBinding?: string;
+  }
+}
+
+/** A principal plus the binding its cookies are signed over. */
+export interface ResolvedPrincipal {
+  principal: WebPrincipal;
+  binding: string;
+}
+
+/** Looks up a cookie's principal id; undefined when nobody has it (a deleted user). */
+export type PrincipalResolver = (principalId: string) => ResolvedPrincipal | undefined;
 
 // ── Signed cookie ──
 //
-// The cookie is `v1.<expiry ms>.<base64url HMAC>`: nothing is stored server-side, so it
-// survives restarts, and the key comes from WEB_PASSWORD, so changing the password revokes
-// every cookie at once.
+// The cookie is `v2.<principal id>.<expiry ms>.<base64url HMAC>`: nothing is stored server-side,
+// so it survives restarts. The key comes from WEB_PASSWORD, so changing it revokes every cookie
+// at once. The MAC also covers a binding the cookie doesn't carry, looked up on every request:
+// a user's password hash, so a password change or reset revokes that user's cookies, and the
+// admin's name, so a new WEB_ADMIN_USERNAME revokes the admin's. v1 cookies, which carried no
+// principal, don't match the pattern and send their browser back to the login page.
 
 export function deriveCookieKey(webPassword: string): Buffer {
   return crypto.createHmac('sha256', webPassword).update(COOKIE_KEY_LABEL).digest();
 }
 
-function cookieMac(key: Buffer, payload: string): string {
-  return crypto.createHmac('sha256', key).update(payload).digest('base64url');
+/** Letter case doesn't count, the same as at login. */
+export function adminBinding(adminUsername: string): string {
+  return `admin:${adminUsername.toLowerCase()}`;
 }
 
-export function signWebCookie(key: Buffer, expiresAtMs: number): string {
-  const payload = `${COOKIE_VERSION}.${expiresAtMs}`;
-  return `${payload}.${cookieMac(key, payload)}`;
+export function userBinding(passwordHash: string): string {
+  return `user:${passwordHash}`;
 }
 
-export function verifyWebCookie(key: Buffer, token: string, nowMs = Date.now()): boolean {
+export function principalIdOf(principal: WebPrincipal): string {
+  return principal.role === 'admin' ? ADMIN_PRINCIPAL_ID : principal.id;
+}
+
+function cookieMac(key: Buffer, payload: string, binding: string): string {
+  // The payload can't hold a line break, so the separator keeps payload and binding apart.
+  return crypto.createHmac('sha256', key).update(`${payload}\n${binding}`).digest('base64url');
+}
+
+export function signWebCookie(
+  key: Buffer,
+  principalId: string,
+  binding: string,
+  expiresAtMs: number
+): string {
+  const payload = `${COOKIE_VERSION}.${principalId}.${expiresAtMs}`;
+  return `${payload}.${cookieMac(key, payload, binding)}`;
+}
+
+/**
+ * The principal a cookie signs in, with the binding it verified against, or null when the cookie
+ * is malformed, expired, revoked or forged.
+ */
+export function verifyWebCookie(
+  key: Buffer,
+  token: string,
+  resolve: PrincipalResolver,
+  nowMs = Date.now()
+): ResolvedPrincipal | null {
   const match = COOKIE_PATTERN.exec(token);
-  if (!match) return false;
+  if (!match) return null;
+  const [, principalId, expiresAt, mac] = match;
+  if (Number(expiresAt) <= nowMs) return null;
+  const resolved = resolve(principalId);
+  if (!resolved) return null;
   // Compare the canonical encodings: decoding first would accept variants of the last
   // base64url character that differ only in its unused low bits.
-  const expected = Buffer.from(cookieMac(key, `${COOKIE_VERSION}.${match[1]}`));
-  if (!crypto.timingSafeEqual(Buffer.from(match[2]), expected)) return false;
-  return Number(match[1]) > nowMs;
+  const expected = Buffer.from(
+    cookieMac(key, `${COOKIE_VERSION}.${principalId}.${expiresAt}`, resolved.binding)
+  );
+  return crypto.timingSafeEqual(Buffer.from(mac), expected) ? resolved : null;
 }
 
 function cookieValues(header: string | undefined, name: string): string[] {
@@ -56,17 +122,25 @@ function cookieValues(header: string | undefined, name: string): string[] {
   return values;
 }
 
-function hasValidCookie(req: Request, key: Buffer): boolean {
-  // A browser can hold several cookies of this name (another path, or a random-token one left
-  // by the pre-2.0 backend, which predates signed cookies); any valid one will do.
-  return cookieValues(req.headers.cookie, WEB_COOKIE_NAME).some(token =>
-    verifyWebCookie(key, token)
-  );
+function signedInPrincipal(
+  req: Request,
+  key: Buffer,
+  resolve: PrincipalResolver
+): ResolvedPrincipal | null {
+  // A browser can hold several cookies of this name (another path, or one left by an older
+  // backend); the first valid one wins.
+  for (const token of cookieValues(req.headers.cookie, WEB_COOKIE_NAME)) {
+    const signedIn = verifyWebCookie(key, token, resolve);
+    if (signedIn) return signedIn;
+  }
+  return null;
 }
 
 function cookieHeader(req: Request, value: string, maxAgeSeconds: number): string {
   // No Path attribute on purpose: the browser defaults it to the directory of the URL that set
-  // it (…/web for POST …/web/login), which stays right under any reverse-proxy path prefix.
+  // it (…/web for POST …/web/login), which stays right under any reverse-proxy path prefix. So
+  // only routes directly under the web root may set or clear it; one deeper would store a second
+  // cookie beside this one, which logout misses.
   const attributes = [
     `${WEB_COOKIE_NAME}=${value}`,
     `Max-Age=${maxAgeSeconds}`,
@@ -78,8 +152,19 @@ function cookieHeader(req: Request, value: string, maxAgeSeconds: number): strin
   return attributes.join('; ');
 }
 
-export function issueSessionCookie(req: Request, res: Response, key: Buffer): void {
-  const token = signWebCookie(key, Date.now() + WEB_SESSION_MAX_AGE_SECONDS * 1000);
+export function issueSessionCookie(
+  req: Request,
+  res: Response,
+  key: Buffer,
+  principalId: string,
+  binding: string
+): void {
+  const token = signWebCookie(
+    key,
+    principalId,
+    binding,
+    Date.now() + WEB_SESSION_MAX_AGE_SECONDS * 1000
+  );
   res.setHeader('Set-Cookie', cookieHeader(req, token, WEB_SESSION_MAX_AGE_SECONDS));
 }
 
@@ -97,16 +182,22 @@ export function createPasswordCheck(expected: string): (candidate: unknown) => b
 
 // ── Where to go after login ──
 
-const RETURN_TO_PATTERN = /^(?:sessions\/[0-9a-f]{1,64})?$/;
+const RETURN_TO_PATTERN = /^(?:sessions\/[0-9a-f]{1,64}|account|admin)?$/;
 
-/** Only '' (the session list) and 'sessions/<hex id>' are allowed, so `next` can't redirect off-site. */
+/**
+ * Only '' (the session list), 'sessions/<hex id>', 'account' and 'admin' are allowed, so `next`
+ * can't redirect off-site.
+ */
 export function parseReturnTo(raw: unknown): string {
   return typeof raw === 'string' && RETURN_TO_PATTERN.test(raw) ? raw : '';
 }
 
 function returnToFor(routerPath: string): string {
-  const match = /^\/sessions\/([0-9a-f]{1,64})(?:\/|$)/.exec(routerPath);
-  return match ? `sessions/${match[1]}` : '';
+  const session = /^\/sessions\/([0-9a-f]{1,64})(?:\/|$)/.exec(routerPath);
+  if (session) return `sessions/${session[1]}`;
+  // A signed-out form post under /admin/users/… comes back to the admin page.
+  const page = /^\/(account|admin)(?:\/|$)/.exec(routerPath);
+  return page ? page[1] : '';
 }
 
 function loginUrl(routerPath: string, returnTo: string): string {
@@ -114,14 +205,26 @@ function loginUrl(routerPath: string, returnTo: string): string {
   return `${webRootFor(routerPath)}login${query}`;
 }
 
+export interface RequireWebAuthOptions {
+  cookieKey: Buffer;
+  /** Injected, so this module stays free of the database. */
+  resolve: PrincipalResolver;
+}
+
 /**
- * Lets requests with a valid cookie through. Others get a JSON 401 under /api/ (the pollers
- * turn that into a trip to the login page) or a redirect to the login page that comes back to
- * the session they were on.
+ * Lets requests with a valid cookie through and puts its principal on `req.webUser`, its binding
+ * on `req.webBinding`. Others get a JSON 401 under /api/ (the pollers turn that into a trip to the
+ * login page) or a redirect to the login page that comes back to the page they were on.
  */
-export function createRequireWebAuth(key: Buffer): RequestHandler {
+export function createRequireWebAuth({
+  cookieKey,
+  resolve,
+}: RequireWebAuthOptions): RequestHandler {
   return (req, res, next) => {
-    if (hasValidCookie(req, key)) {
+    const signedIn = signedInPrincipal(req, cookieKey, resolve);
+    if (signedIn) {
+      req.webUser = signedIn.principal;
+      req.webBinding = signedIn.binding;
       next();
       return;
     }
@@ -144,12 +247,23 @@ const PRUNE_INTERVAL_MS = 60_000;
 /** Bounds memory when many addresses fail; the stalest entries go first. */
 const MAX_TRACKED_CLIENTS = 10_000;
 
+/**
+ * The password a guess was checked against: WEB_PASSWORD, or one user's (by name, letter case
+ * aside). Kept apart by kind, so a user whose name matches the admin's (WEB_ADMIN_USERNAME was
+ * changed onto it) proves only their own password.
+ */
+export type LoginTarget = { role: 'admin' } | { role: 'user'; username: string };
+
 export interface LoginLimiter {
   /** Seconds this client must still wait, or 0 when it may try. */
   lockedFor(clientKey: string): number;
-  /** Records a wrong password; returns the lock it triggered in seconds (0 for none). */
-  recordFailure(clientKey: string): number;
-  recordSuccess(clientKey: string): void;
+  /**
+   * Records a wrong password for `target`; returns the lock it triggered in seconds (0 for
+   * none).
+   */
+  recordFailure(clientKey: string, target: LoginTarget): number;
+  /** Records `target`'s correct password. */
+  recordSuccess(clientKey: string, target: LoginTarget): void;
   trackedClients(): number;
 }
 
@@ -157,12 +271,24 @@ interface FailureRecord {
   failures: number;
   lockedUntil: number;
   lastFailureAt: number;
+  /** targetDigest of every failure so far, or null once they cover two targets. */
+  target: string | null;
+}
+
+/**
+ * Fixed-size, so a record costs the same whatever name was typed: the login form takes up to
+ * 16 KB, and MAX_TRACKED_CLIENTS records of that would hold on to over 150 MB.
+ */
+function targetDigest(target: LoginTarget): string {
+  const label = target.role === 'admin' ? 'admin' : `user:${target.username.toLowerCase()}`;
+  return crypto.createHash('sha256').update(label, 'utf8').digest('base64url');
 }
 
 /**
  * Per-client backoff: the LOCK_AFTER_FAILURES-th wrong password in a row locks the client for
  * 1 s, and each further one doubles that (2 s, 4 s…) up to 60 s. A correct password clears the
- * record.
+ * record only when every miss in it was for that same target: it proves that one password, and
+ * says nothing about guesses at the admin's or another user's.
  */
 export function createLoginLimiter(now: () => number = Date.now): LoginLimiter {
   const clients = new Map<string, FailureRecord>();
@@ -189,27 +315,68 @@ export function createLoginLimiter(now: () => number = Date.now): LoginLimiter {
       return Math.max(0, Math.ceil((record.lockedUntil - now()) / 1000));
     },
 
-    recordFailure(clientKey) {
+    recordFailure(clientKey, target) {
       const nowMs = now();
-      const previous = clients.get(clientKey);
-      const failures =
-        previous && nowMs - previous.lastFailureAt <= FAILURE_MEMORY_MS ? previous.failures + 1 : 1;
+      const digest = targetDigest(target);
+      const stored = clients.get(clientKey);
+      const previous =
+        stored && nowMs - stored.lastFailureAt <= FAILURE_MEMORY_MS ? stored : undefined;
+      const failures = previous ? previous.failures + 1 : 1;
       const lockMs =
         failures >= LOCK_AFTER_FAILURES
           ? Math.min(1000 * 2 ** (failures - LOCK_AFTER_FAILURES), MAX_LOCK_MS)
           : 0;
       clients.delete(clientKey);
-      clients.set(clientKey, { failures, lockedUntil: nowMs + lockMs, lastFailureAt: nowMs });
+      clients.set(clientKey, {
+        failures,
+        lockedUntil: nowMs + lockMs,
+        lastFailureAt: nowMs,
+        target: !previous || previous.target === digest ? digest : null,
+      });
       prune(nowMs);
       return Math.ceil(lockMs / 1000);
     },
 
-    recordSuccess(clientKey) {
-      clients.delete(clientKey);
+    recordSuccess(clientKey, target) {
+      if (clients.get(clientKey)?.target === targetDigest(target)) {
+        clients.delete(clientKey);
+      }
     },
 
     trackedClients() {
       return clients.size;
+    },
+  };
+}
+
+export interface LoginQueue {
+  /** Runs `check` once every earlier check for this client has settled. */
+  run<T>(clientKey: string, check: () => Promise<T>): Promise<T>;
+  /** Clients with a check running or waiting. */
+  queuedClients(): number;
+}
+
+/**
+ * One password check at a time per client. A check awaits scrypt between reading lockedFor and
+ * recording its failure, so a burst of parallel guesses would otherwise all pass lockedFor and
+ * all get checked before the first one locked the client.
+ */
+export function createLoginQueue(): LoginQueue {
+  const tails = new Map<string, Promise<unknown>>();
+  return {
+    run(clientKey, check) {
+      const outcome = (tails.get(clientKey) ?? Promise.resolve()).then(() => check());
+      // The next check waits for this one whichever way it settles.
+      const tail = outcome.catch(() => undefined);
+      tails.set(clientKey, tail);
+      void tail.then(() => {
+        if (tails.get(clientKey) === tail) tails.delete(clientKey);
+      });
+      return outcome;
+    },
+
+    queuedClients() {
+      return tails.size;
     },
   };
 }

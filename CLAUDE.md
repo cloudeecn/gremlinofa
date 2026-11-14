@@ -57,7 +57,7 @@ They have their own package.json and config files.
 - Remote human minion backend. Bridges the minion tool to a human operator via a web UI.
 - API definition is in `touch-grass-backend/touch-grass-api.yaml`. Use it as source of truth.
 - SQLite-based session/message storage. In-memory long-poll resolver for low-latency response delivery.
-- Web UI: server-rendered HTML + vanilla JS, cookie-based auth.
+- Web UI: server-rendered HTML + vanilla JS, admin + users, cookie-based auth, token-routed sessions.
 
 # Anti slop
 

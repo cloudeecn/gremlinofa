@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { createApp } from './app.js';
-import { closeDatabase, initDatabase, sweepOldSessions } from './db.js';
+import { closeDatabase, initDatabase, listUsers, sweepOldSessions } from './db.js';
+import { sameUsername } from './passwords.js';
 import { createPollRegistry } from './pollManager.js';
 import { createShutdownHandler, startServer } from './server.js';
 
@@ -11,6 +12,18 @@ for (const warning of config.warnings) {
 }
 
 initDatabase();
+
+// The login form sends the admin's name to the WEB_PASSWORD check only, so this user can't sign
+// in. Cookies name a user by id, so browsers it signed in earlier keep working.
+for (const user of listUsers()) {
+  if (sameUsername(user.username, config.webAdminUsername)) {
+    console.warn(
+      `Warning: user '${user.username}' has the admin's name (WEB_ADMIN_USERNAME), so it cannot ` +
+        'sign in; browsers already signed in as it keep working. Rename the user on the admin ' +
+        'page or change WEB_ADMIN_USERNAME.'
+    );
+  }
+}
 
 function runRetentionSweep(): void {
   if (config.sessionRetentionDays === 0) return;

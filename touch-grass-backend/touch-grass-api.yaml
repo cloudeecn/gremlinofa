@@ -15,9 +15,15 @@ info:
     stored and shown to the human, and supersedes whatever was pending, but
     opens no request, so there is nothing to answer or poll.
 
+    Sessions can be routed to a Touch Grass user by passing that user's token
+    as `userToken` at creation. The token only decides whose inbox in the web
+    UI shows the session: a user sees the sessions carrying their token, and
+    the admin sees every session. It authenticates nothing. API_PASSWORD
+    still reaches every session by id, with or without a token.
+
     The `/web/*` routes (human operator UI and its JSON polling endpoints) are
     internal to the bundled web UI and not part of this contract.
-  version: 2.1.0
+  version: 2.2.0
 
 servers:
   - url: http://localhost:3004
@@ -56,6 +62,17 @@ paths:
                   type: [string, 'null']
                   maxLength: 200
                   description: Label shown to the human in the session list
+                userToken:
+                  type: [string, 'null']
+                  description: |
+                    Token of the Touch Grass user whose inbox gets this session.
+                    Absent, null or blank (after trimming): the session has no
+                    owner and only the admin sees it. A token that matches no
+                    user is a 400 with the error
+                    `Unknown userToken: no Touch Grass user has this token`.
+                    The token is stored with the session and never echoed back.
+                    Backends before 2.2 ignore the field, so the session goes
+                    to the admin.
       responses:
         '201':
           description: Session created
@@ -345,11 +362,23 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     NotFound:
-      description: Session or request not found
+      description: |
+        Session or request not found. A missing session answers exactly
+        `{"error": "Session not found"}` and a missing request
+        `{"error": "Request not found"}`. Clients rely on the session text to
+        tell a lost session from a misrouted path (a proxy's 404 page, or the
+        catch-all `{"error": "Not found"}`), so it is part of the contract.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+          examples:
+            sessionGone:
+              value:
+                error: Session not found
+            requestGone:
+              value:
+                error: Request not found
     PayloadTooLarge:
       description: |
         Request body exceeds 10 MB. Applies to every /api route, including

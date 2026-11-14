@@ -1,17 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import type { InjectedFile, RequestRecord, Session, SessionMessage } from '../src/types.js';
+import type {
+  InjectedFile,
+  RequestRecord,
+  Session,
+  SessionListEntry,
+  SessionMessage,
+  User,
+  UserStats,
+} from '../src/types.js';
+import type { WebPrincipal } from '../src/webAuth.js';
 import {
+  accountPage,
+  adminPage,
   chatPage,
   chatState,
   chatStatusHtml,
   escapeHtml,
+  loginPage,
   messagesFragment,
   renderMarkdown,
+  sessionListFragment,
   sessionListPage,
   stripLineNumbers,
   undeliveredAnswerHtml,
   webRootFor,
 } from '../src/webViews.js';
+
+const ADMIN: WebPrincipal = { role: 'admin', username: 'Admin' };
+const BOB: WebPrincipal = {
+  role: 'user',
+  id: 'b'.repeat(32),
+  username: 'bob',
+  token: 'tg_bob-token',
+};
 
 function request(overrides: Partial<RequestRecord>): RequestRecord {
   return {
@@ -280,10 +301,17 @@ describe('page chrome', () => {
     id: 'sess1',
     callerId: 'caller',
     displayName: 'Deploy check',
+    userToken: null,
     createdAt: '2026-10-08T10:00:00.000Z',
     lastActivityAt: '2026-10-08T10:00:00.000Z',
   };
-  const listPage = sessionListPage({ base: './', listHtml: '', pendingIds: [], signature: 's' });
+  const listPage = sessionListPage({
+    base: './',
+    listHtml: '',
+    pendingIds: [],
+    signature: 's',
+    viewer: ADMIN,
+  });
   const chat = chatPage({
     base: '../',
     session,
@@ -333,5 +361,252 @@ describe('page chrome', () => {
     expect(chat).toContain('<details class="menu" id="chat-menu">');
     expect(chat).toContain('<input type="checkbox" id="auto-expand-files">');
     expect(listPage).not.toContain('chat-menu');
+  });
+});
+
+describe('login page', () => {
+  it('asks for a username the browser fills, and focuses it', () => {
+    const html = loginPage({ base: './', returnTo: '' });
+    expect(html).toMatch(
+      /<input id="username" type="text" name="username" placeholder="Username" value=""\s+autocomplete="username" autocapitalize="none" spellcheck="false" autofocus required>/
+    );
+    expect(html).toMatch(/<label for="username" class="visually-hidden">Username<\/label>/);
+    expect(html).toMatch(/autocomplete="current-password" required>/);
+  });
+
+  it('keeps a refused username, escaped, and moves the focus to the password', () => {
+    const html = loginPage({ base: './', returnTo: 'admin', username: '"><b>bob' });
+    expect(html).toContain('value="&quot;&gt;&lt;b&gt;bob"');
+    expect(html).not.toContain('<b>bob');
+    expect(html).toMatch(/autocomplete="current-password" autofocus required>/);
+    expect(html).toContain('name="next" value="admin"');
+  });
+});
+
+describe('session owners', () => {
+  function entry(overrides: Partial<SessionListEntry>): SessionListEntry {
+    return {
+      id: 'sess1',
+      callerId: 'caller',
+      displayName: 'Deploy check',
+      userToken: null,
+      createdAt: '2026-10-08T10:00:00.000Z',
+      lastActivityAt: '2026-10-08T10:00:00.000Z',
+      pending: null,
+      ownerUsername: null,
+      ...overrides,
+    };
+  }
+
+  const sessions = [
+    entry({ id: 's1', userToken: 'tg_x', ownerUsername: '<bob>' }),
+    entry({ id: 's2' }),
+  ];
+
+  it('labels each session with its owner when asked', () => {
+    const html = sessionListFragment(sessions, './', { showOwner: true });
+    expect(html).toContain('caller: caller &middot; user: &lt;bob&gt;</span>');
+    expect(html).toContain('caller: caller &middot; no token</span>');
+  });
+
+  it('says nothing about owners by default', () => {
+    const html = sessionListFragment(sessions, './');
+    expect(html).not.toContain('user:');
+    expect(html).not.toContain('no token');
+    expect(html).not.toContain('tg_x');
+  });
+
+  it('names the owner on the chat page only when given one', () => {
+    const session: Session = {
+      id: 'sess1',
+      callerId: 'caller',
+      displayName: null,
+      userToken: 'tg_x',
+      createdAt: '2026-10-08T10:00:00.000Z',
+      lastActivityAt: '2026-10-08T10:00:00.000Z',
+    };
+    const chat = (owner?: string | null) =>
+      chatPage({
+        base: '../',
+        session,
+        messages: [],
+        state: chatState(undefined, undefined),
+        othersPending: [],
+        ...(owner !== undefined && { owner }),
+      });
+    expect(chat('bob')).toContain('caller: caller &middot; user: bob</span>');
+    expect(chat(null)).toContain('caller: caller &middot; no token</span>');
+    expect(chat()).toContain('caller: caller</span>');
+    expect(chat()).not.toContain('tg_x');
+  });
+});
+
+describe('session list toolbar', () => {
+  const pageFor = (viewer: WebPrincipal) =>
+    sessionListPage({ base: './', listHtml: '', pendingIds: [], signature: 's', viewer });
+
+  it('shows who is signed in, with Account, Users and Log out for the admin', () => {
+    const html = pageFor(ADMIN);
+    expect(html).toContain('Signed in as <strong>Admin</strong>');
+    expect(html).toContain('<a href="./account" class="toolbar-link">Account</a>');
+    expect(html).toContain('<a href="./admin" class="toolbar-link">Users</a>');
+    expect(html).toContain('action="./logout"');
+  });
+
+  it('leaves Users out for a user and escapes the name', () => {
+    const html = pageFor({ ...BOB, username: '<bob>' });
+    expect(html).toContain('Signed in as <strong>&lt;bob&gt;</strong>');
+    expect(html).toContain('href="./account"');
+    expect(html).not.toContain('href="./admin"');
+    expect(html).not.toContain('tg_bob-token');
+  });
+});
+
+describe('accountPage', () => {
+  it("shows a user's token, selectable in one click, and the change-password form", () => {
+    const html = accountPage({ base: './', viewer: BOB });
+    expect(html).toContain('data-page="account"');
+    expect(html).toContain('Signed in as <strong>bob</strong>');
+    expect(html).toContain('<code class="token">tg_bob-token</code>');
+    expect(html).toContain('<code>remoteToken</code>');
+    expect(html).toContain('<form method="post" action="./account" class="stacked-form">');
+    expect(html).toMatch(/name="current" autocomplete="current-password"/);
+    expect(html.match(/autocomplete="new-password"/g)).toHaveLength(2);
+    expect(html).toContain('name="confirm"');
+    expect(html).not.toContain('href="./admin"');
+  });
+
+  it('tells the admin the password lives in .env, with no form', () => {
+    const html = accountPage({ base: './', viewer: ADMIN });
+    expect(html).toContain('Signed in as <strong>Admin</strong> (admin)');
+    expect(html).toContain('<code>WEB_PASSWORD</code>');
+    expect(html).not.toContain('<form');
+    expect(html).not.toContain('class="token"');
+    expect(html).toContain('href="./admin"');
+  });
+
+  it('shows a banner and keeps every URL relative', () => {
+    const html = accountPage({
+      base: '../',
+      viewer: BOB,
+      banner: { kind: 'error', html: 'Your current password is wrong.' },
+    });
+    expect(html).toContain('class="banner banner-error"');
+    expect(html).toContain('action="../account"');
+    expect(html).toContain('href="../static/style.css"');
+  });
+});
+
+describe('adminPage', () => {
+  const stats = (overrides: Partial<UserStats> = {}): UserStats => ({
+    sessions: 0,
+    aiMessages: 0,
+    humanReplies: 0,
+    pending: 0,
+    lastActivityAt: null,
+    ...overrides,
+  });
+  const user = (id: string, username: string): User => ({
+    id,
+    username,
+    passwordHash: 'scrypt$secret-hash',
+    token: `tg_${username}-token`,
+    createdAt: '2026-10-08T09:00:00.000Z',
+  });
+  const bob = user('b'.repeat(32), 'bob');
+  const sneaky = user('c'.repeat(32), '<img>');
+  const report = {
+    users: [
+      {
+        user: bob,
+        stats: stats({
+          sessions: 3,
+          aiMessages: 7,
+          humanReplies: 5,
+          pending: 1,
+          lastActivityAt: '2026-10-08T11:00:00.000Z',
+        }),
+      },
+      { user: sneaky, stats: stats() },
+    ],
+    noToken: stats({ sessions: 2, aiMessages: 4 }),
+  };
+
+  it('lists each user with live counts, then the no-token row', () => {
+    const html = adminPage({ base: './', report });
+    expect(html).toContain('data-page="admin"');
+    expect(html).toMatch(
+      /<th scope="row">bob<\/th>\s*<td class="num">3<\/td><td class="num">7<\/td><td class="num">5<\/td><td class="num">1<\/td><td><time datetime="2026-10-08T11:00:00.000Z">/
+    );
+    expect(html).toMatch(
+      /<th scope="row">No token \(admin only\)<\/th>\s*<td class="num">2<\/td><td class="num">4<\/td><td class="num">0<\/td><td class="num">0<\/td><td>&mdash;<\/td>/
+    );
+    expect(html.indexOf('>bob<')).toBeLessThan(html.indexOf('No token (admin only)'));
+    expect(html).toContain('Counts cover the sessions still on the server');
+  });
+
+  it('gives each user a closed panel with the token and forms, never the hash', () => {
+    const html = adminPage({ base: './', report });
+    expect(html).toContain('<details class="user-manage">');
+    expect(html).not.toContain('<details class="user-manage" open>');
+    expect(html).toContain('<code class="token">tg_bob-token</code>');
+    expect(html).toContain(`action="./admin/users/${bob.id}/rename"`);
+    expect(html).toContain(`action="./admin/users/${bob.id}/password"`);
+    expect(html).toContain(`action="./admin/users/${bob.id}/delete"`);
+    expect(html).toContain(
+      'data-confirm="Delete user &quot;bob&quot;? Their sessions stay and become admin-only."'
+    );
+    expect(html).not.toContain('secret-hash');
+  });
+
+  it('escapes usernames everywhere they appear', () => {
+    const html = adminPage({ base: './', report });
+    expect(html).not.toContain('<img>');
+    expect(html).toContain('<th scope="row">&lt;img&gt;</th>');
+    expect(html).toContain('value="&lt;img&gt;"');
+    expect(html).toContain('Delete user &quot;&lt;img&gt;&quot;?');
+  });
+
+  it("keeps the browser's saved login out of the new-user and reset fields", () => {
+    const html = adminPage({ base: './', report });
+    expect(html).toMatch(
+      /<input id="new-username" type="text" name="username" value=""\s+autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="64" required>/
+    );
+    expect(html).toMatch(
+      /id="new-password" type="password" name="password" autocomplete="new-password"/
+    );
+    expect(html).toMatch(
+      new RegExp(`id="reset-${bob.id}" type="password" name="password" autocomplete="new-password"`)
+    );
+    expect(html).toMatch(new RegExp(`id="rename-${bob.id}" [^>]*autocomplete="off"`));
+    expect(html).not.toContain('current-password');
+  });
+
+  it('shows a new user and its token in a banner', () => {
+    const html = adminPage({ base: '../', report, created: bob });
+    expect(html).toContain(
+      'Added <strong>bob</strong>. Their token is <code class="token">tg_bob-token</code>.'
+    );
+    expect(html).toContain('action="../admin/users"');
+  });
+
+  it("re-renders a refused form with what was typed and that user's panel open", () => {
+    const html = adminPage({
+      base: '../../../',
+      report,
+      banner: { kind: 'error', html: 'taken' },
+      form: { newUsername: '"carol', userId: bob.id, rename: 'Robert"' },
+    });
+    expect(html).toContain('id="new-username" type="text" name="username" value="&quot;carol"');
+    expect(html).toContain('<details class="user-manage" open>');
+    expect(html).toContain('value="Robert&quot;"');
+    expect(html.match(/<details class="user-manage" open>/g)).toHaveLength(1);
+    expect(html).toContain('src="../../../static/app.js"');
+  });
+
+  it('says so when there are no users yet', () => {
+    const html = adminPage({ base: './', report: { users: [], noToken: stats() } });
+    expect(html).toContain('No users yet');
+    expect(html).toContain('No token (admin only)');
   });
 });

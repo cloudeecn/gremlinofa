@@ -298,6 +298,99 @@ describe('POST /sessions displayName', () => {
   });
 });
 
+describe('POST /sessions userToken', () => {
+  const UNKNOWN_TOKEN_ERROR = 'Unknown userToken: no Touch Grass user has this token';
+
+  function addUser(username: string) {
+    const user = db.createUser({
+      id: `${username}-id`,
+      username,
+      passwordHash: 'unused',
+      token: `tg_${username}-token`,
+    });
+    if (!user) throw new Error(`username ${username} taken`);
+    return user;
+  }
+
+  async function postSession(body: Record<string, unknown>) {
+    return call('/api/sessions', { method: 'POST', body });
+  }
+
+  it.each([
+    ['as sent', (token: string) => token],
+    ['trimmed', (token: string) => `  ${token}\n`],
+  ])("stores a known user's token %s", async (_label, send) => {
+    const bob = addUser('bob');
+    const res = await postSession({ displayName: 'Deploy', userToken: send(bob.token) });
+    expect(res.status).toBe(201);
+    const { sessionId } = (await res.json()) as { sessionId: string };
+    expect(db.getSession(sessionId)?.userToken).toBe(bob.token);
+    expect(db.listSessionsWithPending({ kind: 'user', token: bob.token })).toEqual([
+      expect.objectContaining({ id: sessionId, ownerUsername: 'bob' }),
+    ]);
+  });
+
+  it.each([
+    ['omitted', undefined],
+    ['null', null],
+    ['empty', ''],
+    ['whitespace-only', '  \t'],
+  ])('creates an admin-only session when userToken is %s', async (_label, userToken) => {
+    addUser('bob');
+    const res = await postSession(userToken === undefined ? {} : { userToken });
+    expect(res.status).toBe(201);
+    const { sessionId } = (await res.json()) as { sessionId: string };
+    expect(db.getSession(sessionId)?.userToken).toBeNull();
+  });
+
+  it('refuses a token no user has, without creating a session', async () => {
+    addUser('bob');
+    const res = await postSession({ userToken: 'tg_nobody' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: UNKNOWN_TOKEN_ERROR });
+    expect(db.listSessionsWithPending({ kind: 'all' })).toEqual([]);
+  });
+
+  it("refuses a deleted user's token", async () => {
+    const bob = addUser('bob');
+    db.deleteUser(bob.id);
+    const res = await postSession({ userToken: bob.token });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: UNKNOWN_TOKEN_ERROR });
+  });
+
+  it.each([
+    ['a number', 42],
+    ['an array', ['tg_x']],
+    ['a boolean', true],
+  ])('refuses %s', async (_label, userToken) => {
+    const res = await postSession({ userToken });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'userToken must be a string or null' });
+  });
+
+  it('never echoes the token back', async () => {
+    const bob = addUser('bob');
+    const created = await postSession({ userToken: bob.token });
+    const createdBody = await created.text();
+    expect(createdBody).not.toContain(bob.token);
+    const { sessionId } = JSON.parse(createdBody) as { sessionId: string };
+    await postMessage(sessionId);
+
+    const res = await call(`/api/sessions/${sessionId}`);
+    const raw = await res.text();
+    expect(raw).not.toContain(bob.token);
+    const body = JSON.parse(raw) as { session: Record<string, unknown> };
+    expect(Object.keys(body.session).sort()).toEqual([
+      'callerId',
+      'createdAt',
+      'displayName',
+      'id',
+      'lastActivityAt',
+    ]);
+  });
+});
+
 describe('POST /sessions/:id/message validation', () => {
   let sessionId: string;
   beforeEach(async () => {

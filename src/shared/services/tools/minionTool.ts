@@ -19,6 +19,7 @@ import type {
   ClientSideTool,
   Message,
   MinionChat,
+  MinionOutputFormat,
   ModelReference,
   ReasoningEffort,
   RenderingBlockGroup,
@@ -31,7 +32,11 @@ import type {
   ToolStreamEvent,
   Verbosity,
 } from '../../protocol/types';
-import type { ToolInfoRenderBlock, ToolResultRenderBlock } from '../../protocol/types/content';
+import type {
+  TokenTotals,
+  ToolInfoRenderBlock,
+  ToolResultRenderBlock,
+} from '../../protocol/types/content';
 import type { ActiveLoop, LoopId } from '../../protocol/protocol';
 import { isModelReference, isModelReferenceArray, isRemoteMinionChat } from '../../protocol/types';
 import { splitInjectedFileBlocks } from '../../protocol/carriedInjection';
@@ -47,7 +52,7 @@ import {
   type AgenticLoopOptions,
   type AgenticLoopEvent,
 } from '../agentic/agenticLoopGenerator';
-import { createTokenTotals, addTokens } from '../../engine/lib/tokenTotals';
+import { createTokenTotals, addTokens, hasTokenUsage } from '../../engine/lib/tokenTotals';
 import { NORMAL_STOP_REASONS } from '../../engine/lib/apiHelpers';
 import { formatFileWithLineNumbers } from '../../engine/lib/formatFileContent';
 import type { InjectedFile, InjectionMode } from '../api/fileInjectionHelper';
@@ -86,6 +91,7 @@ import {
 import {
   TouchGrassClient,
   TouchGrassError,
+  isSessionGone,
   isTouchGrassAbort,
   normalizeTouchGrassEndpoint,
   validateTouchGrassEndpoint,
@@ -352,7 +358,11 @@ export function minionPromptErrorText(err: AgentPromptError): string {
 interface MinionInput {
   /** Action: 'message' (default) sends a new message, 'retry' rolls back to savepoint and re-executes */
   action?: 'message' | 'retry';
-  /** Optional: existing minion chat ID to continue a conversation */
+  /**
+   * Optional: existing minion chat ID to continue a conversation, or
+   * `<continueToken>@<minionChatId>` to continue it from an earlier result.
+   * Read it through `parseMinionChatRef`.
+   */
   minionChatId?: string;
   /**
    * Task/message to send to the minion. Required for 'message' action unless
@@ -384,6 +394,17 @@ interface MinionInput {
    * and return at once. Read it through `readAsyncFlag`.
    */
   async?: boolean | 'true' | 'false';
+  /**
+   * New remote chats only: the Touch Grass user token whose inbox gets the
+   * conversation. Sticks to the chat (`MinionChat.remoteToken`). Read it
+   * through `readRemoteToken`.
+   */
+  remoteToken?: string;
+  /**
+   * Shape of this call's result; persists on the minion chat. Ignored by
+   * returnMode 'both' results. Read it through `readOutputFormat`.
+   */
+  outputFormat?: MinionOutputFormat;
   /** Hook file name (without .js) in /hooks/ to verify minion output before savepoint advances */
   verifyHook?: string;
   /** Override reasoning on/off for this minion call */
@@ -420,10 +441,24 @@ interface MinionInput {
   availablePersonas?: string[];
 }
 
-/** Result of rolling back messages to a savepoint */
+/** What a rollback hands a re-send: the first dropped message's content and text */
 interface RollbackResult {
   stashedRetryContent: StashedRetryContent | undefined;
   recoveredMessage: string | undefined;
+}
+
+/**
+ * A rollback worked out in memory by `planRollback` and written by
+ * `applyRollback`, so a call that fails before its message is saved leaves the
+ * chat as it found it.
+ */
+export interface RollbackPlan extends RollbackResult {
+  /** The message the chat rolls back to (kept), or SAVEPOINT_START to keep none */
+  pointId: string;
+  /** Messages up to and including `pointId` */
+  kept: Message<unknown>[];
+  /** Messages after `pointId`; never empty */
+  dropped: Message<unknown>[];
 }
 
 /**
@@ -499,46 +534,38 @@ function userTextOf(groups: RenderingBlockGroup[] | undefined): string | undefin
 }
 
 /**
- * Roll back a minion chat to its savepoint.
- *
- * Slices messages after the savepoint, stashes content from the first
- * rolled-back message for re-use, recovers the original message text,
- * subtracts rolled-back token metadata, and deletes the messages from storage.
+ * Plan a rollback of a minion chat to `pointId` (a message id, or
+ * SAVEPOINT_START for none): slice off the messages after it, stash content
+ * from the first dropped message for re-use, and recover the original message
+ * text. Pure — storage and the chat totals are untouched until
+ * `applyRollback`.
  *
  * `remote` marks a human chat, whose stored `content` is the inline text
  * (files framed around the message) while the human got the message and the
  * files apart: the original message is recovered from the text group instead.
  *
- * Returns `{ undefined, undefined }` when nothing to roll back.
+ * Returns undefined when `pointId` is not in the chat or nothing follows it.
  */
-async function rollbackToSavepoint(
-  storage: UnifiedStorage,
-  minionChat: MinionChat,
+export function planRollback(
   existingMessages: Message<unknown>[],
-  savepoint: string,
+  pointId: string,
   remote: boolean
-): Promise<RollbackResult> {
-  let rolledBack: Message<unknown>[];
-
-  if (savepoint === SAVEPOINT_START) {
-    rolledBack = existingMessages;
-  } else {
-    const savepointIdx = existingMessages.findIndex(m => m.id === savepoint);
-    if (savepointIdx === -1) {
-      return { stashedRetryContent: undefined, recoveredMessage: undefined };
-    }
-    rolledBack = existingMessages.slice(savepointIdx + 1);
+): RollbackPlan | undefined {
+  let keptCount = 0;
+  if (pointId !== SAVEPOINT_START) {
+    const pointIdx = existingMessages.findIndex(m => m.id === pointId);
+    if (pointIdx === -1) return undefined;
+    keptCount = pointIdx + 1;
   }
-
-  if (rolledBack.length === 0) {
-    return { stashedRetryContent: undefined, recoveredMessage: undefined };
-  }
+  const kept = existingMessages.slice(0, keptCount);
+  const dropped = existingMessages.slice(keptCount);
+  if (dropped.length === 0) return undefined;
 
   // Stash content from the first rolled-back message for potential re-use in Phase 3.
   // Tool_result messages have fullContent (the API payload) — user messages have renderingContent
   // (injected file bars, text groups). Both paths preserve rendering fidelity on retry.
   let stashedRetryContent: StashedRetryContent | undefined;
-  const stashedFirst = rolledBack[0].content;
+  const stashedFirst = dropped[0].content;
   if (stashedFirst.fullContent) {
     stashedRetryContent = {
       modelFamily: stashedFirst.modelFamily as string | undefined,
@@ -562,7 +589,7 @@ async function rollbackToSavepoint(
   // Recover original message text from the first rolled-back message,
   // minus any verify-feedback note a previous retry appended to it.
   let recoveredMessage: string | undefined;
-  const firstAfter = rolledBack[0];
+  const firstAfter = dropped[0];
   const textContent = firstAfter.content.content as string;
   // Messages from before the remote path stored file bars have no text group
   // and fall through to `content`.
@@ -580,42 +607,51 @@ async function rollbackToSavepoint(
     recoveredMessage = extractToolResultText(firstAfter.content.fullContent) ?? undefined;
   }
 
-  // Subtract rolled-back token metadata from chat totals
-  for (const msg of rolledBack) {
-    const meta = msg.metadata;
-    if (meta) {
-      minionChat.totalInputTokens = Math.max(
-        0,
-        (minionChat.totalInputTokens ?? 0) - (meta.inputTokens ?? 0)
-      );
-      minionChat.totalOutputTokens = Math.max(
-        0,
-        (minionChat.totalOutputTokens ?? 0) - (meta.outputTokens ?? 0)
-      );
-      minionChat.totalReasoningTokens = Math.max(
-        0,
-        (minionChat.totalReasoningTokens ?? 0) - (meta.reasoningTokens ?? 0)
-      );
-      minionChat.totalCacheCreationTokens = Math.max(
-        0,
-        (minionChat.totalCacheCreationTokens ?? 0) - (meta.cacheCreationTokens ?? 0)
-      );
-      minionChat.totalCacheReadTokens = Math.max(
-        0,
-        (minionChat.totalCacheReadTokens ?? 0) - (meta.cacheReadTokens ?? 0)
-      );
-      minionChat.totalCost = Math.max(0, (minionChat.totalCost ?? 0) - (meta.messageCost ?? 0));
-    }
-  }
+  return { pointId, kept, dropped, stashedRetryContent, recoveredMessage };
+}
 
-  // Delete rolled-back messages from storage
-  if (savepoint === SAVEPOINT_START) {
-    await storage.deleteMessageAndAfter(minionChat.id, rolledBack[0].id);
-  } else {
-    await storage.deleteMessagesAfter(minionChat.id, savepoint);
-  }
+/** Enough of a message id's random part to tell one chat's messages apart. */
+const ROLLBACK_TOKEN_LENGTH = 8;
 
-  return { stashedRetryContent, recoveredMessage };
+/**
+ * The continue token for the chat state right after `messageId`: the start of
+ * the id's random part (after the last `_`). `<token>@<minionChatId>`
+ * continues the chat from that message.
+ */
+export function continueTokenFor(messageId: string): string {
+  return messageId.slice(messageId.lastIndexOf('_') + 1).slice(0, ROLLBACK_TOKEN_LENGTH);
+}
+
+/**
+ * The id of the one message `token` marks, or undefined when no message or
+ * several do. It is matched against the chat as stored now, so a token from a
+ * branch a rollback dropped fails cleanly instead of landing somewhere else.
+ */
+export function resolveContinueToken(
+  token: string,
+  messages: Array<{ id: string }>
+): string | undefined {
+  if (!token) return undefined;
+  const matches = messages.filter(m => continueTokenFor(m.id) === token);
+  return matches.length === 1 ? matches[0].id : undefined;
+}
+
+/**
+ * Token for the chat's stored tail, the message a plain continue appends
+ * after. Read back from storage because a failed run leaves whatever it saved.
+ * Best effort: a failing read drops the token, not the error result.
+ */
+async function storedTailContinueToken(
+  storage: UnifiedStorage,
+  minionChatId: string
+): Promise<string | undefined> {
+  try {
+    const tail = (await storage.getMinionMessages(minionChatId)).at(-1);
+    return tail && continueTokenFor(tail.id);
+  } catch (err) {
+    console.debug('[minionTool] no continue token for the failed run of %s:', minionChatId, err);
+    return undefined;
+  }
 }
 
 /**
@@ -641,7 +677,7 @@ export function findPriorAssistantClaudeAgentUuid(
 
 /**
  * Write a resolved anchor onto the minion chat row. Mutates in place because
- * both callers save the row themselves after further bookkeeping.
+ * every caller saves the row itself after further bookkeeping.
  */
 function applyRewindPatch(
   minionChat: MinionChat,
@@ -691,15 +727,17 @@ export async function applyClaudeAgentRewindOnFailure(
 }
 
 /**
- * Manual minion-chat rollback (the overlay "View Chat" UI) for a claude-agent
- * minion: rewind the SDK session to the last assistant turn at-or-before the kept
- * tail so the next minion send resumes from a state that matches the trimmed
- * message history. `firstDeletedMessageId` is the first message being removed;
- * everything before it is kept. Mirrors `applyClaudeAgentRewindOnFailure`, but the
- * rewind boundary is the rollback cutoff rather than the savepoint — the same
- * "resume up to and including the kept assistant" semantics the parent chat uses
- * in `computeClaudeAgentRewindKeeping`. No-op for non-claude-agent
- * minions, whose whole history lives in the rolled-back stored messages.
+ * Rollback of a claude-agent minion chat, from the overlay "View Chat" UI
+ * (`deleteMessageAndAfter` in GremlinServer) or the tool's own `applyRollback`
+ * (retry, autoRollback, a continue token): rewind the SDK session to the last
+ * assistant turn at-or-before the kept tail so the next minion send resumes
+ * from a state that matches the trimmed message history.
+ * `firstDeletedMessageId` is the first message being removed; everything
+ * before it is kept. Mirrors `applyClaudeAgentRewindOnFailure`, but the rewind
+ * boundary is the rollback cutoff rather than the savepoint — the same "resume
+ * up to and including the kept assistant" semantics the parent chat uses in
+ * `computeClaudeAgentRewindKeeping`. No-op for non-claude-agent minions, whose
+ * whole history lives in the rolled-back stored messages.
  */
 export async function applyClaudeAgentRewindOnRollback(
   storage: UnifiedStorage,
@@ -720,6 +758,91 @@ export async function applyClaudeAgentRewindOnRollback(
     keptTailId
   );
   await storage.saveMinionChat(minionChat);
+}
+
+/**
+ * Write a planned rollback: subtract the dropped messages' tokens and cost
+ * from the chat totals, delete them, rewind a claude-agent session to the kept
+ * tail, and leave the savepoint on the rollback point. After a failed
+ * claude-agent run `applyClaudeAgentRewindOnFailure` has already rewound to the
+ * anchor at-or-before the savepoint; when that savepoint is the rollback point,
+ * the rewind here lands on the same anchor.
+ */
+export async function applyRollback(
+  storage: UnifiedStorage,
+  minionChat: MinionChat,
+  plan: RollbackPlan
+): Promise<void> {
+  for (const msg of plan.dropped) {
+    const meta = msg.metadata;
+    if (meta) {
+      minionChat.totalInputTokens = Math.max(
+        0,
+        (minionChat.totalInputTokens ?? 0) - (meta.inputTokens ?? 0)
+      );
+      minionChat.totalOutputTokens = Math.max(
+        0,
+        (minionChat.totalOutputTokens ?? 0) - (meta.outputTokens ?? 0)
+      );
+      minionChat.totalReasoningTokens = Math.max(
+        0,
+        (minionChat.totalReasoningTokens ?? 0) - (meta.reasoningTokens ?? 0)
+      );
+      minionChat.totalCacheCreationTokens = Math.max(
+        0,
+        (minionChat.totalCacheCreationTokens ?? 0) - (meta.cacheCreationTokens ?? 0)
+      );
+      minionChat.totalCacheReadTokens = Math.max(
+        0,
+        (minionChat.totalCacheReadTokens ?? 0) - (meta.cacheReadTokens ?? 0)
+      );
+      minionChat.totalCost = Math.max(0, (minionChat.totalCost ?? 0) - (meta.messageCost ?? 0));
+    }
+  }
+
+  const firstDroppedId = plan.dropped[0].id;
+  if (plan.pointId === SAVEPOINT_START) {
+    await storage.deleteMessageAndAfter(minionChat.id, firstDroppedId);
+  } else {
+    await storage.deleteMessagesAfter(minionChat.id, plan.pointId);
+  }
+  await applyClaudeAgentRewindOnRollback(
+    storage,
+    minionChat,
+    [...plan.kept, ...plan.dropped],
+    firstDroppedId
+  );
+  minionChat.savepoint = plan.pointId;
+  minionChat.lastModifiedAt = new Date();
+  await storage.saveMinionChat(minionChat);
+}
+
+type ChatTotals = Pick<
+  MinionChat,
+  | 'totalInputTokens'
+  | 'totalOutputTokens'
+  | 'totalReasoningTokens'
+  | 'totalCacheCreationTokens'
+  | 'totalCacheReadTokens'
+  | 'totalCost'
+  | 'costUnreliable'
+>;
+
+/**
+ * The chat totals with a run's spend added. They cover every stored message, a
+ * failed run's included, because `applyRollback` subtracts whatever it drops.
+ */
+function chatTotalsWithRun(minionChat: MinionChat, totals: TokenTotals): ChatTotals {
+  return {
+    totalInputTokens: (minionChat.totalInputTokens ?? 0) + totals.inputTokens,
+    totalOutputTokens: (minionChat.totalOutputTokens ?? 0) + totals.outputTokens,
+    totalReasoningTokens: (minionChat.totalReasoningTokens ?? 0) + totals.reasoningTokens,
+    totalCacheCreationTokens:
+      (minionChat.totalCacheCreationTokens ?? 0) + totals.cacheCreationTokens,
+    totalCacheReadTokens: (minionChat.totalCacheReadTokens ?? 0) + totals.cacheReadTokens,
+    totalCost: (minionChat.totalCost ?? 0) + totals.cost,
+    costUnreliable: totals.costUnreliable || minionChat.costUnreliable || undefined,
+  };
 }
 
 /** Stop reason of a run's last message — `end_turn` unless it's an assistant message that says otherwise. */
@@ -865,6 +988,73 @@ export function readRemoteFlag(input: { remote?: unknown }): boolean | undefined
 export function readAsyncFlag(input: { async?: unknown }): boolean | undefined {
   if (input.async === true || input.async === 'true') return true;
   if (input.async === false || input.async === 'false') return false;
+  return undefined;
+}
+
+/** The `remoteToken` param, trimmed. Blank or not a string counts as not passed. */
+export function readRemoteToken(input: { remoteToken?: unknown }): string | undefined {
+  if (typeof input.remoteToken !== 'string') return undefined;
+  return input.remoteToken.trim() || undefined;
+}
+
+/**
+ * The `outputFormat` param. Anything but 'text' or 'json' counts as not
+ * passed, so a stray value neither persists nor hides the chat's stored format.
+ */
+export function readOutputFormat(input: {
+  outputFormat?: unknown;
+}): MinionOutputFormat | undefined {
+  const format = input.outputFormat;
+  return format === 'text' || format === 'json' ? format : undefined;
+}
+
+/** Precedence: this call's `outputFormat`, then the chat's, then 'text'. */
+export function resolveOutputFormat(
+  input: { outputFormat?: unknown },
+  minionChat: Pick<MinionChat, 'outputFormat'>
+): MinionOutputFormat {
+  return readOutputFormat(input) ?? minionChat.outputFormat ?? 'text';
+}
+
+/**
+ * The `minionChatId` param split on its first `@`: `<continueToken>@<chatId>`,
+ * or a bare chat id. Every reader of the param goes through here, so the busy
+ * guard, the throttle group and the call display all see the bare id. Not a
+ * string, or empty, counts as not passed.
+ */
+export function parseMinionChatRef(raw: unknown): { chatId?: string; continueToken?: string } {
+  if (typeof raw !== 'string' || raw === '') return {};
+  const at = raw.indexOf('@');
+  if (at === -1) return { chatId: raw };
+  const chatId = raw.slice(at + 1);
+  const continueToken = raw.slice(0, at);
+  return chatId ? { chatId, continueToken } : { continueToken };
+}
+
+/**
+ * Why a call with a continue token can't run, as far as the input alone tells;
+ * undefined when it can. The chat-dependent checks (remote, the token
+ * resolving) follow once the chat is loaded.
+ */
+function checkContinueTokenCall(
+  minionInput: MinionInput,
+  continueTokensEnabled: boolean,
+  chatId: string | undefined
+): string | undefined {
+  if (!continueTokensEnabled) {
+    return 'Continue tokens are not enabled, so minionChatId takes a bare minion chat id without a "<token>@" prefix.';
+  }
+  if (!chatId) {
+    return 'A continue token needs the minion chat id after the "@": "<continueToken>@<minionChatId>".';
+  }
+  if (minionInput.action === 'retry') {
+    return 'action "retry" cannot be combined with a continue token, which already picks the point to send from. Drop one of them.';
+  }
+  // Even with autoRollback on: a token means "send something new from here",
+  // so there is no rolled-back message to recover.
+  if (!minionInput.message && !hasInjectSpecs(minionInput)) {
+    return '"message" (or injectFiles / injectFilesAfter) is required with a continue token: it sends something new from that point.';
+  }
   return undefined;
 }
 
@@ -1148,6 +1338,8 @@ function buildUserMessageGroups(
 
 interface MinionResultFields {
   returnMode: string;
+  /** Ignored in 'both' mode, whose result is always its own JSON */
+  outputFormat: MinionOutputFormat;
   minionChatId: string;
   stopReason: string;
   hasCoT: boolean;
@@ -1157,33 +1349,104 @@ interface MinionResultFields {
   returnValue: string | undefined;
   /** A human answered through the remote backend */
   remote?: boolean;
+  /** Marks the chat state right after this result (the `continueTokens` option) */
+  continueToken?: string;
 }
 
+const RETURN_NOT_CALLED_WARNING = 'Return tool was not called';
+
 /**
- * The tool result text the calling LLM reads. 'both' mode gets JSON (text and
- * result can both be present); every other mode gets the `<minionChatId>` tag,
- * optional `<hasCoT />` / `<remote />` marker lines, then the body.
- * `parseSimplifiedOutput` reads the tag shape back; `renderMinionOutput` renders both.
+ * The tool result text the calling LLM reads. 'both' mode gets JSON with text
+ * and result side by side. Every other mode carries one body: the return
+ * value, a warning that it's missing (enforced modes), or else the prose.
+ * `outputFormat` 'text' writes the `<minionChatId>` tag, an optional
+ * `<continueToken>` tag, optional `<hasCoT />` / `<remote />` marker lines,
+ * then the body; 'json' writes the same facts under the keys 'both' uses
+ * (`result`, `text`) plus `warning`. `parseSimplifiedOutput` reads the tag
+ * shape back; `renderMinionOutput` renders all three.
  */
 export function formatMinionResult(fields: MinionResultFields): string {
-  const { returnMode, minionChatId, stopReason, hasCoT, text, returnValue, remote } = fields;
+  const {
+    returnMode,
+    outputFormat,
+    minionChatId,
+    stopReason,
+    hasCoT,
+    text,
+    returnValue,
+    remote,
+    continueToken,
+  } = fields;
+  const tokenField = continueToken !== undefined ? { continueToken } : {};
   if (returnMode === 'both') {
-    const resultJson: Record<string, unknown> = { stopReason, hasCoT, minionChatId, text };
+    const resultJson: Record<string, unknown> = {
+      stopReason,
+      hasCoT,
+      minionChatId,
+      ...tokenField,
+      text,
+    };
     if (returnValue !== undefined) resultJson.result = returnValue;
     if (remote) resultJson.remote = true;
     return JSON.stringify(resultJson);
   }
+  const missingReturn =
+    returnValue === undefined && (returnMode === 'enforced' || returnMode === 'auto-enforced');
+  if (outputFormat === 'json') {
+    const resultJson: Record<string, unknown> = {
+      minionChatId,
+      ...tokenField,
+      stopReason,
+      hasCoT,
+    };
+    if (remote) resultJson.remote = true;
+    if (missingReturn) resultJson.warning = RETURN_NOT_CALLED_WARNING;
+    else if (returnValue !== undefined) resultJson.result = returnValue;
+    else resultJson.text = text;
+    return JSON.stringify(resultJson);
+  }
   let body: string;
-  if (returnValue !== undefined) {
+  if (missingReturn) {
+    body = `Warning: ${RETURN_NOT_CALLED_WARNING}`;
+  } else if (returnValue !== undefined) {
     body = returnValue;
-  } else if (returnMode === 'enforced' || returnMode === 'auto-enforced') {
-    body = 'Warning: Return tool was not called';
   } else {
     // no-return mode, or return-only fallback when return wasn't called
     body = text;
   }
+  const tokenLine =
+    continueToken !== undefined ? `<continueToken>${continueToken}</continueToken>\n` : '';
   const markers = (hasCoT ? '<hasCoT />\n' : '') + (remote ? '<remote />\n' : '');
-  return `<minionChatId>${minionChatId}</minionChatId>\n${markers}${body}`;
+  return `<minionChatId>${minionChatId}</minionChatId>\n${tokenLine}${markers}${body}`;
+}
+
+interface MinionErrorFields {
+  /** Untruncated error text; the formatter truncates it */
+  error: string;
+  minionChatId: string;
+  outputFormat: MinionOutputFormat;
+  continueToken?: string;
+}
+
+/**
+ * The tool result text for an LLM run that failed after its message was saved.
+ * The chat id comes along so the caller can retry it, which matters most for a
+ * new chat whose first run failed: its id appears nowhere else. Text puts the
+ * truncated error first and the tags after, outside the truncation.
+ */
+export function formatMinionError(fields: MinionErrorFields): string {
+  const { minionChatId, outputFormat, continueToken } = fields;
+  const error = truncateError(fields.error);
+  if (outputFormat === 'json') {
+    return JSON.stringify({
+      error,
+      minionChatId,
+      ...(continueToken !== undefined && { continueToken }),
+    });
+  }
+  const tokenLine =
+    continueToken !== undefined ? `\n<continueToken>${continueToken}</continueToken>` : '';
+  return `${error}\n<minionChatId>${minionChatId}</minionChatId>${tokenLine}`;
 }
 
 /** How long Stop waits for the cancel to report an answer that beat it. */
@@ -1250,6 +1513,16 @@ function describeUnanswered(
  *
  * `retryStash` is set on a true retry: without fresh inject specs, the files
  * the original question carried are re-sent from it rather than re-read.
+ *
+ * `rollback` is the retry / autoRollback planned in Phase 1. It is written
+ * once the post goes through, right before the user message is saved, so a
+ * failed file read, session setup or post (Stop included) leaves the chat as it
+ * was and the next retry finds the question again.
+ *
+ * `hasHistory` says the chat has saved messages once that rollback lands. Only
+ * a post to a session leaves one, and the session id is dropped only when the
+ * backend reports the session gone, so a chat with history but no session lost
+ * it on the backend. The human is told so when a new one opens.
  */
 async function* executeRemoteMinion(
   minionInput: MinionInput,
@@ -1258,11 +1531,14 @@ async function* executeRemoteMinion(
   toolOptions: ToolOptions,
   remote: RemoteConfig,
   retryStash: StashedRetryContent | undefined,
+  rollback: RollbackPlan | undefined,
+  hasHistory: boolean,
   context: ToolContext
 ): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
   const storage = context.storage;
   const signal = context.signal;
   const asyncNote = readAsyncFlag(minionInput) === true;
+  const outputFormat = resolveOutputFormat(minionInput, minionChat);
 
   const project = await storage.getProject(context.projectId);
   if (!project) {
@@ -1309,13 +1585,16 @@ async function* executeRemoteMinion(
     isError: true,
     renderingGroups: [infoGroup],
   });
+  // Stop can land after the question was posted and saved, so it names the chat too.
   const abortedResult: ToolResult = {
-    content: 'Minion was aborted',
+    content: `Minion was aborted. ${followUp}`,
     isError: true,
     renderingGroups: [infoGroup],
   };
 
-  const client = new TouchGrassClient(remote);
+  // `openSession` covers the first create and the re-create after the backend
+  // lost the session, so both route to the chat's inbox.
+  const client = new TouchGrassClient({ ...remote, userToken: minionChat.remoteToken });
   const timeoutMs = resolveRemoteTimeoutMs(toolOptions);
   const deadline = Date.now() + timeoutMs;
 
@@ -1366,23 +1645,34 @@ async function* executeRemoteMinion(
     post: (sessionId: string, content: string) => Promise<T>
   ): Promise<{ sessionId: string; posted: T }> => {
     const knownSessionId = minionChat.remoteSessionId;
+    let contextLost = hasHistory;
     if (knownSessionId) {
       try {
         return { sessionId: knownSessionId, posted: await post(knownSessionId, messageText) };
       } catch (err) {
-        // The backend lost the session (DB wiped, endpoint moved). Start a new
-        // one, once, and tell the human what they're missing.
-        if (!(err instanceof TouchGrassError && err.status === 404)) throw err;
+        // The backend lost the session (deleted, DB wiped, retention). Start a
+        // new one, once, and tell the human what they're missing. Any other
+        // 404 is a wrong endpoint: the session may be alive behind it, so the
+        // chat keeps it.
+        if (!isSessionGone(err)) throw err;
         console.debug('[minionTool] remote session %s is gone, opening a new one', knownSessionId);
       }
-      const sessionId = await openSession();
-      const content = messageText
-        ? `${REMOTE_LOST_CONTEXT_NOTE}\n\n${messageText}`
-        : REMOTE_LOST_CONTEXT_NOTE;
-      return { sessionId, posted: await post(sessionId, content) };
+      // Forgotten before the re-create: when that fails (the token's user was
+      // deleted), the next call may bring a corrected remoteToken, which Phase 1
+      // only takes on a chat without a session.
+      minionChat.remoteSessionId = undefined;
+      minionChat.lastModifiedAt = new Date();
+      await storage.saveMinionChat(minionChat);
+      contextLost = true;
     }
     const sessionId = await openSession();
-    return { sessionId, posted: await post(sessionId, messageText) };
+    let content = messageText;
+    if (contextLost) {
+      content = messageText
+        ? `${REMOTE_LOST_CONTEXT_NOTE}\n\n${messageText}`
+        : REMOTE_LOST_CONTEXT_NOTE;
+    }
+    return { sessionId, posted: await post(sessionId, content) };
   };
   const postFailed = (err: unknown): ToolResult =>
     isTouchGrassAbort(err)
@@ -1415,6 +1705,15 @@ async function* executeRemoteMinion(
     return userMessage;
   };
 
+  // Runs once the post went through, before the user message is saved: the
+  // rollback can't delete it then, and a failed post took nothing back. The
+  // chat is saved either way, so what this call merged (outputFormat, the
+  // display name, ...) persists even when no answer comes back.
+  const settleChat = async (): Promise<void> => {
+    if (rollback) await applyRollback(storage, minionChat, rollback);
+    else await storage.saveMinionChat(minionChat);
+  };
+
   if (asyncNote) {
     let note: PostedMessage;
     try {
@@ -1422,6 +1721,7 @@ async function* executeRemoteMinion(
     } catch (err) {
       return postFailed(err);
     }
+    await settleChat();
     const userMessage = await saveUserMessage();
     // No answer comes back, so the note is a finished exchange on its own: a
     // retry or autoRollback must not take it back.
@@ -1438,6 +1738,7 @@ async function* executeRemoteMinion(
     return {
       content: formatMinionResult({
         returnMode: resolveReturnMode(toolOptions),
+        outputFormat,
         minionChatId: minionChat.id,
         stopReason: 'end_turn',
         hasCoT: false,
@@ -1456,6 +1757,7 @@ async function* executeRemoteMinion(
   } catch (err) {
     return postFailed(err);
   }
+  await settleChat();
   await saveUserMessage();
 
   // One init carries the whole waiting state: nothing changes until the human
@@ -1554,6 +1856,7 @@ async function* executeRemoteMinion(
   return {
     content: formatMinionResult({
       returnMode: resolveReturnMode(toolOptions),
+      outputFormat,
       minionChatId: minionChat.id,
       stopReason: 'end_turn',
       hasCoT: false,
@@ -1583,7 +1886,8 @@ async function* executeMinion(
   toolOptions?: ToolOptions,
   context?: ToolContext
 ): AsyncGenerator<ToolStreamEvent, ToolResult, void> {
-  const guardChatId = (input as unknown as MinionInput).minionChatId;
+  // The bare id: a `<token>@<id>` call must collide with a plain one on the same chat.
+  const guardChatId = parseMinionChatRef(input.minionChatId).chatId;
   const registry = context?.loopRegistry;
   if (registry && guardChatId) {
     if (!registry.acquireMinionChat(guardChatId)) {
@@ -1627,6 +1931,13 @@ async function* executeMinionInner(
   // to a new message arriving after a failed turn). Gates stash reuse above and the
   // verify-feedback note below.
   let isTrueRetry = false;
+  // Retry, autoRollback and continue tokens are planned in Phase 1 and written
+  // right before this call's message is, so an error on the way there leaves
+  // the chat as it was.
+  let pendingRollback: RollbackPlan | undefined;
+  // The message a continue token resolved to. It becomes the savepoint even
+  // when nothing follows it, so a retry of this call returns there.
+  let rollbackPointId: string | undefined;
 
   // ── Phase 1: Validate inputs + load/create chat ──
   // Errors here indicate no state change; caller can resend to reattempt.
@@ -1634,6 +1945,18 @@ async function* executeMinionInner(
   const minionToolOptions = toolOptions ?? {};
   const autoRollbackEnabled = toolOptions?.autoRollback === true;
   const verifyFeedbackEnabled = toolOptions?.verifyFeedback === true;
+  const continueTokensEnabled = toolOptions?.continueTokens === true;
+  const { chatId: requestedChatId, continueToken } = parseMinionChatRef(minionInput.minionChatId);
+  const continueTokenProblem =
+    continueToken !== undefined
+      ? checkContinueTokenCall(minionInput, continueTokensEnabled, requestedChatId)
+      : undefined;
+  if (continueTokenProblem) {
+    return {
+      content: truncateError(`Error: ${continueTokenProblem} Resend to reattempt.`),
+      isError: true,
+    };
+  }
   if (
     action === 'message' &&
     !minionInput.message &&
@@ -1647,7 +1970,7 @@ async function* executeMinionInner(
       isError: true,
     };
   }
-  if (action === 'retry' && !minionInput.minionChatId) {
+  if (action === 'retry' && !requestedChatId) {
     return {
       content: truncateError(
         'Error: "minionChatId" is required when action is "retry". Resend to reattempt.'
@@ -1701,16 +2024,26 @@ async function* executeMinionInner(
   let remoteConfig: RemoteConfig | undefined;
   const remoteFlag = readRemoteFlag(minionInput);
   const asyncFlag = readAsyncFlag(minionInput) === true;
-  if (asyncFlag && !minionInput.minionChatId && remoteFlag !== true) {
+  const remoteToken = readRemoteToken(minionInput);
+  const requestedOutputFormat = readOutputFormat(minionInput);
+  if (asyncFlag && !requestedChatId && remoteFlag !== true) {
     return {
       content:
         'Error: async=true only works with remote (human) minions. Start the chat with remote=true, or drop async and resend.',
       isError: true,
     };
   }
+  if (remoteToken && !requestedChatId && remoteFlag !== true) {
+    return {
+      content: truncateError(
+        'Error: remoteToken only works with remote (human) minions. Start the chat with remote=true, or drop remoteToken and resend.'
+      ),
+      isError: true,
+    };
+  }
 
-  if (minionInput.minionChatId) {
-    if (validateIdChecksum(minionInput.minionChatId) === 'invalid') {
+  if (requestedChatId) {
+    if (validateIdChecksum(requestedChatId) === 'invalid') {
       return {
         content: truncateError(
           'Error: Invalid minionChatId (checksum mismatch) — the ID may have been copied incorrectly. Check the minionChatId from the previous minion result and resend.'
@@ -1718,20 +2051,28 @@ async function* executeMinionInner(
         isError: true,
       };
     }
-    const existing = await storage.getMinionChat(minionInput.minionChatId);
+    const existing = await storage.getMinionChat(requestedChatId);
     if (!existing) {
       return {
         content: truncateError(
-          `Error: Minion chat not found: ${minionInput.minionChatId}. Resend to reattempt.`
+          `Error: Minion chat not found: ${requestedChatId}. Resend to reattempt.`
         ),
         isError: true,
       };
     }
     minionChat = existing;
-    existingMessages = await storage.getMinionMessages(minionInput.minionChatId);
+    existingMessages = await storage.getMinionMessages(requestedChatId);
 
     // Route before merging anything: a remote chat must not pick up LLM knobs.
     const chatId = minionChat.id;
+    if (continueToken !== undefined && isRemoteMinionChat(minionChat)) {
+      return {
+        content: truncateError(
+          `Error: Minion chat ${chatId} is a remote (human) chat, and a human's conversation can't be rolled back. Pass the bare minionChatId. Resend to reattempt.`
+        ),
+        isError: true,
+      };
+    }
     if (isRemoteMinionChat(minionChat)) {
       if (remoteFlag === false) {
         return {
@@ -1749,6 +2090,23 @@ async function* executeMinionInner(
       remoteConfig = resolved.config;
       // Chats from before the flag existed are marked by their session id alone.
       minionChat.remote = true;
+      // The token picks the inbox a session is created in, so it can only
+      // change while the chat has none: its first create failed, or the
+      // backend lost its session and the re-create failed.
+      if (remoteToken && remoteToken !== minionChat.remoteToken) {
+        if (minionChat.remoteSessionId) {
+          return {
+            content: truncateError(
+              `Error: Minion chat ${chatId} already has a remote session in another inbox, so its remoteToken can't change. Omit remoteToken, or start a new remote chat.`
+            ),
+            isError: true,
+          };
+        }
+        minionChat.remoteToken = remoteToken;
+        minionChat.lastModifiedAt = new Date();
+        // Saved now: a create that fails again must not lose the correction.
+        await storage.saveMinionChat(minionChat);
+      }
     } else if (remoteFlag === true) {
       // Remote is decided at creation. Even an empty LLM chat stays LLM: it
       // may hold LLM-only settings (a verifyHook) a human answer would skip.
@@ -1761,15 +2119,23 @@ async function* executeMinionInner(
         content: `Error: async=true cannot be used on minion chat ${chatId}: it is an LLM minion chat, and async only works with remote (human) minions. Drop async and resend.`,
         isError: true,
       };
+    } else if (remoteToken) {
+      return {
+        content: truncateError(
+          `Error: remoteToken cannot be used on minion chat ${chatId}: it is an LLM minion chat. Drop remoteToken, or start a new chat with remote=true.`
+        ),
+        isError: true,
+      };
     }
 
     // Merge caller-provided settings into existing chat. A human only needs
-    // what labels the chat and shapes the injected files; everything else is
-    // an LLM knob.
+    // what labels the chat and shapes the injected files, and the caller
+    // still picks how the result reads; everything else is an LLM knob.
     if (minionInput.displayName !== undefined) minionChat.displayName = minionInput.displayName;
     if (minionInput.persona !== undefined) minionChat.persona = minionInput.persona;
     if (minionInput.fileLineNumbers !== undefined)
       minionChat.fileLineNumbers = minionInput.fileLineNumbers;
+    if (requestedOutputFormat) minionChat.outputFormat = requestedOutputFormat;
     if (!remoteConfig) {
       if (minionInput.enabledTools !== undefined)
         minionChat.enabledTools = minionInput.enabledTools;
@@ -1805,7 +2171,31 @@ async function* executeMinionInner(
         minionChat.pruneThinkingBeforeApiCall = minionInput.pruneThinkingBeforeApiCall;
     }
 
-    if (action === 'retry') {
+    if (continueToken !== undefined) {
+      // The token stands in for retry and autoRollback: drop what follows its
+      // message, whatever the savepoint says.
+      const pointId = resolveContinueToken(continueToken, existingMessages);
+      if (pointId === undefined) {
+        return {
+          content: truncateError(
+            `Error: Continue token "${continueToken}" is not in minion chat ${chatId}: rolled back past it, or copied wrong. Resend to reattempt.`
+          ),
+          isError: true,
+        };
+      }
+      const rollback = planRollback(existingMessages, pointId, false);
+      if (rollback) {
+        const resolved = resolveRetryStash(rollback, minionInput.message ?? '');
+        isTrueRetry = resolved.isTrueRetry;
+        stashedRetryContent = resolved.stash;
+        pendingRollback = rollback;
+        existingMessages = rollback.kept;
+      }
+      // A rejection reason judged the run after the savepoint. From any other
+      // point that run is on another branch, so a resend must not carry it.
+      if (pointId !== minionChat.savepoint) minionChat.pendingVerifyFeedback = undefined;
+      rollbackPointId = pointId;
+    } else if (action === 'retry') {
       // Retry: roll back to savepoint before proceeding
       if (minionChat.savepoint === undefined) {
         return {
@@ -1816,15 +2206,13 @@ async function* executeMinionInner(
         };
       }
 
-      const rollback = await rollbackToSavepoint(
-        storage,
-        minionChat,
+      const rollback = planRollback(
         existingMessages,
         minionChat.savepoint,
         remoteConfig !== undefined
       );
 
-      if (!rollback.stashedRetryContent && !rollback.recoveredMessage) {
+      if (!rollback || (!rollback.stashedRetryContent && !rollback.recoveredMessage)) {
         return {
           content: truncateError(
             'Error: No messages after savepoint to retry. Resend to reattempt.'
@@ -1848,27 +2236,25 @@ async function* executeMinionInner(
       const resolved = resolveRetryStash(rollback, minionInput.message ?? '');
       isTrueRetry = resolved.isTrueRetry;
       stashedRetryContent = resolved.stash;
-
-      existingMessages = await storage.getMinionMessages(minionChat.id);
-      await storage.saveMinionChat(minionChat);
-    } else {
-      // Normal continuation: handle autoRollback if enabled, otherwise just proceed
-      if (autoRollbackEnabled && minionChat.savepoint !== undefined) {
-        const rollback = await rollbackToSavepoint(
-          storage,
-          minionChat,
-          existingMessages,
-          minionChat.savepoint,
-          remoteConfig !== undefined
-        );
+      pendingRollback = rollback;
+      // Everything after this sees the chat as the rollback will leave it.
+      existingMessages = rollback.kept;
+    } else if (autoRollbackEnabled && minionChat.savepoint !== undefined) {
+      // A continuation after a failed run drops that run first.
+      const rollback = planRollback(
+        existingMessages,
+        minionChat.savepoint,
+        remoteConfig !== undefined
+      );
+      if (rollback) {
         if (!minionInput.message && rollback.recoveredMessage !== undefined) {
           minionInput.message = rollback.recoveredMessage;
         }
         const resolved = resolveRetryStash(rollback, minionInput.message ?? '');
         isTrueRetry = resolved.isTrueRetry;
         stashedRetryContent = resolved.stash;
-        existingMessages = await storage.getMinionMessages(minionChat.id);
-        await storage.saveMinionChat(minionChat);
+        pendingRollback = rollback;
+        existingMessages = rollback.kept;
       }
     }
   } else if (remoteFlag === true) {
@@ -1878,8 +2264,9 @@ async function* executeMinionInner(
       return { content: `Error: ${resolved.problem}`, isError: true };
     }
     remoteConfig = resolved.config;
-    // Only what a human conversation needs; LLM knobs would be dead weight
-    // (and a lie, if the chat were ever cloned).
+    // Only what a human conversation needs, and how the caller reads the
+    // result; LLM knobs would be dead weight (and a lie, if the chat were
+    // ever cloned).
     minionChat = {
       id: generateChecksummedId('minion'),
       parentChatId: context.chatId ?? 'standalone',
@@ -1888,7 +2275,9 @@ async function* executeMinionInner(
       displayName: minionInput.displayName,
       persona: minionInput.persona,
       fileLineNumbers: minionInput.fileLineNumbers,
+      outputFormat: requestedOutputFormat,
       remote: true,
+      ...(remoteToken && { remoteToken }),
       createdAt: new Date(),
       lastModifiedAt: new Date(),
     };
@@ -1920,6 +2309,7 @@ async function* executeMinionInner(
       nudgeThinking: minionInput.nudgeThinking,
       thinkingKeepTurns: minionInput.thinkingKeepTurns,
       pruneThinkingBeforeApiCall: minionInput.pruneThinkingBeforeApiCall,
+      outputFormat: requestedOutputFormat,
       createdAt: new Date(),
       lastModifiedAt: new Date(),
     };
@@ -1956,6 +2346,8 @@ async function* executeMinionInner(
       minionToolOptions,
       remoteConfig,
       stashedRetryContent,
+      pendingRollback,
+      existingMessages.length > 0,
       context
     );
   }
@@ -2132,8 +2524,44 @@ async function* executeMinionInner(
     includeMinionTool
   );
 
+  // Persona delegation capability. `personaCeiling` is the set THIS minion may
+  // delegate to (undefined = unrestricted, top-level chat). `requestedGrant` is
+  // what the caller hands the child; `childAvailablePersonas` is the effective
+  // ceiling threaded onto the child (inherits the full ceiling when omitted).
+  const personaCeiling = context.minionAvailablePersonas;
+  const requestedPersonaGrant = minionInput.availablePersonas ?? minionChat.availablePersonas;
+  const childAvailablePersonas = requestedPersonaGrant ?? personaCeiling;
+
+  // Resolve persona, namespace and the four prompt inputs.
+  const promptInputs = resolveMinionPromptInputs(minionInput, minionChat, minionToolOptions);
+  const { persona, nsMode, namespace: minionNamespace } = promptInputs;
+
+  if (nsMode !== 'off') {
+    // Capability check: the caller may only spawn personas within its own
+    // ceiling, and may only grant a subset of that ceiling onward.
+    const delegationError = checkPersonaDelegation(personaCeiling, persona, requestedPersonaGrant);
+    if (delegationError) {
+      return { content: truncateError(`Error: ${delegationError} Resend.`), isError: true };
+    }
+  }
+
+  let minionSystemPrompt: string;
+  try {
+    minionSystemPrompt = await resolveAgentSystemPrompt({
+      createVfsAdapter: context.createVfsAdapter,
+      ...promptInputs.spec,
+    });
+  } catch (err) {
+    if (err instanceof AgentPromptError) {
+      return { content: truncateError(minionPromptErrorText(err)), isError: true };
+    }
+    throw err;
+  }
+
   // ── Phase 3: Message + execution ──
-  // User message will be saved. Errors here can be retried via action: 'retry'.
+  // A failed inject-file read still leaves the chat untouched. After that the
+  // planned rollback lands and the user message is saved; errors from then on
+  // name the minion chat and can be retried via action: 'retry'.
 
   // Check if last message is assistant with unresolved tool_use blocks (needs apiDef.apiType).
   // This happens when the return tool was called (possibly in parallel with other tools),
@@ -2201,8 +2629,27 @@ async function* executeMinionInner(
   // so the note is dropped as moot. The fullContent-reuse and return-tool
   // branches keep their exact payloads and skip the note (a limitation).
   const verifyFeedbackNote = isTrueRetry ? minionChat.pendingVerifyFeedback : undefined;
-  if (minionChat.pendingVerifyFeedback !== undefined) {
-    minionChat.pendingVerifyFeedback = undefined;
+  minionChat.pendingVerifyFeedback = undefined;
+
+  // Every check has passed. The rollback Phase 1 planned lands here, right
+  // before this call's first message write. The chat is saved either way, so
+  // the cleared feedback and the settings this call changed persist even if
+  // the run fails: a continue token restores the transcript, not settings.
+  if (pendingRollback) {
+    await applyRollback(storage, minionChat, pendingRollback);
+  } else {
+    if (rollbackPointId !== undefined && rollbackPointId !== minionChat.savepoint) {
+      // Nothing follows the token's message, but a failed run may have left
+      // the savepoint, and a claude-agent session, behind it.
+      if (minionChat.claudeAgentSessionId) {
+        applyRewindPatch(
+          minionChat,
+          findPriorAssistantClaudeAgentUuid(existingMessages, rollbackPointId)
+        );
+      }
+      minionChat.savepoint = rollbackPointId;
+      minionChat.lastModifiedAt = new Date();
+    }
     await storage.saveMinionChat(minionChat);
   }
   const verifyNoteText = verifyFeedbackNote
@@ -2453,40 +2900,6 @@ async function* executeMinionInner(
         minionContext.push(assistantMsg, resultMsg);
       }
     }
-  }
-
-  // Persona delegation capability. `personaCeiling` is the set THIS minion may
-  // delegate to (undefined = unrestricted, top-level chat). `requestedGrant` is
-  // what the caller hands the child; `childAvailablePersonas` is the effective
-  // ceiling threaded onto the child (inherits the full ceiling when omitted).
-  const personaCeiling = context.minionAvailablePersonas;
-  const requestedPersonaGrant = minionInput.availablePersonas ?? minionChat.availablePersonas;
-  const childAvailablePersonas = requestedPersonaGrant ?? personaCeiling;
-
-  // Resolve persona, namespace and the four prompt inputs.
-  const promptInputs = resolveMinionPromptInputs(minionInput, minionChat, minionToolOptions);
-  const { persona, nsMode, namespace: minionNamespace } = promptInputs;
-
-  if (nsMode !== 'off') {
-    // Capability check: the caller may only spawn personas within its own
-    // ceiling, and may only grant a subset of that ceiling onward.
-    const delegationError = checkPersonaDelegation(personaCeiling, persona, requestedPersonaGrant);
-    if (delegationError) {
-      return { content: truncateError(`Error: ${delegationError} Resend.`), isError: true };
-    }
-  }
-
-  let minionSystemPrompt: string;
-  try {
-    minionSystemPrompt = await resolveAgentSystemPrompt({
-      createVfsAdapter: context.createVfsAdapter,
-      ...promptInputs.spec,
-    });
-  } catch (err) {
-    if (err instanceof AgentPromptError) {
-      return { content: truncateError(minionPromptErrorText(err)), isError: true };
-    }
-    throw err;
   }
 
   // Build system prompts from enabled tools
@@ -2757,6 +3170,39 @@ async function* executeMinionInner(
   let terminalRegistryStatus: 'complete' | 'error' | 'aborted' | 'soft_stopped' | 'max_iterations' =
     'error';
 
+  const outputFormat = resolveOutputFormat(minionInput, minionChat);
+  // A plain continue lands on top of what a failed run saved, and only this
+  // token marks the spot before that continue. With autoRollback the next
+  // call drops the failed run anyway, so the last success token already does.
+  const failureContinueTokens = continueTokensEnabled && !autoRollbackEnabled;
+  const runFailure = async (error: string): Promise<ToolResult> => {
+    // The failed run's messages stay stored, so the totals take its spend:
+    // the rollback that drops them later subtracts it again. Best effort, like
+    // the token: a failing write must not swallow the error result.
+    if (hasTokenUsage(totals)) {
+      try {
+        await storage.saveMinionChat(
+          Object.assign(minionChat, chatTotalsWithRun(minionChat, totals))
+        );
+      } catch (err) {
+        console.debug('[minionTool] totals of the failed run of %s not saved:', minionChat.id, err);
+      }
+    }
+    return {
+      content: formatMinionError({
+        error,
+        minionChatId: minionChat.id,
+        outputFormat,
+        continueToken: failureContinueTokens
+          ? await storedTailContinueToken(storage, minionChat.id)
+          : undefined,
+      }),
+      isError: true,
+      renderingGroups: [infoGroup, ...accumulatedGroups],
+      tokenTotals: totals,
+    };
+  };
+
   try {
     type LoopFinalResult =
       Awaited<ReturnType<typeof runAgenticLoop>> extends AsyncGenerator<infer _E, infer R, infer _N>
@@ -2879,12 +3325,7 @@ async function* executeMinionInner(
           lastFinalResult?.messages ?? [],
           'turn error'
         );
-        return {
-          content: truncateError(`Minion error: ${lastFinalResult.error.message}`),
-          isError: true,
-          renderingGroups: [infoGroup, ...accumulatedGroups],
-          tokenTotals: totals,
-        };
+        return await runFailure(`Minion error: ${lastFinalResult.error.message}`);
       } else if (lastFinalResult.status === 'aborted') {
         // Sidebar STOP on this minion row (or parent abort cascading
         // through the wired listener). Return an error tool result so the
@@ -2898,12 +3339,7 @@ async function* executeMinionInner(
           lastFinalResult?.messages ?? [],
           'aborted'
         );
-        return {
-          content: truncateError('Minion was aborted'),
-          isError: true,
-          renderingGroups: [infoGroup, ...accumulatedGroups],
-          tokenTotals: totals,
-        };
+        return await runFailure('Minion was aborted');
       } else if (lastFinalResult.status === 'max_iterations') {
         // If a deferred return was stored before hitting max iterations, use it
         if (lastFinalResult.returnValue !== undefined) {
@@ -2918,12 +3354,7 @@ async function* executeMinionInner(
             lastFinalResult?.messages ?? [],
             'max iterations'
           );
-          return {
-            content: truncateError(`Minion reached maximum iterations (${MAX_ITERATIONS})`),
-            isError: true,
-            renderingGroups: [infoGroup, ...accumulatedGroups],
-            tokenTotals: totals,
-          };
+          return await runFailure(`Minion reached maximum iterations (${MAX_ITERATIONS})`);
         }
       } else if (lastFinalResult.status === 'soft_stopped') {
         await applyClaudeAgentRewindOnFailure(
@@ -2934,12 +3365,7 @@ async function* executeMinionInner(
           lastFinalResult?.messages ?? [],
           'soft stopped'
         );
-        return {
-          content: truncateError('Minion was stopped before completion'),
-          isError: true,
-          renderingGroups: [infoGroup, ...accumulatedGroups],
-          tokenTotals: totals,
-        };
+        return await runFailure('Minion was stopped before completion');
       }
 
       // Auto-enforce retry: if return wasn't called and retries remain, send reminder and re-run.
@@ -2994,12 +3420,7 @@ async function* executeMinionInner(
         lastFinalResult?.messages ?? [],
         'no assistant message'
       );
-      return {
-        content: truncateError('Minion completed but no assistant message was produced'),
-        isError: true,
-        renderingGroups: [infoGroup, ...accumulatedGroups],
-        tokenTotals: totals,
-      };
+      return await runFailure('Minion completed but no assistant message was produced');
     }
 
     let stopReason = lastFinalResult ? finalStopReason(lastFinalResult.messages) : 'end_turn';
@@ -3018,12 +3439,7 @@ async function* executeMinionInner(
         lastFinalResult?.messages ?? [],
         'abnormal stop'
       );
-      return {
-        content: truncateError(`Minion ended unexpectedly (${stopReason})`),
-        isError: true,
-        renderingGroups: [infoGroup, ...accumulatedGroups],
-        tokenTotals: totals,
-      };
+      return await runFailure(`Minion ended unexpectedly (${stopReason})`);
     }
 
     // ── Verify hook: run VFS-based JS to validate minion output before savepoint ──
@@ -3037,12 +3453,7 @@ async function* executeMinionInner(
         // VFS error — treat as missing
       }
       if (!hookCode) {
-        return {
-          content: truncateError(`Verify hook file not found: ${hookPath}`),
-          isError: true,
-          renderingGroups: [infoGroup, ...accumulatedGroups],
-          tokenTotals: totals,
-        };
+        return await runFailure(`Verify hook file not found: ${hookPath}`);
       }
 
       // Gather new messages from this run
@@ -3093,14 +3504,9 @@ async function* executeMinionInner(
         const evalResult = await vm.evaluate(wrappedCode, 'verifyHook');
 
         if (evalResult.isError) {
-          return {
-            content: truncateError(
-              `Verify hook error: ${String(evalResult.value ?? 'Unknown error')}`
-            ),
-            isError: true,
-            renderingGroups: [infoGroup, ...accumulatedGroups],
-            tokenTotals: totals,
-          };
+          return await runFailure(
+            `Verify hook error: ${String(evalResult.value ?? 'Unknown error')}`
+          );
         }
 
         // Nullish → pass; string → rejection
@@ -3126,12 +3532,7 @@ async function* executeMinionInner(
             lastFinalResult?.messages ?? [],
             'verifyHook reject'
           );
-          return {
-            content: truncateError(`Verify hook rejected: ${errorMsg}`),
-            isError: true,
-            renderingGroups: [infoGroup, ...accumulatedGroups],
-            tokenTotals: totals,
-          };
+          return await runFailure(`Verify hook rejected: ${errorMsg}`);
         }
       } finally {
         vm.dispose();
@@ -3143,30 +3544,30 @@ async function* executeMinionInner(
     const finalSavepoint =
       allMessages.length > 0 ? allMessages[allMessages.length - 1].id : SAVEPOINT_START;
 
-    // Update minion chat with totals and new savepoint (after all retries)
+    // Update minion chat with totals and new savepoint (after all retries). A
+    // copy: if this save throws, the catch below adds the run's totals once.
     const updatedMinionChat: MinionChat = {
       ...minionChat,
+      ...chatTotalsWithRun(minionChat, totals),
       savepoint: finalSavepoint,
       pendingVerifyFeedback: undefined,
-      totalInputTokens: (minionChat.totalInputTokens ?? 0) + totals.inputTokens,
-      totalOutputTokens: (minionChat.totalOutputTokens ?? 0) + totals.outputTokens,
-      totalReasoningTokens: (minionChat.totalReasoningTokens ?? 0) + totals.reasoningTokens,
-      totalCacheCreationTokens:
-        (minionChat.totalCacheCreationTokens ?? 0) + totals.cacheCreationTokens,
-      totalCacheReadTokens: (minionChat.totalCacheReadTokens ?? 0) + totals.cacheReadTokens,
-      totalCost: (minionChat.totalCost ?? 0) + totals.cost,
-      costUnreliable: totals.costUnreliable || minionChat.costUnreliable || undefined,
       lastModifiedAt: new Date(),
     };
     await storage.saveMinionChat(updatedMinionChat);
 
     const resultContent = formatMinionResult({
       returnMode,
+      outputFormat,
       minionChatId: minionChat.id,
       stopReason,
       hasCoT: !!lastFinalResult?.hasCoT,
       text: accumulatedText.join('\n\n'),
       returnValue: usedReturnTool ? returnValue : undefined,
+      // The new savepoint is the stored tail, so `<token>@<id>` right away is a plain continue.
+      continueToken:
+        continueTokensEnabled && finalSavepoint !== SAVEPOINT_START
+          ? continueTokenFor(finalSavepoint)
+          : undefined,
     });
 
     // Reaching here means the loop ended with `complete` (with or without
@@ -3182,12 +3583,7 @@ async function* executeMinionInner(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     terminalRegistryStatus = 'error';
-    return {
-      content: truncateError(`Minion execution failed: ${message}`),
-      isError: true,
-      renderingGroups: [infoGroup, ...accumulatedGroups],
-      tokenTotals: totals,
-    };
+    return await runFailure(`Minion execution failed: ${message}`);
   } finally {
     // Tear down the parent → child cascade listener (if it ever fired,
     // it removed itself thanks to `{ once: true }`; this catches the
@@ -3240,8 +3636,10 @@ function renderMinionInput(input: Record<string, unknown>): string {
     lines.push('Action: retry');
   }
 
-  if (minionInput.minionChatId) {
-    lines.push(`Continue: ${minionInput.minionChatId}`);
+  const chatRef = parseMinionChatRef(minionInput.minionChatId);
+  if (chatRef.chatId !== undefined || chatRef.continueToken !== undefined) {
+    const rollback = chatRef.continueToken !== undefined ? ` (from ${chatRef.continueToken})` : '';
+    lines.push(`Continue: ${chatRef.chatId ?? '(no chat id)'}${rollback}`);
   }
 
   if (minionInput.enabledTools !== undefined) {
@@ -3279,6 +3677,17 @@ function renderMinionInput(input: Record<string, unknown>): string {
 
   if (readAsyncFlag(minionInput)) {
     lines.push('Async: yes');
+  }
+
+  // A prefix is enough to tell tokens apart without spelling one out on screen.
+  const remoteToken = readRemoteToken(minionInput);
+  if (remoteToken) {
+    lines.push(`Token: ${remoteToken.slice(0, 7)}…`);
+  }
+
+  const outputFormat = readOutputFormat(minionInput);
+  if (outputFormat) {
+    lines.push(`Output: ${outputFormat}`);
   }
 
   if (minionInput.verifyHook) {
@@ -3363,30 +3772,71 @@ function renderMinionInput(input: Record<string, unknown>): string {
   return lines.join('\n');
 }
 
-/** Extract minionChatId, the marker lines, and body from the simplified tag format */
-export function parseSimplifiedOutput(
-  output: string
-): { minionChatId: string; hasCoT: boolean; remote: boolean; body: string } | undefined {
+/** Extract minionChatId, the continue token, the marker lines, and body from the simplified tag format */
+export function parseSimplifiedOutput(output: string):
+  | {
+      minionChatId: string;
+      continueToken?: string;
+      hasCoT: boolean;
+      remote: boolean;
+      body: string;
+    }
+  | undefined {
   const match = output.match(
-    /^<minionChatId>([^<]+)<\/minionChatId>\n?(<hasCoT \/>\n?)?(<remote \/>\n?)?([\s\S]*)$/
+    /^<minionChatId>([^<]+)<\/minionChatId>\n?(?:<continueToken>([^<]+)<\/continueToken>\n?)?(<hasCoT \/>\n?)?(<remote \/>\n?)?([\s\S]*)$/
   );
   if (!match) return undefined;
   return {
     minionChatId: match[1],
-    hasCoT: match[2] !== undefined,
-    remote: match[3] !== undefined,
-    body: match[4],
+    ...(match[2] !== undefined && { continueToken: match[2] }),
+    hasCoT: match[3] !== undefined,
+    remote: match[4] !== undefined,
+    body: match[5],
   };
 }
 
 const HUMAN_ANSWER_LABEL = '[Answered by a human]';
+
+/** Read back what `formatMinionError` wrote, in either format; undefined for a prose error. */
+function parseMinionErrorOutput(
+  output: string
+): { error: string; minionChatId: string; continueToken?: string } | undefined {
+  const tagged = output.match(
+    /^([\s\S]*)\n<minionChatId>([^<]+)<\/minionChatId>(?:\n<continueToken>([^<]+)<\/continueToken>)?$/
+  );
+  if (tagged) {
+    return {
+      error: tagged[1],
+      minionChatId: tagged[2],
+      ...(tagged[3] !== undefined && { continueToken: tagged[3] }),
+    };
+  }
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    const { error, minionChatId, continueToken } = parsed as Record<string, unknown>;
+    if (typeof error !== 'string' || typeof minionChatId !== 'string') return undefined;
+    return {
+      error,
+      minionChatId,
+      ...(typeof continueToken === 'string' && { continueToken }),
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Render minion tool output for display
  */
 function renderMinionOutput(output: string, isError?: boolean): string {
   if (isError) {
-    return output;
+    // Same chat id / token lines as a result; prose errors stay as they are.
+    const failure = parseMinionErrorOutput(output);
+    if (!failure) return output;
+    const lines = [failure.error, `[minionChatId: ${failure.minionChatId}]`];
+    if (failure.continueToken) lines.push(`[continueToken: ${failure.continueToken}]`);
+    return lines.join('\n\n');
   }
 
   // Simplified tag format (non-both modes)
@@ -3403,10 +3853,13 @@ function renderMinionOutput(output: string, isError?: boolean): string {
       lines.push(simplified.body);
     }
     lines.push(`[minionChatId: ${simplified.minionChatId}]`);
+    if (simplified.continueToken) {
+      lines.push(`[continueToken: ${simplified.continueToken}]`);
+    }
     return lines.join('\n\n');
   }
 
-  // JSON format (both mode, legacy)
+  // JSON format ('both' mode, outputFormat 'json', legacy)
   try {
     const parsed = JSON.parse(output);
     const lines: string[] = [];
@@ -3420,14 +3873,16 @@ function renderMinionOutput(output: string, isError?: boolean): string {
     if (parsed.warning) {
       lines.push(`⚠ ${parsed.warning}`);
     }
-    if (parsed.text) {
-      lines.push('Text output captured.');
-    }
-    if (parsed.result !== undefined) {
-      lines.push(parsed.result);
+    // Same body as the tag format: the result, or the prose when nothing was returned.
+    const body = parsed.result ?? parsed.text;
+    if (body) {
+      lines.push(body);
     }
     if (parsed.minionChatId) {
       lines.push(`[minionChatId: ${parsed.minionChatId}]`);
+    }
+    if (parsed.continueToken) {
+      lines.push(`[continueToken: ${parsed.continueToken}]`);
     }
 
     return lines.join('\n\n');
@@ -3521,6 +3976,7 @@ function getRemoteMinionDescription(opts: ToolOptions): string {
     'LLM-only parameters (model, enabledTools, enableWeb, system prompts, reasoning and sampling overrides, fileInjectionMode) are ignored, and verifyHook is rejected.',
     'If no answer arrives in time, the question is withdrawn; you can follow up with the same minionChatId.',
     'async=true posts a message the human cannot reply to and returns "Message sent." at once: use it for progress updates and FYIs.',
+    'remoteToken, passed with remote=true on a new chat, sends the chat to that Touch Grass user instead of the admin; it sticks to the chat.',
   ].join(' ');
 }
 
@@ -3543,6 +3999,17 @@ function getMinionDescription(opts: ToolOptions): string {
   } else {
     lines.push(
       '- Retry the last run by setting action to "retry" with the same minionChatId. Omit message to re-send the original, or provide a new message to replace it.'
+    );
+  }
+
+  if (opts.continueTokens === true) {
+    // Refusals carry no token: they leave the chat on the caller's last one.
+    const tokenNote =
+      opts.autoRollback === true
+        ? 'Each successful result carries a continueToken for the chat state right after it.'
+        : 'Each result carries a continueToken for the chat state right after it, and so does an error from a run that started; an error without one changed nothing, so your last token still holds.';
+    lines.push(
+      `- ${tokenNote} Pass "<continueToken>@<minionChatId>" as minionChatId to continue from that point; anything after it is dropped (settings you changed since stay changed; re-pass any that should differ).${isRemoteConfigured(opts) ? ' LLM minion chats only.' : ''}`
     );
   }
 
@@ -3607,9 +4074,12 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     };
   }
 
+  const continueTokens = opts.continueTokens === true;
   properties.minionChatId = {
     type: 'string',
-    description: 'Optional: ID of an existing minion chat to continue the conversation',
+    description: continueTokens
+      ? `Optional: ID of an existing minion chat to continue the conversation. Or "<continueToken>@<minionChatId>", with a continueToken from an earlier result, to continue from that point, dropping anything after it. Needs message or inject files${opts.autoRollback === true ? '' : ', and no action "retry"'}. Settings you changed since stay changed; re-pass any that should differ.`
+      : 'Optional: ID of an existing minion chat to continue the conversation',
   };
   properties.message = {
     type: 'string',
@@ -3664,6 +4134,15 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
     description:
       'Name of a hook file in /hooks/ (without .js) that verifies minion output before savepoint advances. The hook must return a function(messages). Return null to approve, or a string error message to reject.',
   };
+  // 'both' already answers in JSON with text and result side by side, which
+  // the tag format can't hold.
+  if (resolveReturnMode(opts) !== 'both') {
+    properties.outputFormat = {
+      type: 'string',
+      enum: ['text', 'json'],
+      description: `Format of the result you get back. "text" (default): a <minionChatId> tag line${continueTokens ? ' and a <continueToken> tag line' : ''}, then the result. "json": one JSON object with minionChatId, ${continueTokens ? 'continueToken, ' : ''}stopReason and hasCoT, plus whichever of result (the returned value), warning or text (the prose) applies. Persisted on the minion chat.`,
+    };
+  }
 
   if (opts.allowWebSearch === true) {
     properties.enableWeb = {
@@ -3725,6 +4204,11 @@ function getMinionInputSchema(opts: ToolOptions): ToolInputSchema {
       type: 'boolean',
       description:
         'Remote (human) chats only: post the message without waiting for an answer. The human sees it but cannot reply to it, and the call returns "Message sent." right away. Good for progress updates.',
+    };
+    properties.remoteToken = {
+      type: 'string',
+      description:
+        'Remote chats only, set with remote=true on a new chat: the Touch Grass user token whose inbox gets this conversation. Sticks to the chat; omit on continuations. Without it the question goes to the admin.',
     };
   }
 
@@ -3815,10 +4299,8 @@ export const minionTool: ClientSideTool = {
   // same apiDefinitionId space out, but minions on different definitions (whether
   // a different provider or just a different account/key) all launch immediately.
   async getParallelThrottleGroup(input, toolOptions, context) {
-    const minionChat =
-      typeof input.minionChatId === 'string'
-        ? await context.storage.getMinionChat(input.minionChatId)
-        : undefined;
+    const { chatId } = parseMinionChatRef(input.minionChatId);
+    const minionChat = chatId ? await context.storage.getMinionChat(chatId) : undefined;
     // Humans don't share an LLM provider's rate limit, so remote calls stay out
     // of the apiDefinition groups (they still space out among themselves).
     if (isRemoteCall(input) || (minionChat && isRemoteMinionChat(minionChat))) {
@@ -3898,6 +4380,14 @@ export const minionTool: ClientSideTool = {
       label: 'Verify Feedback',
       subtitle:
         'Append the verify-hook rejection reason to the retried message so the minion can correct itself',
+      default: false,
+    },
+    {
+      type: 'boolean',
+      id: 'continueTokens',
+      label: 'Continue Tokens',
+      subtitle:
+        'Give each result a token the caller can pass back to continue the minion chat from that point',
       default: false,
     },
     {

@@ -14,6 +14,8 @@ const TIMEOUT_MS_MAX = 7 * 24 * 60 * 60 * 1000;
  * expiresAt (and reports expired) instead of a timer tick before it (and reporting pending).
  */
 const EXPIRY_GRACE_MS = 25;
+/** The gremlin-side client keys its "check remoteToken" hint on `userToken` in this text. */
+const UNKNOWN_USER_TOKEN = 'Unknown userToken: no Touch Grass user has this token';
 
 function genId(): string {
   return crypto.randomBytes(16).toString('hex');
@@ -42,6 +44,24 @@ function parseDisplayName(raw: unknown): string | null {
     throw new HttpError(400, `displayName must be at most ${DISPLAY_NAME_MAX_LENGTH} characters`);
   }
   return trimmed || null;
+}
+
+/** The owner's token, or null for an admin-only session. Checked here: the FK would be a 500. */
+function parseUserToken(raw: unknown): string | null {
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  if (typeof raw !== 'string') {
+    throw new HttpError(400, 'userToken must be a string or null');
+  }
+  const token = raw.trim();
+  if (token === '') {
+    return null;
+  }
+  if (!db.userTokenExists(token)) {
+    throw new HttpError(400, UNKNOWN_USER_TOKEN);
+  }
+  return token;
 }
 
 function parseFiles(raw: unknown): InjectedFile[] {
@@ -147,8 +167,10 @@ export function createApiRouter({ pollTimeoutMs, polls }: ApiRouterOptions): Rou
   const router = Router();
 
   router.post('/sessions', (req, res) => {
-    const displayName = parseDisplayName(jsonBody(req).displayName);
-    const session = db.createSession(genId(), req.callerId!, displayName);
+    const body = jsonBody(req);
+    const displayName = parseDisplayName(body.displayName);
+    const userToken = parseUserToken(body.userToken);
+    const session = db.createSession(genId(), req.callerId!, displayName, userToken);
     res.status(201).json({ sessionId: session.id });
   });
 
@@ -158,8 +180,10 @@ export function createApiRouter({ pollTimeoutMs, polls }: ApiRouterOptions): Rou
       throw new HttpError(404, 'Session not found');
     }
     const pending = db.getPendingRequestForSession(session.id);
+    // Field by field, so userToken (and any later internal column) stays out of the response.
+    const { id, callerId, displayName, createdAt, lastActivityAt } = session;
     res.json({
-      session,
+      session: { id, callerId, displayName, createdAt, lastActivityAt },
       messages: db.getMessages(session.id),
       pendingRequest: pending ? { requestId: pending.id, expiresAt: pending.expiresAt } : null,
     });

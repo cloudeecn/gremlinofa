@@ -6,6 +6,7 @@ import {
   TouchGrassClient,
   TouchGrassError,
   basicAuthHeader,
+  isSessionGone,
   normalizeTouchGrassEndpoint,
   postMessageWithRetry,
   retryCancelInBackground,
@@ -126,6 +127,51 @@ describe('TouchGrassClient requests', () => {
     expect(JSON.parse(init.body as string)).toEqual({ displayName: 'Project · minion' });
   });
 
+  it('sends userToken with a new session only when one is set', async () => {
+    const fetchMock = stubFetch(async () =>
+      fakeResponse({ status: 201, body: { sessionId: 's1' } })
+    );
+    const withToken = (userToken: string | undefined) =>
+      new TouchGrassClient({ endpoint: ENDPOINT, password: 'pw', userToken, runtime: 'node' });
+    await withToken('tg_bob').createSession('P · m');
+    await withToken('').createSession('P · m');
+    await withToken(undefined).createSession('P · m');
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body as string))).toEqual([
+      { displayName: 'P · m', userToken: 'tg_bob' },
+      { displayName: 'P · m' },
+      { displayName: 'P · m' },
+    ]);
+  });
+
+  it("hints at remoteToken on the backend's unknown-userToken 400", async () => {
+    stubFetch(async () =>
+      fakeResponse({
+        status: 400,
+        body: { error: 'Unknown userToken: no Touch Grass user has this token' },
+      })
+    );
+    const err = await client()
+      .createSession(null)
+      .catch(e => e);
+    expect(err.status).toBe(400);
+    expect(err.retryable).toBe(false);
+    expect(err.message).toBe(
+      'Creating the remote session failed: HTTP 400 Unknown userToken: no Touch Grass user has this token. The backend has no user with this remoteToken. Resend with the corrected remoteToken and the same minionChatId, or start a new remote chat without remoteToken to reach the admin.'
+    );
+  });
+
+  it('leaves the remoteToken hint off other 400s', async () => {
+    stubFetch(async () =>
+      fakeResponse({ status: 400, body: { error: 'displayName must be a string or null' } })
+    );
+    const err = await client()
+      .createSession(null)
+      .catch(e => e);
+    expect(err.message).toBe(
+      'Creating the remote session failed: HTTP 400 displayName must be a string or null.'
+    );
+  });
+
   it('rejects a 2xx body that does not match the contract', async () => {
     stubFetch(async () => fakeResponse({ status: 201, body: {} }));
     const err = await client()
@@ -201,6 +247,21 @@ describe('TouchGrassClient requests', () => {
       .postMessage('s1', { content: 'Q' })
       .catch(e => e);
     expect(err.message).toBe('Sending the message failed: HTTP 413 Request body exceeds 10 MB.');
+  });
+
+  it.each([
+    ['the backend reporting the session gone', { error: 'Session not found' }, true],
+    ["the backend's catch-all for a misrouted path", { error: 'Not found' }, false],
+    ["a proxy's page", '<html><head><title>nginx</title></head></html>', false],
+    ['a plain-text body', 'Not Found', false],
+  ])('tells a lost session from a wrong endpoint: 404 from %s', async (_label, body, gone) => {
+    stubFetch(async () => fakeResponse({ status: 404, body }));
+    const err = await client()
+      .postMessage('s1', { content: 'Q' })
+      .catch(e => e);
+    expect(err.status).toBe(404);
+    expect(err.backendError).toBe(typeof body === 'string' ? undefined : body.error);
+    expect(isSessionGone(err)).toBe(gone);
   });
 
   it('marks gateway errors retryable and others not', async () => {
@@ -693,7 +754,7 @@ describe('postMessageWithRetry', () => {
     }).catch(e => e);
     await vi.advanceTimersByTimeAsync(1_000);
     const err = await pending;
-    expect(err.status).toBe(404);
+    expect(isSessionGone(err)).toBe(true);
     expect(methods(fetchMock)).toEqual(['POST', 'GET']);
   });
 

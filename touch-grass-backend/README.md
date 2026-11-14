@@ -23,6 +23,8 @@ npm run dev
 
 Open http://localhost:3004/web/, sign in as `Admin` with `WEB_PASSWORD`, then point GremlinOFA at it (see [Configuring the Minion Tool](#configuring-the-minion-tool)). Answering alone? You're done. More humans get accounts on the **Users** page ([Routing questions to a user](#routing-questions-to-a-user)). Plain HTTP on localhost is fine for server-mode GremlinOFA. The hosted web app needs HTTPS and `CORS_ORIGIN`, both covered below.
 
+This folder is an npm workspace of the GremlinOFA repo: `npm install` here (or at the repo root) installs into the root's `node_modules` and `package-lock.json`, and the root's `npm audit` covers this package too.
+
 ## Configuration
 
 The server reads `.env` from its working directory (or the file `DOTENV_CONFIG_PATH` names) on top of plain environment variables, and a variable already set in the environment beats the file. A missing file is fine. One that exists but can't be read stops the server with the path and the reason, instead of letting you chase a misleading "API_PASSWORD is not set". Values containing `#` must be quoted, since dotenv cuts an unquoted value at `#`. Single quotes are the safe habit.
@@ -45,8 +47,8 @@ Both service files also set `NODE_ENV=production` for Express's production defau
 ## Build and Deploy
 
 ```bash
-npm ci
-npm run build
+npm ci          # at the repo root; installs every workspace
+npm run build   # back in touch-grass-backend/
 ```
 
 The build is flat: the _contents_ of `dist/` become the install directory.
@@ -88,7 +90,7 @@ Updating is the same copy plus a restart. The build carries no `.env` and no `da
 
 ### With the repo's deploy script
 
-The root `scripts/deploy.ts` has a `touch-grass` target. Add it to `deploy.config.json` (see `deploy.config.example.json`), run `npm ci` in `touch-grass-backend/` once, then `npm run deploy:touch-grass` from the repo root. It builds, rsyncs `dist/`, and keeps `.env`, `data/`, `node_modules/` and any top-level `*.db*` file (the database and its `-wal`/`-shm`, where the v1 `.env.example` put them) on the destination out of reach of `--delete`.
+The root `scripts/deploy.ts` has a `touch-grass` target. Add it to `deploy.config.json` (see `deploy.config.example.json`), then `npm run deploy:touch-grass` from the repo root (after the root `npm ci`). It builds, rsyncs `dist/`, and keeps `.env`, `data/`, `node_modules/` and any top-level `*.db*` file (the database and its `-wal`/`-shm`, where the v1 `.env.example` put them) on the destination out of reach of `--delete`.
 
 ### systemd
 

@@ -11,6 +11,14 @@
     "dest": "/opt/gremlinofa-vfs",
     "postDeploy": "npm install --omit=dev"
   },
+  "storage": {
+    "dest": "you@gremlin.example.com:/opt/gremlinofa-storage",
+    "postDeploy": "npm install --omit=dev"
+  },
+  "cors-proxy": {
+    "dest": "you@gremlin.example.com:/opt/gremlinofa-cors-proxy",
+    "postDeploy": "npm install --omit=dev"
+  },
   "touch-grass": {
     "dest": "you@gremlin.example.com:/opt/gremlinofa-touch-grass",
     "postDeploy": "npm install --omit=dev"

@@ -8,6 +8,11 @@
     "type": "git",
     "url": "git@github.com:cloudeecn/gremlinofa.git"
   },
+  "workspaces": [
+    "storage-backend",
+    "cors-proxy",
+    "touch-grass-backend"
+  ],
   "scripts": {
     "dev": "vite",
     "prebuild:frontend": "tsc -b",
@@ -26,12 +31,16 @@
     "test:silent": "CI=true vitest run --no-color --silent passed-only",
     "build:server": "esbuild src/server/nodeEntry.ts --bundle --platform=node --target=node20 --outfile=dist/server/server.js --format=esm --external:better-sqlite3 --external:@anthropic-ai/claude-agent-sdk --external:@modelcontextprotocol/sdk --banner:js=\"import{createRequire as __cr}from'module';const require=__cr(import.meta.url);\" && cp src/server/deploy/package.json src/server/deploy/.env.example src/server/deploy/gremlinofa-server.service 'src/server/deploy/gremlinofa-server@.service' src/server/deploy/gremlinofa-server.initd dist/server/ && cp node_modules/@jitl/quickjs-ng-wasmfile-release-sync/dist/emscripten-module.wasm dist/server/",
     "build:vfs-server": "mkdir -p dist/vfs-server && esbuild src/server/vfsFacade/entry.ts --bundle --platform=node --target=node18 --outfile=dist/vfs-server/index.js --format=esm --external:express --external:express-rate-limit --external:dotenv --sourcemap && cp src/server/vfsFacade/deploy/package.json src/server/vfsFacade/deploy/.env.example src/server/vfsFacade/deploy/gremlinofa-vfs.service src/server/vfsFacade/deploy/gremlinofa-vfs.initd dist/vfs-server/",
-    "build:touch-grass": "npm --prefix touch-grass-backend run build",
+    "build:storage": "npm run build -w storage-backend",
+    "build:cors-proxy": "npm run build -w cors-proxy",
+    "build:touch-grass": "npm run build -w touch-grass-backend",
     "start:server": "node dist/server/server.js",
     "deploy": "node scripts/deploy.ts frontend server",
     "deploy:frontend": "node scripts/deploy.ts frontend",
     "deploy:server": "node scripts/deploy.ts server",
     "deploy:vfs-server": "node scripts/deploy.ts vfs-server",
+    "deploy:storage": "node scripts/deploy.ts storage",
+    "deploy:cors-proxy": "node scripts/deploy.ts cors-proxy",
     "deploy:touch-grass": "node scripts/deploy.ts touch-grass",
     "prepare": "husky"
   },
@@ -54,7 +63,7 @@
     "express-rate-limit": "^8.7.1",
     "fflate": "^0.8.3",
     "highlight.js": "^11.12.0",
-    "katex": "^0.18.2",
+    "katex": "^0.19.1",
     "marked": "^17.0.6",
     "mustache": "^4.2.0",
     "openai": "^7.45.0",
@@ -102,5 +111,13 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,json,css,md,yaml,html}": "prettier --write"
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.8"
+    },
+    "workbox-build": {
+      "glob": "^14.0.6"
+    }
   }
 }

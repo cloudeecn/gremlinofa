@@ -22,6 +22,8 @@ npm run build
 NODE_ENV=production npm start
 ```
 
+This folder is an npm workspace of the GremlinOFA repo: `npm install` here (or at the repo root) installs into the root's `node_modules` and `package-lock.json`, and the root's `npm audit` covers this package too.
+
 ## Configuration
 
 Everything comes from `.env` in the working directory, the file `DOTENV_CONFIG_PATH` names, or plain environment variables:
@@ -58,6 +60,10 @@ dist/
 ```
 
 The proxy reads `.env` from its working directory itself, so both service files just point the working directory at the install dir. A missing `.env` is fine (defaults and plain environment variables), but one the service user can't read stops the proxy with exit code 1. Otherwise it would start as an open relay with no token and no target list. Don't `source` it from a shell: sh and dotenv disagree about `#`, `$` and quotes, and one file can quietly turn into two different configs. Both service files also set `NODE_ENV=production`, which keeps Express from handing out stack traces in error responses.
+
+### With the repo's deploy script
+
+The root `scripts/deploy.ts` has a `cors-proxy` target. Add it to `deploy.config.json` (see `deploy.config.example.json`), then run `npm run deploy:cors-proxy` from the repo root (after the root `npm ci`). It builds, rsyncs `dist/`, and keeps `.env`, `node_modules/` and `package-lock.json` on the destination out of reach of `--delete`.
 
 ### systemd (Debian, Ubuntu, RHEL, etc.)
 

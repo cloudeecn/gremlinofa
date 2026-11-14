@@ -1,5 +1,6 @@
 {
   "name": "@gremlinofa/storage-sqlite",
+  "private": true,
   "version": "1.0.0",
   "type": "module",
   "description": "SQLite-based remote storage backend for GremlinOFA - because your data deserves a proper home, not some flimsy IndexDB",

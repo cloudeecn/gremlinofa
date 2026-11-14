@@ -21,22 +21,18 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+      # One lockfile for the root and its workspaces (storage-backend, cors-proxy,
+      # touch-grass-backend), so this installs all four
       - name: Install dependencies
         run: npm ci
-      - name: Install remote storage dependencies
-        run: cd storage-backend && npm ci
       - name: Run verification storage-backend
         run: cd storage-backend && npm run verify
       - name: Run tests storage-backend
         run: cd storage-backend && npm run test:silent
-      - name: Install cors-proxy dependencies
-        run: cd cors-proxy && npm ci
       - name: Run verification cors-proxy
         run: cd cors-proxy && npm run verify
       - name: Run tests cors-proxy
         run: cd cors-proxy && npm run test:silent
-      - name: Install touch-grass-backend dependencies
-        run: cd touch-grass-backend && npm ci
       - name: Run verification touch-grass-backend
         run: cd touch-grass-backend && npm run verify
       - name: Run tests touch-grass-backend

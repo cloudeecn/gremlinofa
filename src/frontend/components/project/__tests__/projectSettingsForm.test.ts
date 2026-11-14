@@ -41,7 +41,6 @@ const fullProject: Project = {
   enabledTools: ['memory', 'javascript'],
   toolOptions: { memory: { useSystemPrompt: true }, javascript: { loadLib: false } },
   disableStream: true,
-  extendedContext: true,
   useAnthropicOneHourCache: true,
   noLineNumbers: true,
   cacheRoutingScope: 'chat',

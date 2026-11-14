@@ -9,8 +9,8 @@
  * **Not overridable at chat level**, deliberately — transport and provider
  * knobs rather than agent identity. Do not re-derive this list; extend it here
  * with a reason if it ever changes:
- *   `preFillResponse`, `disableStream`, `extendedContext`,
- *   `useAnthropicOneHourCache`, `noLineNumbers`, `cacheRoutingScope`,
+ *   `preFillResponse`, `disableStream`, `useAnthropicOneHourCache`,
+ *   `noLineNumbers`, `cacheRoutingScope`,
  *   `reasoningSummary`, `flexTierEnabled`, `toolOptions`.
  *
  * `toolOptions` stays project-level even though `enabledTools` does not: both

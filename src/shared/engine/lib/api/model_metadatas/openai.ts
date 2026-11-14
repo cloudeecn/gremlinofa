@@ -1,13 +1,13 @@
 import type { ModelKnowledge } from '../../../../protocol/types';
 
+// From GPT-5.4 on, a request with more than 272K prompt tokens bills every
+// token at the `contextPricingTiers` rate (2x input/cache, 1.5x output).
+// Fast mode (2x rates) and the 12-hour cache write (2.5x input) are not modeled.
 export const OPENAI_MODELS: ModelKnowledge[] = [
-  // === GPT-6 series (Astra / Sol / Luna) ===
+  // === GPT-6 series (Astra / Sol / Terra / Luna) ===
   {
     // Astra is the flagship; the low-specificity `gpt-6` fuzz match makes it
     // the profile future gpt-6* ids inherit until they get their own entries.
-    // >272K-input requests bill 2x input/cache and 1.5x output for the whole
-    // request — recorded but not applied (see unsupportedHighContextPricing).
-    // Fast mode (2x rates) is not modeled.
     matches: [
       { apiType: ['chatgpt', 'responses_api'], modelIdExact: ['gpt-6-astra'] },
       { apiType: ['chatgpt', 'responses_api'], modelIdFuzz: [{ modelIdPrefix: 'gpt-6-astra' }] },
@@ -18,16 +18,17 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 10.0,
     outputPrice: 50.0,
-    reasoningPrice: 50.0,
     cacheReadPrice: 1.0,
     cacheWritePrice: 12.5,
-    unsupportedHighContextPricing: {
-      thresholdTokens: 272000,
-      inputPrice: 20.0,
-      cacheReadPrice: 2.0,
-      cacheWritePrice: 25.0,
-      outputPrice: 75.0,
-    },
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 20.0,
+        cacheReadPrice: 2.0,
+        cacheWritePrice: 25.0,
+        outputPrice: 75.0,
+      },
+    ],
     contextWindow: 1050000,
     maxOutputTokens: 128000,
     reasoningMode: 'always',
@@ -50,20 +51,53 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 2.0,
     outputPrice: 10.0,
-    reasoningPrice: 10.0,
     cacheReadPrice: 0.1,
     cacheWritePrice: 2.5,
-    unsupportedHighContextPricing: {
-      thresholdTokens: 272000,
-      inputPrice: 4.0,
-      cacheReadPrice: 0.2,
-      cacheWritePrice: 5.0,
-      outputPrice: 15.0,
-    },
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 4.0,
+        cacheReadPrice: 0.2,
+        cacheWritePrice: 5.0,
+        outputPrice: 15.0,
+      },
+    ],
     contextWindow: 1050000,
     maxOutputTokens: 128000,
     reasoningMode: 'always',
     supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    webSearchPrice: 0.01,
+    supportsVerbosity: true,
+    reasoningHistoryParam: 'reasoning_context',
+  },
+  {
+    // GPT-6.1 Terra (2026-10-26): takes `none` (no `minimal`), default
+    // `medium`. Tool calling needs the Responses API.
+    matches: [
+      { apiType: ['chatgpt', 'responses_api'], modelIdExact: ['gpt-6.1-terra'] },
+      { apiType: ['chatgpt', 'responses_api'], modelIdFuzz: [{ modelIdPrefix: 'gpt-6.1-terra' }] },
+      {
+        apiType: ['chatgpt', 'responses_api'],
+        modelIdFuzz: [{ modelIdPrefix: 'gpt-6', modelIdPostfix: '-terra' }],
+      },
+    ],
+    inputPrice: 1.0,
+    outputPrice: 5.0,
+    cacheReadPrice: 0.05,
+    cacheWritePrice: 1.25,
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 2.0,
+        cacheReadPrice: 0.1,
+        cacheWritePrice: 2.5,
+        outputPrice: 7.5,
+      },
+    ],
+    contextWindow: 1050000,
+    maxOutputTokens: 128000,
+    reasoningMode: 'optional',
+    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     webSearchPrice: 0.01,
     supportsVerbosity: true,
     reasoningHistoryParam: 'reasoning_context',
@@ -79,16 +113,17 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 2.0,
     outputPrice: 10.0,
-    reasoningPrice: 10.0,
     cacheReadPrice: 0.2,
     cacheWritePrice: 2.5,
-    unsupportedHighContextPricing: {
-      thresholdTokens: 272000,
-      inputPrice: 4.0,
-      cacheReadPrice: 0.4,
-      cacheWritePrice: 5.0,
-      outputPrice: 15.0,
-    },
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 4.0,
+        cacheReadPrice: 0.4,
+        cacheWritePrice: 5.0,
+        outputPrice: 15.0,
+      },
+    ],
     contextWindow: 1050000,
     maxOutputTokens: 128000,
     reasoningMode: 'optional',
@@ -110,16 +145,17 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 0.1,
     outputPrice: 0.5,
-    reasoningPrice: 0.5,
     cacheReadPrice: 0.01,
     cacheWritePrice: 0.125,
-    unsupportedHighContextPricing: {
-      thresholdTokens: 272000,
-      inputPrice: 0.2,
-      cacheReadPrice: 0.02,
-      cacheWritePrice: 0.25,
-      outputPrice: 0.75,
-    },
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 0.2,
+        cacheReadPrice: 0.02,
+        cacheWritePrice: 0.25,
+        outputPrice: 0.75,
+      },
+    ],
     contextWindow: 1050000,
     maxOutputTokens: 128000,
     reasoningMode: 'optional',
@@ -129,11 +165,22 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     reasoningHistoryParam: 'reasoning_context',
   },
 
-  // === GPT-5.6 series (Sol / Terra / Luna) ===
-  // Repriced downward on 2026-07-30 and again since; rates below are the
-  // current ones. The >272K-input tier (2x input/cache, 1.5x output) applies
-  // here as on gpt-6 but is not yet recorded.
+  // ChatGPT Instant as a moving alias. No Batch; effort values unpublished.
   {
+    matches: [{ apiType: ['chatgpt', 'responses_api'], modelIdExact: ['chat-latest'] }],
+    inputPrice: 5.0,
+    outputPrice: 30.0,
+    cacheReadPrice: 0.5,
+    contextWindow: 400000,
+    maxOutputTokens: 128000,
+    webSearchPrice: 0.01,
+  },
+
+  // === GPT-5.6 series (Sol / Terra / Luna) ===
+  {
+    // Sol's promo rate runs through 2026-11-30. The rate it returns to comes
+    // from OpenAI's 2026-11-03 customer email ("starting November 30"), not
+    // the pricing page; re-check that page once the promo is over.
     matches: [
       // 'gpt-5.6' is an official alias routing to Sol
       { apiType: ['chatgpt', 'responses_api'], modelIdExact: ['gpt-5.6', 'gpt-5.6-sol'] },
@@ -145,10 +192,37 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 4.0,
     outputPrice: 20.0,
-    reasoningPrice: 20.0,
     cacheReadPrice: 0.4,
     cacheWritePrice: 5.0,
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 8.0,
+        cacheReadPrice: 0.8,
+        cacheWritePrice: 10.0,
+        outputPrice: 30.0,
+      },
+    ],
+    priceSchedule: [
+      {
+        effectiveFrom: '2026-11-30',
+        inputPrice: 5.0,
+        outputPrice: 30.0,
+        cacheReadPrice: 0.5,
+        cacheWritePrice: 6.25,
+        contextPricingTiers: [
+          {
+            thresholdTokens: 272000,
+            inputPrice: 10.0,
+            cacheReadPrice: 1.0,
+            cacheWritePrice: 12.5,
+            outputPrice: 45.0,
+          },
+        ],
+      },
+    ],
     contextWindow: 1050000,
+    maxOutputTokens: 128000,
     reasoningMode: 'optional',
     supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     webSearchPrice: 0.01,
@@ -169,10 +243,19 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 2.0,
     outputPrice: 12.0,
-    reasoningPrice: 12.0,
     cacheReadPrice: 0.2,
     cacheWritePrice: 2.5,
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 4.0,
+        cacheReadPrice: 0.4,
+        cacheWritePrice: 5.0,
+        outputPrice: 18.0,
+      },
+    ],
     contextWindow: 1050000,
+    maxOutputTokens: 128000,
     reasoningMode: 'optional',
     supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     webSearchPrice: 0.01,
@@ -193,10 +276,19 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 0.2,
     outputPrice: 1.2,
-    reasoningPrice: 1.2,
     cacheReadPrice: 0.02,
     cacheWritePrice: 0.25,
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 0.4,
+        cacheReadPrice: 0.04,
+        cacheWritePrice: 0.5,
+        outputPrice: 1.8,
+      },
+    ],
     contextWindow: 1050000,
+    maxOutputTokens: 128000,
     reasoningMode: 'optional',
     supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     webSearchPrice: 0.01,
@@ -207,8 +299,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
   // === GPT-5.5 / 5.4 / 5.3 series ===
   // Each sub-model needs an exact id, a `5.x` + postfix fuzz that outranks the
   // `gpt-5` + postfix ones further down, and a prefix for dated snapshots
-  // (which don't end in the postfix). >272K-input requests bill 2x input and
-  // 1.5x output for the whole request — recorded but not applied.
+  // (which don't end in the postfix).
   {
     matches: [
       { apiType: ['chatgpt', 'responses_api'], modelIdExact: ['gpt-5.5'] },
@@ -216,14 +307,15 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 5.0,
     outputPrice: 30.0,
-    reasoningPrice: 30.0,
     cacheReadPrice: 0.5,
-    unsupportedHighContextPricing: {
-      thresholdTokens: 272000,
-      inputPrice: 10.0,
-      cacheReadPrice: 1.0,
-      outputPrice: 45.0,
-    },
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 10.0,
+        cacheReadPrice: 1.0,
+        outputPrice: 45.0,
+      },
+    ],
     contextWindow: 1050000,
     maxOutputTokens: 128000,
     reasoningMode: 'optional',
@@ -244,7 +336,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     // No cached-input discount.
     inputPrice: 30.0,
     outputPrice: 180.0,
-    reasoningPrice: 180.0,
+    contextPricingTiers: [{ thresholdTokens: 272000, inputPrice: 60.0, outputPrice: 270.0 }],
     contextWindow: 1050000,
     maxOutputTokens: 128000,
     reasoningMode: 'always',
@@ -264,14 +356,15 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 2.5,
     outputPrice: 15.0,
-    reasoningPrice: 15.0,
     cacheReadPrice: 0.25,
-    unsupportedHighContextPricing: {
-      thresholdTokens: 272000,
-      inputPrice: 5.0,
-      cacheReadPrice: 0.5,
-      outputPrice: 22.5,
-    },
+    contextPricingTiers: [
+      {
+        thresholdTokens: 272000,
+        inputPrice: 5.0,
+        cacheReadPrice: 0.5,
+        outputPrice: 22.5,
+      },
+    ],
     contextWindow: 1050000,
     maxOutputTokens: 128000,
     reasoningMode: 'optional',
@@ -291,12 +384,7 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 30.0,
     outputPrice: 180.0,
-    reasoningPrice: 180.0,
-    unsupportedHighContextPricing: {
-      thresholdTokens: 272000,
-      inputPrice: 60.0,
-      outputPrice: 270.0,
-    },
+    contextPricingTiers: [{ thresholdTokens: 272000, inputPrice: 60.0, outputPrice: 270.0 }],
     contextWindow: 1050000,
     maxOutputTokens: 128000,
     reasoningMode: 'always',
@@ -316,7 +404,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 0.75,
     outputPrice: 4.5,
-    reasoningPrice: 4.5,
     cacheReadPrice: 0.075,
     contextWindow: 400000,
     maxOutputTokens: 128000,
@@ -337,7 +424,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 0.2,
     outputPrice: 1.25,
-    reasoningPrice: 1.25,
     cacheReadPrice: 0.02,
     contextWindow: 400000,
     maxOutputTokens: 128000,
@@ -358,7 +444,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.75,
     outputPrice: 14.0,
-    reasoningPrice: 14.0,
     cacheReadPrice: 0.175,
     contextWindow: 400000,
     maxOutputTokens: 128000,
@@ -378,7 +463,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.75,
     outputPrice: 14.0,
-    reasoningPrice: 14.0,
     cacheReadPrice: 0.175,
     contextWindow: 128000,
     maxOutputTokens: 16384,
@@ -396,7 +480,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.75,
     outputPrice: 14.0,
-    reasoningPrice: 14.0,
     cacheReadPrice: 0.175,
     contextWindow: 128000,
     reasoningMode: 'optional',
@@ -414,7 +497,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.75,
     outputPrice: 14.0,
-    reasoningPrice: 14.0,
     cacheReadPrice: 0.175,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -432,7 +514,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.75,
     outputPrice: 14.0,
-    reasoningPrice: 14.0,
     cacheReadPrice: 0.175,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -454,7 +535,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 21.0,
     outputPrice: 168.0,
-    reasoningPrice: 168.0,
     contextWindow: 128000,
     reasoningMode: 'always',
     supportedReasoningEfforts: ['medium', 'high', 'xhigh'],
@@ -470,7 +550,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.25,
     outputPrice: 10.0,
-    reasoningPrice: 10.0,
     cacheReadPrice: 0.125,
     contextWindow: 128000,
     reasoningMode: 'optional',
@@ -488,7 +567,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.25,
     outputPrice: 10.0,
-    reasoningPrice: 10.0,
     cacheReadPrice: 0.125,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -506,7 +584,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.25,
     outputPrice: 10.0,
-    reasoningPrice: 10.0,
     cacheReadPrice: 0.125,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -524,7 +601,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.25,
     outputPrice: 10.0,
-    reasoningPrice: 10.0,
     cacheReadPrice: 0.125,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -542,7 +618,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 0.25,
     outputPrice: 2.0,
-    reasoningPrice: 2.0,
     cacheReadPrice: 0.025,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -559,7 +634,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.25,
     outputPrice: 10.0,
-    reasoningPrice: 10.0,
     cacheReadPrice: 0.125,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -578,7 +652,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 0.25,
     outputPrice: 2.0,
-    reasoningPrice: 2.0,
     cacheReadPrice: 0.025,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -597,7 +670,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 0.05,
     outputPrice: 0.4,
-    reasoningPrice: 0.4,
     cacheReadPrice: 0.005,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -631,7 +703,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.25,
     outputPrice: 10.0,
-    reasoningPrice: 10.0,
     cacheReadPrice: 0.125,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -653,7 +724,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 15.0,
     outputPrice: 120.0,
-    reasoningPrice: 120.0,
     contextWindow: 128000,
     reasoningMode: 'always',
     supportedReasoningEfforts: ['high'],
@@ -674,7 +744,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.25,
     outputPrice: 10.0,
-    reasoningPrice: 10.0,
     cacheReadPrice: 0.125,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -900,7 +969,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 15.0,
     outputPrice: 60.0,
-    reasoningPrice: 60.0,
     cacheReadPrice: 7.5,
     contextWindow: 200000,
     reasoningMode: 'always',
@@ -917,7 +985,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 150.0,
     outputPrice: 600.0,
-    reasoningPrice: 600.0,
     contextWindow: 200000,
     reasoningMode: 'always',
     supportedReasoningEfforts: ['low', 'medium', 'high'],
@@ -933,7 +1000,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.1,
     outputPrice: 4.4,
-    reasoningPrice: 4.4,
     cacheReadPrice: 0.55,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -947,7 +1013,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 2.0,
     outputPrice: 8.0,
-    reasoningPrice: 8.0,
     cacheReadPrice: 0.5,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -964,7 +1029,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 20.0,
     outputPrice: 80.0,
-    reasoningPrice: 80.0,
     contextWindow: 128000,
     reasoningMode: 'always',
     supportedReasoningEfforts: ['low', 'medium', 'high'],
@@ -980,7 +1044,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 10.0,
     outputPrice: 40.0,
-    reasoningPrice: 40.0,
     cacheReadPrice: 2.5,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -997,7 +1060,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.1,
     outputPrice: 4.4,
-    reasoningPrice: 4.4,
     cacheReadPrice: 0.55,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -1014,7 +1076,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 1.1,
     outputPrice: 4.4,
-    reasoningPrice: 4.4,
     cacheReadPrice: 0.275,
     contextWindow: 128000,
     reasoningMode: 'always',
@@ -1031,7 +1092,6 @@ export const OPENAI_MODELS: ModelKnowledge[] = [
     ],
     inputPrice: 2.0,
     outputPrice: 8.0,
-    reasoningPrice: 8.0,
     cacheReadPrice: 0.5,
     contextWindow: 128000,
     reasoningMode: 'always',

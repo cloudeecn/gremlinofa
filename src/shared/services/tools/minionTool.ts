@@ -3024,7 +3024,6 @@ async function* executeMinionInner(
     enabledTools: minionTools,
     toolOptions: effectiveToolOptions,
     disableStream: project.disableStream ?? false,
-    extendedContext: project.extendedContext ?? false,
     useAnthropicOneHourCache: project.useAnthropicOneHourCache ?? false,
     // Thread the project setting (minion sub-loops otherwise never inherit it)
     // plus the minion-level override, so the child's own fs/memory reads resolve

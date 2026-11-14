@@ -19,7 +19,6 @@ import {
   shouldPrependPrefill,
 } from '../../engine/lib/apiHelpers';
 import { calculateCost, isCostUnreliable } from '../../engine/lib/api/modelMetadata';
-import { supportsClaudeAgent1mContext } from '../../engine/lib/api/claudeAgentExtendedContext';
 import { StreamingContentAssembler } from '../streaming/StreamingContentAssembler';
 import { executeClientSideTool, type ClientSideToolRegistry } from '../tools/clientSideTools';
 import type { BackendDeps } from '../../engine/backendDeps';
@@ -124,7 +123,6 @@ export interface AgenticLoopOptions {
   enabledTools: string[];
   toolOptions: Record<string, ToolOptions>;
   disableStream: boolean;
-  extendedContext: boolean;
   // Use 1h cache TTL on Anthropic cache_control breakpoints (default 5m).
   // Only honored when apiDef.apiType === 'anthropic'.
   useAnthropicOneHourCache?: boolean;
@@ -673,6 +671,7 @@ function extractIterationTokens(
     cacheCreationTokens?: number;
     cacheReadTokens?: number;
     webSearchCount?: number;
+    tierPromptTokens?: number;
   },
   model: Model,
   cacheTtl?: '5m' | '1h',
@@ -694,7 +693,8 @@ function extractIterationTokens(
     cacheReadTokens,
     webSearchCount,
     cacheTtl,
-    tierMultiplier
+    tierMultiplier,
+    result.tierPromptTokens
   );
 
   const costUnreliable = isCostUnreliable(
@@ -1489,21 +1489,6 @@ export async function* runAgenticLoop(
 ): AsyncGenerator<AgenticLoopEvent, AgenticLoopResult, void> {
   const { apiDef, model, projectId, chatId, enabledTools, toolOptions } = options;
 
-  // Gate extended context on whether the effective model actually supports it.
-  // Use model.supportsExtendedContext directly — the model object already carries correct metadata
-  // from discovery (resolved via baseModelId). Re-resolving by model.id breaks for Bedrock
-  // inference profiles whose IDs (e.g. us.anthropic.claude-...) don't match fuzz patterns.
-  const effectiveExtendedContext = options.extendedContext && !!model.supportsExtendedContext;
-
-  // claude-agent opts into the 1M window by suffixing the model id with `[1m]`
-  // (the Claude Code convention, used instead of the SDK's `Options.betas`).
-  // Eligibility is its own set (see supportsClaudeAgent1mContext), distinct
-  // from `supportsExtendedContext`.
-  const claudeAgentExtendedContext =
-    apiDef.apiType === 'claude-agent' &&
-    !!options.extendedContext &&
-    supportsClaudeAgent1mContext(model.id);
-
   // VFS access lives only in the worker. `createVfsAdapter` is required
   // on `AgenticLoopOptions`; `buildLoopOptions` is the single production
   // constructor and always supplies it from `BackendDeps`. Anything
@@ -1779,8 +1764,6 @@ export async function* runAgenticLoop(
           enabledTools,
           toolOptions,
           disableStream: options.disableStream,
-          extendedContext: effectiveExtendedContext,
-          claudeAgentExtendedContext,
           useAnthropicOneHourCache: options.useAnthropicOneHourCache,
           flexTierEnabled: options.flexTierEnabled,
           signal: options.signal,
@@ -1951,14 +1934,8 @@ export async function* runAgenticLoop(
           options.deps.toolRegistry
         );
 
-        // Fill context window from model metadata (extended context overrides to 1M).
-        // claude-agent's `[1m]` suffix path also yields a 1M window — notably for
-        // Opus 4.5, which gets the suffix but carries no supportsExtendedContext flag.
         if (assistantMessage.metadata) {
-          assistantMessage.metadata.contextWindow =
-            effectiveExtendedContext || claudeAgentExtendedContext
-              ? 1_000_000
-              : model.contextWindow || 0;
+          assistantMessage.metadata.contextWindow = model.contextWindow || 0;
         }
 
         messages.push(assistantMessage);

@@ -48,6 +48,7 @@ import {
   mapAnthropicEventToStreamChunks,
 } from '../shared/services/api/anthropicStreamMapper';
 import { getModelMetadataFor } from '../shared/engine/lib/api/modelMetadata';
+import { supportsClaudeAgent1mContext } from '../shared/engine/lib/api/claudeAgentExtendedContext';
 import { mapAnthropicEffort } from '../shared/engine/lib/reasoningEffort';
 import { addTokens, createTokenTotals } from '../shared/engine/lib/tokenTotals';
 import { buildGremlinMcpServer, MCP_SERVER_NAME } from './claudeAgentToolBridge';
@@ -61,13 +62,17 @@ import {
 
 /** Hard-coded model list — the SDK has no listing endpoint. */
 const CLAUDE_AGENT_MODELS = [
+  'claude-fable-5-2',
   'claude-fable-5-1',
   'claude-fable-5',
   'claude-opus-5-5',
   'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
+  'claude-sonnet-5-5',
+  'claude-sonnet-5',
   'claude-sonnet-4-6',
+  'claude-haiku-5-5',
   'claude-haiku-4-5',
 ];
 
@@ -793,12 +798,6 @@ export class ClaudeAgentClient implements APIClient {
       toolContext?: ToolContext;
       /** Project web-search toggle: enables the SDK's built-in WebSearch/WebFetch. */
       webSearchEnabled?: boolean;
-      /**
-       * Pre-gated by the agentic loop: when true, opt into the 1M context window
-       * by suffixing the model id with `[1m]` (the Claude Code convention; we
-       * use it rather than the SDK's `Options.betas`).
-       */
-      claudeAgentExtendedContext?: boolean;
     } & Record<string, unknown>
   ): AsyncGenerator<StreamChunk, StreamResult<Anthropic.Beta.BetaContentBlock[]>, unknown> {
     const lastUserMsg = extractLastUserMessage(messages);
@@ -1070,12 +1069,13 @@ export class ClaudeAgentClient implements APIClient {
     // Note: the project's max output tokens (`options.maxTokens`) rides the
     // CLI env (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`, set with the auth env above) —
     // `Options` itself has no equivalent field.
-    // The Agent SDK opts into the 1M window via a `[1m]` model-id suffix rather
-    // than a beta header. Eligibility is pre-gated upstream (the loop only sets
-    // claudeAgentExtendedContext for the supported Sonnet 4.5 / Opus 4.5–4.8 set).
-    const sdkModelId = options.claudeAgentExtendedContext ? `${modelId}[1m]` : modelId;
-    if (options.claudeAgentExtendedContext) {
-      console.debug('[claudeAgent] 1M context enabled, model=%s', sdkModelId);
+    // 1M is the default everywhere. The few models Claude Code still runs at
+    // 200K without it get the `[1m]` model-id suffix (the SDK has no beta-header
+    // equivalent).
+    const needs1mSuffix = supportsClaudeAgent1mContext(modelId);
+    const sdkModelId = needs1mSuffix ? `${modelId}[1m]` : modelId;
+    if (needs1mSuffix) {
+      console.debug('[claudeAgent] 1M context via suffix, model=%s', sdkModelId);
     }
 
     // Per-definition CLI overrides: empty binaryPath keeps the SDK's bundled
@@ -1970,6 +1970,13 @@ export class ClaudeAgentClient implements APIClient {
               lastStepUsage.inputTokens +
               lastStepUsage.outputTokens +
               lastStepUsage.reasoningTokens +
+              (lastStepUsage.cacheCreationTokens ?? 0) +
+              (lastStepUsage.cacheReadTokens ?? 0),
+            // Context pricing tiers are per request, and `usage` sums every
+            // internal call. The last call carries the largest prompt of the
+            // turn, so pricing the whole turn by it is a close approximation.
+            tierPromptTokens:
+              lastStepUsage.inputTokens +
               (lastStepUsage.cacheCreationTokens ?? 0) +
               (lastStepUsage.cacheReadTokens ?? 0),
           }

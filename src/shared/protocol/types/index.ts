@@ -157,6 +157,26 @@ export type AnthropicReasoningMode =
   | 'budget-based' // Uses budget_tokens parameter
   | 'none'; // No reasoning support
 
+/** Token prices in USD per 1M tokens; `undefined` falls back to the next layer. */
+export interface PriceFields {
+  inputPrice?: number;
+  outputPrice?: number;
+  cacheReadPrice?: number;
+  cacheWritePrice?: number;
+  reasoningPrice?: number;
+}
+
+export interface ContextPricingTier extends PriceFields {
+  /** Tier applies when the prompt is strictly above this many tokens */
+  thresholdTokens: number;
+}
+
+export interface ScheduledPrice extends PriceFields {
+  /** First UTC day the price applies, `YYYY-MM-DD` */
+  effectiveFrom: string;
+  contextPricingTiers?: ContextPricingTier[];
+}
+
 /**
  * Comprehensive model metadata including pricing, capabilities, and provider-specific quirks
  */
@@ -167,9 +187,6 @@ export interface ModelMetadata {
 
   /** Max output/completion tokens */
   maxOutputTokens?: number;
-
-  /** Whether the model supports 1M extended context window (Anthropic beta) */
-  supportsExtendedContext?: boolean;
 
   // === Pricing (per 1M tokens in USD, or per-unit for images/requests). 0 means free, undefined means unable to find data ===
 
@@ -195,20 +212,20 @@ export interface ModelMetadata {
   requestPrice?: number;
 
   /**
-   * Higher pricing tier some providers charge once a request's context length
-   * crosses a threshold (e.g. Qwen bills more above 256K tokens). Recorded for
-   * reference only — NOT applied by `calculateCost`, which always uses the base
-   * (sub-threshold) inputPrice/outputPrice/cacheReadPrice regardless of the
-   * actual context size. Wire it into a context-aware pricing pass to honor it.
+   * Prompt-length pricing tiers, ascending by `thresholdTokens`. A request whose
+   * prompt (input + cache read + cache write) is above a tier's threshold bills
+   * every token of that request at the highest such tier; fields a tier leaves
+   * unset fall back to the base price. Applied by `resolveModelPricing`.
    */
-  unsupportedHighContextPricing?: {
-    /** Tier applies at/above this context length, in tokens */
-    thresholdTokens: number;
-    inputPrice?: number;
-    outputPrice?: number;
-    cacheReadPrice?: number;
-    cacheWritePrice?: number;
-  };
+  contextPricingTiers?: ContextPricingTier[];
+
+  /**
+   * Dated price changes. The base fields are the price before the first entry;
+   * every entry whose date has arrived overrides the fields it sets, in date
+   * order (its `contextPricingTiers` replace the current tiers, so `[]` clears
+   * them). Applied by `resolveModelPricing`.
+   */
+  priceSchedule?: ScheduledPrice[];
 
   // === Reasoning Capabilities ===
   /**
@@ -374,8 +391,6 @@ export interface Project {
 
   // Disable streaming (use non-streaming API calls)
   disableStream?: boolean;
-  // Extended context window (1M tokens, Anthropic beta)
-  extendedContext?: boolean;
   // Use 1h cache TTL on Anthropic cache_control breakpoints (default 5m).
   // Only honored when apiType === 'anthropic'.
   useAnthropicOneHourCache?: boolean;

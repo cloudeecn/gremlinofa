@@ -156,7 +156,6 @@ export async function buildAgenticLoopOptionsForContext(
     enabledTools,
     toolOptions,
     disableStream: project.disableStream ?? false,
-    extendedContext: project.extendedContext ?? false,
     useAnthropicOneHourCache: project.useAnthropicOneHourCache ?? false,
     noLineNumbers: project.noLineNumbers,
     cacheRoutingScope: project.cacheRoutingScope,

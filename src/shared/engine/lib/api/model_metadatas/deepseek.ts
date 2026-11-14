@@ -6,7 +6,7 @@ import type { ModelKnowledge } from '../../../../protocol/types';
 // placeholder at worst.
 //
 // Prices are the peak list rate; off-peak (everything outside 01:00-04:00 and
-// 06:00-10:00 UTC on weekdays) bills half. Effort is `low` / `high` / `max`,
+// 06:00-10:00 UTC on weekdays, and all of a Chinese public holiday) bills half. Effort is `low` / `high` / `max`,
 // server default `high`: `reasoning_effort` beside `thinking` on Chat
 // Completions, `reasoning.effort` on Responses, where `none` is the only off
 // switch (`thinking` isn't read there).

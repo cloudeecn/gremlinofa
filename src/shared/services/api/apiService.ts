@@ -260,11 +260,6 @@ export class APIService {
       // tools through `executeClientSideTool`. Other clients ignore it.
       toolContext?: ToolContext;
       disableStream?: boolean;
-      extendedContext?: boolean;
-      // claude-agent only: when true, the model id is sent to the Agent SDK with
-      // a `[1m]` suffix to opt into the 1M context window (no beta-header
-      // equivalent). Pre-gated by the loop; the stub client ignores it.
-      claudeAgentExtendedContext?: boolean;
       // Use 1h cache TTL on Anthropic cache_control blocks (default 5m).
       // Only honored by the Anthropic client.
       useAnthropicOneHourCache?: boolean;
